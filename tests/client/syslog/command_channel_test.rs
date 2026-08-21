@@ -222,12 +222,26 @@ async fn injected_syslog_message_reaches_the_wire_over_tcp() {
         other => panic!("expected Sent, got {other:?}"),
     };
 
-    let mut buf = vec![0u8; 4096];
-    let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
-        .await
-        .expect("no syslog line arrived")
-        .expect("read");
-    let line = String::from_utf8_lossy(&buf[..n]).to_string();
+    // Read until the framing newline rather than once: TCP is a stream, so a single
+    // `read` may return a prefix of the message. A one-shot read here passed most of
+    // the time and then reported 72 wire bytes against 73 sent -- a split, not a
+    // miscount.
+    let mut line_bytes: Vec<u8> = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut buf = [0u8; 512];
+        loop {
+            let read = stream.read(&mut buf).await.expect("read");
+            assert!(read > 0, "syslog stream closed before the newline arrived");
+            line_bytes.extend_from_slice(&buf[..read]);
+            if line_bytes.ends_with(b"\n") {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("no complete syslog line arrived");
+    let n = line_bytes.len();
+    let line = String::from_utf8_lossy(&line_bytes).to_string();
 
     // TCP frames each message with a trailing newline, and the reported count says so.
     assert_eq!(n, bytes_sent, "reported byte count differs from the wire");
