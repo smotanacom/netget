@@ -113,3 +113,27 @@ See `tests/client/torrent_tracker/CLAUDE.md` for E2E testing details.
 - [BEP 3: The BitTorrent Protocol Specification](http://www.bittorrent.org/beps/bep_0003.html)
 - [BEP 23: Tracker Returns Compact Peer Lists](http://www.bittorrent.org/beps/bep_0023.html)
 - [Tracker Protocol Specification](https://wiki.theory.org/BitTorrentSpecification#Tracker_HTTP.2FHTTPS_Protocol)
+
+## Injected actions (the dashboard's `[ send ]`)
+
+A tracker client has no read loop at all - each announce/scrape is a one-shot HTTP GET - so
+the command channel is the *only* way to reach a running one. It is registered and its
+`TorrentTrackerClient::command_loop` spawned **before** the connect-event LLM call, which a
+`*` -> manual rule can park for minutes.
+
+The old `execute_tracker_action` is now `TorrentTrackerClient::apply_action`, taking an
+already executed `ClientActionResult`; the connect-event task and the command loop both call
+it, so an injected `tracker_announce` builds the identical announce URL and fires the same
+`tracker_announce_response` event.
+
+`ClientSendOutcome` semantics:
+
+| Outcome | When |
+|---|---|
+| `Executed { detail }` | The announce/scrape completed (`tracker_announce completed`), or it was sent and the tracker's reply could not be bdecoded - `detail` says which. |
+| `Rejected { error }` | The action is not `tracker_announce`, `tracker_scrape` or `disconnect`. |
+| `Disconnected` | `{"type":"disconnect"}`; status goes to Disconnected and the handle is dropped. |
+| `Err(...)` | The HTTP GET failed, or a required field (`info_hash`, `peer_id`, `port`) was missing. |
+
+**`Sent { bytes_sent }` is never reported**: reqwest owns the socket. The GET is awaited
+before the outcome is returned.

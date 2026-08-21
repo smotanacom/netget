@@ -156,6 +156,8 @@ pub mod tor;
 pub mod torrent_dht;
 #[cfg(feature = "torrent-peer")]
 pub mod torrent_peer;
+#[cfg(feature = "torrent-tracker")]
+pub mod torrent_tracker;
 #[cfg(feature = "turn")]
 pub mod turn;
 #[cfg(feature = "udp")]
@@ -178,3 +180,5 @@ pub mod wireguard;
 pub mod xmlrpc;
 #[cfg(feature = "xmpp")]
 pub mod xmpp;
+#[cfg(feature = "zookeeper")]
+pub mod zookeeper;

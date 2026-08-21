@@ -52,6 +52,50 @@ pub static ZOOKEEPER_CLIENT_DATA_RECEIVED_EVENT: LazyLock<EventType> = LazyLock:
     ])
 });
 
+/// Raised after a write verb (`create_znode`, `set_data`, `delete_znode`) completes.
+///
+/// The read verbs have their own events - `zookeeper_data_received` for `get_data`,
+/// `zookeeper_children_received` for `get_children` - and neither fits a write: there is no
+/// data and no child list to report, only the fact that ZooKeeper accepted the change and
+/// the version it now holds. Without this the three write verbs completed silently and the
+/// model was never told whether its own write landed.
+pub static ZOOKEEPER_CLIENT_OPERATION_COMPLETE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "zookeeper_operation_complete",
+        "A ZooKeeper write (create/set_data/delete) completed",
+        json!({
+            "type": "wait_for_more"
+        }),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "operation".to_string(),
+            type_hint: "string".to_string(),
+            description: "The verb that completed: create, set_data or delete".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "path".to_string(),
+            type_hint: "string".to_string(),
+            description: "ZNode path the operation was requested for".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "created_path".to_string(),
+            type_hint: "string".to_string(),
+            description: "Path ZooKeeper actually created (create only; a sequential node                           gets a suffix)"
+                .to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "version".to_string(),
+            type_hint: "integer".to_string(),
+            description: "Data version after the write (set_data only)".to_string(),
+            required: false,
+        },
+    ])
+});
+
 pub static ZOOKEEPER_CLIENT_CHILDREN_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "zookeeper_children_received",
@@ -229,6 +273,11 @@ impl Protocol for ZookeeperClientProtocol {
                 "Triggered when ZooKeeper client receives children list",
                 json!({"type": "placeholder", "event_id": "zookeeper_children_received"}),
             ),
+            EventType::new(
+                "zookeeper_operation_complete",
+                "Triggered when a ZooKeeper write (create/set_data/delete) completes",
+                json!({"type": "placeholder", "event_id": "zookeeper_operation_complete"}),
+            ),
         ]
     }
 
@@ -252,8 +301,16 @@ impl Protocol for ZookeeperClientProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("zookeeper-async v5.0 client library")
             .llm_control("ZNode operations (create, get, set, delete, getChildren)")
-            .e2e_testing("Docker ZooKeeper container")
-            .notes("Simplified implementation, no watch mechanism")
+            .e2e_testing(
+                "tests/client/zookeeper/command_channel_test.rs drives a real zookeeper-async \
+                 session against NetGet's own ZooKeeper server on 127.0.0.1",
+            )
+            .notes(
+                "Real zookeeper-async session: create/get_data/set_data/delete/get_children \
+                 run against the server and raise events. No watch mechanism - watches are \
+                 registered as `false` on every call, so the client polls rather than being \
+                 notified.",
+            )
             .build()
     }
 
