@@ -544,8 +544,13 @@ impl ServerRegistry {
         for (protocol_name, protocol) in &self.protocols {
             // Add all protocol keywords
             for keyword in protocol.keywords() {
-                self.keyword_map
-                    .insert(keyword.to_lowercase(), protocol_name.clone());
+                let lower = keyword.to_lowercase();
+                // Store the hyphen/space-normalized form too; input is normalized
+                // before lookup, so a keyword declared as "ssh-agent" was otherwise
+                // unreachable from the input "ssh_agent".
+                let normalized = lower.replace(['-', ' '], "_");
+                self.keyword_map.insert(lower, protocol_name.clone());
+                self.keyword_map.insert(normalized, protocol_name.clone());
             }
 
             // Also add the full stack name as a keyword
@@ -814,13 +819,37 @@ impl ServerRegistry {
             }
         }
 
-        // For all other protocols, check ALL keywords from each protocol with word boundaries
+        // For all other protocols, check ALL keywords from each protocol with word
+        // boundaries -- longest matching keyword first.
+        //
+        // This used to return the first hit while iterating a HashMap, whose order is
+        // unspecified, so a input matching two protocols' keywords resolved to
+        // whichever the hash order yielded and could differ between runs or feature
+        // sets. That is what the hand-maintained priority ladder above exists to work
+        // around, one collision at a time. Preferring the longest keyword makes the
+        // more specific protocol win on its own, and the name tie-break makes the
+        // answer identical on every run.
+        let mut best: Option<(usize, &String)> = None;
         for (protocol_name, protocol) in &self.protocols {
             for keyword in protocol.keywords() {
-                if self.matches_with_word_boundary(&input_lower, &keyword.to_lowercase()) {
-                    return Some(protocol_name.clone());
+                let keyword = keyword.to_lowercase();
+                if !self.matches_with_word_boundary(&input_lower, &keyword) {
+                    continue;
+                }
+                let better = match best {
+                    None => true,
+                    Some((best_len, best_name)) => {
+                        keyword.len() > best_len
+                            || (keyword.len() == best_len && protocol_name < best_name)
+                    }
+                };
+                if better {
+                    best = Some((keyword.len(), protocol_name));
                 }
             }
+        }
+        if let Some((_, protocol_name)) = best {
+            return Some(protocol_name.clone());
         }
 
         // Default to TCP if "tcp", "raw", "ftp", "custom" found
