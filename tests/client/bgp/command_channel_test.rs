@@ -101,6 +101,24 @@ async fn injected_bgp_client_action_reaches_our_own_server() {
             "router_id": "10.0.0.1",
             "hold_time": 0,
         })),
+        // The server answers bgp_open through the LLM and fails CLOSED when it cannot
+        // reach one -- deliberately, so a peering policy that cannot be evaluated never
+        // admits a neighbour. This test points its LLM at an unreachable URL, so without
+        // a static handler here the handshake can never complete and the session never
+        // reaches Established. This is the shape the protocol's own
+        // `get_startup_examples()` documents.
+        event_handlers: Some(vec![serde_json::json!({
+            "event_pattern": "bgp_open",
+            "handler": {
+                "type": "static",
+                "actions": [{
+                    "type": "send_bgp_open",
+                    "my_as": 65001,
+                    "hold_time": 0,
+                    "router_id": "10.0.0.1"
+                }]
+            }
+        })]),
         ..Default::default()
     }
     .create(&state, tx.clone())
