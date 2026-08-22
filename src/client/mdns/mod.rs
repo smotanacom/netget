@@ -436,13 +436,53 @@ impl MdnsClient {
 
                         // Use mdns to resolve hostname (timeout in milliseconds)
                         match mdns.resolve_hostname(hostname, Some(5000)) {
-                            Ok(addrs) => {
-                                info!("Resolved {} to {} addresses", hostname, addrs.len());
+                            Ok(events) => {
+                                // `resolve_hostname` returns a Receiver of resolution
+                                // EVENTS, not addresses. This used to bind it as `addrs`
+                                // and log `addrs.len()` -- the channel's queue depth,
+                                // which is 0 -- so the client reported "Resolved X to 0
+                                // addresses" and never surfaced a single address, however
+                                // well the resolution went. Drain it instead; it is a
+                                // flume receiver, so `recv_async` keeps this off the
+                                // runtime's worker threads.
+                                let mut found: Vec<String> = Vec::new();
+                                while let Ok(event) = events.recv_async().await {
+                                    match event {
+                                        mdns_sd::HostnameResolutionEvent::AddressesFound(
+                                            _,
+                                            addrs,
+                                        ) => {
+                                            found.extend(addrs.iter().map(|a| a.to_string()));
+                                            break;
+                                        }
+                                        mdns_sd::HostnameResolutionEvent::SearchTimeout(_)
+                                        | mdns_sd::HostnameResolutionEvent::SearchStopped(_) => {
+                                            break
+                                        }
+                                        _ => continue,
+                                    }
+                                }
+                                found.sort();
+                                info!(
+                                    "Resolved {} to {} address(es): {:?}",
+                                    hostname,
+                                    found.len(),
+                                    found
+                                );
                                 let _ = status_tx
-                                    .send(format!("[CLIENT] Resolved {}: {:?}", hostname, addrs));
-                                return Ok(Applied::Executed(format!(
-                                    "resolve_hostname '{hostname}' issued"
-                                )));
+                                    .send(format!("[CLIENT] Resolved {}: {:?}", hostname, found));
+                                return Ok(Applied::Executed(if found.is_empty() {
+                                    format!(
+                                        "resolve_hostname '{hostname}': no addresses \
+                                         (search timed out after 5s)"
+                                    )
+                                } else {
+                                    format!(
+                                        "resolve_hostname '{hostname}': {} -> {}",
+                                        found.len(),
+                                        found.join(", ")
+                                    )
+                                }));
                             }
                             Err(e) => {
                                 warn!("Failed to resolve {}: {}", hostname, e);
