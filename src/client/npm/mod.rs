@@ -339,7 +339,8 @@ impl NpmClient {
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
-        let results = Self::perform_search_packages(client_id, query, limit, &status_tx).await?;
+        let results =
+            Self::perform_search_packages(client_id, query, limit, &app_state, &status_tx).await?;
         Self::notify_search_results(client_id, results, app_state, llm_client, status_tx).await;
         Ok(())
     }
@@ -350,10 +351,25 @@ impl NpmClient {
         client_id: ClientId,
         query: String,
         limit: u64,
+        app_state: &AppState,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<NpmSearchResults> {
-        // NPM search API endpoint
-        let search_url = "https://registry.npmjs.org/-/v1/search";
+        // Search the registry this client was configured with, not always the public one.
+        // The `registry_url` startup parameter was declared and honoured by every other
+        // verb, but search hardcoded https://registry.npmjs.org/-/v1/search -- so a client
+        // pointed at a private registry (or, in a test, at a loopback listener) silently
+        // queried the public registry instead.
+        let registry_url = app_state
+            .with_client_mut(client_id, |client| {
+                client
+                    .get_protocol_field("registry_url")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .await
+            .flatten()
+            .context("No registry URL found")?;
+        let search_url = format!("{}/-/v1/search", registry_url.trim_end_matches('/'));
 
         info!(
             "NPM client {} searching for: {} (limit: {})",
@@ -635,8 +651,10 @@ impl NpmClient {
                     let limit = data["limit"].as_u64().unwrap_or(20);
                     let requested = query.clone();
 
-                    let results =
-                        Self::perform_search_packages(client_id, query, limit, status_tx).await?;
+                    let results = Self::perform_search_packages(
+                        client_id, query, limit, app_state, status_tx,
+                    )
+                    .await?;
                     let detail = format!(
                         "search_packages {requested:?} -> {} result(s) of {} total",
                         results.results.len(),
