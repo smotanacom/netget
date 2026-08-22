@@ -36,6 +36,19 @@ struct GitSession {
     password: Option<String>,
 }
 
+/// Read one string startup parameter off the client's stored protocol data.
+async fn read_field(app_state: &AppState, client_id: ClientId, key: &str) -> Option<String> {
+    app_state
+        .with_client_mut(client_id, |client| {
+            client
+                .get_protocol_field(key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .await
+        .flatten()
+}
+
 /// What one executed action did. Shared vocabulary between the connected-event handler
 /// and the injected-command loop.
 enum Applied {
@@ -105,7 +118,15 @@ impl GitClient {
                 }
                 Err(_) => None,
             },
-            ..Default::default()
+            // Seed the declared credentials. They were plumbed all the way to
+            // `Cred::userpass_plaintext` but the session was built with
+            // `..Default::default()`, so both were always `None` and authenticated
+            // Git over HTTPS could never work -- a parameter declared, threaded and
+            // never actually supplied. CLAUDE.md calls a declared-but-unread
+            // parameter dead weight the model will try to use; this was the shape
+            // where the plumbing existed and only the seeding was missing.
+            username: read_field(&app_state, client_id, "username").await,
+            password: read_field(&app_state, client_id, "password").await,
         }));
 
         // Command channel for injected actions (the dashboard's [ send ] / composer).
