@@ -35,7 +35,7 @@ mod ntp_client_tests {
                 .on_event("ntp_response_received")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "wait_for_more"
+                        "type": "analyze_response"
                     }
                 ]))
                 .expect_at_most(1)
@@ -91,7 +91,7 @@ mod ntp_client_tests {
                 .on_event("ntp_response_received")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "wait_for_more"
+                        "type": "analyze_response"
                     }
                 ]))
                 .expect_at_most(1)
@@ -141,7 +141,7 @@ mod ntp_client_tests {
                     .on_event("ntp_response_received")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "wait_for_more"
+                            "type": "analyze_response"
                         }
                     ]))
                     .expect_at_most(1)
