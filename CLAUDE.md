@@ -780,13 +780,40 @@ Read before assuming a subsystem is sound:
   goes through `call_llm_for_client` (budget, limiter and client `event_handlers` all apply),
   and `src/server/git/mod.rs` and `src/server/mercurial/mod.rs` both use
   `action_helper::call_llm`. Re-run that grep before trusting any similar claim here.
-- On LLM failure most protocols reset to Idle and write nothing, leaving the peer to hang
-  until its own timeout. Still true for **70 of the 79** server `mod.rs` files with a
-  recognisable LLM-error branch — 6 answer on every branch, 3 on some. `http` (500, or 503 +
-  `Retry-After` when the error is an overload) and `tcp` (half-close, so the peer reads EOF)
-  are fixed; copy one of those shapes when you touch a protocol. Re-derive the count with a
-  grep for `LLM error` in `src/server/*/mod.rs` and check whether the following ~18 lines
+- On LLM failure a protocol must not reset to Idle and write nothing, leaving the peer to hang
+  until its own timeout. **Swept across all 135 server protocols in August 2026** (audit found
+  64 defective: 54 silent, 4 leaking the error onto the wire, 6 mixed). 44 now answer with a
+  `crate::utils::WireFailure` category; copy `http` (503 + `Retry-After` vs 500) or `tcp`
+  (half-close, so the peer reads EOF) when you touch a new one. Re-derive rather than trusting
+  this: grep `LLM error` in `src/server/*/mod.rs` and check whether the following ~18 lines
   write anything.
+
+  **20 protocols are deliberately silent and must stay that way** — `arp`, `bootp`, `datalink`,
+  `dhcp`, `igmp`, `ipsec`, `isis`, `mdns`, `openvpn`, `ospf`, `radius`, `rip`, `rtp`, `syslog`,
+  `udp`, `usb/mouse`, `usb/keyboard` and the BLE profiles. Each says so in its own CLAUDE.md.
+  The rule is that **a fabricated reply is worse than silence when every reply the protocol
+  defines is a positive assertion.** `openvpn` is the case to remember: its only pre-TLS server
+  message is `P_CONTROL_HARD_RESET_SERVER_V2`, and sending it *is* admitting the peer — so
+  "fixing the silence" there would turn a backend outage into an authentication bypass. ARP
+  would write a fabricated MAC into the requester's neighbour cache; OSPF/IGMP/RIP/BOOTP/DHCP
+  have no error frame at all. Where the wire cannot carry the distinction, the **log** must:
+  tag `decision=model_reject` / `model_silent` / `fail_closed_llm_error` as `radius` does.
+- **A static handler with an empty `actions` array does NOT suppress the LLM call.** The event
+  still reaches `call_llm`. So a rule written as "answer with nothing" is not a no-op — under a
+  dead or slow backend the protocol takes its LLM-failure path anyway. Use a real no-op verb the
+  protocol actually declares (`wait_for_more` for stream protocols) when you want a
+  deterministic do-nothing answer. This cost a full debugging cycle: a test using the empty-list
+  form passed 5/5 in isolation and failed intermittently under the full suite, because it was
+  racing the dead backend's retry/backoff rather than avoiding the call. Note that CLAUDE.md
+  describes dashboard-created *clients* getting one zero-action static rule per connect event —
+  **that idiom has not been re-verified against this finding** and may be equally ineffective.
+- **`ServerForm::create` substitutes a default instruction** (`"You are a {protocol} server.
+  Handle requests appropriately."`) whenever `instruction` is `None` — see
+  `src/cli/management.rs`. Any non-empty instruction makes `operator_wants_dynamic` true, so a
+  test built with `..Default::default()` **does consult the model**, whatever its comments claim.
+  Two `peer_inject` tests documented "Zero LLM calls" while doing the opposite, and passed only
+  because the old fail-open swallowed the resulting error. Pass `instruction: Some(String::new())`
+  when you want a genuinely model-free server.
 - **Answering the peer is not a licence to tell it anything.** Fixing the silence above
   introduced the opposite defect across ~25 protocols at once: each interpolated the error into
   the reply, so a plain `telnet` session printed `[netget] cannot answer right now: ✗  LLM
@@ -843,3 +870,14 @@ Read before assuming a subsystem is sound:
   ```
 - Conventional Commits, one logical change per commit. No co-author or bot attribution
   trailers of any kind.
+- **Commit as you go.** Land each logical change as soon as it is verified, rather than
+  accumulating a large uncommitted tree and committing at the end. Other agents are editing this
+  repo continuously: a big working tree is a merge hazard, it is what broad `git add` sweeps pick
+  up, and an interrupted session loses all of it. Verify, commit, continue.
+- **Verify against a clean baseline, not against "does it pass".** The suite has pre-existing
+  failures, so a red run proves nothing on its own. Run the same suite at unmodified `HEAD` in a
+  throwaway worktree and **diff the two failure sets** — only the difference is yours. This is
+  what separates a real regression from the repo's existing red and from load-flaky tests (the
+  suite has at least one: `git::e2e_test::test_git_with_scripting` asserts a wall-clock
+  "near-instant" bound and fails under parallel load while passing 3/3 in isolation).
+  Cross-check any suspect failure by re-running it in isolation before calling it a regression.
