@@ -192,6 +192,88 @@ impl PypiClient {
     }
 
     /// Raise `pypi_package_info` for a completed metadata fetch.
+    /// Run the actions the model returned for a response event.
+    ///
+    /// They were discarded (`actions: _`), so answering pypi_package_info_received or its siblings did nothing at all --
+    /// the whole point of raising the event.
+    ///
+    /// Everything goes through the `perform_*` round-trips, which raise no event. That
+    /// bounds the loop -- a follow-up cannot trigger another response event and drive the
+    /// model in circles -- and is the only shape that compiles, since routing back through
+    /// the notifying entry points makes notify -> perform -> notify a self-referential
+    /// async chain rustc cannot prove `Send`.
+    async fn run_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        app_state: &AppState,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        let protocol = crate::client::pypi::actions::PypiClientProtocol::new();
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            let outcome: Result<()> = match name.as_str() {
+                "pypi_get_package_info" => Self::perform_get_package_info(
+                    client_id,
+                    data["package_name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    app_state,
+                    status_tx,
+                )
+                .await
+                .map(|_| ()),
+                "pypi_search_packages" => Self::perform_search_packages(
+                    client_id,
+                    data["query"].as_str().unwrap_or_default().to_string(),
+                    data["limit"].as_u64().unwrap_or(10),
+                    status_tx,
+                )
+                .await
+                .map(|_| ()),
+                "pypi_download_package" => Self::perform_download_package(
+                    client_id,
+                    data["package_name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    data["version"].as_str().map(|s| s.to_string()),
+                    data["filename"].as_str().map(|s| s.to_string()),
+                    app_state,
+                    status_tx,
+                )
+                .await
+                .map(|_| ()),
+                "pypi_list_package_files" => Self::perform_list_package_files(
+                    client_id,
+                    data["package_name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    data["version"].as_str().map(|s| s.to_string()),
+                    app_state,
+                )
+                .await
+                .map(|_| ()),
+                other => {
+                    info!(
+                        "PyPI client {} follow-up '{}' has no non-notifying path; skipped",
+                        client_id, other
+                    );
+                    Ok(())
+                }
+            };
+            if let Err(e) = outcome {
+                error!("PyPI client {} follow-up action failed: {}", client_id, e);
+            }
+        }
+    }
+
     async fn notify_package_info(
         client_id: ClientId,
         info: PypiPackageInfo,
@@ -269,12 +351,13 @@ impl PypiClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state, &status_tx).await;
             }
             Err(e) => {
                 error!("LLM error for PyPI client {}: {}", client_id, e);
