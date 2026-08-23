@@ -63,7 +63,6 @@ const DISCARDED_BASELINE: &[&str] = &[
     "isis",
     "kubernetes",
     "mdns",
-    "ntp",
     "oauth2",
     "postgresql",
     "s3",
