@@ -57,7 +57,6 @@ const NEVER_EMITTED_BASELINE: &[&str] = &[
 
 /// Clients that discard at least one `call_llm_for_client` result.
 const DISCARDED_BASELINE: &[&str] = &[
-    "bitcoin",
     "dc",
     "elasticsearch",
     "grpc",
@@ -71,7 +70,6 @@ const DISCARDED_BASELINE: &[&str] = &[
     "saml",
     "stun",
     "tor",
-    "webdav",
     "webrtc",
     "whois",
 ];

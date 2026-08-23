@@ -465,6 +465,49 @@ impl WebdavClient {
     }
 
     /// Fire one `webdav_response_received` event at the LLM and apply any memory update.
+    /// Run the actions the model returned for a response event.
+    ///
+    /// They were discarded (`actions: _`), so answering webdav_response_received did nothing -- the whole
+    /// point of raising it. Dispatch goes through `perform_request`, which raises no event: that
+    /// bounds the loop, and avoids a notify -> perform -> notify chain that rustc cannot
+    /// prove `Send`.
+    async fn run_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        let protocol = crate::client::webdav::actions::WebdavClientProtocol::new();
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            if name != "webdav_request" {
+                info!(
+                    "WebDAV client {} follow-up '{}' has no non-notifying path; skipped",
+                    client_id, name
+                );
+                continue;
+            }
+            if let Err(e) = Self::perform_request(
+                client_id,
+                data["method"].as_str().unwrap_or("GET").to_string(),
+                data["path"].as_str().unwrap_or("/").to_string(),
+                None,
+                data["body"].as_str().map(|s| s.to_string()),
+                app_state,
+                status_tx,
+            )
+            .await
+            {
+                error!("WebDAV client {} follow-up action failed: {}", client_id, e);
+            }
+        }
+    }
+
     async fn notify_response(
         client_id: ClientId,
         event_data: serde_json::Value,
@@ -495,12 +538,13 @@ impl WebdavClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state, &status_tx).await;
             }
             Err(e) => {
                 error!("LLM error for WebDAV client {}: {}", client_id, e);
