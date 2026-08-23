@@ -732,6 +732,20 @@ Assume other agents work in this repo concurrently.
 - **Give scratchpad files a name unique to you.** Two agents independently wrote `mod.rs.bak`
   into the shared session scratchpad; one clobbered the other, and restoring "the" backup put
   one protocol's source into another protocol's file. Prefix every scratch file with your task.
+- **Never revert a dirty working-tree file you did not demonstrably write** — no
+  `git checkout -- <path>`, `git restore`, or overwrite to "tidy up" an edit that looks
+  half-finished. You cannot tell your own abandoned work from another agent's work in progress,
+  and the tree is routinely mid-edit for several agents at once. An unverified edit left in the
+  tree is a far smaller problem than deleted work. This happened: a batch of subagents died
+  mid-task leaving three modified files, and the reflex to restore a clean tree wiped edits that
+  may not have been theirs. They survived only because `git diff > patch` had been run first.
+  If you truly must clear a path, save `git diff -- <path>` to a uniquely named scratch file
+  **first** and say so — but prefer leaving it alone and reporting it.
+- **Don't fan out a large agent wave while the API is failing.** If agents start returning
+  "stalled" or the tool-permission classifier times out, stop and wait instead of launching the
+  next slice. One 23-agent wave during a degraded period burned ~3.8M tokens for 2 usable
+  results, and the dead agents left half-written files in the shared tree for someone else to
+  trip over.
 - **Pause and report** if you hit an error in code you did not modify. It is almost always
   another agent mid-edit; retry rather than "fixing" their file.
 - **Verify HEAD, not the working tree.** During parallel work the working tree is routinely
