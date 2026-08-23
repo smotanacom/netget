@@ -62,12 +62,13 @@ const DISCARDED_BASELINE: &[&str] = &[
     "grpc",
     "isis",
     "kubernetes",
+    "mdns",
     "ntp",
     "oauth2",
+    "postgresql",
     "s3",
     "saml",
     "stun",
-    "tor",
     "webrtc",
     "whois",
 ];
@@ -155,22 +156,31 @@ fn strip_comments(src: &str) -> String {
 }
 
 fn discards_llm_result(rest: &str) -> bool {
-    let rest = &strip_comments(rest);
-    let mut from = 0;
-    while let Some(idx) = rest[from..].find("call_llm_for_client") {
-        let at = from + idx;
-        let before = &rest[at.saturating_sub(80)..at];
-        let window = &rest[at..(at + 900).min(rest.len())];
-        if before.contains("let _ =")
-            || window.contains("actions: _")
-            || window.contains("Ok(_) =>")
-            || window.contains("Ok(_result) =>")
-        {
-            return true;
-        }
-        from = at + "call_llm_for_client".len();
-    }
-    false
+    let src = strip_comments(rest);
+    // Only unambiguous shapes.
+    //
+    // An earlier version also flagged `Ok(_) =>` anywhere within 900 characters after a
+    // `call_llm_for_client` call. That is far too loose: `Ok(_) => {}` is the correct
+    // catch-all arm of a `match protocol.execute_action(..)` that already handles the
+    // meaningful variants, and ntp and tor were both flagged for having one while
+    // executing the model's actions perfectly well. The window was also too tight in the
+    // other direction -- mdns and postgresql discard an answer more than 900 characters
+    // from the call and were missed entirely. Whole-file, two literal shapes, no window.
+    src.contains("actions: _") || regex_like_let_underscore_call(&src)
+}
+
+/// `let _ = ...call_llm_for_client`, tolerating a path prefix and whitespace.
+fn regex_like_let_underscore_call(src: &str) -> bool {
+    src.match_indices("call_llm_for_client").any(|(idx, _)| {
+        let before = &src[idx.saturating_sub(80)..idx];
+        let Some(pos) = before.rfind("let _ =") else {
+            return false;
+        };
+        // Nothing but a path between `let _ =` and the call.
+        before[pos + "let _ =".len()..]
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == ':' || c == '_' || c.is_whitespace())
+    })
 }
 
 #[test]
