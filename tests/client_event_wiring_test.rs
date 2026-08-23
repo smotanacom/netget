@@ -67,7 +67,6 @@ const DISCARDED_BASELINE: &[&str] = &[
     "postgresql",
     "s3",
     "saml",
-    "stun",
     "webrtc",
     "whois",
 ];

@@ -313,7 +313,7 @@ impl StunClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
@@ -321,8 +321,43 @@ impl StunClient {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
 
-                // Note: We don't execute follow-up actions here to avoid recursion
-                // The LLM response is primarily for interpretation/logging
+                // Execute what the model asked for. These were discarded with a note
+                // saying it was "to avoid recursion" -- a real hazard, but the answer is
+                // to dispatch through a path that raises no event rather than to drop the
+                // answer. A model that read a discovered address and wanted to re-probe
+                // (to see whether the mapping is stable, which is the whole point of
+                // repeated STUN binding requests) was silently ignored.
+                //
+                // `query_external_address` performs the exchange and raises nothing, so
+                // one probe cannot drive an unbounded chain and the async type stays
+                // non-recursive, which is what tokio::spawn's Send bound requires.
+                use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                let protocol = crate::client::stun::actions::StunClientProtocol::new();
+                for action in actions {
+                    match protocol.execute_action(action.clone()) {
+                        Ok(ClientActionResult::Custom { name, .. })
+                            if name == "send_binding_request" =>
+                        {
+                            match Self::query_external_address(client_id, app_state, status_tx)
+                                .await
+                            {
+                                Ok(d) => info!(
+                                    "STUN client {} follow-up binding request: {}",
+                                    client_id, d.external_addr
+                                ),
+                                Err(e) => error!(
+                                    "STUN client {} follow-up binding request failed: {}",
+                                    client_id, e
+                                ),
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => error!(
+                            "STUN client {} rejected its own follow-up action: {}",
+                            client_id, e
+                        ),
+                    }
+                }
             }
             Err(e) => {
                 error!("LLM error for STUN client {}: {}", client_id, e);
