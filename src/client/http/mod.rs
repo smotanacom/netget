@@ -605,12 +605,47 @@ impl HttpClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
+                }
+
+                // Execute what the model asked for. These were discarded, so a model that
+                // read a response and wanted to follow it with another request was
+                // silently ignored -- the entire purpose of raising the event.
+                //
+                // They run through `perform_request`, which issues the exchange and raises
+                // no event. That bounds the loop (a follow-up cannot trigger another
+                // response event and drive the model in circles) and is also the only
+                // shape that compiles: routing them back through `make_request` would make
+                // notify -> apply -> make -> notify a self-referential async chain, which
+                // rustc cannot prove `Send` and `tokio::spawn` therefore rejects.
+                use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                for action in actions {
+                    let Ok(ClientActionResult::Custom { name, data }) =
+                        protocol.execute_action(action.clone())
+                    else {
+                        continue;
+                    };
+                    if name != "http_request" {
+                        continue;
+                    }
+                    let result = Self::perform_request(
+                        client_id,
+                        data["method"].as_str().unwrap_or("GET").to_string(),
+                        data["path"].as_str().unwrap_or("/").to_string(),
+                        data["headers"].as_object().cloned(),
+                        data["body"].as_str().map(|s| s.to_string()),
+                        &app_state,
+                        &status_tx,
+                    )
+                    .await;
+                    if let Err(e) = result {
+                        error!("HTTP client {} follow-up request failed: {}", client_id, e);
+                    }
                 }
             }
             Err(e) => {
