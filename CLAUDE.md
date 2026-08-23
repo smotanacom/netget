@@ -798,15 +798,25 @@ Read before assuming a subsystem is sound:
   would write a fabricated MAC into the requester's neighbour cache; OSPF/IGMP/RIP/BOOTP/DHCP
   have no error frame at all. Where the wire cannot carry the distinction, the **log** must:
   tag `decision=model_reject` / `model_silent` / `fail_closed_llm_error` as `radius` does.
-- **A static handler with an empty `actions` array does NOT suppress the LLM call.** The event
-  still reaches `call_llm`. So a rule written as "answer with nothing" is not a no-op — under a
-  dead or slow backend the protocol takes its LLM-failure path anyway. Use a real no-op verb the
-  protocol actually declares (`wait_for_more` for stream protocols) when you want a
-  deterministic do-nothing answer. This cost a full debugging cycle: a test using the empty-list
-  form passed 5/5 in isolation and failed intermittently under the full suite, because it was
-  racing the dead backend's retry/backoff rather than avoiding the call. Note that CLAUDE.md
-  describes dashboard-created *clients* getting one zero-action static rule per connect event —
-  **that idiom has not been re-verified against this finding** and may be equally ineffective.
+- **A static handler with an empty `actions` array appears NOT to suppress the LLM call —
+  mechanism unexplained, treat with suspicion.** Observed in `tests/server/xmpp/peer_inject_test.rs`
+  under full-suite load: with `{"type":"static","actions":[]}` on a `*` pattern, a probe on the
+  `call_llm` error branch fired with a real backend error, proving the model was consulted;
+  changing only that JSON to `[{"type":"wait_for_more"}]` made the probe stop firing. The two
+  runs differed in nothing else, so the attribution is sound, but **the mechanism was not found**.
+  Ruled out by inspection: `parse_event_handlers` accepts an empty array, `EventHandlerType::validate`
+  passes it, `find_handler`'s `*` matches, `execute_static_handler` returns `Handled` regardless
+  of length, `action_helper` propagates a handler `Err` rather than falling back, and
+  `start_server_from_action` applies `event_handler_config` (~line 608) *before* `spawn` (~line
+  727), so there is no config-not-yet-applied race. Something else is going on. Until it is
+  understood:
+  - prefer a real no-op verb the protocol declares (`wait_for_more`) over an empty list;
+  - **`src/tui/modal/form.rs:607` uses exactly the empty-list form** for every dashboard-created
+    client's `<proto>_connected` rule, whose entire purpose is to stop the connect event parking
+    or reaching the model. If the observation generalises, that rule does nothing and connect
+    events go to the LLM anyway. **Unverified — worth an experiment before trusting it.**
+  - the `wait_for_more` replacement has **one** full-suite confirmation, so it may itself be a
+    lucky run rather than a fix. Re-run under load before relying on it.
 - **`ServerForm::create` substitutes a default instruction** (`"You are a {protocol} server.
   Handle requests appropriately."`) whenever `instruction` is `None` — see
   `src/cli/management.rs`. Any non-empty instruction makes `operator_wants_dynamic` true, so a
