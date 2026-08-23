@@ -275,7 +275,7 @@ usb-fido2 = ["usb-common", "ring", "ring/std", "serde_cbor"]  # USB FIDO2/U2F Se
 usb-smartcard = ["usb-common"]  # Virtual USB CCID smart card reader over USB/IP. rsa/sha2 dropped with crypto.rs: the handler owns every response APDU, so the protocol holds no keys
 usb = ["dep:nusb"]  # USB client for connecting to USB devices
 openidconnect = ["dep:openidconnect", "urlencoding"]  # OpenID Connect client for authentication flows
-kubernetes = ["dep:kube", "dep:k8s-openapi"]  # Kubernetes client protocol with v1.30 API support
+kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:rustls"]  # Kubernetes client protocol with v1.30 API support
 # Kubernetes API *server*. Deliberately independent of the `kubernetes` client feature: kubectl
 # speaks JSON to an apiserver by default, so this needs neither kube nor k8s-openapi - just the
 # HTTP stack and rustls for the optional TLS listener. Pure Rust, no system library.
