@@ -320,6 +320,7 @@ impl PostgresqlClient {
                     client_id,
                     &query,
                     rows,
+                    &pg_client,
                     &protocol,
                     &app_state,
                     &llm_client,
@@ -346,7 +347,7 @@ impl PostgresqlClient {
         match Self::apply_action(protocol.execute_action(action)?, pg_client, client_id).await {
             Ok(Applied::Query { query, rows }) => {
                 Self::report_query_result(
-                    client_id, &query, rows, protocol, app_state, llm_client, status_tx,
+                    client_id, &query, rows, pg_client, protocol, app_state, llm_client, status_tx,
                 )
                 .await;
             }
@@ -446,6 +447,7 @@ impl PostgresqlClient {
         client_id: ClientId,
         query: &str,
         rows: Vec<serde_json::Value>,
+        pg_client: &Arc<Mutex<tokio_postgres::Client>>,
         protocol: &Arc<PostgresqlClientProtocol>,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
@@ -469,9 +471,19 @@ impl PostgresqlClient {
             .await
             .unwrap_or_default();
 
+        // Execute what the model asked for.
+        //
+        // The result was matched as `actions: _, memory_updates: Some(mem)`, which threw
+        // the actions away AND silently skipped the whole arm whenever the model returned
+        // no memory update -- so on the common path nothing happened at all. A model that
+        // read query results and wanted to issue the next query was ignored.
+        //
+        // `apply_action` runs a query and raises no event, so a follow-up cannot trigger
+        // another result event and drive the model in circles, and the async type stays
+        // non-recursive as tokio::spawn's Send bound requires.
         if let Ok(ClientLlmResult {
-            actions: _,
-            memory_updates: Some(mem),
+            actions,
+            memory_updates,
         }) = call_llm_for_client(
             llm_client,
             app_state,
@@ -484,7 +496,45 @@ impl PostgresqlClient {
         )
         .await
         {
-            app_state.set_memory_for_client(client_id, mem).await;
+            if let Some(mem) = memory_updates {
+                app_state.set_memory_for_client(client_id, mem).await;
+            }
+            for action in actions {
+                let decoded = match protocol.execute_action(action.clone()) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        error!(
+                            "PostgreSQL client {} rejected its own follow-up action: {}",
+                            client_id, e
+                        );
+                        continue;
+                    }
+                };
+                match Self::apply_action(decoded, pg_client, client_id).await {
+                    Ok(Applied::Query { query, rows }) => info!(
+                        "PostgreSQL client {} follow-up query returned {} row(s): {}",
+                        client_id,
+                        rows.len(),
+                        crate::utils::truncate_for_log(&query, 80)
+                    ),
+                    Ok(Applied::Nothing(detail)) => info!(
+                        "PostgreSQL client {} follow-up produced no query: {}",
+                        client_id, detail
+                    ),
+                    Ok(Applied::Disconnect) => {
+                        info!(
+                            "PostgreSQL client {} follow-up requested disconnect",
+                            client_id
+                        );
+                        Self::mark_disconnected(client_id, app_state, status_tx).await;
+                        break;
+                    }
+                    Err(e) => error!(
+                        "PostgreSQL client {} follow-up action failed: {}",
+                        client_id, e
+                    ),
+                }
+            }
         }
     }
 
