@@ -507,6 +507,59 @@ impl JsonRpcClient {
     }
 
     /// Raise `jsonrpc_response_received` for a completed exchange.
+    /// Run the actions the model returned for a response event.
+    ///
+    /// They were discarded (`actions: _`) at both notify sites, so answering
+    /// jsonrpc_response_received did nothing -- the whole point of raising it. Dispatch
+    /// goes through the `perform_*` cores, which raise no event: that bounds the loop and
+    /// avoids a notify -> perform -> notify chain rustc cannot prove `Send`.
+    async fn run_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        app_state: &Arc<AppState>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        let protocol = crate::client::jsonrpc::actions::JsonRpcClientProtocol::new();
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            let outcome = match name.as_str() {
+                "jsonrpc_request" => Self::perform_request(
+                    client_id,
+                    data["method"].as_str().unwrap_or_default(),
+                    data.get("params").cloned(),
+                    data.get("id").cloned(),
+                    app_state,
+                )
+                .await
+                .map(|_| ()),
+                "jsonrpc_batch" => Self::perform_batch_request(
+                    client_id,
+                    data["requests"].as_array().cloned().unwrap_or_default(),
+                    app_state,
+                )
+                .await
+                .map(|_| ()),
+                other => {
+                    info!(
+                        "JSON-RPC client {} follow-up '{}' has no non-notifying path; skipped",
+                        client_id, other
+                    );
+                    Ok(())
+                }
+            };
+            if let Err(e) = outcome {
+                error!(
+                    "JSON-RPC client {} follow-up action failed: {}",
+                    client_id, e
+                );
+            }
+        }
+    }
+
     async fn notify_response(
         client_id: ClientId,
         exchange: (u16, Option<serde_json::Value>),
@@ -542,13 +595,14 @@ impl JsonRpcClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state).await;
             }
             Err(e) => {
                 error!("LLM error for JSON-RPC client {}: {}", client_id, e);
@@ -689,13 +743,14 @@ impl JsonRpcClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state).await;
             }
             Err(e) => {
                 error!("LLM error for JSON-RPC client {}: {}", client_id, e);

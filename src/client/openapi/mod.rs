@@ -684,6 +684,65 @@ impl OpenApiClient {
     }
 
     /// Hand a completed exchange to the LLM as an `openapi_operation_response` event.
+    /// Run the actions the model returned for a response event.
+    ///
+    /// They were discarded (`actions: _`), so answering openapi_operation_response did
+    /// nothing -- the whole point of raising it. Dispatch goes through
+    /// `perform_operation`, which raises no event: that bounds the loop and avoids a
+    /// notify -> perform -> notify chain rustc cannot prove `Send`.
+    async fn run_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        app_state: &AppState,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        let protocol = crate::client::openapi::actions::OpenApiClientProtocol::new();
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            if name != "openapi_operation" {
+                info!(
+                    "OpenAPI client {} follow-up '{}' has no non-notifying path; skipped",
+                    client_id, name
+                );
+                continue;
+            }
+            let to_map = |v: &serde_json::Value| -> HashMap<String, String> {
+                v.as_object()
+                    .map(|o| {
+                        o.iter()
+                            .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let result = Self::perform_operation(
+                client_id,
+                data["operation_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                to_map(&data["path_params"]),
+                to_map(&data["query_params"]),
+                data["headers"].as_object().cloned(),
+                data.get("body").cloned().unwrap_or(serde_json::Value::Null),
+                app_state,
+                status_tx,
+            )
+            .await;
+            if let Err(e) = result {
+                error!(
+                    "OpenAPI client {} follow-up action failed: {}",
+                    client_id, e
+                );
+            }
+        }
+    }
+
     async fn notify_operation_response(
         client_id: ClientId,
         exchange: OpenApiExchange,
@@ -727,13 +786,14 @@ impl OpenApiClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state, &status_tx).await;
                 // Note: We don't execute follow-up actions here to avoid recursive async
                 // function issues. The LLM can handle follow-up operations by including
                 // them in the original response, or the operator can inject them.
