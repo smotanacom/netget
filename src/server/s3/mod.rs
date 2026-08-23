@@ -217,6 +217,26 @@ async fn handle_s3_request_with_llm(
     // Process LLM result and build HTTP response
     match llm_result {
         Ok(execution_result) => {
+            // Which of the three outcomes this was, for the log. `decision=` is a stable
+            // grep target: `model_reject` is the model deliberately refusing the request,
+            // `model_answer` is a real S3 response, `model_no_action` is the model saying
+            // nothing usable. None of them is `fail_closed_llm_error`, which only the `Err`
+            // arm below may write — an operator must be able to tell a model's refusal from
+            // netget failing to reach one.
+            let decision = execution_result
+                .protocol_results
+                .iter()
+                .find_map(|result| match result {
+                    ActionResult::Custom { name, .. } => match name.as_str() {
+                        "s3_error" => Some("model_reject"),
+                        "s3_object" | "s3_object_list" | "s3_bucket_list" => Some("model_answer"),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap_or("model_no_action");
+            let failures = execution_result.failures.len();
+
             // Scan for the first action that is actually an S3 response. This was a
             // `for` loop with an unconditional `return` inside it — so it examined
             // only the first result and, if that was something like `show_message`,
@@ -227,27 +247,57 @@ async fn handle_s3_request_with_llm(
                 .into_iter()
                 .find_map(|result| process_s3_action_result(result, bucket.as_deref(), &status_tx))
             {
+                log.debug(format!("S3 {} {} decision={}", operation, path, decision));
                 return Ok(response);
             }
 
-            // No S3 actions found, return empty 200 OK
+            // No S3 actions found, return empty 200 OK. Logged at WARN because the model
+            // produced nothing this protocol can turn into a response — for the write verbs
+            // that empty 200 reads as success, so it must be visible in the log.
+            log.warn(format!(
+                "S3 {} {} decision={} (no S3 response action; {} action(s) failed to \
+                 execute) — answering empty 200 OK",
+                operation, path, decision, failures
+            ));
             Ok(Response::builder()
                 .status(StatusCode::OK)
                 .body(Full::new(Bytes::new()))
                 .unwrap())
         }
         Err(e) => {
-            // Non-fatal: a wire fallback (500 response) is still delivered and the HTTP
-            // connection continues.
-            log.warn(format!("LLM error handling S3 request: {}", e));
+            // netget could not reach a decision at all. Fail closed with an S3 `<Error>`
+            // document carrying only a category — never the error itself, which names the
+            // backend, the model and netget's own retry machinery. The full error goes to
+            // the log and the status stream, which is where an operator looks.
+            let failure = crate::utils::WireFailure::classify(&e);
+            log.warn(format!(
+                "S3 {} {} decision=fail_closed_llm_error category={:?}: {}",
+                operation, path, failure, e
+            ));
 
-            // Return 500 error
-            Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header("Content-Type", "application/xml")
+            // Distinct codes, so a client backs off rather than recording a permanent
+            // fault: an overloaded backend is 503 + Retry-After (the AWS SDKs and rust-s3
+            // treat 503 `ServiceUnavailable` as retryable), anything else is 500.
+            let (status, code) = match failure {
+                crate::utils::WireFailure::Overloaded => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "ServiceUnavailable")
+                }
+                crate::utils::WireFailure::Unavailable => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "InternalError")
+                }
+            };
+
+            let mut builder = Response::builder()
+                .status(status)
+                .header("Content-Type", "application/xml");
+            if failure == crate::utils::WireFailure::Overloaded {
+                builder = builder.header("Retry-After", "5");
+            }
+
+            Ok(builder
                 .body(Full::new(Bytes::from(build_error_xml(
-                    "InternalError",
-                    crate::utils::WireFailure::classify(&e).text(),
+                    code,
+                    failure.text(),
                 ))))
                 .unwrap())
         }

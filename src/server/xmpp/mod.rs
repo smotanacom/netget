@@ -22,6 +22,51 @@ use tokio::sync::mpsc;
 /// without limit, and every subsequent event re-sends the whole thing to the model.
 const MAX_XMPP_BUFFER_BYTES: usize = 256 * 1024;
 
+/// A fatal stream error to send when netget itself cannot answer, per RFC 6120 §4.9.
+///
+/// The peer gets a *category*, never a diagnosis: the two `WireFailure` variants map onto two
+/// distinct defined stream conditions so a client can tell "come back later" from "this server
+/// is broken" —
+///
+/// * `WireFailure::Overloaded` → `<resource-constraint/>` (§4.9.3.17, "the server lacks the
+///   system resources necessary to service the stream"), which clients treat as retryable and
+///   back off on;
+/// * `WireFailure::Unavailable` → `<internal-server-error/>` (§4.9.3.10).
+///
+/// The `<text>` is `WireFailure::text`, a `&'static str` — nothing derived from the error can
+/// reach it. The error itself goes to the log and the status stream.
+///
+/// `stream_opened` covers the case where the failure happens on the very first event, before
+/// the model has ever answered with a stream header: RFC 6120 §4.9.1.1 requires an opening tag
+/// to precede the error, so one is synthesised. `domain` is operator-supplied startup config,
+/// not peer data, but it is escaped anyway so a stray `&` cannot produce a malformed frame.
+fn stream_error_frame(
+    failure: crate::utils::WireFailure,
+    stream_opened: bool,
+    domain: &str,
+) -> String {
+    const NS: &str = "urn:ietf:params:xml:ns:xmpp-streams";
+    let condition = match failure {
+        crate::utils::WireFailure::Overloaded => "resource-constraint",
+        crate::utils::WireFailure::Unavailable => "internal-server-error",
+    };
+
+    let mut frame = String::new();
+    if !stream_opened {
+        frame.push_str(&format!(
+            "<?xml version='1.0'?><stream:stream xmlns='jabber:client' \
+             xmlns:stream='http://etherx.jabber.org/streams' version='1.0' from='{}'>",
+            actions::xml_escape(domain)
+        ));
+    }
+    frame.push_str(&format!(
+        "<stream:error><{condition} xmlns='{NS}'/>\
+         <text xmlns='{NS}' xml:lang='en'>{}</text></stream:error></stream:stream>",
+        actions::xml_escape(failure.text())
+    ));
+    frame
+}
+
 /// XMPP server that forwards XML stanzas to LLM
 pub struct XmppServer;
 
@@ -43,6 +88,9 @@ impl XmppServer {
             local_addr, domain
         ));
 
+        // Kept alongside the protocol so a connection that fails before the model has ever
+        // answered can still synthesise the opening stream tag a stream error must follow.
+        let stream_domain = domain.clone();
         let protocol = Arc::new(XmppProtocol::with_domain(domain));
 
         let task_registrar = app_state.clone();
@@ -57,6 +105,7 @@ impl XmppServer {
                         let state_clone = app_state.clone();
                         let status_clone = status_tx.clone();
                         let protocol_clone = protocol.clone();
+                        let domain_clone = stream_domain.clone();
 
                         Log::new(Some(&status_clone)).debug(format!(
                             "XMPP connection {} from {}",
@@ -118,6 +167,10 @@ impl XmppServer {
                             let mut read_half = read_half;
                             let mut buffer = Vec::new();
                             let mut temp_buf = vec![0u8; 4096];
+                            // Has anything at all been written to this peer yet? A stream error
+                            // must be preceded by an opening stream tag, and on this server the
+                            // opening tag is the model's answer to the first event.
+                            let mut stream_opened = false;
 
                             loop {
                                 match read_half.read(&mut temp_buf).await {
@@ -206,6 +259,7 @@ impl XmppServer {
 
                                                 let mut should_close = false;
                                                 let mut wait_for_more = false;
+                                                let mut wrote_any = false;
 
                                                 for protocol_result in
                                                     execution_result.protocol_results
@@ -219,6 +273,8 @@ impl XmppServer {
                                                             let _ = write.write_all(&data).await;
                                                             let _ = write.flush().await;
                                                             drop(write);
+                                                            stream_opened = true;
+                                                            wrote_any = true;
 
                                                             // Live ↑ counter + last_activity.
                                                             state_clone
@@ -251,8 +307,25 @@ impl XmppServer {
                                                     }
                                                 }
 
+                                                // Three outcomes stay distinguishable in the
+                                                // log: the model closed the stream, the model
+                                                // answered with nothing, and the LLM call
+                                                // errored (`decision=fail_closed_llm_error`,
+                                                // below). Only the last one is netget failing.
                                                 if should_close {
+                                                    log.debug(format!(
+                                                        "XMPP connection {connection_id} closed \
+                                                         by model: decision=model_close"
+                                                    ));
                                                     break;
+                                                }
+
+                                                if !wrote_any && !wait_for_more {
+                                                    log.debug(format!(
+                                                        "XMPP no stanza for connection \
+                                                         {connection_id}: \
+                                                         decision=model_no_actions"
+                                                    ));
                                                 }
 
                                                 // Only consume the buffer once the model has
@@ -266,9 +339,53 @@ impl XmppServer {
                                                 }
                                             }
                                             Err(e) => {
-                                                // Keep the buffer: the model never saw this
-                                                // data, so dropping it would lose a stanza.
-                                                log.warn(format!("XMPP LLM call failed: {}", e));
+                                                // This branch used to log and loop, so the peer
+                                                // sat blocked on a stanza that was never going
+                                                // to be answered until its own timeout fired -
+                                                // the "reset and write nothing" shape CLAUDE.md
+                                                // flags. XMPP has a defined frame for exactly
+                                                // this, so use it: a fatal stream error, then
+                                                // close.
+                                                let failure =
+                                                    crate::utils::WireFailure::classify(&e);
+                                                let class = if failure.is_overloaded() {
+                                                    "overloaded"
+                                                } else {
+                                                    "unavailable"
+                                                };
+                                                // The full error goes to the log and the status
+                                                // stream only. Never to the peer.
+                                                log.warn(format!(
+                                                    "XMPP LLM call failed on connection \
+                                                     {connection_id}: \
+                                                     decision=fail_closed_llm_error \
+                                                     class={class} error={e}"
+                                                ));
+
+                                                let frame = stream_error_frame(
+                                                    failure,
+                                                    stream_opened,
+                                                    &domain_clone,
+                                                );
+                                                let mut write = write_half_arc.lock().await;
+                                                let _ = write.write_all(frame.as_bytes()).await;
+                                                let _ = write.flush().await;
+                                                drop(write);
+
+                                                state_clone
+                                                    .update_connection_stats(
+                                                        server_id,
+                                                        connection_id,
+                                                        None,
+                                                        Some(frame.len() as u64),
+                                                        None,
+                                                        Some(1),
+                                                    )
+                                                    .await;
+
+                                                // A stream error is unrecoverable (RFC 6120
+                                                // §4.9): both sides close after it.
+                                                break;
                                             }
                                         }
                                     }

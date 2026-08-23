@@ -26,6 +26,7 @@ use crate::logging::emit::Log;
 use crate::protocol::Event;
 use crate::server::named_pipe::actions::{NamedPipeProtocol, NAMED_PIPE_DATA_RECEIVED_EVENT};
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 
 /// Removes the FIFO node(s) this server created when the read task ends — including when the task
 /// is aborted by `stop_server`, because aborting drops the task future and with it this guard.
@@ -247,21 +248,51 @@ impl NamedPipeServer {
                         for msg in result.messages {
                             let _ = status_tx.send(msg);
                         }
+                        let mut wrote = 0usize;
                         for pr in result.protocol_results {
                             if let ActionResult::Output(bytes) = pr {
+                                wrote += bytes.len();
                                 Self::write_response(&mut response_file, &bytes, &status_tx);
                             }
                             // CloseConnection / WaitForMore / others are meaningless for a
                             // connectionless FIFO sink and are intentionally ignored.
                         }
+                        // Three outcomes must stay apart in the log: the model answered with
+                        // bytes, the model deliberately answered with nothing (a real answer for
+                        // a one-way sink), and the backend erred (below). Only the last one gets
+                        // a netget-authored reply.
+                        Log::new(Some(&status_tx)).debug(format!(
+                            "Named pipe {:?} decision={} bytes={}",
+                            pipe_path,
+                            if wrote > 0 {
+                                "model_output"
+                            } else {
+                                "model_no_output"
+                            },
+                            wrote
+                        ));
                     }
                     Err(e) => {
-                        // Fail closed: write nothing, report on both channels. A FIFO reader that
-                        // gets no response is exactly how the other fixed protocols behave on an
-                        // LLM failure — better than emitting a dangerous default. Non-fatal: the
-                        // read loop continues to the next chunk.
-                        Log::new(Some(&status_tx))
-                            .warn(format!("Named pipe LLM error for {:?}: {}", pipe_path, e));
+                        // The backend failed. The full error goes to the log and the status
+                        // stream; the FIFO reader gets a category only — never the error, the
+                        // backend URL, the model name or an anyhow chain (see
+                        // `crate::utils::wire_failure`). Non-fatal: the read loop continues to
+                        // the next chunk.
+                        let failure = WireFailure::classify(&e);
+                        let decision = if failure.is_overloaded() {
+                            "fail_closed_overloaded"
+                        } else {
+                            "fail_closed_llm_error"
+                        };
+                        error!(
+                            "Named pipe {:?} decision={} LLM error: {}",
+                            pipe_path, decision, e
+                        );
+                        Log::new(Some(&status_tx)).warn(format!(
+                            "Named pipe {:?} decision={}: {}",
+                            pipe_path, decision, e
+                        ));
+                        Self::write_failure_notice(&mut response_file, failure, &status_tx);
                     }
                 }
             }
@@ -269,6 +300,39 @@ impl NamedPipeServer {
 
         task_registrar.register_server_task(server_id, handle).await;
         Ok(())
+    }
+
+    /// Tell the FIFO reader that netget itself could not answer this chunk.
+    ///
+    /// A reader parked in `read()` on the response FIFO has no timeout of its own — `cat` blocks
+    /// forever — so silence on a backend failure hangs it indefinitely. It gets one attributed,
+    /// newline-terminated line carrying a *category* and nothing else: `prefixed_text()` is
+    /// `&'static str`, so nothing derived from the error can reach the pipe. The two categories
+    /// have distinct wording (`WireFailure::Overloaded` reads as retryable), which is the only
+    /// distinction a byte-stream FIFO can carry — it has no status codes.
+    ///
+    /// When no `response_pipe_path` was configured there is no reply channel at all, and silence
+    /// is the only correct behaviour; it is logged, not invented.
+    fn write_failure_notice(
+        response_file: &mut Option<File>,
+        failure: WireFailure,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        let log = Log::new(Some(status_tx));
+        let Some(f) = response_file else {
+            log.debug(
+                "Named pipe: no response_pipe_path configured; the failure notice has nowhere to \
+                 go and the reader sees nothing"
+                    .to_string(),
+            );
+            return;
+        };
+        let mut line = String::with_capacity(failure.prefixed_text().len() + 1);
+        line.push_str(failure.prefixed_text());
+        line.push('\n');
+        if let Err(e) = f.write_all(line.as_bytes()).and_then(|_| f.flush()) {
+            log.error(format!("Named pipe failure-notice write error: {}", e));
+        }
     }
 
     /// Write `bytes` to the response FIFO, or warn if none was configured.

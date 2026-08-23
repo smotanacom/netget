@@ -73,10 +73,29 @@ it, the handler runs.
 Dual logging throughout: DEBUG summaries with a 100-character preview, TRACE full
 payloads (text as a string, binary as hex), to both `netget.log` and the TUI.
 
+### When the LLM call fails
+
+A raw byte stream has no error frame, so there is nothing safe to *say*: the only
+honest signal is FIN. Both LLM entry points (the `send_first` banner and
+`socket_file_data_received`) classify the error with
+`crate::utils::WireFailure`, log the full error to `netget.log` and the status
+stream, then `shutdown()` the write half, drop the connection from the map and
+call `close_connection_on_server`. The peer's next read returns EOF immediately
+instead of blocking until its own timeout. Nothing derived from the error — the
+backend URL, the model name, an `anyhow` chain — ever reaches the socket.
+
+Three outcomes stay distinguishable in the log:
+
+| `decision=` | meaning |
+|---|---|
+| `model_close` | the model answered by hanging up |
+| `model_no_actions` | the model answered with no bytes (legitimate; connection stays open) |
+| `fail_closed_llm_error` | the LLM call errored; `class=overloaded\|unavailable` |
+
 ## Not implemented
 
 Peer credentials (`SO_PEERCRED` — a Unix socket can identify the connecting
-process; the model is not told), idle timeouts, half-close, backpressure, and any
+process; the model is not told), idle timeouts, backpressure, and any
 bound on how much `wait_for_more` accumulates. `SocketAddr` is required by
 internal APIs, so connections report the placeholder `127.0.0.1:0`; the real path
 is in `protocol_info.socket_path`.
@@ -115,5 +134,5 @@ LLM calls):
   `printf ping | nc -U …` can miss the reply; keep stdin open or use a real
   client.
 
-`tests/server/socket_file/` exists but is **not declared in
-`tests/server/mod.rs`**, so it is never compiled or run.
+`tests/server/socket_file/` is declared in `tests/server/mod.rs` and runs against
+the mock LLM.

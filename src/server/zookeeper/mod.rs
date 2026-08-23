@@ -579,13 +579,17 @@ impl ZookeeperServer {
             {
                 Ok(execution_result) => {
                     // Execute actions
+                    let mut answered = false;
                     for result in execution_result.protocol_results {
                         match result {
                             ActionResult::Custom { name, data } if name == "zookeeper_response" => {
+                                answered = true;
                                 // A handler that omitted the xid gets the request's own xid
                                 // rather than 0: xid 0 is never a valid reply to a real
                                 // request (negative xids are reserved for pings and watch
                                 // notifications) and leaves the client waiting forever.
+                                let error_code =
+                                    data.get("error_code").and_then(|v| v.as_i64()).unwrap_or(0);
                                 let response = Self::custom_reply_body(&data, request_info.xid);
                                 let sent = Self::write_frame(
                                     write_half,
@@ -596,6 +600,19 @@ impl ZookeeperServer {
                                 )
                                 .await?;
 
+                                // Three outcomes must be told apart in the log: the handler
+                                // refused (a real decision), the handler said nothing, and the
+                                // LLM call failed. This is the first of the three.
+                                if error_code != 0 {
+                                    debug!(
+                                        "ZooKeeper connection {} decision=model_reject \
+                                         operation={} xid={} error_code={}",
+                                        connection_id,
+                                        request_info.operation,
+                                        request_info.xid,
+                                        error_code
+                                    );
+                                }
                                 trace!(
                                     "ZooKeeper sent {} bytes to connection {}",
                                     sent,
@@ -609,9 +626,68 @@ impl ZookeeperServer {
                             _ => {}
                         }
                     }
+
+                    if !answered {
+                        // The handler ran but produced no reply. ZooKeeper is strictly
+                        // request/response and correlates by xid alone, so writing nothing
+                        // leaves the client blocked until its own session timeout. Answer with
+                        // a bare error header — no body, and nothing derived from netget's
+                        // internals can appear in one.
+                        warn!(
+                            "ZooKeeper connection {} decision=fail_closed_no_answer operation={} \
+                             xid={}: handler produced no zookeeper_response; replying \
+                             ZSYSTEMERROR",
+                            connection_id, request_info.operation, request_info.xid
+                        );
+                        let _ = server.status_tx.send(format!(
+                            "[WARN] ZooKeeper {} on connection {} unanswered by handler; \
+                             replying ZSYSTEMERROR",
+                            request_info.operation, connection_id
+                        ));
+                        Self::write_frame(
+                            write_half,
+                            &app_state,
+                            Some(server_id),
+                            connection_id,
+                            &Self::reply(request_info.xid, 0, ZSYSTEMERROR, &[]),
+                        )
+                        .await?;
+                    }
                 }
                 Err(e) => {
-                    error!("LLM error: {}", e);
+                    // Fail closed, but audibly: the peer gets a category, the log gets the
+                    // error. ZooKeeper replies carry no free-text field, so the categories are
+                    // expressed as distinct error codes — ZOPERATIONTIMEOUT is the transient
+                    // one a client retries, ZSYSTEMERROR the one it reports.
+                    let failure = crate::utils::WireFailure::classify(&e);
+                    let (code, class) = match failure {
+                        crate::utils::WireFailure::Overloaded => {
+                            (ZOPERATIONTIMEOUT, "fail_closed_overloaded")
+                        }
+                        crate::utils::WireFailure::Unavailable => {
+                            (ZSYSTEMERROR, "fail_closed_llm_error")
+                        }
+                    };
+                    error!(
+                        "ZooKeeper connection {} decision={} operation={} xid={} \
+                         reply_error_code={}: LLM error: {}",
+                        connection_id, class, request_info.operation, request_info.xid, code, e
+                    );
+                    let _ = server.status_tx.send(format!(
+                        "[ERROR] ZooKeeper {} on connection {} failed ({}): {}",
+                        request_info.operation,
+                        connection_id,
+                        class,
+                        crate::utils::truncate_for_log(&e.to_string(), 200)
+                    ));
+                    Self::write_frame(
+                        write_half,
+                        &app_state,
+                        Some(server_id),
+                        connection_id,
+                        &Self::reply(request_info.xid, 0, code, &[]),
+                    )
+                    .await?;
                 }
             }
         }
@@ -846,6 +922,16 @@ const MAX_REQUEST_BYTES: i32 = 1024 * 1024;
 /// xid for an injected reply that names none. -1 is the watch-notification xid, the one frame a
 /// real server originates on its own; any other value would claim to answer a request.
 const INJECTED_DEFAULT_XID: i32 = -1;
+
+/// ZooKeeper API error codes used when netget itself cannot answer.
+///
+/// They are the two categories of `crate::utils::WireFailure` mapped onto the codes a real
+/// ZooKeeper uses, and they are deliberately different: `ZOPERATIONTIMEOUT` reads as transient
+/// (a client backs off and retries), `ZSYSTEMERROR` as a server-side fault. Both send a
+/// header-only reply — a ZooKeeper error frame carries no body, which is also why this
+/// protocol cannot leak an internal error string onto the wire.
+const ZSYSTEMERROR: i32 = -1;
+const ZOPERATIONTIMEOUT: i32 = -7;
 
 /// Opcodes the server answers itself rather than handing to a handler.
 const OP_PING: i32 = 11;

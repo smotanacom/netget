@@ -340,6 +340,25 @@ ProtocolConnectionInfo::Maven {
 - A status outside 100-599 is rejected by the action executor
 - A header name hyper cannot parse produces a 502 for that request; the
   connection and server stay up
+- A `body_base64` that is not valid base64 produces a 502 rather than the
+  declared status with an empty body: Maven would otherwise cache a zero-byte
+  artifact as a successful download
+
+### 9. Backend Failure
+
+The peer gets a category, never the error text. `call_llm` returning `Err` is
+classified with `crate::utils::WireFailure`:
+
+- `Overloaded` (the LLM rate limiter is saturated, queue full or wait timed
+  out) -> `503 Service Unavailable` + `Retry-After: 1`, so Maven backs off and
+  retries instead of recording a permanent repository fault
+- `Unavailable` (anything else) -> `500 Internal Server Error`
+
+Both bodies are literals; the error itself goes to `tracing::error!` and the
+status stream only. The log keeps the three outcomes apart with a `decision=`
+tag: `model_answer`, `model_no_action` (nothing usable came back, the default
+404 stands), `fail_closed_llm_overloaded` / `fail_closed_llm_error`, and
+`fail_closed_bad_body`.
 
 ## Example Prompts
 

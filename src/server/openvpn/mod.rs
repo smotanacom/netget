@@ -65,6 +65,7 @@ use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
 use crate::state::server::{ConnectionState, ConnectionStatus, ProtocolConnectionInfo};
+use crate::utils::wire_failure::WireFailure;
 use actions::{OpenvpnProtocol, OPENVPN_PEER_RESET_EVENT};
 use anyhow::{Context, Result};
 use packet::{ControlFrame, DataFrame};
@@ -346,6 +347,25 @@ impl OpenvpnServer {
     /// `reject_peer`, an empty answer, or an LLM error all leave the peer
     /// unanswered, and the three outcomes are logged distinctly so a refusal is
     /// never confused with silence.
+    ///
+    /// **Silence is the protocol's refusal, not a missing feature.** Before the
+    /// TLS control channel exists OpenVPN has exactly one server-to-client
+    /// message, `P_CONTROL_HARD_RESET_SERVER_V2`, and sending it *is* admitting
+    /// the peer — there is no NAK, no error packet, and `AUTH_FAILED` is a
+    /// push message that only exists once TLS is up, which this server never
+    /// reaches. A real OpenVPN server drops what it will not admit (that is
+    /// what an HMAC failure under `--tls-auth` does). So answering on backend
+    /// failure would be the fail-open bug, not a fix for it: there is no reply
+    /// that means "try again later", only one that means "you are in".
+    ///
+    /// What the peer cannot be told, the operator is. Every outcome is logged
+    /// with a stable `decision=` token — `model_accept`, `model_reject`,
+    /// `fail_closed_no_action`, `fail_closed_llm_error` — mirroring
+    /// `src/server/radius/`, so `decision=fail_closed_` greps out every peer
+    /// the model did not actually answer for. The LLM-error line additionally
+    /// carries the [`WireFailure`] class, which is the distinction a protocol
+    /// with two error codes would have put on the wire, and the full error,
+    /// which never leaves the log.
     #[allow(clippy::too_many_arguments)]
     async fn decide_and_answer(
         &self,
@@ -390,9 +410,18 @@ impl OpenvpnServer {
                 extract_decision(&result.protocol_results)
             }
             Err(e) => {
+                // The error is rendered here and nowhere else: the peer gets no
+                // bytes at all, so nothing can leak, and the operator needs the
+                // whole chain. The class is what a protocol with a retryable
+                // error code would have signalled instead.
+                let class = match WireFailure::classify(&e) {
+                    WireFailure::Overloaded => "overloaded",
+                    WireFailure::Unavailable => "unavailable",
+                };
                 log.error(format!(
-                    "OpenVPN: no decision for {} ({}); leaving it unanswered",
-                    peer_addr, e
+                    "OpenVPN {} decision=fail_closed_llm_error class={} - leaving it \
+                     unanswered (the protocol has no reply that is not an admission): {}",
+                    peer_addr, class, e
                 ));
                 None
             }
@@ -418,7 +447,7 @@ impl OpenvpnServer {
                     .set_admission(&peer_addr, PeerAdmission::Rejected)
                     .await;
                 log.info(format!(
-                    "OpenVPN: refused {} ({}) - no reply sent",
+                    "OpenVPN {} decision=model_reject - refused, no reply sent ({})",
                     peer_addr,
                     reason.as_deref().unwrap_or("no reason given")
                 ));
@@ -431,8 +460,8 @@ impl OpenvpnServer {
                     .set_admission(&peer_addr, PeerAdmission::Rejected)
                     .await;
                 log.warn(format!(
-                    "OpenVPN: no accept_peer/reject_peer decision for {}; leaving it \
-                     unanswered (failing closed)",
+                    "OpenVPN {} decision=fail_closed_no_action - the model produced neither \
+                     accept_peer nor reject_peer; leaving it unanswered",
                     peer_addr
                 ));
             }
@@ -501,7 +530,7 @@ impl OpenvpnServer {
         let _ = status_tx.send("__UPDATE_UI__".to_string());
 
         Log::new(Some(status_tx)).info(format!(
-            "OpenVPN: answered {} with HARD_RESET_SERVER_V2 ({} bytes){}",
+            "OpenVPN {} decision=model_accept - answered with HARD_RESET_SERVER_V2 ({} bytes){}",
             peer_addr,
             reply.len(),
             reason.map(|r| format!(" - {}", r)).unwrap_or_default()

@@ -74,6 +74,15 @@ The three `nfc_apdu_received` rules are disambiguated with
 never sees a "listening on" line and times out at 120s. It is contention, not a bug in the
 test. A genuine failure shows a failed assertion within about a second.
 
+## `wire_failure_categories_map_to_distinct_status_words`
+
+A synchronous, socket-free companion to the E2E case. It asserts the mapping the LLM-error
+branch relies on — `WireFailure::Overloaded` → `6400`, `WireFailure::Unavailable` → `6F00` —
+and that the two stay different. Driving it end-to-end would mean forcing an overload out of
+the mock backend, which costs an unmatched-request round trip and would break the suite's
+exact LLM call budget for no extra coverage: the byte the reader sees is chosen entirely by
+`ApduResponse::for_wire_failure`, so testing that function tests the wire.
+
 ## Not covered
 
 - Interop with a real `pcscd` via `vpcd` in TCP-client mode. Needs vsmartcard installed.

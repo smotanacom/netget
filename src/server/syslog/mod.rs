@@ -132,21 +132,48 @@ impl SyslogServer {
                                         let _ = status_clone.send(format!("[INFO] {}", message));
                                     }
 
+                                    // Syslog is one-way: nothing is ever written back to the
+                                    // sender (RFC 5426 has no acknowledgement), so the only
+                                    // record of what happened is the log. Keep the three
+                                    // outcomes greppable and distinct: the model explicitly
+                                    // dropped the message, the model answered nothing at all,
+                                    // or it asked for real work.
+                                    let decision = Self::decision_tag(&execution_result);
                                     debug!(
-                                        "Syslog got {} protocol results",
-                                        execution_result.protocol_results.len()
+                                        "Syslog message from {} decision={} ({} protocol results, {} failed actions)",
+                                        peer_addr,
+                                        decision,
+                                        execution_result.protocol_results.len(),
+                                        execution_result.failures.len()
                                     );
                                     let _ = status_clone.send(format!(
-                                        "[DEBUG] Syslog got {} protocol results",
+                                        "[DEBUG] Syslog message from {} decision={} ({} protocol results)",
+                                        peer_addr,
+                                        decision,
                                         execution_result.protocol_results.len()
                                     ));
-
-                                    // Syslog is typically one-way (no response needed)
-                                    // But LLM can perform actions like storing, forwarding, etc.
                                 }
                                 Err(e) => {
-                                    error!("Syslog LLM call failed: {}", e);
-                                    let _ = status_clone.send(format!("✗ Syslog LLM error: {}", e));
+                                    // The peer is not told: syslog has no reply message, and
+                                    // inventing one would be a protocol violation. The error
+                                    // therefore goes to the log and the operator status stream
+                                    // only — never to the wire — with the same category split
+                                    // (`WireFailure`) the answering protocols put on the wire,
+                                    // so an overload is distinguishable from a hard failure.
+                                    let category = crate::utils::WireFailure::classify(&e);
+                                    let tag = if category.is_overloaded() {
+                                        "llm_error_overloaded"
+                                    } else {
+                                        "llm_error_unavailable"
+                                    };
+                                    error!(
+                                        "Syslog message from {} decision={} (dropped, no reply is possible on syslog): {}",
+                                        peer_addr, tag, e
+                                    );
+                                    let _ = status_clone.send(format!(
+                                        "✗ Syslog message from {} decision={} (dropped): {}",
+                                        peer_addr, tag, e
+                                    ));
                                 }
                             }
                         });
@@ -164,6 +191,32 @@ impl SyslogServer {
             .await;
 
         Ok(local_addr)
+    }
+
+    /// Classify what the model actually decided about one datagram, for the log.
+    ///
+    /// Syslog cannot answer its sender, so "the model said drop it", "the model said
+    /// nothing" and "the LLM call failed" are indistinguishable on the wire — all three
+    /// are silence. They must not be indistinguishable in the log as well: the first is a
+    /// decision, the other two are netget failing to make one. The error case is tagged at
+    /// the call site (`decision=llm_error_*`); this covers the successful-call cases.
+    ///
+    /// The tokens are stable so an operator can grep `decision=no_answer` /
+    /// `decision=llm_error_` for every message netget did not really handle.
+    fn decision_tag(result: &crate::llm::ExecutionResult) -> &'static str {
+        if result.raw_actions.is_empty() {
+            // No actions at all: the model produced nothing usable. Dropping is what
+            // syslog does anyway, but it was not a decision.
+            return "no_answer";
+        }
+        let all_ignored = result.raw_actions.iter().all(|action| {
+            action.get("type").and_then(|v| v.as_str()) == Some("ignore_syslog_message")
+        });
+        if all_ignored {
+            "model_drop"
+        } else {
+            "model_handled"
+        }
     }
 
     /// Parse a syslog datagram into the fields exposed to the LLM.

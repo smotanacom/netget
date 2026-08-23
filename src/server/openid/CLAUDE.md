@@ -54,7 +54,7 @@ what makes the deliberate-misbehaviour scenarios above possible.
 said "No specific actions available for this event", the model got only
 `set_memory` / `show_message` / `append_to_log`, and every OIDC action it produced was
 rejected as unknown, retried twice, and failed — leaving the server to answer every request
-with its `500` "LLM did not generate a response" fallback. In debug builds it also tripped the
+with its `500 server_error` no-answer fallback. In debug builds it also tripped the
 `debug_assert!` in `action_helper.rs`.
 
 It now carries `.with_actions(OpenIdProtocol.get_sync_actions())`. Since every endpoint shares
@@ -79,6 +79,25 @@ parties reject `null`. Both the executor and `handle_llm_response` now filter nu
 relying parties that refuse `"none"`. It is an **advertisement only** — nothing signs. If you
 tell the model to return unsigned tokens, tell it to advertise `["none"]` too, or the RP will
 reject the mismatch.
+
+## Backend failure — three distinguishable outcomes
+
+Every request is answered; none of the three answers carries an internal error string.
+
+| Outcome | Wire | Log token |
+|---|---|---|
+| The LLM call returned `Err` and the backend is saturated | `503` + `temporarily_unavailable` | `decision=llm_error overload=true` |
+| The LLM call returned `Err` otherwise | `500` + `server_error` | `decision=llm_error overload=false` |
+| The model answered with nothing renderable | `500` + `server_error` | `decision=no_answer` |
+| The model deliberately refused (`send_error_response`) | the model's own code/status | `decision=model_reject` |
+
+Both failure paths are 5xx on purpose: a 4xx would tell the relying party its own request was
+at fault and stop it retrying. `temporarily_unavailable` versus `server_error` is the split
+that makes an RP back off rather than record a permanent fault, so keep them distinct.
+
+`error_description` is `crate::utils::WireFailure::…prefixed_text()` — a `&'static str`
+category, never the error. The error goes to `tracing` and the status stream through `Log`.
+Do not interpolate it into the response; `tests/wire_failure_test.rs` scans for exactly that.
 
 ## Nothing here may panic
 

@@ -53,3 +53,20 @@ base64 — the `send_tcp_data` lesson.
 
 On LLM failure the server sends nothing (RTP has no error frame) and logs on both channels. It never
 falls through to a default stream — media the model never authorized must not appear on the wire.
+
+Silence is deliberate here, and it is the one place in the tree where it is the *correct* answer to a
+backend failure. RTP is a one-way media transport: there is no request/response turn, no error frame,
+and the peer is not blocked waiting on us. The only in-band thing we could send is an RTCP BYE, which
+would assert we are leaving a session we never joined — and at a 20 ms frame interval it would be one
+bogus packet per inbound datagram. So nothing goes on the socket.
+
+What the silence must not do is hide *which* silence it was, since all three look identical on the
+wire. `handle_datagram` tags each in the log, radius-style:
+
+- `decision=model_sent_nothing` — the model answered and asked for no media (a real answer).
+- `decision=fail_closed_backend_overloaded` — the backend was saturated (`WireFailure::Overloaded`).
+- `decision=fail_closed_backend_error` — anything else (`WireFailure::Unavailable`).
+
+There is no `decision=model_reject`: RTP has no accept/deny semantics, so a model declining to stream
+*is* `model_sent_nothing`. The error itself goes only to the log and the status stream — never into a
+packet.

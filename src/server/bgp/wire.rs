@@ -96,6 +96,13 @@ pub const SUB_FSM_ESTABLISHED: u8 = 3;
 // Cease (RFC 4271 section 6.7; subcodes from RFC 4486 section 3)
 pub const ERR_CEASE: u8 = 6;
 pub const SUB_CEASE_ADMIN_SHUTDOWN: u8 = 2;
+/// RFC 4486 section 4: the speaker is rejecting this connection. Permanent as far as the peer
+/// is concerned — it should not treat the rejection as a transient resource condition.
+pub const SUB_CEASE_CONNECTION_REJECTED: u8 = 5;
+/// RFC 4486 section 8: the speaker cannot carry the peering right now for want of resources.
+/// A conforming implementation applies a damping/backoff to this subcode and retries, which is
+/// exactly the behaviour a saturated backend wants.
+pub const SUB_CEASE_OUT_OF_RESOURCES: u8 = 8;
 
 /// Why a 19-octet header was rejected, and the NOTIFICATION it earns.
 #[derive(Debug, Clone, PartialEq, Eq)]

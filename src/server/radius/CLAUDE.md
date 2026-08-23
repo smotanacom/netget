@@ -22,7 +22,7 @@ Here, in `RadiusServer::decide`:
 | Model returns `send_access_challenge` | Access-Challenge | `decision=model_challenge` |
 | Model returns no usable action | **Access-Reject** (synthesised) | `decision=fail_closed_no_action` |
 | Model's action fails to encode | **Access-Reject** (synthesised) | `decision=fail_closed_action_error` |
-| LLM call errors / times out | **Access-Reject** (synthesised) | `decision=fail_closed_llm_error` |
+| LLM call errors / times out | **Access-Reject** (synthesised) | `decision=fail_closed_llm_error`, plus `category=overloaded`/`category=unavailable` from `WireFailure::classify` |
 | Accounting-Request, no answer | **nothing** (NAS retransmits) | `decision=fail_closed_no_action` |
 
 Three things make this structural rather than aspirational:

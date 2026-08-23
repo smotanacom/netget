@@ -409,15 +409,49 @@ impl IpsecServer {
                 for message in &result.messages {
                     log.info(format!("{}", message));
                 }
-                debug!(
-                    "IPSec handshake from {} produced {} action(s) (no packets sent)",
+                // Three outcomes have to stay distinguishable in the log, because the
+                // wire cannot distinguish them: this honeypot is receive-only and every
+                // one of them looks identical to the peer (nothing arrives). An operator
+                // greps `decision=` to tell "the model refused" from "the model said
+                // nothing" from "the backend broke".
+                let decision =
+                    if result.raw_actions.iter().any(|a| {
+                        a.get("type").and_then(|t| t.as_str()) == Some("reject_connection")
+                    }) {
+                        "model_reject"
+                    } else if result.raw_actions.is_empty() {
+                        "no_answer"
+                    } else {
+                        "model_answer"
+                    };
+                info!(
+                    "IPSec {} {} from {} decision={} actions={} (honeypot, nothing sent)",
+                    ike_version,
+                    exchange_type,
                     peer_addr,
+                    decision,
                     result.raw_actions.len()
                 );
             }
             Err(e) => {
-                Log::new(Some(status_tx))
-                    .error(format!("IPSec handshake event handling failed: {}", e));
+                // Deliberately no wire response. There is nothing correct to send: the
+                // honeypot never transmits (see the module docs), and an IKE NOTIFY here
+                // would both fingerprint it and answer for a negotiation it cannot run.
+                // Classify anyway so an overloaded backend is distinguishable from a
+                // broken one in the log; the error itself goes to the log and the status
+                // stream, never to the peer.
+                let decision = match crate::utils::WireFailure::classify(&e) {
+                    crate::utils::WireFailure::Overloaded => "fail_closed_overloaded",
+                    crate::utils::WireFailure::Unavailable => "fail_closed_unavailable",
+                };
+                error!(
+                    "IPSec {} {} from {} decision={} (honeypot, nothing sent): {:#}",
+                    ike_version, exchange_type, peer_addr, decision, e
+                );
+                Log::new(Some(status_tx)).error(format!(
+                    "IPSec handshake event handling failed ({}): {}",
+                    decision, e
+                ));
             }
         }
     }

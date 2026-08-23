@@ -238,4 +238,39 @@ mod tests {
 
         Ok(())
     }
+
+    /// The LLM-error path must answer a *category*, and the two categories must be
+    /// different status words.
+    ///
+    /// This is the unit half of the fail-closed contract: `6400` (execution error,
+    /// card state unchanged) tells the reader to retry a saturated backend, while
+    /// `6F00` (no precise diagnosis) is the flat failure. Collapsing them back into
+    /// one code would make a transient overload look like a broken card. Neither
+    /// carries a single byte derived from the error — an APDU response has no
+    /// free-text field, which is precisely why this protocol cannot leak one.
+    #[test]
+    fn wire_failure_categories_map_to_distinct_status_words() {
+        use ::netget::server::nfc::apdu::ApduResponse;
+        use ::netget::utils::WireFailure;
+
+        let overloaded = ApduResponse::for_wire_failure(WireFailure::Overloaded);
+        assert_eq!(
+            overloaded.clone().into_bytes(),
+            vec![0x64, 0x00],
+            "an overloaded backend must answer 6400 so the reader retries"
+        );
+
+        let unavailable = ApduResponse::for_wire_failure(WireFailure::Unavailable);
+        assert_eq!(
+            unavailable.clone().into_bytes(),
+            vec![0x6F, 0x00],
+            "any other backend failure must answer 6F00"
+        );
+
+        assert_ne!(
+            overloaded.status_word(),
+            unavailable.status_word(),
+            "the two categories must stay distinguishable on the wire"
+        );
+    }
 }

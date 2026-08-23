@@ -74,9 +74,33 @@ live.
 
 ### Failure behavior
 
-An LLM/handler failure on the greeting closes the connection before anything is
-written, and on a command breaks the loop. Either way the peer sees a close
-rather than an error tuple.
+ra_svn lets the server answer the greeting *or* any command with
+`( failure ( ( apr-err message file line ) ) )`, so that is what a backend
+failure produces — the protocol's own error shape, not silence and not an
+invented one.
+
+| Outcome | Wire | Log |
+|---|---|---|
+| Handler wrote a response | that response | — |
+| Handler returned `close_connection` | half-close (EOF) | `decision=model_close` |
+| Handler returned no action | nothing; connection stays open | `decision=no_action` |
+| LLM/handler call errored | `( failure ( ( <code> <category> 0: 0 ) ) )` then close | `decision=fail_closed_llm_error category=…` + the error |
+
+The two [`WireFailure`](../../utils/wire_failure.rs) categories map onto
+different apr error numbers so a client can back off rather than record a
+permanent fault: `Overloaded` → **210003** `SVN_ERR_RA_SVN_IO_ERROR` (transient),
+`Unavailable` → **210000** `SVN_ERR_RA_SVN_CMD_ERR` (generic). The message is
+`WireFailure::text()`, a `&'static str` — the backend URL, the model name, file
+paths and anyhow chains stay in the log and the status stream, never on the wire.
+
+"Answered with nothing" is deliberately *not* turned into a failure: a static
+handler with an empty action list, or a human choosing "Answer with nothing" at
+the dashboard before injecting bytes through `[ message this peer ]`, is a real
+answer. It is logged distinctly so an operator can tell it from a backend error.
+
+`tests/server/svn/llm_failure_test.rs` points the server at a dead backend and
+asserts the peer reads a well-formed failure tuple carrying only a category, then
+EOF.
 
 ## Known limitation: line framing
 

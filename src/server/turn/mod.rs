@@ -686,10 +686,30 @@ async fn base_event_data(
     })
 }
 
+/// Run the policy decision for one control request.
+///
+/// Three outcomes are kept apart, both in the log (`decision=`) and on the wire, because
+/// collapsing them is how a fail-closed protocol turns into a fail-open one:
+///
+/// * `decision=fail_closed_no_policy` — no operator policy, so no LLM call and, deliberately,
+///   **no reply**. Nothing was asked and nothing failed; the request is simply not served.
+/// * `decision=fail_closed_llm_error` — the backend errored. Nothing is granted, *and* the
+///   client is told so with a STUN error response, so it stops retransmitting for ~39s.
+/// * the model answered — the caller inspects the actions; a missing grant action is a
+///   model refusal (`decision=model_reject`, logged at the call sites).
+///
+/// The error response carries a **category only** (`crate::utils::WireFailure`), never the
+/// backend's message: the reason phrase goes on the wire to a stranger, the error goes to the
+/// log. `Overloaded` maps to 508 Insufficient Capacity and `Unavailable` to 500 Server Error —
+/// both in STUN's 5xx "temporarily unable, may retry" class, but distinct so a client can tell
+/// saturation from a broken backend.
 async fn call_llm_for_event(
     ctx: &TurnContext,
     event_type: &'static EventType,
     event_data: serde_json::Value,
+    transaction_id: &[u8; 12],
+    method: u16,
+    peer_addr: SocketAddr,
 ) -> Option<ExecutionResult> {
     let event = Event::new(event_type, event_data);
 
@@ -702,8 +722,8 @@ async fn call_llm_for_event(
     // with the grant policy it should apply.
     if !operator_wants_dynamic(&ctx.state, ctx.server_id, &event_type.id).await {
         Log::new(Some(&ctx.status_tx)).debug(format!(
-            "TURN {} not granted: no operator policy configured (no instruction or handler), \
-             fail-closed with no LLM call",
+            "TURN {} decision=fail_closed_no_policy: no operator policy configured (no \
+             instruction or handler), fail-closed with no LLM call",
             event_type.id
         ));
         return None;
@@ -728,7 +748,27 @@ async fn call_llm_for_event(
             Some(result)
         }
         Err(e) => {
-            Log::new(Some(&ctx.status_tx)).warn(format!("TURN LLM error: {}", e));
+            // The full error goes to the log and the status stream, where an operator looks.
+            error!(
+                "TURN {} decision=fail_closed_llm_error for {}: {:#}",
+                event_type.id, peer_addr, e
+            );
+            Log::new(Some(&ctx.status_tx)).warn(format!(
+                "TURN {} decision=fail_closed_llm_error for {}: {}",
+                event_type.id, peer_addr, e
+            ));
+
+            // The client gets a category, never the error. Silence here left it retransmitting
+            // for the full STUN Rc/Rm schedule (~39s) before giving up.
+            let (code, reason) = match crate::utils::WireFailure::classify(&e) {
+                crate::utils::WireFailure::Overloaded => {
+                    (508u16, crate::utils::WireFailure::Overloaded.text())
+                }
+                crate::utils::WireFailure::Unavailable => {
+                    (500u16, crate::utils::WireFailure::Unavailable.text())
+                }
+            };
+            send_local_error(ctx, transaction_id, method, code, reason, peer_addr).await;
             None
         }
     }
@@ -878,14 +918,27 @@ async fn handle_allocate_request(
         );
     }
 
-    let Some(result) = call_llm_for_event(ctx, &TURN_ALLOCATE_REQUEST_EVENT, event_data).await
+    let Some(result) = call_llm_for_event(
+        ctx,
+        &TURN_ALLOCATE_REQUEST_EVENT,
+        event_data,
+        &msg.transaction_id,
+        3,
+        peer_addr,
+    )
+    .await
     else {
         return;
     };
 
     let Some(action) = find_action(&result, "send_turn_allocate_response") else {
-        // No grant: refresh/error/ignore all land here. The reserved socket is
-        // dropped, so nothing is ever relayed.
+        // No grant: refusal/error/ignore all land here. The reserved socket is
+        // dropped, so nothing is ever relayed. This is the model answering, so it
+        // is a policy decision — distinct from a backend failure.
+        Log::new(Some(&ctx.status_tx)).info(format!(
+            "TURN allocate decision=model_reject for {}: no send_turn_allocate_response action",
+            peer_addr
+        ));
         send_outputs(ctx, &result, peer_addr).await;
         return;
     };
@@ -992,10 +1045,25 @@ async fn handle_refresh_request(
         );
     }
 
-    let Some(result) = call_llm_for_event(ctx, &TURN_REFRESH_REQUEST_EVENT, event_data).await
+    let Some(result) = call_llm_for_event(
+        ctx,
+        &TURN_REFRESH_REQUEST_EVENT,
+        event_data,
+        &msg.transaction_id,
+        4,
+        peer_addr,
+    )
+    .await
     else {
         return;
     };
+
+    if find_action(&result, "send_turn_refresh_response").is_none() {
+        Log::new(Some(&ctx.status_tx)).info(format!(
+            "TURN refresh decision=model_reject for {}: no send_turn_refresh_response action",
+            peer_addr
+        ));
+    }
 
     if let Some(action) = find_action(&result, "send_turn_refresh_response") {
         let lifetime = action
@@ -1059,11 +1127,26 @@ async fn handle_create_permission_request(
         );
     }
 
-    let Some(result) =
-        call_llm_for_event(ctx, &TURN_CREATE_PERMISSION_REQUEST_EVENT, event_data).await
+    let Some(result) = call_llm_for_event(
+        ctx,
+        &TURN_CREATE_PERMISSION_REQUEST_EVENT,
+        event_data,
+        &msg.transaction_id,
+        8,
+        peer_addr,
+    )
+    .await
     else {
         return;
     };
+
+    if find_action(&result, "send_turn_create_permission_response").is_none() {
+        Log::new(Some(&ctx.status_tx)).info(format!(
+            "TURN create_permission decision=model_reject for {}: no \
+             send_turn_create_permission_response action",
+            peer_addr
+        ));
+    }
 
     if let Some(action) = find_action(&result, "send_turn_create_permission_response") {
         // An explicit list lets the model permit a subset; omitting it permits
@@ -1161,10 +1244,26 @@ async fn handle_channel_bind_request(
         );
     }
 
-    let Some(result) = call_llm_for_event(ctx, &TURN_CHANNEL_BIND_REQUEST_EVENT, event_data).await
+    let Some(result) = call_llm_for_event(
+        ctx,
+        &TURN_CHANNEL_BIND_REQUEST_EVENT,
+        event_data,
+        &msg.transaction_id,
+        9,
+        peer_addr,
+    )
+    .await
     else {
         return;
     };
+
+    if find_action(&result, "send_turn_channel_bind_response").is_none() {
+        Log::new(Some(&ctx.status_tx)).info(format!(
+            "TURN channel_bind decision=model_reject for {}: no send_turn_channel_bind_response \
+             action",
+            peer_addr
+        ));
+    }
 
     if find_action(&result, "send_turn_channel_bind_response").is_some() {
         if let Some((id, _, state)) = ctx.server.allocation_for_client(peer_addr).await {

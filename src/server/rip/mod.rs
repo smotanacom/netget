@@ -183,7 +183,7 @@ impl RipServer {
                             .await
                             {
                                 log.info(format!(
-                                    "RIP {} from {} ignored: no routing policy configured (static default, no LLM)",
+                                    "RIP {} from {} decision=static_default_silent: no routing policy configured (no LLM call)",
                                     message_type, peer_addr
                                 ));
                                 return;
@@ -210,8 +210,29 @@ impl RipServer {
                                         log.info(message);
                                     }
 
+                                    // Three outcomes that all end in the same silence on the
+                                    // wire must stay apart in the log, because only one of
+                                    // them is a fault: an explicit `ignore_request` is a
+                                    // routing decision, an empty answer is the model
+                                    // declining to decide, and an error is netget failing.
+                                    // Grep `decision=` to tell them apart.
+                                    let named_ignore =
+                                        execution_result.raw_actions.iter().any(|a| {
+                                            a.get("type").and_then(|v| v.as_str())
+                                                == Some("ignore_request")
+                                        });
+                                    let decision = if named_ignore {
+                                        "model_ignore"
+                                    } else if execution_result.raw_actions.is_empty() {
+                                        "no_answer_silent"
+                                    } else {
+                                        "model_advertise"
+                                    };
                                     log.debug(format!(
-                                        "RIP parsed {} actions",
+                                        "RIP {} from {} decision={} ({} actions)",
+                                        message_type,
+                                        peer_addr,
+                                        decision,
                                         execution_result.raw_actions.len()
                                     ));
 
@@ -246,9 +267,32 @@ impl RipServer {
                                     }
                                 }
                                 Err(e) => {
-                                    // Non-fatal: RIP's spec-safe answer to a failure is to
-                                    // stay silent, so this is WARN not ERROR.
-                                    log.warn(format!("RIP LLM call failed: {}", e));
+                                    // RIP has no error message: RFC 2453 defines Request (1)
+                                    // and Response (2) and nothing else, and a Response is a
+                                    // routing assertion. Inventing one here would put a
+                                    // fabricated routing statement into a peer's table, so
+                                    // the spec-safe answer to an internal failure is the same
+                                    // silence this server already applies when no routing
+                                    // policy is configured. The peer is not blocked by it:
+                                    // RIP is connectionless and re-requests on its own timer.
+                                    //
+                                    // The failure is therefore reported to the operator only.
+                                    // The category is logged separately from the error so a
+                                    // saturated backend (retry worthwhile) is distinguishable
+                                    // from a broken one, matching what a protocol with error
+                                    // codes would put on the wire. The full error goes to the
+                                    // log and the status stream and never anywhere else.
+                                    let category = if crate::utils::WireFailure::classify(&e)
+                                        .is_overloaded()
+                                    {
+                                        "overloaded"
+                                    } else {
+                                        "unavailable"
+                                    };
+                                    log.warn(format!(
+                                        "RIP {} from {} decision=fail_closed_llm_error category={}, no response sent: {}",
+                                        message_type, peer_addr, category, e
+                                    ));
                                 }
                             }
                         });

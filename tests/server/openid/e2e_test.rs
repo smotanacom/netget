@@ -438,3 +438,89 @@ unsupported_grant_type and status_code 400.
 
     Ok(())
 }
+
+/// The model answers with nothing renderable — the relying party must be failed closed, and
+/// told only a category.
+///
+/// Two things are guarded here, and they are the two halves of the same defect. A silent or
+/// hung request leaves the RP blocked until its own timeout; a reply that interpolates the
+/// backend error puts netget's internals (backend URL, model name, retry text) on a
+/// stranger's wire. So: a 500 `server_error` with no token in it, whose `error_description`
+/// is the `WireFailure` category string and nothing else.
+#[tokio::test]
+async fn test_openid_no_usable_answer_fails_closed_without_leaking() -> E2EResult<()> {
+    println!("\n=== E2E Test: OpenID no-answer fails closed ===");
+
+    let instruction = "OpenID Connect provider that produces no answer.";
+
+    let server_config = NetGetConfig::new(format!(
+        "Start OpenID Connect server on port {{AVAILABLE_PORT}}. {}",
+        instruction
+    ))
+    .with_mock(|mock| {
+        mock.on_instruction_containing("OpenID Connect server")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "openid",
+                    "instruction": instruction
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+            // The model answers, but with zero actions: nothing the OIDC layer can render.
+            .on_event("openid_request")
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let mut server = start_netget_server(server_config).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://localhost:{}/token", server.port))
+        .form(&[("grant_type", "authorization_code"), ("code", "abc")])
+        .send()
+        .await?;
+
+    assert_eq!(
+        resp.status(),
+        500,
+        "a request the model did not answer must fail closed, not hang and not succeed"
+    );
+    let body = resp.text().await?;
+    let error: Value = serde_json::from_str(&body)?;
+    assert_eq!(error["error"], "server_error");
+    assert_eq!(
+        error["error_description"],
+        ::netget::utils::WireFailure::Unavailable.prefixed_text(),
+        "the description must be the fixed category string, not a rendered error"
+    );
+
+    // Nothing in the body may name netget's internals, and no credential may be issued.
+    for forbidden in [
+        "LLM",
+        "Ollama",
+        "ollama",
+        "retries",
+        "✗",
+        "http://127.0.0.1",
+        "11434",
+        "/Users/",
+        "access_token",
+        "id_token",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "fail-closed body leaked {forbidden:?}: {body}"
+        );
+    }
+    println!("✓ failed closed with a category only: {body}");
+
+    server.verify_mocks().await?;
+    server.stop().await?;
+
+    Ok(())
+}

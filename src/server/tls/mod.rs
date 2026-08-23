@@ -14,7 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use tokio_rustls::TlsAcceptor;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info};
 
 use super::connection::ConnectionId;
 use crate::llm::action_helper::call_llm;
@@ -24,7 +24,22 @@ use crate::logging::emit::Log;
 use crate::protocol::Event;
 use crate::server::TlsProtocol;
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 use actions::{TLS_CONNECTION_OPENED_EVENT, TLS_DATA_RECEIVED_EVENT};
+
+/// The `decision=` token for an LLM call that returned `Err`.
+///
+/// TLS has exactly one failure shape on the wire - a close_notify alert - so an overloaded
+/// backend and a broken one cannot be told apart by the peer. They are told apart in the log
+/// instead: the token is stable, so `grep 'decision=fail_closed_'` finds every connection that
+/// was hung up on because nothing usable was produced, and the `_overloaded` suffix marks the
+/// transient half. The error itself is logged, never written to the socket.
+fn llm_error_decision(err: &anyhow::Error) -> &'static str {
+    match WireFailure::classify(err) {
+        WireFailure::Overloaded => "fail_closed_llm_error_overloaded",
+        WireFailure::Unavailable => "fail_closed_llm_error_unavailable",
+    }
+}
 
 /// Connection state for LLM processing
 #[derive(Debug, Clone, PartialEq)]
@@ -350,9 +365,11 @@ impl TlsServer {
                     }
 
                     // Handle protocol results (send banner)
+                    let mut acted = false;
                     for protocol_result in execution_result.protocol_results {
                         match protocol_result {
                             ActionResult::Output(output_data) => {
+                                acted = true;
                                 let mut write = write_half.lock().await;
                                 let log = Log::new(Some(&status_tx));
                                 if let Err(e) = write.write_all(&output_data).await {
@@ -393,6 +410,7 @@ impl TlsServer {
                                 }
                             }
                             ActionResult::CloseConnection => {
+                                acted = true;
                                 connections.lock().await.remove(&connection_id);
                                 if let Err(e) = write_half.lock().await.shutdown().await {
                                     debug!("TLS shutdown on {} returned: {}", connection_id, e);
@@ -404,23 +422,33 @@ impl TlsServer {
                             _ => {}
                         }
                     }
+
+                    // The model answering with no banner is a real answer - "say nothing" -
+                    // and is left as silence, but it is not the same as the backend failing,
+                    // and a peer waiting for a greeting that never comes is worth a line.
+                    if !acted {
+                        Log::new(Some(&status_tx)).warn(format!(
+                            "TLS connection {connection_id} decision=model_no_action: model \
+                             produced no banner, nothing sent"
+                        ));
+                    }
                 }
                 Err(e) => {
                     // A `send_first` server owes the peer a greeting; without one the peer
                     // waits for a banner that will never come. Close the TLS connection with
                     // a close_notify alert so it reads EOF instead. (See the data path below
                     // for why this is close_notify and not a fatal alert.)
-                    // Non-fatal: the peer gets close_notify + EOF, so WARN not ERROR.
+                    // The full error goes to the log and the status stream, which is where
+                    // an operator looks; the peer gets a close_notify alert and nothing else.
+                    let decision = llm_error_decision(&e);
+                    error!(
+                        "TLS connection {} decision={}: LLM call failed generating banner: {:#}",
+                        connection_id, decision, e
+                    );
                     Log::new(Some(&status_tx)).warn(format!(
-                        "LLM error generating TLS banner on {}: {}",
-                        connection_id, e
+                        "TLS connection {connection_id} decision={decision}: no banner \
+                         generated, closing with close_notify"
                     ));
-                    if crate::llm::is_overload_error(&e) {
-                        warn!(
-                            "TLS connection {} closed before banner: LLM capacity exhausted",
-                            connection_id
-                        );
-                    }
                     {
                         let mut write = write_half.lock().await;
                         if let Err(shutdown_err) = write.shutdown().await {
@@ -567,10 +595,12 @@ impl TlsServer {
                     // Handle protocol results
                     let mut should_close = false;
                     let mut should_wait = false;
+                    let mut acted = false;
 
                     for protocol_result in execution_result.protocol_results {
                         match protocol_result {
                             ActionResult::Output(output_data) => {
+                                acted = true;
                                 let mut write = write_half.lock().await;
                                 let log = Log::new(Some(&status_tx));
                                 if let Err(e) = write.write_all(&output_data).await {
@@ -615,13 +645,26 @@ impl TlsServer {
                                 }
                             }
                             ActionResult::CloseConnection => {
+                                acted = true;
                                 should_close = true;
                             }
                             ActionResult::WaitForMore => {
+                                acted = true;
                                 should_wait = true;
                             }
                             _ => {}
                         }
+                    }
+
+                    // An answer that carries no output, no close and no wait leaves the
+                    // peer holding an unanswered request. That is a legitimate "say nothing"
+                    // for a transport with no reply obligation, so the connection stays open -
+                    // but it is logged distinctly from a backend failure, which hangs up.
+                    if !acted {
+                        Log::new(Some(&status_tx)).warn(format!(
+                            "TLS connection {connection_id} decision=model_no_action: model \
+                             produced no usable action, nothing sent"
+                        ));
                     }
 
                     // Handle wait_for_more
@@ -694,10 +737,16 @@ impl TlsServer {
                     }
                 }
                 Err(e) => {
-                    // Non-fatal: the peer gets close_notify + EOF, so WARN not ERROR.
+                    // The full error goes to the log and the status stream; the peer gets a
+                    // close_notify alert carrying nothing about why.
+                    let decision = llm_error_decision(&e);
+                    error!(
+                        "TLS connection {} decision={}: LLM call failed for received data: {:#}",
+                        connection_id, decision, e
+                    );
                     Log::new(Some(&status_tx)).warn(format!(
-                        "LLM error for TLS data on {}: {}",
-                        connection_id, e
+                        "TLS connection {connection_id} decision={decision}: no response \
+                         generated, closing with close_notify"
                     ));
 
                     // Say something on the wire instead of resetting to Idle in silence.
@@ -714,12 +763,6 @@ impl TlsServer {
                     // strongest in-spec signal reachable through its public API. Forging a
                     // plaintext alert record onto the TCP socket underneath would violate
                     // TLS 1.3 record protection, so it is not done.
-                    if crate::llm::is_overload_error(&e) {
-                        warn!(
-                            "TLS connection {} closed: LLM capacity exhausted",
-                            connection_id
-                        );
-                    }
                     {
                         let mut write = write_half.lock().await;
                         if let Err(shutdown_err) = write.shutdown().await {

@@ -355,3 +355,84 @@ async fn test_saml_sp_builds_authn_request() -> E2EResult<()> {
     println!("=== Test passed ===\n");
     Ok(())
 }
+
+/// When the model produces no usable answer, `/acs` must fail **closed**.
+///
+/// The dangerous shape here is not silence — it is a permissive default. The handler used to
+/// initialise `status_code` to 200 and emit that whenever no action carried a parseable HTTP
+/// response, so "the model said nothing" reached the browser as an empty `200 OK`. It carried
+/// no `Set-Cookie`, so it was never a sign-in, but it told the peer the request had succeeded.
+///
+/// This pins all three properties of the fail-closed path: a 5xx, no session cookie, and a
+/// body that is a *category* rather than netget's internals (no backend URL, no model name,
+/// no `anyhow` chain — see `tests/wire_failure_test.rs`).
+#[tokio::test]
+async fn test_saml_sp_fails_closed_when_the_handler_answers_nothing() -> E2EResult<()> {
+    println!("\n=== E2E Test: SAML SP fails closed on a no-answer ===");
+
+    let prompt = "Start a SAML Service Provider on port {AVAILABLE_PORT}. \
+        On /acs read the SAMLResponse.";
+
+    let config = NetGetConfig::new(prompt).with_mock(|mock| {
+        mock.on_event("saml_sp_request")
+            .and_event_data_contains("path", "/acs")
+            // No actions at all: the model answered nothing usable.
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
+            .on_instruction_containing("SAML Service Provider")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "saml-sp",
+                    "instruction": "SAML SP reading the SAMLResponse"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let server = helpers::start_netget_server(config).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://127.0.0.1:{}/acs", server.port))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body("SAMLResponse=irrelevant")
+        .send()
+        .await?;
+
+    let status = response.status();
+    assert!(
+        status.is_server_error(),
+        "a no-answer must be a 5xx, never a success: got {status}"
+    );
+    assert!(
+        response.headers().get("set-cookie").is_none(),
+        "a no-answer must never grant a session"
+    );
+
+    let body = response.text().await?;
+    println!("fail-closed body: {body:?}");
+    for leaked in [
+        "http://",
+        "ollama",
+        "llama",
+        "retries",
+        "Error",
+        "src/",
+        "Caused by",
+    ] {
+        assert!(
+            !body.contains(leaked),
+            "the peer must get a category, not netget's internals; found {leaked:?} in:\n{body}"
+        );
+    }
+
+    server.verify_mocks().await?;
+    server.stop().await?;
+    println!("=== Test passed ===\n");
+    Ok(())
+}

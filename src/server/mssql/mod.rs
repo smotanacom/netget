@@ -583,7 +583,16 @@ impl MssqlHandler {
                 // Process action results to find MSSQL responses
                 for result in execution_result.protocol_results {
                     if responded {
-                        break;
+                        // TDS is strictly one token stream per statement, so only the first
+                        // response-producing action can reach the wire. Say which ones were
+                        // dropped rather than discarding them silently.
+                        if let ActionResult::Custom { name, .. } = &result {
+                            warn!(
+                                "MSSQL: query already answered, ignoring extra action result '{}'",
+                                name
+                            );
+                        }
+                        continue;
                     }
                     match result {
                         ActionResult::Custom { name, data } => match name.as_str() {
@@ -616,6 +625,13 @@ impl MssqlHandler {
                                     data.get("severity").and_then(|v| v.as_u64()).unwrap_or(16)
                                         as u8;
 
+                                // The model chose to refuse this statement. Tagged so an
+                                // operator can tell a deliberate refusal from netget failing
+                                // to obtain one; the two are indistinguishable on the wire.
+                                Log::new(Some(&self.status_tx)).info(format!(
+                                    "MSSQL query decision=model_reject error={} severity={}",
+                                    error_number, severity
+                                ));
                                 self.send_error(stream, error_number, message, severity)
                                     .await?;
                                 responded = true;
@@ -641,12 +657,28 @@ impl MssqlHandler {
                 }
 
                 if !responded {
-                    // TDS clients block until a DONE arrives, so something must be sent.
-                    warn!(
-                        "MSSQL: no response action produced for query {:?}; sending empty DONE",
-                        query
-                    );
-                    self.send_done(stream, 0).await?;
+                    // TDS clients block until a DONE or an ERROR arrives, so something must be
+                    // sent. It must not be a bare DONE: in SQL that reads as "the statement ran
+                    // and matched nothing", which is a meaningful *successful* answer. Nobody
+                    // answered this query, so the fail-closed token is ERROR.
+                    //
+                    // An explicit `close_this_connection` is the one exception - that is the
+                    // model deciding, not the model going quiet - so it keeps the DONE it has
+                    // always produced and is tagged as its own decision.
+                    if close_requested {
+                        Log::new(Some(&self.status_tx))
+                            .info("MSSQL query decision=model_close (closing without a result)");
+                        self.send_done(stream, 0).await?;
+                    } else {
+                        let message = crate::utils::WireFailure::Unavailable.prefixed_text();
+                        Log::new(Some(&self.status_tx)).warn(format!(
+                            "MSSQL query decision=fail_closed_no_action; replying error {}: {}",
+                            MSSQL_ERROR_GENERIC, message
+                        ));
+                        warn!("MSSQL: no response action produced for query {:?}", query);
+                        self.send_error(stream, MSSQL_ERROR_GENERIC, message, 16)
+                            .await?;
+                    }
                 }
 
                 Ok(close_requested)
@@ -670,8 +702,13 @@ impl MssqlHandler {
                 let message = crate::utils::WireFailure::classify(&e).prefixed_text();
                 // Non-fatal: a wire fallback (TDS ERROR token) is still delivered and the
                 // connection stays open, so this is recovered rather than a hard failure.
-                Log::new(Some(&self.status_tx))
-                    .warn(format!("MSSQL replying error {number}: {message}"));
+                // `decision=fail_closed_llm_error` is never `model_reject`: the model said
+                // nothing at all here. The full error goes to the log only.
+                error!("MSSQL: LLM error answering query {:?}: {:#}", query, e);
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "MSSQL query decision=fail_closed_llm_error ({}); replying error {number}: {message}",
+                    if overloaded { "overloaded" } else { "unavailable" }
+                ));
                 self.send_error(stream, number, message, 16).await?;
                 Ok(false)
             }
@@ -719,11 +756,11 @@ impl MssqlHandler {
             let col_name = col.get("name").and_then(|v| v.as_str()).unwrap_or("column");
 
             response.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // UserType
-            // Flags is a little-endian USHORT and fNullable is bit 0, so the bytes are
-            // 01 00. This used to be `[0x00, 0x02]`, i.e. bit 9 - which no TDS flag
-            // occupies, so a real client (tiberius) rejected every result set with
-            // "column metadata: invalid flags". It went unnoticed because NetGet's own
-            // MSSQL client could not complete the handshake at all.
+                                                                   // Flags is a little-endian USHORT and fNullable is bit 0, so the bytes are
+                                                                   // 01 00. This used to be `[0x00, 0x02]`, i.e. bit 9 - which no TDS flag
+                                                                   // occupies, so a real client (tiberius) rejected every result set with
+                                                                   // "column metadata: invalid flags". It went unnoticed because NetGet's own
+                                                                   // MSSQL client could not complete the handshake at all.
             response.extend_from_slice(&[0x01, 0x00]); // Flags: fNullable
             col_type.write_type_info(&mut response);
 

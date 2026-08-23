@@ -99,6 +99,25 @@ A client matches replies to requests by xid alone. Two things guarantee it:
 
 No znode tree, no session table, no data of any kind. Every reply comes from the handler.
 
+## When netget itself cannot answer
+
+ZooKeeper is strictly request/response and correlates by xid alone, so writing nothing leaves
+the client blocked until its own session timeout. Every request that reaches a handler is
+therefore answered, including when the handler fails:
+
+| Situation | Reply | Log |
+|---|---|---|
+| handler answered with a non-zero `error_code` | that code | `decision=model_reject` |
+| handler ran but produced no `zookeeper_response` | `ZSYSTEMERROR` (-1) | `decision=fail_closed_no_answer` |
+| LLM call errored, `WireFailure::Unavailable` | `ZSYSTEMERROR` (-1) | `decision=fail_closed_llm_error` |
+| LLM call errored, `WireFailure::Overloaded` | `ZOPERATIONTIMEOUT` (-7) | `decision=fail_closed_overloaded` |
+
+The two failure codes differ on purpose: `ZOPERATIONTIMEOUT` reads as transient so a client
+backs off and retries, `ZSYSTEMERROR` as a server-side fault. The full error goes to
+`tracing::error!` and the status stream and **never** to the wire — a ZooKeeper error frame is
+header-only, so there is no free-text field to leak a backend URL, model name or `anyhow` chain
+into. Keep it that way: do not add a body to these replies.
+
 ## Remaining limitations
 
 1. **Only the request header and the leading path are decoded.** The watch flag, znode data on

@@ -329,17 +329,62 @@ impl RtspServer {
 
         let action =
             match call_llm(llm, state, server_id, Some(connection_id), &event, protocol).await {
-                Ok(result) => result.raw_actions.into_iter().next(),
+                Ok(result) => {
+                    let action = result.raw_actions.into_iter().next();
+                    if action.is_none() {
+                        // The model was reachable and said nothing. Distinct in the log from a
+                        // backend failure and from an explicit refusal; the RTSP framing
+                        // defaults below then apply.
+                        Log::new(Some(status_tx)).warn(format!(
+                            "RTSP {} {} decision=model_no_answer (no action returned)",
+                            req.method, req.uri
+                        ));
+                    }
+                    action
+                }
                 Err(e) => {
-                    // Fail closed: answer 503 so the client's request completes deterministically
-                    // rather than hanging, and never fabricate a stream.
+                    // Fail closed: answer so the client's request completes deterministically
+                    // rather than hanging, and never fabricate a stream. The peer gets a
+                    // category only — the error itself goes to the log and the status stream.
+                    let failure = crate::utils::WireFailure::classify(&e);
+                    let (code, reason, decision, extra) = match failure {
+                        // Transient saturation: 503 + Retry-After tells the client to back off
+                        // rather than record a permanent fault.
+                        crate::utils::WireFailure::Overloaded => (
+                            503u16,
+                            "Service Unavailable",
+                            "fail_closed_llm_overloaded",
+                            vec![("Retry-After".to_string(), "5".to_string())],
+                        ),
+                        crate::utils::WireFailure::Unavailable => (
+                            500u16,
+                            "Internal Server Error",
+                            "fail_closed_llm_error",
+                            Vec::new(),
+                        ),
+                    };
                     Log::new(Some(status_tx)).error(format!(
-                        "RTSP 503 for {} {} (LLM failure, fail-closed): {}",
-                        req.method, req.uri, e
+                        "RTSP {} {} decision={} -> {} {}: {}",
+                        req.method, req.uri, decision, code, reason, e
                     ));
-                    return build_response(503, "Service Unavailable", &req.cseq, &[], None, None);
+                    return build_response(code, reason, &req.cseq, &extra, None, None);
                 }
             };
+
+        // An explicit non-2xx from the model is a refusal, not an absence of one. Keep it
+        // distinguishable in the log from both branches above (radius' decision= shape).
+        if let Some(code) = action
+            .as_ref()
+            .and_then(|a| a.get("status_code"))
+            .and_then(|v| v.as_u64())
+        {
+            if !(200..300).contains(&code) {
+                Log::new(Some(status_tx)).warn(format!(
+                    "RTSP {} {} decision=model_reject -> {}",
+                    req.method, req.uri, code
+                ));
+            }
+        }
 
         match req.method.as_str() {
             "OPTIONS" => {
@@ -646,9 +691,17 @@ fn reason_phrase(code: u16, default: &str) -> &'static str {
         501 => "Not Implemented",
         503 => "Service Unavailable",
         _ => {
-            // default is a caller-supplied &str; leak-free path: fall back to a generic phrase.
+            // `default` is a caller-supplied &str; the reason must stay `&'static` so nothing
+            // derived from an error can reach the status line. Fall back to a category phrase
+            // rather than "OK", which would make a refusal read as `RTSP/1.0 403 OK`.
             let _ = default;
-            "OK"
+            match code {
+                100..=199 => "Continue",
+                200..=299 => "OK",
+                300..=399 => "Redirection",
+                400..=499 => "Client Error",
+                _ => "Server Error",
+            }
         }
     }
 }

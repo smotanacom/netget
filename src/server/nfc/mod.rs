@@ -28,7 +28,9 @@
 //!
 //! Nothing is answered by hardcoded card logic: there is no file system and no
 //! stored NDEF parser here, only the state the model itself set. If no handler
-//! produces a response the tag replies `6F00` (fail closed), never a success.
+//! produces a response the tag replies `6F00` (fail closed), never a success;
+//! if the backend itself failed it replies `6400` when that backend is merely
+//! saturated, so a reader retries instead of recording a broken card.
 
 pub mod actions;
 pub mod apdu;
@@ -43,6 +45,7 @@ use crate::server::nfc::actions::*;
 use crate::server::nfc::apdu::{ApduCommand, ApduResponse, SW_WRONG_LENGTH};
 use crate::state::app_state::AppState;
 use crate::state::server::ServerId;
+use crate::utils::WireFailure;
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
@@ -181,11 +184,20 @@ impl NfcServer {
                 }
             }
             Err(e) => {
-                // Non-fatal: the tag is up with its built-in defaults (wire fallback),
-                // so this is WARN not ERROR.
+                // Non-fatal: no reader has been accepted yet, so there is nobody to
+                // answer; the tag is up with its built-in defaults (wire fallback), so
+                // this is WARN not ERROR. Tagged so an operator can tell a backend
+                // outage at startup from the model choosing to configure nothing.
+                let failure = WireFailure::classify(&e);
                 Log::new(Some(&status_tx)).warn(format!(
-                    "NFC startup configuration failed: {e}. The tag is up with its \
-                     built-in defaults and carries no model-supplied NDEF records."
+                    "NFC decision=fail_closed_llm_error at startup (category={}): {e}. \
+                     The tag is up with its built-in defaults and carries no \
+                     model-supplied NDEF records.",
+                    if failure.is_overloaded() {
+                        "overloaded"
+                    } else {
+                        "unavailable"
+                    }
                 ));
             }
         }
@@ -506,14 +518,27 @@ impl NfcServer {
         {
             Ok(execution) => execution,
             Err(e) => {
-                // Non-fatal: the tag answers 6F00 (wire fallback), so WARN.
+                // The backend erred. The reader still gets an answer, but only a
+                // *category*: 6400 when the backend is saturated (retryable), 6F00
+                // otherwise. The error itself goes to the log and the status stream —
+                // never onto the wire.
+                let failure = WireFailure::classify(&e);
+                let response = ApduResponse::for_wire_failure(failure);
+                // Non-fatal: the tag answers a card error (wire fallback), so WARN.
                 log.warn(format!(
-                    "NFC handler failed for {} on {}: {}; answering 6F00",
+                    "NFC decision=fail_closed_llm_error for {} on {} (category={}, \
+                     answering {}): {}",
                     event.id(),
                     connection_id,
+                    if failure.is_overloaded() {
+                        "overloaded"
+                    } else {
+                        "unavailable"
+                    },
+                    response.status_word(),
                     e
                 ));
-                return ApduResponse::card_error();
+                return response;
             }
         };
 
@@ -543,7 +568,7 @@ impl NfcServer {
                     }
                     Err(e) => {
                         log.warn(format!(
-                            "NFC respond_to_apdu could not be decoded on {}: {}",
+                            "NFC decision=fail_closed_undecodable respond_to_apdu on {}: {}",
                             connection_id, e
                         ));
                     }
@@ -552,11 +577,33 @@ impl NfcServer {
         }
 
         match response {
-            Some(response) => response,
+            Some(response) => {
+                // The handler answered. Tag the two model outcomes apart from each other
+                // and from the fail-closed paths below: a status word outside the
+                // 61xx/62xx/63xx/90xx success-and-warning range is the model refusing,
+                // which is a real answer and must not read like an outage in the log.
+                let decision = if matches!(response.sw1, 0x90 | 0x61 | 0x62 | 0x63) {
+                    "model_answer"
+                } else {
+                    "model_reject"
+                };
+                log.debug(format!(
+                    "NFC decision={} for {} on {} (SW={})",
+                    decision,
+                    event.id(),
+                    connection_id,
+                    response.status_word()
+                ));
+                response
+            }
             None => {
-                // Fail closed: the tag answers 6F00 (wire fallback), so WARN.
+                // The handler ran and said nothing usable. Distinct from an LLM error
+                // above: this is the model declining to speak, and it fails closed with
+                // 6F00 — never a success.
+                // Non-fatal: the tag answers 6F00 (wire fallback), so WARN.
                 log.warn(format!(
-                    "NFC handler produced no respond_to_apdu for {} on {}; answering 6F00",
+                    "NFC decision=fail_closed_no_action: handler produced no respond_to_apdu \
+                     for {} on {}; answering 6F00",
                     event.id(),
                     connection_id
                 ));

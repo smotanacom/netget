@@ -866,6 +866,8 @@ impl OspfServer {
             return Ok(());
         }
 
+        let event_id = event.event_type.id.clone();
+
         match call_llm(
             &llm_client,
             &app_state,
@@ -887,8 +889,21 @@ impl OspfServer {
                     execution_result.protocol_results.len()
                 ));
 
+                // Distinguish, in the log, the model *choosing* silence from the model
+                // returning nothing usable. On the wire the two are identical — OSPF has no
+                // response for either — so the log is the only place the difference survives.
+                let mut packets_sent = 0usize;
+                let mut model_chose_to_wait = false;
+
                 // Process each protocol result (OSPF packets to send)
                 for protocol_result in execution_result.protocol_results {
+                    if matches!(
+                        protocol_result,
+                        crate::llm::actions::protocol_trait::ActionResult::WaitForMore
+                    ) {
+                        model_chose_to_wait = true;
+                    }
+
                     // Check if this is a Custom result with OSPF action
                     if let crate::llm::actions::protocol_trait::ActionResult::Custom {
                         name,
@@ -959,6 +974,7 @@ impl OspfServer {
                                         &packet,
                                     ) {
                                         Ok(()) => {
+                                            packets_sent += 1;
                                             let log = Log::new(Some(&status_tx));
                                             // Summary + hex payload are FileOnly (hot path).
                                             log.debug(format!(
@@ -995,6 +1011,7 @@ impl OspfServer {
                             output_data,
                         ) {
                             Ok(()) => {
+                                packets_sent += 1;
                                 Log::new(Some(&status_tx)).debug(format!(
                                     "OSPF sent {} bytes to multicast (224.0.0.5)",
                                     output_data.len()
@@ -1006,9 +1023,46 @@ impl OspfServer {
                         }
                     }
                 }
+
+                if packets_sent == 0 {
+                    // No packet went out. OSPF has no "I cannot answer" message, so the wire
+                    // looks exactly like a passive listener either way; the decision tag is
+                    // what tells an operator which of the two happened.
+                    let decision = if model_chose_to_wait {
+                        "model_wait"
+                    } else {
+                        "model_no_action"
+                    };
+                    Log::new(Some(&status_tx)).info(format!(
+                        "OSPF {} answered with no packet: decision={} (OSPF has no error \
+                         packet type; staying silent is the protocol-correct response)",
+                        event_id, decision
+                    ));
+                }
             }
             Err(e) => {
-                Log::new(Some(&status_tx)).error(format!("OSPF LLM error: {}", e));
+                // The LLM call failed. OSPF defines no error or NAK packet — the five packet
+                // types are Hello, DD, LSR, LSU, LSAck and every one of them is a positive
+                // routing assertion. Fabricating any of them to signal "netget is broken"
+                // would claim an adjacency, a DR role or database contents we cannot back,
+                // which is strictly worse for the peer than silence: its own
+                // RouterDeadInterval already handles a router that stops speaking. So this
+                // path stays silent on the wire deliberately, and the failure is reported to
+                // the operator here. Nothing derived from `e` reaches the socket.
+                let category = crate::utils::WireFailure::classify(&e);
+                let decision = if category.is_overloaded() {
+                    "fail_closed_overloaded"
+                } else {
+                    "fail_closed_unavailable"
+                };
+                Log::new(Some(&status_tx)).error(format!(
+                    "OSPF {} not answered: decision={} ({}) — no packet sent, OSPF has no \
+                     failure packet type; LLM error: {}",
+                    event_id,
+                    decision,
+                    category.text(),
+                    e
+                ));
             }
         }
 

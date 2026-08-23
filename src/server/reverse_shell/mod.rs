@@ -219,6 +219,50 @@ struct ShellConnection {
     write_half: Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
 }
 
+/// Why a session is being failed closed, kept distinct from a deliberate model decision.
+///
+/// The two variants exist so the log can tell an operator which happened. Collapsing them —
+/// which this protocol used to do behind a single `no_answer` flag — makes a backend outage
+/// indistinguishable from a model that answered with an unusable action list, and those want
+/// completely different responses from whoever is watching.
+#[derive(Clone, Copy, Debug)]
+enum FailClosed {
+    /// The LLM call itself returned `Err`. Carries only the *category* of the failure — the
+    /// error text is logged, never carried towards the wire (`crate::utils::wire_failure`).
+    LlmError(crate::utils::WireFailure),
+    /// The call succeeded but produced nothing usable: an empty action list, or a batch where
+    /// every action failed. The backend is up; the answer was not usable.
+    NoUsableAnswer,
+}
+
+impl FailClosed {
+    /// The peer-visible category. `&'static str` by construction, so nothing derived from an
+    /// error can reach the socket.
+    fn wire_text(self) -> &'static str {
+        match self {
+            Self::LlmError(failure) => failure.text(),
+            // The backend answered; it is this request that could not be served.
+            Self::NoUsableAnswer => crate::utils::WireFailure::Unavailable.text(),
+        }
+    }
+
+    /// The `decision=` tag written to the log and the status stream. Three cases stay
+    /// distinguishable there: `model_end_session` (a deliberate close), `fail_closed_no_answer`
+    /// (the model said nothing usable) and `fail_closed_llm_error` (the call errored), the last
+    /// split further by overload so a capacity problem is not read as a permanent fault.
+    fn decision_tag(self) -> &'static str {
+        match self {
+            Self::LlmError(crate::utils::WireFailure::Overloaded) => {
+                "fail_closed_llm_error_overloaded"
+            }
+            Self::LlmError(crate::utils::WireFailure::Unavailable) => {
+                "fail_closed_llm_error_unavailable"
+            }
+            Self::NoUsableAnswer => "fail_closed_no_answer",
+        }
+    }
+}
+
 /// What the model decided in answer to one event.
 #[derive(Default)]
 struct Outcome {
@@ -226,8 +270,8 @@ struct Outcome {
     output: Vec<u8>,
     /// The session should close after writing `output`.
     close: bool,
-    /// No usable action came back (an LLM error, or an empty/failed action list).
-    no_answer: bool,
+    /// Set when nothing usable came back, with the reason kept separate from a model decision.
+    fail_closed: Option<FailClosed>,
 }
 
 impl ShellConnection {
@@ -342,15 +386,22 @@ impl ShellConnection {
         {
             Ok(execution) => execution,
             Err(e) => {
-                warn!(
-                    "Reverse-shell event {} not answered: {}",
-                    event.event_type.id, e
+                // The full error goes to the log and the status stream, where an operator
+                // looks. Only its category is allowed anywhere near the socket.
+                let failure = crate::utils::WireFailure::classify(&e);
+                error!(
+                    "Reverse-shell event {} decision={} error={}",
+                    event.event_type.id,
+                    FailClosed::LlmError(failure).decision_tag(),
+                    e
                 );
                 let _ = self.status_tx.send(format!(
-                    "[WARN] Reverse-shell {} not answered: {}",
-                    event.event_type.id, e
+                    "[ERROR] Reverse-shell {} decision={}: {}",
+                    event.event_type.id,
+                    FailClosed::LlmError(failure).decision_tag(),
+                    e
                 ));
-                outcome.no_answer = true;
+                outcome.fail_closed = Some(FailClosed::LlmError(failure));
                 return outcome;
             }
         };
@@ -385,7 +436,12 @@ impl ShellConnection {
         }
 
         if !saw_result {
-            outcome.no_answer = true;
+            warn!(
+                "Reverse-shell event {} decision={} (model returned no usable action)",
+                event.event_type.id,
+                FailClosed::NoUsableAnswer.decision_tag()
+            );
+            outcome.fail_closed = Some(FailClosed::NoUsableAnswer);
         }
 
         outcome
@@ -423,18 +479,20 @@ impl ShellConnection {
             );
         }
 
-        if outcome.no_answer {
+        if let Some(reason) = outcome.fail_closed {
             let _ = self.status_tx.send(format!(
-                "✗ Reverse-shell closing {} (no usable answer from model)",
-                self.connection_id
+                "✗ Reverse-shell closing {} decision={}",
+                self.connection_id,
+                reason.decision_tag()
             ));
+            self.write_failure_notice(reason).await;
             self.shutdown().await;
             return Ok(true);
         }
 
         if outcome.close {
             let _ = self.status_tx.send(format!(
-                "✗ Reverse-shell session {} ended",
+                "✗ Reverse-shell session {} decision=model_end_session",
                 self.connection_id
             ));
             self.shutdown().await;
@@ -442,6 +500,41 @@ impl ShellConnection {
         }
 
         Ok(false)
+    }
+
+    /// Tell the operator, on its own line, that the server could not answer — then the caller
+    /// half-closes.
+    ///
+    /// A bare FIN is honest but ambiguous: on a reverse-shell transcript it looks exactly like
+    /// the implant on the far end dying, which sends the operator hunting the wrong problem.
+    /// One line naming the *category* removes that ambiguity while inventing no shell output.
+    ///
+    /// The text is `WireFailure`'s `&'static str` and nothing else. The error itself has
+    /// already been logged; interpolating it here is the defect this whole path exists to
+    /// avoid (see `crate::utils::wire_failure`). The two categories carry different words —
+    /// "retry later" for a saturated backend, "could not be processed" otherwise — so an
+    /// operator (or a script watching the transcript) can tell a transient outage from a
+    /// permanent one even though a raw shell stream has no status code.
+    ///
+    /// CRLF and a leading newline so the notice cannot be mistaken for the output of whatever
+    /// the operator last typed, and so a cooked-mode client does not stair-step it.
+    async fn write_failure_notice(&self, reason: FailClosed) {
+        let notice = format!("\r\n[netget] {}\r\n", reason.wire_text());
+        let mut writer = self.write_half.lock().await;
+        if writer.write_all(notice.as_bytes()).await.is_ok() {
+            let _ = writer.flush().await;
+            drop(writer);
+            self.app_state
+                .update_connection_stats(
+                    self.server_id,
+                    self.connection_id,
+                    None,
+                    Some(notice.len() as u64),
+                    None,
+                    Some(1),
+                )
+                .await;
+        }
     }
 
     /// Half-close the write direction so the operator's next read returns EOF.

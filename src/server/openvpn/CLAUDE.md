@@ -145,6 +145,30 @@ Two sync actions, both enforced:
 server loop reads. **Fails closed**: a rejection, an empty answer, and an LLM error all leave the peer unanswered, and
 all three are logged distinctly so an outage can never be mistaken for approval.
 
+### Why a backend failure sends nothing
+
+Before the TLS control channel exists, OpenVPN has exactly one server-to-client message,
+`P_CONTROL_HARD_RESET_SERVER_V2`, and sending it **is** admitting the peer. There is no NAK and no error packet;
+`AUTH_FAILED` is a push message that only exists once TLS is up, which this server never reaches. A real OpenVPN server
+drops what it will not admit — that is what an HMAC failure under `--tls-auth` does. So the usual fix of answering the
+peer with a category instead of silence does not apply here: the only available reply means "you are in", and emitting
+it on an LLM outage would be the fail-open bug rather than a cure for it.
+
+The distinction the peer cannot be given is given to the operator instead. Every outcome carries a stable `decision=`
+token, matching `src/server/radius/`:
+
+| Token | Meaning |
+|---|---|
+| `decision=model_accept` | the model called `accept_peer`; the reset reply was sent |
+| `decision=model_reject` | the model called `reject_peer`; nothing sent, by the model's choice |
+| `decision=fail_closed_no_action` | the model answered with neither action; nothing sent |
+| `decision=fail_closed_llm_error` | the LLM call itself errored; nothing sent |
+
+`grep 'decision=fail_closed_'` finds every peer the model did not actually answer for. The LLM-error line also carries
+`class=overloaded` / `class=unavailable` from `WireFailure::classify` — the distinction a protocol with two error codes
+would have put on the wire — and the full error text, which stays in the log and the status stream and never touches
+the socket.
+
 No async actions: the executor builds a stateless `OpenvpnProtocol` with no handle to the running server, so anything
 listed there could only return `NoAction`.
 

@@ -421,8 +421,16 @@ async fn test_rejected_peer_receives_nothing() -> E2EResult<()> {
 
     let server_log = server.get_output().await.join("\n");
     assert!(
-        server_log.contains("refused") && server_log.contains("not on the allow list"),
-        "the refusal and its reason should be logged. Server log:\n{}",
+        server_log.contains("decision=model_reject")
+            && server_log.contains("not on the allow list"),
+        "the refusal and its reason should be logged, and an explicit model refusal must \
+         carry decision=model_reject rather than any fail_closed_ tag. Server log:\n{}",
+        server_log
+    );
+    assert!(
+        !server_log.contains("decision=fail_closed"),
+        "a model refusal must never be recorded as fail-closed: the two are different \
+         events and an operator greps for the difference. Server log:\n{}",
         server_log
     );
 
@@ -456,8 +464,9 @@ async fn test_absent_decision_fails_closed() -> E2EResult<()> {
 
     let server_log = server.get_output().await.join("\n");
     assert!(
-        server_log.contains("no accept_peer/reject_peer decision"),
-        "the no-decision path must be logged distinctly from a refusal. Server log:\n{}",
+        server_log.contains("decision=fail_closed_no_action"),
+        "the no-decision path must be logged distinctly from a refusal, under its own \
+         greppable decision= tag. Server log:\n{}",
         server_log
     );
 

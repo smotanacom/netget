@@ -362,11 +362,39 @@ Following NetGet's dual logging pattern (tracing macros + status_tx):
 - Server lifecycle: "S3 server listening on 0.0.0.0:9000"
 - Connection events: "S3 client connected from 127.0.0.1:54321"
 
+### WARN Level — the `decision=` tags
+
+Every request that does not produce a normal S3 response is logged with a stable
+`decision=` tag, so an operator can tell the three cases apart with `grep`:
+
+- `decision=model_answer` — the model produced `s3_object` / `s3_object_list` /
+  `s3_bucket_list` (DEBUG, alongside the normal response)
+- `decision=model_reject` — the model deliberately refused, via `send_s3_error` (DEBUG)
+- `decision=model_no_action` — the model answered nothing this protocol can turn into a
+  response, or every action it emitted failed to execute. WARN, because the wire answer is
+  the empty `200 OK` fall-through, which for PutObject/CreateBucket/DeleteObject/HeadObject
+  reads to the client as success. The line names how many actions failed
+- `decision=fail_closed_llm_error category=Overloaded|Unavailable` — netget could not reach
+  a decision at all (backend error, timeout, unusable output). WARN, and the **only** place
+  the full error text is written; it goes to `netget.log` and the TUI status stream and
+  never to the peer
+
+### The LLM-failure wire response
+
+On `Err` from `call_llm` the peer gets an S3 `<Error>` document carrying only a category
+from `crate::utils::WireFailure` — never the error, the backend URL, the model name or an
+`anyhow` chain:
+
+- `WireFailure::Overloaded` → `503` + `<Code>ServiceUnavailable</Code>` + `Retry-After: 5`,
+  so an SDK backs off and retries
+- `WireFailure::Unavailable` → `500` + `<Code>InternalError</Code>`, a permanent fault
+
+Keeping the two codes distinct is the point: collapsing both onto 500 makes a transient
+backend saturation look permanent to every S3 client.
+
 ### ERROR Level
 
-- Server failures: "Failed to bind S3 server to port 9000"
-- Internal errors: "Failed to generate XML response"
-- LLM errors: "LLM error handling S3 request"
+- Internal errors: "Dropping S3 {name} header: … is not a valid HTTP header value"
 
 ## Example Prompts
 

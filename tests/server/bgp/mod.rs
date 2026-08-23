@@ -11,3 +11,6 @@ mod static_default_test;
 
 #[cfg(all(test, feature = "bgp"))]
 mod peer_inject_test;
+
+#[cfg(all(test, feature = "bgp"))]
+mod llm_failure_test;

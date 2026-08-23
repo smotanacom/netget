@@ -11,10 +11,33 @@ mapping experiments, and honeypot operations.
 An ARP reply is **not wire-determined** — the MAC advertised is a policy choice
 (spoofing/honeypot/custom mapping), like DNS/DHCP. So with **no operator policy** (no server
 instruction and no per-event handler), the server **answers nothing** — it has no MAC to claim —
-and takes **no LLM round-trip per captured packet** (gated by `should_call_llm` in `mod.rs` =
+and takes **no LLM round-trip per captured packet** (gated by `operator_wants_dynamic` in `mod.rs` =
 `has_instruction || has_handler`). The LLM is consulted **only when the operator opts in** with the
 mapping to serve (an instruction or a handler). The material below describing the model receiving
 ARP events and returning `send_arp_reply` therefore describes the opt-in path, not the default.
+
+### LLM failure: silence is the correct answer, and the log says which silence
+
+ARP has **no error message**. The only frame this server can emit is a reply asserting that some
+MAC owns the queried IP — and that MAC is exactly what the failed LLM call was supposed to decide.
+Fabricating one would poison the requester's neighbour cache; a requester that hears nothing simply
+times out, which is RFC 826's normal outcome for "nobody here owns that address". So on an LLM
+error the server deliberately puts **nothing** on the wire. This is the documented exception to the
+"answer the peer on backend failure" rule in the root `CLAUDE.md`, not an oversight.
+
+Because all outcomes look identical on the wire, they are separated **in the log** by a `decision=`
+tag, the same way `radius` separates its cases:
+
+| Tag | Meaning |
+|---|---|
+| `decision=no_policy` | No instruction and no handler — static default, no LLM call at all |
+| `decision=model_reject` | The model answered with `ignore_arp` — a real decision not to reply |
+| `decision=model_no_answer` | The model returned no actions |
+| `decision=fail_closed_overloaded` | The LLM call errored and `WireFailure::classify` said the backend is saturated (retryable) |
+| `decision=fail_closed_llm_error` | The LLM call errored otherwise |
+
+The full error goes to `tracing::error!` and the status stream (operator-facing, both local). It
+never reaches a peer, because no packet is sent.
 
 **Status**: Experimental (Layer 2 Protocol)
 **Layer**: OSI Layer 2 (Data Link)

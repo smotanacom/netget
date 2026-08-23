@@ -19,7 +19,7 @@
 //! 1. **Nothing is typed.** A failed LLM call must never put a keystroke on the wire. This is
 //!    the fail-closed property that matters for a keyboard — a device that types *something*
 //!    when its brain is unreachable would be far worse than one that types nothing.
-//! 2. **The failure is recorded at ERROR, on both channels.** Silence that goes unlogged is
+//! 2. **The failure is recorded at ERROR, on both channels, tagged `decision=llm_error`.** Silence that goes unlogged is
 //!    indistinguishable from a working keyboard nobody is using, which is exactly the situation
 //!    an operator needs to be able to tell apart.
 //!
@@ -70,6 +70,11 @@ mod usb_keyboard_llm_failure {
         // The attach handler fails. This is the only event this protocol raises that a model
         // would answer with keystrokes.
         server.wait_for_log(LLM_FAILURE_LOG, 15).await?;
+
+        // Silence has three causes and they must not look alike in the log: a backend failure,
+        // a model that answered with no keystrokes, and a model that typed. Only the first one
+        // is a fault, so the failure path carries its own `decision=` tag.
+        server.wait_for_log("decision=llm_error", 15).await?;
 
         // Poll the interrupt IN endpoint the way a host does. Every URB must succeed — the
         // device is still there and the session is intact — and every one must be empty.

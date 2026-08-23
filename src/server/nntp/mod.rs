@@ -237,29 +237,71 @@ impl NntpServer {
                     log.info(message);
                 }
 
-                for protocol_result in execution_result.protocol_results {
-                    if let ActionResult::Output(data) = protocol_result {
-                        Self::write_counted(
-                            write_half_arc,
-                            app_state,
-                            server_id,
-                            connection_id,
-                            &data,
-                            false,
-                        )
-                        .await;
+                let plan = SessionWrite::collect(&execution_result.protocol_results);
 
-                        // Sent summary + payload are FileOnly.
-                        let response = String::from_utf8_lossy(&data);
-                        let preview = crate::utils::truncate_for_log(&response, 100);
-                        log.debug(format!(
-                            "NNTP sent {} bytes on connection {}: {}",
-                            data.len(),
-                            connection_id,
-                            preview.trim()
-                        ));
-                        log.trace(format!("NNTP sent (text): {:?}", response.trim()));
-                    }
+                for data in &plan.outputs {
+                    Self::write_counted(
+                        write_half_arc,
+                        app_state,
+                        server_id,
+                        connection_id,
+                        data,
+                        false,
+                    )
+                    .await;
+
+                    // Sent summary + payload are FileOnly.
+                    let response = String::from_utf8_lossy(data);
+                    let preview = crate::utils::truncate_for_log(&response, 100);
+                    log.debug(format!(
+                        "NNTP sent {} bytes on connection {} (decision={}): {}",
+                        data.len(),
+                        connection_id,
+                        nntp_model_decision(data),
+                        preview.trim()
+                    ));
+                    log.trace(format!("NNTP sent (text): {:?}", response.trim()));
+                }
+
+                // A greeting is mandatory: RFC 3977 5.1 has the server speak
+                // first, and a client reads that line before it sends
+                // anything. So an answer with no greeting in it is not
+                // "say nothing", it is a session that can never start - the
+                // client blocks forever on a line that is not coming. The
+                // Err branch below already answers 400; this covers the
+                // model (or a static/manual handler) returning zero actions,
+                // or actions that all failed to execute, which reaches here
+                // as Ok with nothing to write. An explicit wait_for_more or
+                // close_connection is a deliberate choice and is left alone.
+                if plan.wrote_nothing() && !plan.silence_is_deliberate {
+                    let decision = if execution_result.failures.is_empty() {
+                        "fail_closed_no_actions"
+                    } else {
+                        "fail_closed_action_error"
+                    };
+                    let line = nntp_greeting_failure_line_static();
+                    log.warn(format!(
+                        "NNTP greeting produced no response on connection {} \
+                         (decision={}, refused: {}): {}",
+                        connection_id,
+                        decision,
+                        line.trim_end(),
+                        nntp_failure_detail(&execution_result)
+                    ));
+                    Self::write_counted(
+                        write_half_arc,
+                        app_state,
+                        server_id,
+                        connection_id,
+                        line.as_bytes(),
+                        true,
+                    )
+                    .await;
+                    return;
+                }
+
+                if plan.close {
+                    return;
                 }
             }
             Err(e) => {
@@ -269,7 +311,8 @@ impl NntpServer {
                 // greeting line that was never coming.
                 let line = nntp_greeting_failure_line(&e);
                 log.warn(format!(
-                    "NNTP greeting LLM error on connection {} (refused: {}): {}",
+                    "NNTP greeting LLM error on connection {} \
+                     (decision=fail_closed_llm_error, refused: {}): {}",
                     connection_id,
                     line.trim_end(),
                     e
@@ -345,35 +388,38 @@ impl NntpServer {
                         execution_result.protocol_results.len()
                     ));
 
-                    // An action that failed to execute (a missing required
-                    // field, say) leaves protocol_results empty, and the
-                    // same reasoning as the LLM-error branch below applies:
+                    let plan = SessionWrite::collect(&execution_result.protocol_results);
+
                     // NNTP is one response line per command, so writing
                     // nothing desynchronises the client for the rest of the
                     // session - it waits forever for a line that will never
-                    // come. Answer 403 instead. A model that deliberately
-                    // chose wait_for_more reports no failures and is left
-                    // alone.
-                    let wrote_nothing = !execution_result
-                        .protocol_results
-                        .iter()
-                        .any(|r| matches!(r, ActionResult::Output(_)));
-                    if wrote_nothing && !execution_result.failures.is_empty() {
-                        let detail = execution_result
-                            .failures
-                            .iter()
-                            .map(|f| format!("{}: {}", f.action, f.error))
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        let reply = format!(
-                            "403 netget: could not build a response ({})\r\n",
-                            detail.replace(['\r', '\n'], " ")
-                        );
+                    // come, and if it ever gives up and sends another
+                    // command it reads the next reply as the answer to this
+                    // one. Two Ok cases land here with nothing to write and
+                    // both get 403: actions that failed to execute (a
+                    // missing required field, say) and an answer with no
+                    // actions in it at all - an empty model reply, a manual
+                    // "answer with nothing", a zero-action static handler.
+                    // The empty case is the worse of the two, not the
+                    // exempt one. A deliberate wait_for_more or
+                    // close_connection is left alone.
+                    if plan.wrote_nothing() && !plan.silence_is_deliberate {
+                        let decision = if execution_result.failures.is_empty() {
+                            "fail_closed_no_actions"
+                        } else {
+                            "fail_closed_action_error"
+                        };
+                        // The peer gets a category; the detail goes to the
+                        // log. Action names and executor error strings are
+                        // netget's internals and are not the peer's to read.
+                        let reply = nntp_command_failure_line_static();
                         log.warn(format!(
-                            "NNTP action failure on connection {} (replying: {}): {}",
+                            "NNTP produced no response on connection {} \
+                             (decision={}, replying: {}): {}",
                             connection_id,
+                            decision,
                             reply.trim_end(),
-                            detail
+                            nntp_failure_detail(&execution_result)
                         ));
                         Self::write_counted(
                             write_half_arc,
@@ -386,39 +432,31 @@ impl NntpServer {
                         .await;
                     }
 
-                    let mut close = false;
-                    for protocol_result in execution_result.protocol_results {
-                        match protocol_result {
-                            ActionResult::Output(data) => {
-                                Self::write_counted(
-                                    write_half_arc,
-                                    app_state,
-                                    server_id,
-                                    connection_id,
-                                    &data,
-                                    false,
-                                )
-                                .await;
+                    for data in &plan.outputs {
+                        Self::write_counted(
+                            write_half_arc,
+                            app_state,
+                            server_id,
+                            connection_id,
+                            data,
+                            false,
+                        )
+                        .await;
 
-                                // Sent summary + payload are FileOnly.
-                                let response = String::from_utf8_lossy(&data);
-                                let preview = crate::utils::truncate_for_log(&response, 100);
-                                log.debug(format!(
-                                    "NNTP sent {} bytes on connection {}: {}",
-                                    data.len(),
-                                    connection_id,
-                                    preview.trim()
-                                ));
-                                log.trace(format!("NNTP sent (text): {:?}", response.trim()));
-                            }
-                            ActionResult::CloseConnection => {
-                                close = true;
-                                break;
-                            }
-                            _ => {}
-                        }
+                        // Sent summary + payload are FileOnly.
+                        let response = String::from_utf8_lossy(data);
+                        let preview = crate::utils::truncate_for_log(&response, 100);
+                        log.debug(format!(
+                            "NNTP sent {} bytes on connection {} (decision={}): {}",
+                            data.len(),
+                            connection_id,
+                            nntp_model_decision(data),
+                            preview.trim()
+                        ));
+                        log.trace(format!("NNTP sent (text): {:?}", response.trim()));
                     }
-                    if close {
+
+                    if plan.close {
                         break;
                     }
                 }
@@ -432,7 +470,8 @@ impl NntpServer {
                     // authenticate anyone or hand back an article.
                     let (reply, close) = nntp_command_failure_line(&e);
                     log.warn(format!(
-                        "NNTP LLM error on connection {} (replying: {}): {}",
+                        "NNTP LLM error on connection {} \
+                         (decision=fail_closed_llm_error, replying: {}): {}",
                         connection_id,
                         reply.trim_end(),
                         e
@@ -457,6 +496,99 @@ impl NntpServer {
 
         log.info(format!("NNTP connection {} closed", connection_id));
     }
+}
+
+/// What a batch of action results means for the wire.
+///
+/// Collected up front so the "nothing to say" case can be recognised *before* anything is
+/// written, and so a nested `Multiple` still counts as a response — matching on the top-level
+/// variants alone would read `Multiple(vec![Output(..)])` as silence and answer 403 over a
+/// perfectly good reply.
+#[derive(Default)]
+struct SessionWrite {
+    /// Bytes to put on the wire, in order.
+    outputs: Vec<Vec<u8>>,
+    /// The session should end after those bytes.
+    close: bool,
+    /// The answer contained an explicit `wait_for_more` or `close_connection`, so writing
+    /// nothing is a choice rather than a hole.
+    silence_is_deliberate: bool,
+}
+
+impl SessionWrite {
+    fn collect(results: &[ActionResult]) -> Self {
+        let mut plan = Self::default();
+        plan.absorb(results);
+        plan
+    }
+
+    fn absorb(&mut self, results: &[ActionResult]) {
+        for result in results {
+            match result {
+                ActionResult::Output(data) => self.outputs.push(data.clone()),
+                ActionResult::CloseConnection => {
+                    self.close = true;
+                    self.silence_is_deliberate = true;
+                }
+                ActionResult::WaitForMore => self.silence_is_deliberate = true,
+                ActionResult::Multiple(inner) => self.absorb(inner),
+                _ => {}
+            }
+        }
+    }
+
+    fn wrote_nothing(&self) -> bool {
+        self.outputs.is_empty()
+    }
+}
+
+/// Log tag for a response the model itself produced: a 4xx/5xx status line is the model
+/// refusing, anything else is the model answering. Keeping the two apart in the log is what
+/// makes a real denial distinguishable from netget's own fail-closed replies, which are
+/// tagged `decision=fail_closed_*`.
+fn nntp_model_decision(data: &[u8]) -> &'static str {
+    match data.first() {
+        Some(b'4') | Some(b'5') => "model_reject",
+        _ => "model_answer",
+    }
+}
+
+/// Everything about a failed answer that belongs in the log and nowhere else.
+fn nntp_failure_detail(result: &crate::llm::actions::executor::ExecutionResult) -> String {
+    if result.failures.is_empty() {
+        "the answer contained no actions".to_string()
+    } else {
+        result
+            .failures
+            .iter()
+            .map(|f| format!("{}: {}", f.action, f.error))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
+/// The greeting to write when the answer contains no greeting at all.
+///
+/// There is no error to classify here — nothing failed, the answer was simply empty — so this
+/// is the flat `Unavailable` category. 400 is the same legal failure greeting the LLM-error
+/// path uses, and the server closes after it.
+fn nntp_greeting_failure_line_static() -> String {
+    format!(
+        "400 {}\r\n",
+        crate::utils::WireFailure::Unavailable.prefixed_text()
+    )
+}
+
+/// The command reply to write when the answer contains nothing to send.
+///
+/// 403 leaves the session usable, which is right for a per-command hole. The free text is a
+/// fixed category: action names and executor error strings name netget's internals and never
+/// reach the peer.
+fn nntp_command_failure_line_static() -> String {
+    format!(
+        "403 {}\r\n",
+        crate::utils::WireFailure::Unavailable.prefixed_text()
+    )
 }
 
 /// The greeting to write when the LLM backend cannot produce one.

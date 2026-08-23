@@ -201,10 +201,18 @@ struct ConnectionData {
 - `wait_for_more` accumulates data in memory without limits
 - Long-running accumulating connections could exhaust memory
 
-### 5. No Half-Close Support
+### 5. Half-Close Is a Failure Signal, Not a Feature
 
-- Closing a connection closes both read and write directions
-- TCP half-close (shutdown write but keep reading) not supported
+- The model cannot request a half-close: `close_this_connection` closes both directions
+- The server half-closes (`write.shutdown()`) in exactly one case — the LLM call returned
+  `Err` — for both the greeting (`send_first`) and the data path. Raw TCP has no error
+  frame, so FIN is the only honest answer: the peer reads EOF immediately instead of
+  blocking until its own timeout. Nothing derived from the error is ever written to the
+  socket; the full error goes to the log and the status stream only
+  (`decision=fail_closed_llm_error class=overloaded|unavailable`)
+- The three outcomes are distinguishable in the log: `decision=model_close` (the model hung
+  up), `decision=model_no_actions` (the model answered with no bytes — legitimate on raw
+  TCP, connection stays open), `decision=fail_closed_llm_error` (the backend failed)
 
 ## Example Prompts
 

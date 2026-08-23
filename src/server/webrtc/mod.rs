@@ -36,6 +36,18 @@
 //! it, rejects the offer; only an explicit `accept_offer` accepts. A model's explicit
 //! `reject_offer` carries its own reason, so refusal and silence are distinguishable in the
 //! signalling frame the peer receives.
+//!
+//! # Failure reaches the peer as a category, never as an error string
+//!
+//! Nothing derived from an internal error is written to the signalling socket or the data
+//! channel. A backend failure on the offer path rejects with
+//! [`crate::utils::WireFailure::prefixed_text`], and one on the data-channel path writes the
+//! same category text on the channel rather than going silent and leaving the peer waiting.
+//! The three outcomes stay apart in the log via a `decision=` tag: `model_reject` (the model
+//! refused), `fail_closed_no_decision` (the model answered nothing usable), and
+//! `fail_closed_backend_overloaded` / `fail_closed_backend_error` (the call itself failed —
+//! kept distinct so an operator can tell a saturated backend from a broken one, which is the
+//! `503`-vs-`500` distinction in a protocol that has no status codes of its own).
 
 pub mod actions;
 
@@ -68,6 +80,7 @@ use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
 use crate::state::ServerId;
+use crate::utils::WireFailure;
 use actions::{
     WEBRTC_MESSAGE_RECEIVED_EVENT, WEBRTC_OFFER_RECEIVED_EVENT, WEBRTC_PEER_CONNECTED_EVENT,
 };
@@ -521,16 +534,23 @@ impl PeerCtx {
         {
             Ok(result) => result,
             Err(e) => {
+                // Silence would leave the peer waiting on a data channel that will never
+                // answer. It gets a category on that channel; the error stays in the log.
+                let failure = WireFailure::classify(&e);
+                let decision = backend_failure_tag(failure);
                 error!(
-                    "WebRTC LLM call failed for peer {} ({}): {}",
+                    "WebRTC LLM call failed for peer {} ({}) (decision={}): {}",
                     self.peer_id,
                     netget_event.id(),
+                    decision,
                     e
                 );
                 let _ = self.status_tx.send(format!(
-                    "[ERROR] WebRTC peer {}: no response generated ({})",
-                    self.peer_id, e
+                    "[ERROR] WebRTC peer {} (decision={}): no response generated ({})",
+                    self.peer_id, decision, e
                 ));
+                self.send_on_channel(failure.prefixed_text().to_string())
+                    .await;
                 return;
             }
         };
@@ -541,35 +561,34 @@ impl PeerCtx {
             collect_result(action_result, &mut outputs, &mut close);
         }
 
-        if !outputs.is_empty() {
-            let channel = {
-                let peers = self.server_data.peers.lock().await;
-                peers
-                    .get(&self.peer_id)
-                    .and_then(|peer| peer.data_channel.clone())
-            };
-            match channel {
-                Some(channel) => {
-                    for bytes in outputs {
-                        let text = String::from_utf8_lossy(&bytes).to_string();
-                        match channel.send_text(text).await {
-                            Ok(n) => trace!("WebRTC sent {} bytes to peer {}", n, self.peer_id),
-                            Err(e) => {
-                                error!("WebRTC failed to send to peer {}: {}", self.peer_id, e)
-                            }
-                        }
-                    }
-                }
-                None => warn!(
-                    "WebRTC has no open data channel for peer {}; response dropped",
-                    self.peer_id
-                ),
-            }
+        for bytes in outputs {
+            self.send_on_channel(String::from_utf8_lossy(&bytes).to_string())
+                .await;
         }
 
         if close {
             info!("WebRTC closing peer {} on model request", self.peer_id);
             self.teardown("closed by model").await;
+        }
+    }
+
+    /// Write one text message on this peer's data channel, if it has an open one.
+    async fn send_on_channel(&self, text: String) {
+        let channel = {
+            let peers = self.server_data.peers.lock().await;
+            peers
+                .get(&self.peer_id)
+                .and_then(|peer| peer.data_channel.clone())
+        };
+        match channel {
+            Some(channel) => match channel.send_text(text).await {
+                Ok(n) => trace!("WebRTC sent {} bytes to peer {}", n, self.peer_id),
+                Err(e) => error!("WebRTC failed to send to peer {}: {}", self.peer_id, e),
+            },
+            None => warn!(
+                "WebRTC has no open data channel for peer {}; response dropped",
+                self.peer_id
+            ),
         }
     }
 
@@ -616,7 +635,13 @@ fn collect_result(result: &ActionResult, outputs: &mut Vec<Vec<u8>>, close: &mut
 /// The model's verdict on an incoming offer.
 enum OfferDecision {
     Accept,
-    Reject(String),
+    /// Refuse the offer. `reason` is peer-visible free text and must never carry an internal
+    /// error; `decision` is the log tag that keeps a model refusal, a model silence and a
+    /// backend failure distinguishable after the fact.
+    Reject {
+        reason: String,
+        decision: &'static str,
+    },
 }
 
 /// WebRTC server: WebSocket signalling in front of webrtc-rs peer connections.
@@ -860,11 +885,14 @@ impl WebRtcServer {
             .await;
 
             match decision {
-                OfferDecision::Reject(reason) => {
-                    info!("WebRTC offer from {} rejected: {}", peer_id, reason);
+                OfferDecision::Reject { reason, decision } => {
+                    info!(
+                        "WebRTC offer from {} rejected (decision={}): {}",
+                        peer_id, decision, reason
+                    );
                     let _ = status_tx.send(format!(
-                        "[SERVER] WebRTC offer from {} rejected: {}",
-                        peer_id, reason
+                        "[SERVER] WebRTC offer from {} rejected (decision={}): {}",
+                        peer_id, decision, reason
                     ));
                     send_signal(
                         &out_tx,
@@ -906,11 +934,17 @@ impl WebRtcServer {
                             );
                         }
                         Err(e) => {
-                            error!("WebRTC failed to answer peer {}: {}", peer_id, e);
+                            // webrtc-rs' error names library internals; log it, and tell the
+                            // peer only that negotiation did not complete.
+                            error!(
+                                "WebRTC failed to answer peer {} (decision=negotiation_failed): {}",
+                                peer_id, e
+                            );
                             send_signal(
                                 &out_tx,
                                 &WebRtcSignal::Error {
-                                    message: format!("failed to establish peer connection: {}", e),
+                                    message: "the peer connection could not be established"
+                                        .to_string(),
                                 },
                             );
                         }
@@ -964,11 +998,18 @@ impl WebRtcServer {
         {
             Ok(result) => result,
             Err(e) => {
-                error!("WebRTC offer decision failed for peer {}: {}", peer_id, e);
-                return OfferDecision::Reject(format!(
-                    "no decision could be obtained from the model: {}",
-                    e
-                ));
+                // The peer gets a category; the error itself stays in the log. See
+                // `crate::utils::wire_failure`.
+                let failure = WireFailure::classify(&e);
+                let decision = backend_failure_tag(failure);
+                error!(
+                    "WebRTC offer decision failed for peer {} (decision={}): {}",
+                    peer_id, decision, e
+                );
+                return OfferDecision::Reject {
+                    reason: failure.prefixed_text().to_string(),
+                    decision,
+                };
             }
         };
 
@@ -978,10 +1019,26 @@ impl WebRtcServer {
             }
         }
 
-        OfferDecision::Reject(
-            "the model returned no accept_offer or reject_offer action; refusing by default"
+        OfferDecision::Reject {
+            reason: "the model returned no accept_offer or reject_offer action; refusing by \
+                     default"
                 .to_string(),
-        )
+            decision: "fail_closed_no_decision",
+        }
+    }
+}
+
+/// The `decision=` log tag for a backend failure.
+///
+/// Overload and everything else are kept apart because they are the same distinction a
+/// protocol with status codes expresses as 503 vs 500: one says "retry", the other does not.
+/// The signalling protocol has no codes, so the split lives in the log and in the two
+/// `WireFailure` texts.
+fn backend_failure_tag(failure: WireFailure) -> &'static str {
+    if failure.is_overloaded() {
+        "fail_closed_backend_overloaded"
+    } else {
+        "fail_closed_backend_error"
     }
 }
 
@@ -996,12 +1053,14 @@ fn offer_decision(result: &ActionResult) -> Option<OfferDecision> {
             {
                 Some(OfferDecision::Accept)
             } else {
-                Some(OfferDecision::Reject(
-                    data.get("reason")
+                Some(OfferDecision::Reject {
+                    reason: data
+                        .get("reason")
                         .and_then(|v| v.as_str())
                         .unwrap_or("the model rejected this offer")
                         .to_string(),
-                ))
+                    decision: "model_reject",
+                })
             }
         }
         ActionResult::Multiple(inner) => inner.iter().find_map(offer_decision),

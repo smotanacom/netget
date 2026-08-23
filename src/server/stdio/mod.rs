@@ -199,12 +199,15 @@ impl StdioServer {
                     let _ = status_tx.send(msg);
                 }
                 let mut should_close = false;
+                let mut wrote = false;
                 for pr in result.protocol_results {
                     match pr {
                         ActionResult::Output(bytes) => {
+                            wrote = true;
                             Self::write_stream(false, &bytes, status_tx).await;
                         }
                         ActionResult::Custom { name, data } if name == "stdio_stderr" => {
+                            wrote = true;
                             if let Some(hex_str) = data.get("hex").and_then(|v| v.as_str()) {
                                 if let Ok(bytes) = hex::decode(hex_str) {
                                     Self::write_stream(true, &bytes, status_tx).await;
@@ -215,11 +218,36 @@ impl StdioServer {
                         _ => {}
                     }
                 }
+                // The model answering nothing is a real answer for a filter (grep drops a line),
+                // so it emits nothing — but it must stay distinguishable in the log from the
+                // backend having failed, which is the case below.
+                let decision = match (wrote, should_close) {
+                    (_, true) => "model_close",
+                    (true, false) => "model_answer",
+                    (false, false) => "model_silent",
+                };
+                debug!("stdio {} decision={}", event.event_type.id, decision);
                 should_close
             }
             Err(e) => {
-                // Fail closed: emit nothing, report on both channels.
-                Log::new(Some(status_tx)).error(format!("LLM error for stdio event: {}", e));
+                // The backend failed. stdout is the payload stream and stays pristine — writing a
+                // diagnostic there would corrupt the data a downstream process is parsing. fd 2 is
+                // where a Unix filter reports that it could not do its job, so the category goes
+                // there and nothing else does: never the error, which goes to the log alone.
+                let failure = crate::utils::WireFailure::classify(&e);
+                let decision = if failure.is_overloaded() {
+                    "fail_closed_overloaded"
+                } else {
+                    "fail_closed_unavailable"
+                };
+                Log::new(Some(status_tx)).error(format!(
+                    "stdio {} decision={} error: {}",
+                    event.event_type.id, decision, e
+                ));
+                let mut line = String::with_capacity(48);
+                line.push_str(failure.prefixed_text());
+                line.push('\n');
+                Self::write_stream(true, line.as_bytes(), status_tx).await;
                 false
             }
         }

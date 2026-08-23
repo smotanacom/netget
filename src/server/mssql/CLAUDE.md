@@ -63,9 +63,28 @@ entirely, which silently discarded the `rows_affected` the LLM supplied.
 
 ### Failure behavior
 
-- **No response action** → empty DONE, logged at WARN. TDS clients block until a
-  DONE arrives, so something must always be sent.
-- **LLM call fails** → ERROR 50000 severity 16 with the message.
+TDS clients block until a DONE or an ERROR token arrives, so every branch below
+writes one. What is written carries a *category*, never netget's own error text:
+the error itself goes to the log and the status stream only
+(`crate::utils::WireFailure`).
+
+The three outcomes are distinguishable in the log by a stable `decision=` tag, so
+a deliberate refusal is never confused with netget failing to obtain an answer:
+
+- **The model refused** (`mssql_error_response`) → its own ERROR token, logged
+  `decision=model_reject`.
+- **No response action** → ERROR 50000 severity 16, message
+  `netget: request could not be processed`, logged `decision=fail_closed_no_action`.
+  Not a bare DONE: in SQL that reads as "ran, matched nothing", which is a
+  successful answer to a query nobody answered. The one exception is an explicit
+  `close_this_connection` with no other action — a decision rather than silence —
+  which still sends DONE and logs `decision=model_close`.
+- **LLM call fails** → ERROR severity 16 logged `decision=fail_closed_llm_error`:
+  49918 ("not enough resources", on SqlClient's transient-retry list) when the
+  backend is overloaded, 50000 otherwise, with the fixed `netget: …` category
+  message for that class.
+- **A second response action after the first** → logged at WARN and dropped; TDS
+  allows only one token stream per statement.
 - **Action result the handler does not recognise** → logged at WARN and skipped.
 - **TDS packet length below 8** → connection closed.
 - **Bulk Load (0x0E) or an unknown packet type** → ERROR 40002.

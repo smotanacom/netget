@@ -16,8 +16,15 @@ use crate::llm::ollama_client::OllamaClient;
 use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 use crate::{console_debug, console_trace};
 use actions::TorrentDhtProtocol;
+
+/// BEP 5 error code 201 — "Generic Error".
+const KRPC_GENERIC_ERROR: i64 = 201;
+/// BEP 5 error code 202 — "Server Error". Used for the transient (overloaded) case so a
+/// querying node distinguishes "come back later" from a permanent fault on this node.
+const KRPC_SERVER_ERROR: i64 = 202;
 
 /// BitTorrent DHT server
 pub struct TorrentDhtServer;
@@ -126,6 +133,15 @@ impl TorrentDhtServer {
                                             &actions::DHT_PING_QUERY_EVENT
                                         }
                                     };
+                                    // Kept out of the event so a failure reply can still echo
+                                    // `t`: a KRPC reply that does not carry the querying
+                                    // node's transaction id is dropped, and the peer waits
+                                    // out its own timeout exactly as if we had said nothing.
+                                    let transaction_id_hex = params
+                                        .get("transaction_id")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
+
                                     let event = Event::new(event_type, serde_json::json!(params));
 
                                     debug!("BitTorrent DHT calling LLM for {} query", query_type);
@@ -161,6 +177,18 @@ impl TorrentDhtServer {
                                                 execution_result.protocol_results.len()
                                             ));
 
+                                            // An explicit refusal by the model is a KRPC
+                                            // error reply it asked for itself; keep it
+                                            // distinguishable in the log from our own
+                                            // fail-closed reply, which says nothing about
+                                            // what the model thought.
+                                            let model_rejected =
+                                                execution_result.raw_actions.iter().any(|a| {
+                                                    a.get("type").and_then(|t| t.as_str())
+                                                        == Some("send_dht_error_response")
+                                                });
+
+                                            let mut sent_any = false;
                                             for protocol_result in execution_result.protocol_results
                                             {
                                                 if let Some(output_data) =
@@ -175,6 +203,7 @@ impl TorrentDhtServer {
                                                             e
                                                         );
                                                     } else {
+                                                        sent_any = true;
                                                         debug!(
                                                             "BitTorrent DHT sent {} bytes to {}",
                                                             output_data.len(),
@@ -194,11 +223,68 @@ impl TorrentDhtServer {
                                                     }
                                                 }
                                             }
+
+                                            if sent_any {
+                                                debug!(
+                                                    "BitTorrent DHT {} from {} decision={}",
+                                                    query_type,
+                                                    peer_addr,
+                                                    if model_rejected {
+                                                        "model_reject"
+                                                    } else {
+                                                        "model_answer"
+                                                    }
+                                                );
+                                            } else {
+                                                // The model produced nothing that reaches the
+                                                // wire. Staying silent would leave the
+                                                // querying node blocked until its own
+                                                // timeout, so answer with a category.
+                                                tracing::warn!(
+                                                    "BitTorrent DHT {} from {} decision=\
+                                                     fail_closed_no_action",
+                                                    query_type,
+                                                    peer_addr
+                                                );
+                                                let _ = status_clone.send(format!(
+                                                    "[WARN] BitTorrent DHT {} from {}: no action \
+                                                     from the model, replying KRPC error",
+                                                    query_type, peer_addr
+                                                ));
+                                                Self::send_failure_reply(
+                                                    &socket_clone,
+                                                    peer_addr,
+                                                    transaction_id_hex.as_deref(),
+                                                    WireFailure::Unavailable,
+                                                    &status_clone,
+                                                )
+                                                .await;
+                                            }
                                         }
                                         Err(e) => {
-                                            error!("BitTorrent DHT LLM call failed: {}", e);
-                                            let _ = status_clone
-                                                .send(format!("✗ BitTorrent DHT LLM error: {}", e));
+                                            // The error itself goes to the log and the status
+                                            // stream only — the peer gets a bare BEP 5 error
+                                            // code and a fixed category string.
+                                            let failure = WireFailure::classify(&e);
+                                            error!(
+                                                "BitTorrent DHT {} from {} \
+                                                 decision=fail_closed_llm_error \
+                                                 category={:?}: {}",
+                                                query_type, peer_addr, failure, e
+                                            );
+                                            let _ = status_clone.send(format!(
+                                                "[ERROR] BitTorrent DHT LLM call failed for {} \
+                                                 from {}: {}",
+                                                query_type, peer_addr, e
+                                            ));
+                                            Self::send_failure_reply(
+                                                &socket_clone,
+                                                peer_addr,
+                                                transaction_id_hex.as_deref(),
+                                                failure,
+                                                &status_clone,
+                                            )
+                                            .await;
                                         }
                                     }
                                 }
@@ -225,6 +311,82 @@ impl TorrentDhtServer {
             .await;
 
         Ok(local_addr)
+    }
+
+    /// Answer a query netget cannot serve with a BEP 5 error reply carrying only a category.
+    ///
+    /// `{"t": <echoed>, "y": "e", "e": [code, text]}`. The code separates the two categories
+    /// so a querying node can back off rather than record a permanent fault here: 202
+    /// ("Server Error") for a saturated backend, 201 ("Generic Error") for everything else.
+    /// The text comes from [`WireFailure::text`], which is `&'static str` — the backend
+    /// error, the model name and any path stay in the log.
+    async fn send_failure_reply(
+        socket: &UdpSocket,
+        peer_addr: SocketAddr,
+        transaction_id_hex: Option<&str>,
+        failure: WireFailure,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        // Without `t` there is nothing for the querying node to correlate the reply with, and
+        // BEP 5 requires it on every message; an unaddressed datagram is worse than silence.
+        let Some(transaction_id) = transaction_id_hex.and_then(|t| hex::decode(t).ok()) else {
+            tracing::warn!(
+                "BitTorrent DHT: cannot send failure reply to {} — query carried no usable \
+                 transaction id",
+                peer_addr
+            );
+            return;
+        };
+
+        let code = if failure.is_overloaded() {
+            KRPC_SERVER_ERROR
+        } else {
+            KRPC_GENERIC_ERROR
+        };
+
+        let mut response = std::collections::HashMap::new();
+        response.insert(
+            b"t".to_vec(),
+            serde_bencode::value::Value::Bytes(transaction_id),
+        );
+        response.insert(
+            b"y".to_vec(),
+            serde_bencode::value::Value::Bytes(b"e".to_vec()),
+        );
+        response.insert(
+            b"e".to_vec(),
+            serde_bencode::value::Value::List(vec![
+                serde_bencode::value::Value::Int(code),
+                serde_bencode::value::Value::Bytes(failure.text().as_bytes().to_vec()),
+            ]),
+        );
+
+        let encoded = match serde_bencode::to_bytes(&serde_bencode::value::Value::Dict(response)) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                error!("BitTorrent DHT: failed to encode KRPC error reply: {}", e);
+                return;
+            }
+        };
+
+        match socket.send_to(&encoded, peer_addr).await {
+            Ok(sent) => {
+                debug!(
+                    "BitTorrent DHT sent KRPC error {} ({} bytes) to {}",
+                    code, sent, peer_addr
+                );
+                let _ = status_tx.send(format!(
+                    "[DEBUG] BitTorrent DHT sent KRPC error {} to {}",
+                    code, peer_addr
+                ));
+            }
+            Err(e) => {
+                error!(
+                    "BitTorrent DHT: failed to send KRPC error reply to {}: {}",
+                    peer_addr, e
+                );
+            }
+        }
     }
 
     fn parse_krpc_message(data: &[u8]) -> Result<(String, serde_json::Value)> {

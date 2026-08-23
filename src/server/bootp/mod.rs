@@ -158,6 +158,8 @@ impl BootpServer {
                                 "0.0.0.0".to_string(),
                             );
 
+                            let client_mac_for_log = client_mac.clone();
+
                             let event_data = serde_json::json!({
                                 "op_code": op_code,
                                 "client_mac": client_mac,
@@ -192,10 +194,14 @@ impl BootpServer {
                                         execution_result.protocol_results.len()
                                     ));
 
+                                    let mut declined = false;
+                                    let mut replied = false;
+
                                     for protocol_result in execution_result.protocol_results {
                                         if let Some(output_data) =
                                             protocol_result.get_all_output().first()
                                         {
+                                            replied = true;
                                             let _ =
                                                 socket_clone.send_to(output_data, peer_addr).await;
 
@@ -216,13 +222,54 @@ impl BootpServer {
                                                 output_data.len()
                                             ));
                                         } else {
+                                            // `ignore_request` yields NoAction: the model
+                                            // looked at the request and chose not to serve
+                                            // this client. That is a real decision, not a
+                                            // failure, and must not be confused with either
+                                            // of the two below.
+                                            declined = true;
                                             log.debug("BOOTP protocol result has no output data");
                                         }
                                     }
+
+                                    if !replied {
+                                        let decision = if declined {
+                                            "model_decline"
+                                        } else {
+                                            "no_answer"
+                                        };
+                                        Self::log_silence(
+                                            &status_clone,
+                                            peer_addr,
+                                            &client_mac_for_log,
+                                            decision,
+                                        );
+                                    }
                                 }
                                 Err(e) => {
-                                    error!("BOOTP LLM call failed: {}", e);
+                                    // The backend failed. BOOTP has no way to say so on the
+                                    // wire (see `log_silence`), so the peer gets nothing and
+                                    // the error goes to the log and the operator's status
+                                    // stream only - never into a datagram.
+                                    let decision = match crate::utils::WireFailure::classify(&e) {
+                                        crate::utils::WireFailure::Overloaded => {
+                                            "fail_closed_overloaded"
+                                        }
+                                        crate::utils::WireFailure::Unavailable => {
+                                            "fail_closed_unavailable"
+                                        }
+                                    };
+                                    error!(
+                                        "BOOTP LLM call failed for {} (mac={}) decision={}: {}",
+                                        peer_addr, client_mac_for_log, decision, e
+                                    );
                                     let _ = status_clone.send(format!("✗ BOOTP LLM error: {}", e));
+                                    Self::log_silence(
+                                        &status_clone,
+                                        peer_addr,
+                                        &client_mac_for_log,
+                                        decision,
+                                    );
                                 }
                             }
                         });
@@ -242,6 +289,43 @@ impl BootpServer {
             .await;
 
         Ok(local_addr)
+    }
+
+    /// Record, in one greppable shape, that this request goes unanswered - and why.
+    ///
+    /// **BOOTP has no failure message, and inventing one would be worse than silence.**
+    /// RFC 951 defines exactly two operations, BOOTREQUEST and BOOTREPLY; there is no NAK
+    /// (DHCPNAK belongs to DHCP's message-type option, which BOOTP does not have) and no
+    /// status field anywhere in the 300-byte frame. The only thing this server could put on
+    /// the wire on failure is a BOOTREPLY, and a BOOTREPLY is an *offer*: the client reads
+    /// `yiaddr`, `siaddr` and `file` and boots from them. A reply carrying 0.0.0.0 would
+    /// either be discarded as garbage or, on a lenient client, end the retransmit loop and
+    /// strand a machine that would otherwise have been served by the next retry or by
+    /// another BOOTP server on the segment.
+    ///
+    /// Silence is what the protocol already means by "not me": RFC 951 s7.1 has the client
+    /// retransmit with backoff precisely so a busy or absent server costs nothing. So a
+    /// transient backend failure resolves itself on the client's next attempt, which is the
+    /// same outcome the `Overloaded` category asks for in protocols that can express it.
+    ///
+    /// The three cases are therefore distinguished only here, by `decision=`:
+    /// `model_decline` (the model ran `ignore_request`), `no_answer` (the model produced
+    /// nothing), and `fail_closed_overloaded` / `fail_closed_unavailable` (the LLM call
+    /// itself errored, classified by [`crate::utils::WireFailure`]). Nothing derived from
+    /// the error reaches the socket.
+    fn log_silence(
+        status_tx: &mpsc::UnboundedSender<String>,
+        peer_addr: SocketAddr,
+        client_mac: &str,
+        decision: &'static str,
+    ) {
+        let line = format!(
+            "BOOTP no reply to {} (mac={}) decision={} (RFC 951 has no failure reply; \
+             client will retransmit)",
+            peer_addr, client_mac, decision
+        );
+        tracing::warn!("{}", line);
+        Log::new(Some(status_tx)).info(line);
     }
 
     #[cfg(feature = "bootp")]

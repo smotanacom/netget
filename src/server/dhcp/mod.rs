@@ -115,6 +115,7 @@ impl DhcpServer {
                             protocol.set_request_context(request_ctx.clone());
 
                             let message_type = format!("{:?}", request_ctx.message_type);
+                            let message_type_for_log = message_type.clone();
                             let client_mac = crate::server::dhcp::format_mac(&request_ctx.chaddr);
                             let requested_ip = request_ctx.requested_ip.map(|ip| ip.to_string());
                             let xid = Some(request_ctx.xid);
@@ -137,7 +138,36 @@ impl DhcpServer {
                             Log::new(Some(&status_clone))
                                 .debug(format!("DHCP calling LLM for request from {}", peer_addr));
 
-                            match call_llm(
+                            // ── Why a failed request is answered with NOTHING ──────────────
+                            //
+                            // DHCP has no "I cannot answer right now" message. The only reply
+                            // that could be synthesised here without the model is a DHCPNAK,
+                            // and a NAK is not a failure code: RFC 2131 4.3.2 defines it as
+                            // "your notion of the network address is incorrect". Sending it
+                            // because *netget's* backend is down tells the client something
+                            // false about its own lease, and a client in RENEWING/REBINDING
+                            // that receives one MUST drop the address and restart from INIT
+                            // (4.4.5) — a valid lease destroyed by an internal error. The same
+                            // section requires a server with no knowledge of a binding to
+                            // "remain silent", which is exactly netget's position when the
+                            // oracle that would have decided is unavailable.
+                            //
+                            // Silence is also the retry path the protocol already specifies:
+                            // clients retransmit DISCOVER/REQUEST with backoff (4.4.1), so an
+                            // Overloaded backend recovers on the client's own retry, which is
+                            // what a 503 buys in HTTP. Answering would be the worse behaviour
+                            // here, not the better one.
+                            //
+                            // So the three no-reply cases are separated in the LOG instead,
+                            // with a stable `decision=` token (the radius convention): an
+                            // operator greps `decision=fail_closed_` and finds every request
+                            // netget dropped on the floor, distinct from the ones the model
+                            // deliberately chose not to answer. The error itself goes to the
+                            // log and the status stream only — never to the wire, which for
+                            // this protocol carries no bytes at all on these paths.
+                            let log = Log::new(Some(&status_clone));
+
+                            let decision = match call_llm(
                                 &llm_clone,
                                 &state_clone,
                                 server_id,
@@ -149,13 +179,16 @@ impl DhcpServer {
                             {
                                 Ok(execution_result) => {
                                     for message in &execution_result.messages {
-                                        Log::new(Some(&status_clone)).info(format!("{}", message));
+                                        log.info(format!("{}", message));
                                     }
 
-                                    Log::new(Some(&status_clone)).debug(format!(
+                                    log.debug(format!(
                                         "DHCP got {} protocol results",
                                         execution_result.protocol_results.len()
                                     ));
+
+                                    let had_actions = !execution_result.raw_actions.is_empty();
+                                    let mut sent = 0usize;
 
                                     for protocol_result in execution_result.protocol_results {
                                         if let Some(output_data) =
@@ -163,8 +196,7 @@ impl DhcpServer {
                                         {
                                             let _ =
                                                 socket_clone.send_to(output_data, peer_addr).await;
-
-                                            let log = Log::new(Some(&status_clone));
+                                            sent += 1;
 
                                             // DEBUG: Log summary (FileOnly, hot per-packet path)
                                             log.debug(format!(
@@ -183,15 +215,60 @@ impl DhcpServer {
                                                 output_data.len()
                                             ));
                                         } else {
-                                            Log::new(Some(&status_clone))
-                                                .debug("DHCP protocol result has no output data");
+                                            log.debug("DHCP protocol result has no output data");
                                         }
+                                    }
+
+                                    if sent > 0 {
+                                        "model_reply"
+                                    } else if had_actions {
+                                        // The model answered, and its answer produced no
+                                        // packet — `ignore_request`, or actions that write
+                                        // nothing. Deliberate silence, not a failure.
+                                        "model_no_reply"
+                                    } else {
+                                        // The model produced no action at all. Nothing on the
+                                        // wire, same as an error, but a different cause.
+                                        "fail_closed_no_action"
                                     }
                                 }
                                 Err(e) => {
-                                    Log::new(Some(&status_clone))
-                                        .error(format!("DHCP LLM error: {}", e));
+                                    // DHCP cannot express "retry later" on the wire, so an
+                                    // overloaded backend and a dead one look identical to the
+                                    // client. Keep the distinction where it is actionable —
+                                    // next to the decision token, in the log.
+                                    let category =
+                                        match crate::utils::wire_failure::WireFailure::classify(&e)
+                                        {
+                                            crate::utils::wire_failure::WireFailure::Overloaded => {
+                                                "overloaded"
+                                            }
+                                            crate::utils::wire_failure::WireFailure::Unavailable => {
+                                                "unavailable"
+                                            }
+                                        };
+                                    log.error(format!(
+                                        "DHCP LLM call failed for {} (category={}): {}",
+                                        peer_addr, category, e
+                                    ));
+                                    "fail_closed_llm_error"
                                 }
+                            };
+
+                            log.info(format!(
+                                "DHCP {} from {} decision={}",
+                                message_type_for_log, peer_addr, decision
+                            ));
+
+                            if decision.starts_with("fail_closed_") {
+                                // RFC 2131 4.3.2: a server that cannot decide remains silent
+                                // and "MAY output a warning to the network administrator".
+                                // This is that warning — the client will retransmit.
+                                log.warn(format!(
+                                    "DHCP sent no reply to {} (no usable decision was produced; \
+                                     the client will retransmit)",
+                                    peer_addr
+                                ));
                             }
                         });
                     }

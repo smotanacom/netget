@@ -229,3 +229,116 @@ async fn test_stdio_server_flag_clean_stdout() -> E2EResult<()> {
     mock_server.verify_calls().await?;
     Ok(())
 }
+
+/// When the LLM backend fails, the filter must not go silent *and* must not corrupt the payload
+/// stream. stdout is the data channel a downstream process parses, so nothing diagnostic goes
+/// there; fd 2 is where a Unix filter says it could not do its job, so it carries one
+/// category-only line — never the backend error, the model name, or a URL.
+///
+/// The mock answers with prose the action parser cannot use, which is what `call_llm` surfaces as
+/// an `Err` after its retries.
+#[tokio::test]
+async fn test_stdio_llm_failure_writes_category_to_stderr_only() -> E2EResult<()> {
+    let mock = MockLlmBuilder::new()
+        .on_event("stdio_input_received")
+        .respond_with_raw("Sorry, I would rather not answer in that format.")
+        .expect_at_least(1)
+        .and()
+        .build();
+    let mock_server = MockOllamaServer::start(mock).await?;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_netget"))
+        .arg("--model")
+        .arg("qwen3-coder:30b")
+        .arg("--log-level")
+        .arg("info")
+        .arg("--ollama-url")
+        .arg(mock_server.base_url())
+        .arg("--ollama-lock")
+        .arg("--server")
+        .arg("stdio")
+        .arg("--")
+        .arg("For each stdin line, write its uppercase form to stdout")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().ok_or("no child stdin")?;
+    let mut stdout_lines = BufReader::new(child.stdout.take().ok_or("no child stdout")?).lines();
+
+    let stderr_buf = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+    let stderr_buf_reader = stderr_buf.clone();
+    let mut stderr_lines = BufReader::new(child.stderr.take().ok_or("no child stderr")?).lines();
+    let stderr_task = tokio::spawn(async move {
+        while let Ok(Some(line)) = stderr_lines.next_line().await {
+            let mut buf = stderr_buf_reader.lock().await;
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+    });
+
+    // Collect anything that reaches stdout; the assertion below is that the failure notice is not
+    // among it.
+    let stdout_buf = std::sync::Arc::new(tokio::sync::Mutex::new(String::new()));
+    let stdout_buf_reader = stdout_buf.clone();
+    let stdout_task = tokio::spawn(async move {
+        while let Ok(Some(line)) = stdout_lines.next_line().await {
+            let mut buf = stdout_buf_reader.lock().await;
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    stdin.write_all(b"hello\n").await?;
+    stdin.flush().await?;
+
+    // Wait for the category line on stderr (the retries take a moment).
+    let found = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if stderr_buf.lock().await.contains("could not be processed")
+                || stderr_buf.lock().await.contains("backend at capacity")
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    let _ = child.kill().await;
+    let _ = stderr_task.await;
+    let _ = stdout_task.await;
+
+    let stderr = stderr_buf.lock().await.clone();
+    let stdout = stdout_buf.lock().await.clone();
+
+    assert!(
+        found,
+        "a backend failure must leave a category-only notice on stderr, not silence.\nstderr was:\n{stderr}"
+    );
+
+    // stdout stays pristine: the failure notice never touches the payload stream.
+    assert!(
+        !stdout.contains("could not be processed") && !stdout.contains("backend at capacity"),
+        "the failure notice leaked onto the payload stream (stdout):\n{stdout}"
+    );
+
+    // And the notice carries no internals. These are the tokens that leaked historically
+    // (tests/wire_failure_test.rs FORBIDDEN_TOKENS); they may appear elsewhere on stderr, which is
+    // the log channel, so only the notice line itself is inspected.
+    for line in stderr.lines().filter(|l| l.contains("netget: ")) {
+        for token in ["✗", "retries", "http://", "11434", "qwen", "/Users/"] {
+            assert!(
+                !line.contains(token),
+                "the peer-visible failure line leaked {token:?}: {line:?}"
+            );
+        }
+    }
+
+    mock_server.verify_calls().await?;
+    Ok(())
+}

@@ -442,6 +442,21 @@ impl WireguardServer {
     }
 
     /// Raise `wireguard_peer_connected` and apply whatever the handler/LLM decided.
+    ///
+    /// **There is nothing to write to the peer on failure, and that is protocol-correct.**
+    /// WireGuard has no error frame: the transport is Noise_IK plus encrypted data packets,
+    /// and by the time this event fires the peer's handshake has *already* completed inside
+    /// the backend. Nothing is blocked waiting on an answer, so the "peer hangs until its own
+    /// timeout" failure mode that other protocols must fix here does not exist. What did
+    /// exist is the other half of the defect: an LLM error looked byte-for-byte like the model
+    /// deliberately choosing to leave the peer as-is. That is now separated in the log.
+    ///
+    /// The peer is **not** torn down when the backend errors. Its presence on the interface is
+    /// not a fail-open default — a WireGuard responder drops a handshake whose static key is
+    /// not already configured, so every peer that can reach this function was authorized
+    /// earlier by an explicit `wireguard_add_peer`. Removing it on an LLM outage would turn a
+    /// backend hiccup into a VPN outage for an already-authorized peer, which is a worse
+    /// answer than leaving the prior explicit decision standing and logging loudly.
     #[allow(clippy::too_many_arguments)]
     async fn handle_peer_connected(
         &self,
@@ -477,8 +492,26 @@ impl WireguardServer {
         {
             Ok(r) => r,
             Err(e) => {
-                Log::new(Some(status_tx))
-                    .error(format!("WireGuard peer event handling failed: {}", e));
+                // decision=fail_closed_llm_error — the backend never produced a decision.
+                // Distinct from decision=model_no_action below, which is the model choosing
+                // "leave the peer as-is". The category (overloaded vs unavailable) is carried
+                // in the log only; nothing here reaches the wire, and nothing may: the peer is
+                // a stranger and the error names the backend, the model and file paths.
+                let category = crate::utils::WireFailure::classify(&e);
+                let summary = format!(
+                    "WireGuard peer {} decision=fail_closed_llm_error category={} \
+                     (no decision produced; peer left exactly as its last explicit \
+                     authorization set it)",
+                    short_key(peer_key),
+                    if category.is_overloaded() {
+                        "overloaded"
+                    } else {
+                        "unavailable"
+                    },
+                );
+                // The full error goes to the file log and the operator's status stream — both
+                // are netget's own surfaces, not the peer's.
+                Log::new(Some(status_tx)).error(format!("{}: {}", summary, e));
                 return;
             }
         };
@@ -488,6 +521,12 @@ impl WireguardServer {
         }
 
         // Apply the decided actions to the live interface.
+        //
+        // Every branch records a stable `decision=` token so the three outcomes an operator
+        // has to tell apart — the model changed the peer, the model removed it, the model said
+        // nothing — never collapse into each other, and neither collapses into the
+        // `fail_closed_llm_error` case above.
+        let mut decisions: Vec<&'static str> = Vec::new();
         for action in &result.raw_actions {
             let action_type = action.get("type").and_then(|v| v.as_str()).unwrap_or("");
             match action_type {
@@ -508,6 +547,7 @@ impl WireguardServer {
                         .unwrap_or_else(|| allowed_ips.clone());
 
                     if ips.is_empty() {
+                        decisions.push("model_authorize_invalid");
                         warn!("authorize_peer for {} has no allowed_ips", public_key);
                         let _ = status_tx.send(format!(
                             "[WARN] authorize_peer for {} ignored: no allowed_ips",
@@ -523,8 +563,11 @@ impl WireguardServer {
                         .or(endpoint);
 
                     if let Err(e) = self.add_peer(public_key.clone(), ips, ep).await {
+                        decisions.push("model_authorize_failed");
                         error!("Failed to authorize WireGuard peer {}: {}", public_key, e);
                         let _ = status_tx.send(format!("[ERROR] authorize_peer failed: {}", e));
+                    } else {
+                        decisions.push("model_authorize");
                     }
                 }
                 "disconnect_peer" | "reject_peer" => {
@@ -535,8 +578,11 @@ impl WireguardServer {
                         .to_string();
 
                     if let Err(e) = self.remove_peer(public_key.clone(), status_tx).await {
+                        decisions.push("model_reject_failed");
                         error!("Failed to remove WireGuard peer {}: {}", public_key, e);
                         let _ = status_tx.send(format!("[ERROR] disconnect_peer failed: {}", e));
+                    } else {
+                        decisions.push("model_reject");
                     }
                 }
                 other => {
@@ -544,6 +590,22 @@ impl WireguardServer {
                 }
             }
         }
+
+        // `model_no_action` is a real, considered answer — "leave the peer as-is" is what the
+        // event description tells the model to express by returning no actions. It is logged
+        // at INFO precisely so that it reads differently from the ERROR-level
+        // `decision=fail_closed_llm_error` above, which is the same *outcome* arrived at for
+        // an entirely different reason.
+        let summary = format!(
+            "WireGuard peer {} decision={}",
+            short_key(peer_key),
+            if decisions.is_empty() {
+                "model_no_action".to_string()
+            } else {
+                decisions.join(",")
+            }
+        );
+        Log::new(Some(status_tx)).info(summary);
     }
 
     /// Add / (re)configure a peer on the WireGuard interface.

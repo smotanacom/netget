@@ -110,10 +110,22 @@ No async actions: the protocol is purely reactive.
 
 ## Failure behaviour — no fail-open
 
-- **LLM call fails** → `503` `Status` with `reason: ServiceUnavailable`.
+- **LLM call fails, backend saturated** (`WireFailure::Overloaded`) → `503` `Status`,
+  `reason: ServiceUnavailable`, plus a `Retry-After: 5` header and `details.retryAfterSeconds`,
+  so client-go backs off and retries instead of recording a permanent fault.
+- **LLM call fails, anything else** (`WireFailure::Unavailable`) → `500` `Status`,
+  `reason: InternalError`.
 - **Model returns no `k8s_*` action** → `500` `Status` with `reason: InternalError`.
+- **Model answered with `k8s_status`** → exactly that `Status`; this is a decision, not a
+  failure.
 
-Neither invents an empty `PodList`. An empty list is a *claim about the cluster* — "there are no
+**The peer gets a category, the log gets the error.** The `Status.message` on a failure is a
+`&'static str` from `crate::utils::WireFailure::prefixed_text()` — never the error, the backend
+URL, the model name or an `anyhow` chain. The full error goes to `tracing::error!` and the
+status stream. The three outcomes are separable in the log by their `decision=` tag:
+`model_reject`, `fail_closed_no_action`, `fail_closed_llm_error`.
+
+Neither failure branch invents an empty `PodList`. An empty list is a *claim about the cluster* — "there are no
 pods" — and it must never be indistinguishable from "the model said nothing". This is the OAuth2
 lesson applied here.
 

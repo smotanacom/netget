@@ -293,6 +293,39 @@ generic peer task, not here), and the handle is removed on every exit path (EOF,
 - Connection stays in ServerInstance until closed
 - UI updates on every message (bytes sent/received, last activity)
 
+## Failure contract: the peer always gets a line, and it is always a category
+
+NNTP is strictly one response line per command and the server speaks first, so silence is not a
+neutral outcome here - the client blocks on a line that is never coming, and if it gives up and
+sends the next command it reads that command's reply as this one's. Every path in `run_session`
+that produces nothing to send therefore writes a 4xx instead:
+
+| Situation | Greeting | Command | Log tag |
+|---|---|---|---|
+| LLM backend overloaded | `400`, then close | `400`, then close (RFC 3977 3.1: come back later) | `decision=fail_closed_llm_error` |
+| LLM call errored otherwise | `400`, then close | `403`, session stays open | `decision=fail_closed_llm_error` |
+| An action failed to execute | `400`, then close | `403`, session stays open | `decision=fail_closed_action_error` |
+| The answer contained no actions | `400`, then close | `403`, session stays open | `decision=fail_closed_no_actions` |
+| `wait_for_more` / `close_connection` | nothing written (deliberate) | nothing written (deliberate) | - |
+| The model answered | its own line | its own line | `decision=model_answer` / `model_reject` |
+
+Two rules hold across all of it:
+
+- **The peer gets a category, the log gets the error.** The free text comes from
+  `crate::utils::WireFailure` (`&'static str`), never from the error, the action name, the
+  backend URL or the model name. A newline in an error could otherwise forge a second response
+  line and desynchronise the session on its own. `tests/wire_failure_test.rs` fails the build if
+  an interpolated form reappears.
+- **An answer with no actions is the worse case, not the exempt one.** It is what an empty model
+  reply, a manual "answer with nothing" and a zero-action static handler all produce, and it
+  arrives as `Ok` with no failures - which is exactly why it used to slip through. Only an
+  explicit `wait_for_more` or `close_connection` buys silence.
+
+`model_reject` (a 4xx/5xx line the model itself chose) is kept distinct in the log from
+netget's own `fail_closed_*` replies, so a real denial is never confused with a backend outage.
+
+Tests: `tests/server/nntp/llm_failure_test.rs` covers all four failure rows.
+
 ## Known Limitations
 
 ### 1. No Article Storage

@@ -578,6 +578,60 @@ mod tests {
         );
     }
 
+    /// OSPF's LLM-failure contract is *deliberate silence*, and that has to be pinned or it
+    /// reads as the "protocol goes quiet on LLM error" defect it is not.
+    ///
+    /// OSPF defines no error or NAK packet: Hello, DD, LSR, LSU and LSAck are all positive
+    /// routing assertions. Emitting any of them to signal "netget is broken" would claim an
+    /// adjacency, a DR role or database contents netget cannot back — worse for the peer than
+    /// saying nothing, which its own RouterDeadInterval already handles. So the failure goes
+    /// to the operator only, and the three cases stay apart by `decision=` tag.
+    #[test]
+    fn ospf_llm_failure_is_silent_on_the_wire_and_tagged_in_the_log() {
+        use ::netget::llm::actions::protocol_trait::Protocol;
+
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/server/ospf/mod.rs"
+        ))
+        .expect("src/server/ospf/mod.rs must be readable");
+
+        let err_branch = src
+            .split("Err(e) => {\n                // The LLM call failed.")
+            .nth(1)
+            .expect("dispatch_event must keep its documented LLM-failure branch");
+        // Only the log call may follow; the moment a send appears here the contract changed.
+        let err_branch = &err_branch[..err_branch.find("\n        }").unwrap_or(err_branch.len())];
+        assert!(
+            !err_branch.contains("send_ospf_packet"),
+            "the LLM-failure branch must put nothing on the wire — OSPF has no failure packet"
+        );
+        assert!(
+            err_branch.contains("decision={}"),
+            "the LLM-failure branch must carry a decision= tag in its log line"
+        );
+        for tag in ["\"fail_closed_overloaded\"", "\"fail_closed_unavailable\""] {
+            assert!(
+                err_branch.contains(tag),
+                "the LLM-failure branch must distinguish {tag} so an operator can tell an \
+                 overloaded backend from a broken one"
+            );
+        }
+        for tag in ["\"model_wait\"", "\"model_no_action\""] {
+            assert!(
+                src.contains(tag),
+                "the model choosing silence and the model returning nothing usable must stay \
+                 distinguishable in the log ({tag})"
+            );
+        }
+
+        let notes = OspfProtocol::new().metadata().notes.unwrap_or_default();
+        assert!(
+            notes.contains("no error or NAK packet"),
+            "metadata().notes must state that the silence is deliberate, not an oversight"
+        );
+    }
+
     #[test]
     fn test_ospf_checksum() {
         // Create a simple test packet

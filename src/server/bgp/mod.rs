@@ -61,6 +61,8 @@ use crate::state::app_state::AppState;
 #[cfg(feature = "bgp")]
 use crate::state::server::BgpSessionState;
 #[cfg(feature = "bgp")]
+use crate::utils::WireFailure;
+#[cfg(feature = "bgp")]
 use actions::{
     BGP_ESTABLISHED_EVENT, BGP_MESSAGE_INTENT, BGP_NOTIFICATION_EVENT, BGP_OPEN_EVENT,
     BGP_UPDATE_EVENT,
@@ -646,7 +648,34 @@ impl BgpSession {
             // sent, and the session ends. This path is structurally distinct from "the model
             // said nothing" on purpose: silence must not be readable as refusal, and refusal
             // must not be readable as silence.
-            SendOutcome::Refused => Ok(false),
+            SendOutcome::Refused => {
+                info!(
+                    "BGP bgp_open decision=model_reject peer={} AS{}",
+                    self.remote_addr, peer_as
+                );
+                Ok(false)
+            }
+            // The operator opted into a dynamic peering policy (that is the only way an LLM call
+            // happens here at all) and it could not be evaluated. Sending the configured OPEN
+            // would admit a neighbour the policy might have refused, which is the fail-open
+            // pattern the root CLAUDE.md calls the most dangerous in this codebase: a backend
+            // outage would silently become "peer with anyone". So refuse — and refuse with the
+            // subcode that tells the peer whether to come back.
+            SendOutcome::Failed(failure) => {
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "BGP refusing to peer with {} AS{}: peering policy could not be evaluated \
+                     (decision=fail_closed_llm_error, {})",
+                    self.remote_addr,
+                    peer_as,
+                    if failure.is_overloaded() {
+                        "resource"
+                    } else {
+                        "unavailable"
+                    }
+                ));
+                self.notify(wire::ERR_CEASE, SendOutcome::cease_subcode(failure), &[]);
+                Ok(false)
+            }
             SendOutcome::SentOpen { hold_time } => {
                 // RFC 4271 section 4.2: the negotiated hold time is the smaller of the two
                 // *proposals*. Ours is whatever went into the OPEN we just sent, which is the
@@ -658,14 +687,16 @@ impl BgpSession {
                 Ok(true)
             }
             SendOutcome::Nothing => {
-                // No usable answer — a model outage, a `wait_for_more`, or a handler that
-                // returned nothing. Peering is not an authorisation decision: the operator
+                // The policy ran and produced no OPEN — a `wait_for_more`, or a handler that
+                // returned nothing. This is *not* the backend-failure case, which is handled
+                // above; the distinction matters because peering is not an authorisation
+                // decision when the policy was actually consulted: the operator
                 // opened this port with this ASN, and a peer that already completed a TCP
                 // handshake gets the configured OPEN. Refusing here would mean an LLM outage
-                // silently drops every BGP session, which is the failure mode, not the
-                // safeguard.
+                // silently drops every session it did not explicitly bless.
                 Log::new(Some(&self.status_tx)).warn(format!(
-                    "BGP no OPEN from handler for {}, sending configured OPEN AS{}",
+                    "BGP no OPEN from handler for {} (decision=model_silent), sending \
+                     configured OPEN AS{}",
                     self.remote_addr, self.config.local_as
                 ));
                 let bytes = wire::encode(wire::build_open(
@@ -730,8 +761,48 @@ impl BgpSession {
                 "remote_addr": self.remote_addr.to_string(),
             }),
         };
-        let _ = self.call_llm_and_send(&event).await;
+        let outcome = self.call_llm_and_send(&event).await;
+        self.log_advertisement_outcome("bgp_established", outcome);
         Ok(())
+    }
+
+    /// Log what an advertisement-shaped event decided, keeping the three cases apart.
+    ///
+    /// Nothing is written to the peer on any of them, and that is protocol-correct: RFC 4271
+    /// defines no reply to a session coming up or to an inbound UPDATE, and advertising *no*
+    /// routes already is the fail-closed answer — a backend outage must not leak a route, and
+    /// tearing an Established session down with a NOTIFICATION because one model call hiccuped
+    /// would be a worse answer than advertising nothing. The keepalive ticker runs in its own
+    /// task, so the peer is not left hanging either way. What must not happen is the three
+    /// cases becoming indistinguishable to the operator, so they are tagged here.
+    fn log_advertisement_outcome(&self, event_id: &str, outcome: SendOutcome) {
+        match outcome {
+            SendOutcome::Failed(failure) => {
+                // The error itself was already logged in full by `call_llm_and_send`.
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "BGP {} advertised nothing to {} (decision=fail_closed_llm_error, {})",
+                    event_id,
+                    self.remote_addr,
+                    if failure.is_overloaded() {
+                        "resource"
+                    } else {
+                        "unavailable"
+                    }
+                ));
+            }
+            SendOutcome::Nothing => debug!(
+                "BGP {} decision=model_silent peer={}: nothing advertised",
+                event_id, self.remote_addr
+            ),
+            SendOutcome::Refused => info!(
+                "BGP {} decision=model_reject peer={}: NOTIFICATION sent",
+                event_id, self.remote_addr
+            ),
+            SendOutcome::SentOpen { .. } => debug!(
+                "BGP {} peer={}: handler answered",
+                event_id, self.remote_addr
+            ),
+        }
     }
 
     async fn on_update(
@@ -754,7 +825,8 @@ impl BgpSession {
             event_type: &BGP_UPDATE_EVENT,
             data,
         };
-        let _ = self.call_llm_and_send(&event).await;
+        let outcome = self.call_llm_and_send(&event).await;
+        self.log_advertisement_outcome("bgp_update", outcome);
         Ok(())
     }
 
@@ -784,7 +856,10 @@ impl BgpSession {
         // (a server instruction or a per-event handler) — otherwise it is a wasted round-trip
         // that can change nothing.
         if operator_wants_dynamic(&self.app_state, self.server_id, &event.event_type.id).await {
-            let _ = call_llm(
+            // Purely observational: the session is already over and RFC 4271 forbids answering a
+            // NOTIFICATION, so a backend failure here changes nothing on the wire. It is still
+            // logged with the same tag so an operator sees the outage in one grep.
+            if let Err(e) = call_llm(
                 &self.llm_client,
                 &self.app_state,
                 self.server_id,
@@ -792,7 +867,16 @@ impl BgpSession {
                 &event,
                 &*self.protocol,
             )
-            .await;
+            .await
+            {
+                error!(
+                    "BGP bgp_notification decision=fail_closed_llm_error category={:?} peer={}: \
+                     {:#}",
+                    WireFailure::classify(&e),
+                    self.remote_addr,
+                    e
+                );
+            }
         }
     }
 
@@ -826,11 +910,19 @@ impl BgpSession {
         {
             Ok(result) => result,
             Err(e) => {
+                // The full error goes to the log and the operator's status stream. Nothing
+                // derived from it reaches the peer — a BGP NOTIFICATION has no free-text field
+                // at all, so the category is carried by the Cease subcode and nothing else.
+                let failure = WireFailure::classify(&e);
+                error!(
+                    "BGP {} decision=fail_closed_llm_error category={:?} peer={}: {:#}",
+                    event.event_type.id, failure, self.remote_addr, e
+                );
                 Log::new(Some(&self.status_tx)).warn(format!(
-                    "BGP handler failed for {}: {}",
+                    "BGP handler for {} could not be run (decision=fail_closed_llm_error): {}",
                     event.event_type.id, e
                 ));
-                return SendOutcome::Nothing;
+                return SendOutcome::Failed(failure);
             }
         };
 
@@ -980,8 +1072,26 @@ enum SendOutcome {
     SentOpen { hold_time: u16 },
     /// A NOTIFICATION was written; the model refused to peer.
     Refused,
-    /// Nothing usable was produced.
+    /// Nothing usable was produced: `wait_for_more`, an empty handler, or a model that answered
+    /// with no BGP action. The operator's policy was *evaluated* and simply said nothing.
     Nothing,
+    /// The handler could not be run at all — the backend errored, timed out, or was saturated.
+    /// Distinct from [`SendOutcome::Nothing`] on purpose: the policy was never evaluated, so a
+    /// caller that treats silence as consent must not treat this the same way.
+    Failed(WireFailure),
+}
+
+#[cfg(feature = "bgp")]
+impl SendOutcome {
+    /// The Cease subcode a failed handler earns. RFC 4486 separates a resource condition, which
+    /// a peer damps and retries, from an outright rejection, which it does not — so a saturated
+    /// backend must not be reported as a permanent refusal to peer.
+    fn cease_subcode(failure: WireFailure) -> u8 {
+        match failure {
+            WireFailure::Overloaded => wire::SUB_CEASE_OUT_OF_RESOURCES,
+            WireFailure::Unavailable => wire::SUB_CEASE_CONNECTION_REJECTED,
+        }
+    }
 }
 
 /// Keepalive cadence and hold-timer enforcement.

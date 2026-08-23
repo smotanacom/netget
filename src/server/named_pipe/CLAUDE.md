@@ -63,9 +63,20 @@ fix.
 
 - **`spawn()` awaits readiness** (both FIFOs created and opened, read fd registered with the
   runtime) and returns `Err` on any failure, so `server_startup` sets `ServerStatus::Error`.
-- **Fail closed** on LLM error: nothing is written, and the error is logged at ERROR on both the
-  tracing log and the status stream. A reader that gets no bytes is how the other fixed protocols
-  behave on an LLM failure — better than a permissive default.
+- **Fail closed, but not silent**, on LLM error. Nothing the model asked for is invented; the
+  reader instead gets one attributed, newline-terminated line carrying a *category* and nothing
+  else — `WireFailure::prefixed_text()`, which is `&'static str`, so no part of the error, the
+  backend URL, the model name or an `anyhow` chain can reach the pipe. Silence would be worse
+  here: a reader parked in `read()` on a FIFO has no timeout of its own (`cat` blocks forever).
+  The two categories are worded differently (`Overloaded` reads as retryable) because a byte
+  stream has no status codes to distinguish them with. The full error goes to `tracing::error!`
+  and to the status stream. When no `response_pipe_path` is configured there is no reply channel
+  at all, so nothing is written and that is logged.
+- **Three outcomes stay apart in the log** via a stable `decision=` tag, greppable by an
+  operator: `decision=model_output` (the model answered with bytes), `decision=model_no_output`
+  (the model answered with nothing — a real answer for a one-way sink), and
+  `decision=fail_closed_overloaded` / `decision=fail_closed_llm_error` (netget could not ask).
+  A model that says nothing must never be indistinguishable from a backend that fell over.
 - The read/dispatch loop is registered via `register_server_task`, so `stop_server` aborts it and
   releases the fds. A `FifoCleanup` guard is moved *into* the task, so aborting the task drops the
   guard and unlinks every FIFO node this server created — cleanup on stop, even on abort.
@@ -81,3 +92,8 @@ path, and any framing — each `read()` chunk is one event. Responses to `CloseC
 `tests/server/named_pipe/e2e_test.rs`: a real, independent `std::fs` writer writes `PING\n` to the
 input FIFO; the mocked LLM answers `write_named_pipe_data` `PONG\n`; a real `std::fs` reader reads
 `PONG\n` off the response FIFO. Asserts actual bytes on the pipe, not "it opened".
+
+A second case drives the backend-failure path: the event matches no mock rule, so the LLM call
+errors, and the test asserts the response FIFO carries an attributed `netget: …` category line
+and none of the tokens that leaked historically (`✗`, `retries`, the backend URL, the model
+name). Both halves matter — that the reader is answered at all, and that it is told nothing.

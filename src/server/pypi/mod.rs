@@ -152,12 +152,37 @@ impl PypiServer {
 }
 
 /// Build the 502 sent when model or handler output cannot be turned into a
-/// valid HTTP response (bad status code, malformed header name, ...).
+/// valid HTTP response (bad status code, malformed header name, no answer at all).
+///
+/// The peer gets a category, never a diagnosis: what exactly was wrong with the action
+/// output is netget's own business and goes to the log only.
+/// See `crate::utils::wire_failure`.
 fn bad_gateway() -> Response<Full<Bytes>> {
     Response::builder()
         .status(502)
-        .body(Full::new(Bytes::from("Bad Gateway: invalid PyPI response")))
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .body(Full::new(Bytes::from(
+            crate::utils::WireFailure::Unavailable.prefixed_text(),
+        )))
         .expect("502 response with a literal body is always valid")
+}
+
+/// Build the reply for an LLM/backend failure.
+///
+/// The two categories get distinct HTTP codes on purpose: pip retries a 503 with
+/// `Retry-After` and records a 500 as a hard failure, so collapsing them would make a
+/// transient overload look permanent. The body is a static category string — the error
+/// itself is logged, never written to the socket.
+fn llm_failure_response(failure: crate::utils::WireFailure) -> Response<Full<Bytes>> {
+    let mut builder = Response::builder()
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .status(if failure.is_overloaded() { 503 } else { 500 });
+    if failure.is_overloaded() {
+        builder = builder.header("Retry-After", "5");
+    }
+    builder
+        .body(Full::new(Bytes::from(failure.prefixed_text())))
+        .expect("failure response with a literal body is always valid")
 }
 
 /// Handle a single PyPI request with integrated LLM actions
@@ -286,11 +311,19 @@ async fn handle_pypi_request_with_llm_actions(
                 let _ = status_tx.send(msg);
             }
 
-            // Extract PyPI response from protocol results
-            // Default response in case nothing was produced
-            let mut status_code = 200;
+            // Extract the PyPI response from the protocol results.
+            //
+            // There is deliberately no default here. This used to pre-set
+            // `status_code = 200` with an empty body, so a model that answered with no
+            // action at all — or a handler configured with `actions: []` — produced a
+            // `200 OK` with zero bytes. To pip that reads as "the project exists and has
+            // no distributions", i.e. silence became a successful answer. A no-answer is
+            // a failure and must look like one on the wire.
+            let mut status_code: Option<u16> = None;
             let mut response_headers = HashMap::new();
             let mut response_body: Vec<u8> = Vec::new();
+            let mut body_set = false;
+            let mut decode_failed = false;
 
             for protocol_result in execution_result.protocol_results {
                 if let ActionResult::Output(output_data) = protocol_result {
@@ -299,7 +332,15 @@ async fn handle_pypi_request_with_llm_actions(
                         serde_json::from_slice::<serde_json::Value>(&output_data)
                     {
                         if let Some(status) = json_value.get("status").and_then(|v| v.as_u64()) {
-                            status_code = status as u16;
+                            if (100..=599).contains(&status) {
+                                status_code = Some(status as u16);
+                            } else {
+                                Log::new(Some(&status_tx)).error(format!(
+                                    "PyPI response status {} is not a valid HTTP status code",
+                                    status
+                                ));
+                                decode_failed = true;
+                            }
                         }
                         if let Some(headers_obj) =
                             json_value.get("headers").and_then(|v| v.as_object())
@@ -317,23 +358,54 @@ async fn handle_pypi_request_with_llm_actions(
                         {
                             use base64::Engine;
                             match base64::engine::general_purpose::STANDARD.decode(encoded) {
-                                Ok(decoded) => response_body = decoded,
+                                Ok(decoded) => {
+                                    response_body = decoded;
+                                    body_set = true;
+                                }
                                 Err(e) => {
+                                    // Serving 0 bytes here would hand pip a truncated
+                                    // distribution that fails its hash check much later,
+                                    // far from the cause. Refuse instead.
                                     Log::new(Some(&status_tx)).error(format!(
                                         "PyPI response body_base64 is not valid base64: {}",
                                         e
                                     ));
+                                    decode_failed = true;
                                 }
                             }
                         } else if let Some(body) = json_value.get("body").and_then(|v| v.as_str()) {
                             response_body = body.as_bytes().to_vec();
+                            body_set = true;
                         }
                     }
                 }
             }
 
+            if decode_failed {
+                // The model/handler answered, but the answer cannot be put on the wire.
+                Log::new(Some(&status_tx)).error(format!(
+                    "PyPI {} {} decision=fail_closed_bad_action → 502",
+                    method, uri
+                ));
+                return Ok(bad_gateway());
+            }
+
+            // `send_pypi_response` always yields a status plus exactly one of
+            // `body`/`body_base64` (see `execute_send_pypi_response`), so both being
+            // present is precisely "a PyPI response was produced".
+            let Some(status_code) = status_code.filter(|_| body_set) else {
+                // Distinct from an LLM error (below) and from a model that deliberately
+                // answered 404: nothing usable came back at all.
+                Log::new(Some(&status_tx)).warn(format!(
+                    "PyPI {} {} decision=fail_closed_no_action \
+                     (no send_pypi_response in the answer) → 502",
+                    method, uri
+                ));
+                return Ok(bad_gateway());
+            };
+
             Log::new(Some(&status_tx)).info(format!(
-                "PyPI {} {} → {} ({} bytes)",
+                "PyPI {} {} decision=model_response → {} ({} bytes)",
                 method,
                 uri,
                 status_code,
@@ -352,19 +424,24 @@ async fn handle_pypi_request_with_llm_actions(
             match response.body(Full::new(Bytes::from(response_body))) {
                 Ok(resp) => Ok(resp),
                 Err(e) => {
-                    Log::new(Some(&status_tx))
-                        .error(format!("Invalid PyPI response ({}), sending 502", e));
+                    Log::new(Some(&status_tx)).error(format!(
+                        "PyPI {} {} decision=fail_closed_bad_action: invalid response ({}) → 502",
+                        method, uri, e
+                    ));
                     Ok(bad_gateway())
                 }
             }
         }
         Err(e) => {
-            Log::new(Some(&status_tx)).warn(format!("LLM error for {} {}: {}", method, uri, e));
-
-            Ok(Response::builder()
-                .status(500)
-                .body(Full::new(Bytes::from("Internal Server Error")))
-                .unwrap())
+            // The backend failed. The peer gets a category and a code it can act on; the
+            // error itself — backend URL, model name, anyhow chain — goes to the log only.
+            let failure = crate::utils::WireFailure::classify(&e);
+            let code = if failure.is_overloaded() { 503 } else { 500 };
+            Log::new(Some(&status_tx)).warn(format!(
+                "PyPI {} {} decision=fail_closed_llm_error → {} ({:?}): {}",
+                method, uri, code, failure, e
+            ));
+            Ok(llm_failure_response(failure))
         }
     }
 }

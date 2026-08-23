@@ -302,3 +302,27 @@ Key testing considerations:
 - RFC 3376: Internet Group Management Protocol, Version 3
 - RFC 4604: Using Internet Group Management Protocol Version 3 (IGMPv3) and Multicast Listener Discovery Protocol
   Version 2 (MLDv2) for Source-Specific Multicast
+
+## LLM failure policy: silence, classified in the log
+
+IGMP has no error message. The only packets a host may emit are a Membership Report and a
+Leave Group, and a Report is a *positive claim* — "this host is a member of group G" — which
+makes the querier forward that group's traffic onto the segment. Emitting one because netget
+could not reach its backend would assert a membership nobody asked for; a Report or Leave that
+netget merely observed has no spec-mandated response at all. So on backend failure the wire
+stays silent, exactly as it does when no membership policy is configured. A wrong reply here is
+worse than no reply, which is why this protocol does not follow the `http`/`tcp` shape of
+answering with an error category.
+
+The operator still has to be able to tell the cases apart, so each is tagged in the log
+(`mod.rs`, the event task):
+
+| tag | meaning |
+|---|---|
+| `decision=static_no_policy` | no instruction and no handler — static default, no LLM call |
+| `decision=model_ignore` | the model explicitly chose `ignore_message` (`ActionResult::NoAction`) |
+| `decision=model_no_answer` | the model answered, but produced no packet (WARN) |
+| `decision=fail_closed_silent` | the LLM call errored (ERROR), with `category=overloaded\|unavailable` from `WireFailure::classify` |
+
+The error text is logged only. Nothing derived from it can reach the socket, because nothing is
+written to the socket on this path at all.

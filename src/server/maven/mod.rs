@@ -401,6 +401,7 @@ async fn handle_maven_request_with_llm(
             let mut status_code = 404;
             let mut response_headers = HashMap::new();
             let mut response_body = Vec::new();
+            let mut produced_response = false;
 
             for protocol_result in execution_result.protocol_results {
                 if let ActionResult::Output(output_data) = protocol_result {
@@ -408,6 +409,7 @@ async fn handle_maven_request_with_llm(
                     if let Ok(json_value) =
                         serde_json::from_slice::<serde_json::Value>(&output_data)
                     {
+                        produced_response = true;
                         if let Some(status) = json_value.get("status").and_then(|v| v.as_u64()) {
                             status_code = status as u16;
                         }
@@ -431,11 +433,21 @@ async fn handle_maven_request_with_llm(
                             match base64::engine::general_purpose::STANDARD.decode(encoded) {
                                 Ok(decoded) => response_body = decoded,
                                 Err(e) => {
-                                    // Non-fatal: bad model/handler output; body stays empty.
-                                    log.warn(format!(
-                                        "Maven response body_base64 is not valid base64: {}",
+                                    // Fail closed: shipping the declared status with an
+                                    // empty body would look like a successful zero-byte
+                                    // artifact download and Maven would cache it.
+                                    tracing::error!(
+                                        "Maven {} {} decision=fail_closed_bad_body error={}",
+                                        method,
+                                        uri,
                                         e
+                                    );
+                                    log.warn(format!(
+                                        "Maven {} {} decision=fail_closed_bad_body: response \
+                                         body_base64 is not valid base64: {}",
+                                        method, uri, e
                                     ));
+                                    return Ok(bad_gateway());
                                 }
                             }
                         } else if let Some(body_str) =
@@ -447,12 +459,23 @@ async fn handle_maven_request_with_llm(
                 }
             }
 
+            // Three outcomes stay distinguishable in the log: the model produced a
+            // response (`model_answer`), the model produced nothing usable and the
+            // default 404 stands (`model_no_action`), and the LLM call itself failed
+            // (`fail_closed_llm_*`, in the Err arm below).
+            let decision = if produced_response {
+                "model_answer"
+            } else {
+                "model_no_action"
+            };
+
             // Response summary FileOnly: the send_maven_* action template already
             // reports the send to the TUI.
             log.debug(format!(
-                "Maven {} {} -> {} ({} bytes)",
+                "Maven {} {} decision={} -> {} ({} bytes)",
                 method,
                 uri,
+                decision,
                 status_code,
                 response_body.len()
             ));
@@ -476,13 +499,35 @@ async fn handle_maven_request_with_llm(
             }
         }
         Err(e) => {
-            // Non-fatal: the client gets a 500 (wire fallback).
-            log.warn(format!("LLM error for {} {}: {}", method, uri, e));
+            // The peer gets a category, the log gets the error. Nothing derived
+            // from `e` may reach the wire: the bodies below are literals and the
+            // status is chosen from the classification alone.
+            let failure = crate::utils::WireFailure::classify(&e);
+            let decision = if failure.is_overloaded() {
+                "fail_closed_llm_overloaded"
+            } else {
+                "fail_closed_llm_error"
+            };
+            tracing::error!("Maven {} {} decision={} error={}", method, uri, decision, e);
+            log.warn(format!(
+                "Maven {} {} decision={}: {}",
+                method, uri, decision, e
+            ));
+
+            if failure.is_overloaded() {
+                // Transient saturation. 503 + Retry-After tells Maven to back off
+                // and retry rather than record a permanent repository fault.
+                return Ok(Response::builder()
+                    .status(503)
+                    .header(hyper::header::RETRY_AFTER, "1")
+                    .body(Full::new(Bytes::from("Service Unavailable")))
+                    .expect("503 response with a literal body is always valid"));
+            }
 
             Ok(Response::builder()
                 .status(500)
                 .body(Full::new(Bytes::from("Internal Server Error")))
-                .unwrap())
+                .expect("500 response with a literal body is always valid"))
         }
     }
 }

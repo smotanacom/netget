@@ -344,6 +344,17 @@ impl BitcoinServer {
                     let _ = status_tx.send(msg);
                 }
 
+                // The model answering with no action is a real answer here - most of the
+                // Bitcoin handshake is peer-driven and "say nothing, wait for their version"
+                // is correct - so it stays silent. It is still tagged, because in the log it
+                // must not look like the LLM-error path below.
+                if execution_result.protocol_results.is_empty() {
+                    Log::new(Some(&status_tx)).debug(format!(
+                        "Bitcoin connection {} opened decision=model_no_action (no message sent)",
+                        connection_id
+                    ));
+                }
+
                 // Handle protocol results
                 for protocol_result in execution_result.protocol_results {
                     match protocol_result {
@@ -373,7 +384,8 @@ impl BitcoinServer {
                             )
                             .await;
                             Log::new(Some(&status_tx)).info(format!(
-                                "Closed Bitcoin connection {} after connection opened",
+                                "Closed Bitcoin connection {} after connection opened \
+                                 decision=model_close",
                                 connection_id
                             ));
                         }
@@ -382,10 +394,60 @@ impl BitcoinServer {
                 }
             }
             Err(e) => {
-                Log::new(Some(&status_tx))
-                    .warn(format!("LLM error on Bitcoin connection opened: {}", e));
+                Self::fail_closed(
+                    &write_half,
+                    &connections,
+                    &app_state,
+                    &status_tx,
+                    server_id,
+                    connection_id,
+                    &e,
+                    "connection opened",
+                )
+                .await;
             }
         }
+    }
+
+    /// The LLM call itself failed. Bitcoin P2P has no error frame a modern peer will act on -
+    /// BIP61 `reject` was removed from Bitcoin Core in 0.20 and is ignored by everything on
+    /// the network today - so the only signal that reaches the peer is a disconnect, which is
+    /// exactly what a real node does when it cannot serve a connection. Half-close the write
+    /// side so the peer reads EOF at once and moves on to another peer, instead of blocking
+    /// until its own timeout.
+    ///
+    /// Nothing derived from the error is written to the socket: FIN carries no text, and the
+    /// error goes to the log and the status stream, where an operator looks. The overload and
+    /// non-overload categories cannot be distinguished on the wire because Bitcoin has only
+    /// this one shape, so they are distinguished in the log instead - `decision=` is stable so
+    /// an operator can grep for it.
+    #[allow(clippy::too_many_arguments)]
+    async fn fail_closed(
+        write_half: &Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
+        connections: &Arc<Mutex<HashMap<ConnectionId, ConnectionData>>>,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+        server_id: crate::state::ServerId,
+        connection_id: ConnectionId,
+        err: &anyhow::Error,
+        context: &str,
+    ) {
+        let decision = match crate::utils::WireFailure::classify(err) {
+            crate::utils::WireFailure::Overloaded => "fail_closed_llm_overloaded",
+            crate::utils::WireFailure::Unavailable => "fail_closed_llm_error",
+        };
+        let log = Log::new(Some(status_tx));
+        // The error text belongs here, never on the wire.
+        log.warn(format!(
+            "LLM error on Bitcoin {} for connection {} decision={}: {}",
+            context, connection_id, decision, err
+        ));
+        Self::close_from_model(write_half, connections, app_state, server_id, connection_id).await;
+        log.info(format!(
+            "Closed Bitcoin connection {} decision={}",
+            connection_id, decision
+        ));
+        let _ = status_tx.send("__UPDATE_UI__".to_string());
     }
 
     /// Handle data received on a connection with LLM actions
@@ -509,7 +571,7 @@ impl BitcoinServer {
                     let event = Event::new(
                         &BITCOIN_MESSAGE_RECEIVED_EVENT,
                         serde_json::json!({
-                            "message_type": message_type,
+                            "message_type": message_type.clone(),
                             "message": message_json,
                         }),
                     );
@@ -531,6 +593,17 @@ impl BitcoinServer {
                             // Display messages
                             for msg in execution_result.messages {
                                 let _ = status_tx.send(msg);
+                            }
+
+                            // As on the opened event: no action is a legitimate answer for
+                            // most message types (an `addr` or an `inv` needs no reply), so
+                            // stay silent - but tag it, so the log never confuses it with the
+                            // LLM-error path below.
+                            if execution_result.protocol_results.is_empty() {
+                                Log::new(Some(&status_tx)).debug(format!(
+                                    "Bitcoin {} on {} decision=model_no_action (no reply sent)",
+                                    message_type, connection_id
+                                ));
                             }
 
                             // Handle protocol results
@@ -574,8 +647,10 @@ impl BitcoinServer {
                                 )
                                 .await;
                                 let _ = status_tx.send("__UPDATE_UI__".to_string());
-                                Log::new(Some(&status_tx))
-                                    .info(format!("Closed Bitcoin connection {}", connection_id));
+                                Log::new(Some(&status_tx)).info(format!(
+                                    "Closed Bitcoin connection {} decision=model_close",
+                                    connection_id
+                                ));
                                 return;
                             }
 
@@ -613,13 +688,20 @@ impl BitcoinServer {
                             }
                         }
                         Err(e) => {
-                            Log::new(Some(&status_tx))
-                                .warn(format!("LLM error for Bitcoin data: {}", e));
-                            connections
-                                .lock()
-                                .await
-                                .entry(connection_id)
-                                .and_modify(|conn| conn.state = ConnectionState::Idle);
+                            // This used to reset the state to Idle and write nothing, leaving
+                            // a peer that had just sent us a `version` or a `ping` blocked
+                            // until its own timeout with no indication anything went wrong.
+                            Self::fail_closed(
+                                &write_half,
+                                &connections,
+                                &app_state,
+                                &status_tx,
+                                server_id,
+                                connection_id,
+                                &e,
+                                &format!("{} message", message_type),
+                            )
+                            .await;
                             return;
                         }
                     }

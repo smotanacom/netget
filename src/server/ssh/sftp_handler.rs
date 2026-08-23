@@ -11,7 +11,8 @@ use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::server::SshProtocol;
 use crate::state::app_state::AppState;
-use anyhow::{anyhow, Result};
+use crate::utils::WireFailure;
+use anyhow::Result;
 use russh_sftp::protocol::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,6 +67,45 @@ fn sftp_error_status(response: &serde_json::Value) -> Option<StatusCode> {
         "eof" => StatusCode::Eof,
         _ => StatusCode::Failure,
     })
+}
+
+/// What a backend failure is reported to the SFTP client as.
+///
+/// SFTP v3 defines only OK, EOF, NO_SUCH_FILE, PERMISSION_DENIED, FAILURE, BAD_MESSAGE,
+/// NO_CONNECTION, CONNECTION_LOST and OP_UNSUPPORTED — there is no "busy, try again". So both
+/// [`WireFailure`] categories land on FAILURE and the distinction is kept in the log, where
+/// `llm_sftp_operation` records it alongside the operation name.
+///
+/// FAILURE rather than NO_SUCH_FILE, which several of these paths used to return: "the handler
+/// that answers questions about this tree is unreachable" is a different statement from "this
+/// path does not exist", and the second one is a permanent lie about the filesystem that a
+/// client may cache and a script will branch on.
+const BACKEND_FAILURE_STATUS: StatusCode = StatusCode::Failure;
+
+/// True when the handler produced nothing that could be an SFTP reply.
+///
+/// `llm_sftp_operation` falls back to `{}` when the response carried zero actions. Every reader
+/// below then finds its field missing and substitutes a default — a handle equal to the
+/// requested path, `0o100644` attributes, empty content — so silence *invented* a directory, a
+/// file or a stat for any path asked about, and a model that said nothing "opened" everything.
+/// Silence is not an answer: fail closed, exactly as an unreachable backend does.
+///
+/// A named action that is not one of the SFTP replies counts as silence too — the fallback in
+/// `llm_sftp_operation` hands back the first action when none of them is an SFTP reply, so a
+/// lone `show_message` would otherwise be read as an answer and defaulted in exactly the same
+/// way. A bare object with no `type` is still accepted: that is the shape a script handler
+/// returns, and its fields are the answer.
+fn sftp_no_answer(response: &serde_json::Value) -> bool {
+    let Some(obj) = response.as_object() else {
+        return true;
+    };
+    if obj.is_empty() {
+        return true;
+    }
+    match obj.get("type").and_then(|v| v.as_str()) {
+        Some(name) => !is_sftp_reply_action(name),
+        None => false,
+    }
 }
 
 /// Information about an open handle
@@ -198,11 +238,21 @@ impl LlmSftpHandler {
                 Ok(reply)
             }
             Err(e) => {
-                error!("LLM error for SFTP {}: {}", operation, e);
-                let _ = self
-                    .status_tx
-                    .send(format!("[ERROR] LLM error for SFTP {}: {}", operation, e));
-                Err(anyhow!("LLM error: {}", e))
+                // Return the error unwrapped. It used to be re-created with
+                // `anyhow!("LLM error: {}", e)`, which discards the concrete error type —
+                // and `is_overload_error` works by downcasting, so every SFTP failure was
+                // classified as a generic one and a saturated backend was indistinguishable
+                // from a broken one. `context()`/plain propagation keep the chain intact.
+                let failure = WireFailure::classify(&e);
+                error!(
+                    "SFTP {}: decision=fail_closed_backend_error category={:?}: {}",
+                    operation, failure, e
+                );
+                let _ = self.status_tx.send(format!(
+                    "[ERROR] SFTP {}: decision=fail_closed_backend_error category={:?}",
+                    operation, failure
+                ));
+                Err(e)
             }
         }
     }
@@ -251,10 +301,18 @@ impl russh_sftp::server::Handler for LlmSftpHandler {
             Ok(response) => {
                 if let Some(status) = sftp_error_status(&response) {
                     debug!("SFTP opendir refused by handler for {}: {:?}", path, status);
-                    let _ = self
-                        .status_tx
-                        .send(format!("[DEBUG] SFTP opendir refused for {path}"));
+                    let _ = self.status_tx.send(format!(
+                        "[DEBUG] SFTP opendir for {path}: decision=model_reject"
+                    ));
                     return Err(status);
+                }
+
+                if sftp_no_answer(&response) {
+                    error!("SFTP opendir for {}: decision=fail_closed_no_answer", path);
+                    let _ = self.status_tx.send(format!(
+                        "[ERROR] SFTP opendir for {path}: decision=fail_closed_no_answer"
+                    ));
+                    return Err(BACKEND_FAILURE_STATUS);
                 }
 
                 // LLM should return a handle for this directory
@@ -307,22 +365,14 @@ impl russh_sftp::server::Handler for LlmSftpHandler {
                 })
             }
             Err(_) => {
-                error!("SFTP opendir failed for path: {}", path);
-                let _ = self
-                    .status_tx
-                    .send(format!("[ERROR] SFTP opendir failed for path: {}", path));
-
-                // DEBUG: SFTP error response
-                debug!(
-                    "SFTP response: SSH_FXP_STATUS id={}, status=NO_SUCH_FILE",
-                    id
-                );
+                // Already logged with its category by `llm_sftp_operation`.
+                debug!("SFTP response: SSH_FXP_STATUS id={}, status=FAILURE", id);
                 let _ = self.status_tx.send(format!(
-                    "[DEBUG] SFTP response: SSH_FXP_STATUS id={}, status=NO_SUCH_FILE",
-                    id
+                    "[DEBUG] SFTP response: SSH_FXP_STATUS id={}, status=FAILURE (opendir '{}')",
+                    id, path
                 ));
 
-                Err(StatusCode::NoSuchFile)
+                Err(BACKEND_FAILURE_STATUS)
             }
         }
     }
@@ -372,8 +422,22 @@ impl russh_sftp::server::Handler for LlmSftpHandler {
             match self.llm_sftp_operation("readdir", params).await {
                 Ok(response) => {
                     if let Some(status) = sftp_error_status(&response) {
-                        debug!("SFTP readdir refused by handler for {}: {:?}", path, status);
+                        debug!(
+                            "SFTP readdir for {}: decision=model_reject ({:?})",
+                            path, status
+                        );
                         return Err(status);
+                    }
+
+                    if sftp_no_answer(&response) {
+                        // An empty listing is a legitimate answer and looks nothing like this:
+                        // it arrives as `sftp_directory_listing` with no `entries`. A reply
+                        // with no fields at all means the handler said nothing.
+                        error!("SFTP readdir for {}: decision=fail_closed_no_answer", path);
+                        let _ = self.status_tx.send(format!(
+                            "[ERROR] SFTP readdir for {path}: decision=fail_closed_no_answer"
+                        ));
+                        return Err(BACKEND_FAILURE_STATUS);
                     }
 
                     // Parse file list from LLM
@@ -445,20 +509,14 @@ impl russh_sftp::server::Handler for LlmSftpHandler {
                     Ok(Name { id, files })
                 }
                 Err(_) => {
-                    error!("SFTP readdir LLM error for handle: {}", handle);
-                    let _ = self.status_tx.send(format!(
-                        "[ERROR] SFTP readdir LLM error for handle: {}",
-                        handle
-                    ));
-
-                    // DEBUG: SFTP error response
+                    // Already logged with its category by `llm_sftp_operation`.
                     debug!("SFTP response: SSH_FXP_STATUS id={}, status=FAILURE", id);
                     let _ = self.status_tx.send(format!(
-                        "[DEBUG] SFTP response: SSH_FXP_STATUS id={}, status=FAILURE",
-                        id
+                        "[DEBUG] SFTP response: SSH_FXP_STATUS id={}, status=FAILURE (readdir '{}')",
+                        id, handle
                     ));
 
-                    Err(StatusCode::Failure)
+                    Err(BACKEND_FAILURE_STATUS)
                 }
             }
         } else {
@@ -515,10 +573,18 @@ impl russh_sftp::server::Handler for LlmSftpHandler {
             Ok(response) => {
                 if let Some(status) = sftp_error_status(&response) {
                     debug!("SFTP open refused by handler for {}: {:?}", path, status);
-                    let _ = self
-                        .status_tx
-                        .send(format!("[DEBUG] SFTP open refused for {path}"));
+                    let _ = self.status_tx.send(format!(
+                        "[DEBUG] SFTP open for {path}: decision=model_reject"
+                    ));
                     return Err(status);
+                }
+
+                if sftp_no_answer(&response) {
+                    error!("SFTP open for {}: decision=fail_closed_no_answer", path);
+                    let _ = self.status_tx.send(format!(
+                        "[ERROR] SFTP open for {path}: decision=fail_closed_no_answer"
+                    ));
+                    return Err(BACKEND_FAILURE_STATUS);
                 }
 
                 let handle_str = response
@@ -568,22 +634,14 @@ impl russh_sftp::server::Handler for LlmSftpHandler {
                 })
             }
             Err(_) => {
-                error!("SFTP open failed for path: {}", path);
-                let _ = self
-                    .status_tx
-                    .send(format!("[ERROR] SFTP open failed for path: {}", path));
-
-                // DEBUG: SFTP error response
-                debug!(
-                    "SFTP response: SSH_FXP_STATUS id={}, status=NO_SUCH_FILE",
-                    id
-                );
+                // Already logged with its category by `llm_sftp_operation`.
+                debug!("SFTP response: SSH_FXP_STATUS id={}, status=FAILURE", id);
                 let _ = self.status_tx.send(format!(
-                    "[DEBUG] SFTP response: SSH_FXP_STATUS id={}, status=NO_SUCH_FILE",
-                    id
+                    "[DEBUG] SFTP response: SSH_FXP_STATUS id={}, status=FAILURE (open '{}')",
+                    id, path
                 ));
 
-                Err(StatusCode::NoSuchFile)
+                Err(BACKEND_FAILURE_STATUS)
             }
         }
     }
@@ -632,8 +690,22 @@ impl russh_sftp::server::Handler for LlmSftpHandler {
             match self.llm_sftp_operation("read", params).await {
                 Ok(response) => {
                     if let Some(status) = sftp_error_status(&response) {
-                        debug!("SFTP read refused by handler for {}: {:?}", path, status);
+                        debug!(
+                            "SFTP read for {}: decision=model_reject ({:?})",
+                            path, status
+                        );
                         return Err(status);
+                    }
+
+                    if sftp_no_answer(&response) {
+                        // Without this the missing `content` defaults to "", `offset >= 0` is
+                        // immediately past the end, and the client is told EOF — i.e. it
+                        // downloads a successful zero-byte file and reports no error at all.
+                        error!("SFTP read for {}: decision=fail_closed_no_answer", path);
+                        let _ = self.status_tx.send(format!(
+                            "[ERROR] SFTP read for {path}: decision=fail_closed_no_answer"
+                        ));
+                        return Err(BACKEND_FAILURE_STATUS);
                     }
 
                     // Get file content from LLM
@@ -698,20 +770,17 @@ impl russh_sftp::server::Handler for LlmSftpHandler {
                     Ok(Data { id, data })
                 }
                 Err(_) => {
-                    error!("SFTP read LLM error for handle: {}", handle);
+                    // FAILURE, not EOF. EOF is a *successful* end-of-file: a client that gets
+                    // it at offset 0 writes out a complete zero-byte file and exits 0, so a
+                    // backend outage silently truncated every download. Already logged with
+                    // its category by `llm_sftp_operation`.
+                    debug!("SFTP response: SSH_FXP_STATUS id={}, status=FAILURE", id);
                     let _ = self.status_tx.send(format!(
-                        "[ERROR] SFTP read LLM error for handle: {}",
-                        handle
+                        "[DEBUG] SFTP response: SSH_FXP_STATUS id={}, status=FAILURE (read '{}')",
+                        id, handle
                     ));
 
-                    // DEBUG: SFTP error response
-                    debug!("SFTP response: SSH_FXP_STATUS id={}, status=EOF", id);
-                    let _ = self.status_tx.send(format!(
-                        "[DEBUG] SFTP response: SSH_FXP_STATUS id={}, status=EOF",
-                        id
-                    ));
-
-                    Err(StatusCode::Eof)
+                    Err(BACKEND_FAILURE_STATUS)
                 }
             }
         } else {
@@ -820,10 +889,23 @@ impl russh_sftp::server::Handler for LlmSftpHandler {
             Ok(response) => {
                 if let Some(status) = sftp_error_status(&response) {
                     debug!("SFTP lstat refused by handler for {}: {:?}", path, status);
-                    let _ = self
-                        .status_tx
-                        .send(format!("[DEBUG] SFTP lstat refused for {path}"));
+                    let _ = self.status_tx.send(format!(
+                        "[DEBUG] SFTP lstat for {path}: decision=model_reject"
+                    ));
                     return Err(status);
+                }
+
+                if sftp_no_answer(&response) {
+                    // Otherwise every field below falls back to its default and the client is
+                    // told the path exists as a 0-byte 0o100644 file — so a handler that said
+                    // nothing stats *any* path successfully, including ones it would have
+                    // refused. That is the fail-open shape CLAUDE.md calls the most dangerous
+                    // pattern here.
+                    error!("SFTP lstat for {}: decision=fail_closed_no_answer", path);
+                    let _ = self.status_tx.send(format!(
+                        "[ERROR] SFTP lstat for {path}: decision=fail_closed_no_answer"
+                    ));
+                    return Err(BACKEND_FAILURE_STATUS);
                 }
 
                 let mut attrs = FileAttributes::default();
@@ -882,22 +964,14 @@ impl russh_sftp::server::Handler for LlmSftpHandler {
                 Ok(Attrs { id, attrs })
             }
             Err(_) => {
-                error!("SFTP lstat failed for path: {}", path);
-                let _ = self
-                    .status_tx
-                    .send(format!("[ERROR] SFTP lstat failed for path: {}", path));
-
-                // DEBUG: SFTP error response
-                debug!(
-                    "SFTP response: SSH_FXP_STATUS id={}, status=NO_SUCH_FILE",
-                    id
-                );
+                // Already logged with its category by `llm_sftp_operation`.
+                debug!("SFTP response: SSH_FXP_STATUS id={}, status=FAILURE", id);
                 let _ = self.status_tx.send(format!(
-                    "[DEBUG] SFTP response: SSH_FXP_STATUS id={}, status=NO_SUCH_FILE",
-                    id
+                    "[DEBUG] SFTP response: SSH_FXP_STATUS id={}, status=FAILURE (lstat '{}')",
+                    id, path
                 ));
 
-                Err(StatusCode::NoSuchFile)
+                Err(BACKEND_FAILURE_STATUS)
             }
         }
     }

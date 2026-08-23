@@ -42,6 +42,22 @@ round-trip at all**. The model (or a script / static handler) is consulted **onl
 opts in** with the grant policy. `call_llm_for_event` returns `None` in the no-policy case, which is
 the same signal it uses for a refusal or an LLM failure — nothing is granted.
 
+**Three no-grant outcomes, kept apart.** Granting nothing is the same in all three, but what the
+client is told is not, and the log tags them so an operator can tell them apart:
+
+| Situation | Log | On the wire |
+|---|---|---|
+| No operator policy | `decision=fail_closed_no_policy` | **nothing** — the request is simply not served, and no LLM call is made |
+| Backend errored | `decision=fail_closed_llm_error` (full error at `error!` + status stream) | STUN error response: **508** Insufficient Capacity when `WireFailure::Overloaded`, **500** Server Error otherwise |
+| Model answered without a grant action | `decision=model_reject` | whatever the model's own actions emit (typically `send_turn_error_response`, or nothing) |
+
+The error response carries `WireFailure::text()` as its reason phrase and nothing else. Never
+interpolate the backend error, its URL, the model name or an `anyhow` chain into the reason: it
+goes to a stranger on the network, and `tests/wire_failure_test.rs` fails the build on the known
+leak idioms. `tests/server/turn/llm_failure_test.rs` pins both halves — that a reply arrives at
+all (silence left the client retransmitting for the full ~39s STUN schedule), and that its reason
+phrase is the category.
+
 ## Library choice
 
 Hand-rolled on top of the STUN message format, *not* `webrtc-turn`, even though the `turn`
@@ -202,7 +218,8 @@ is what would actually fix it.
 
 **Fail-closed points** worth preserving if you refactor: no allocation without an explicit
 grant action; no relaying to or from an unpermitted IP; a mismatched relay address refuses
-rather than confirms; an LLM error grants nothing.
+rather than confirms; an LLM error grants nothing (and answers 500/508 rather than going
+silent, without putting the error itself on the wire).
 
 ## Example prompts
 

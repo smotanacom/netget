@@ -102,6 +102,35 @@ Two panics are reachable here and both are guarded:
 - `set_fname_str` / `set_sname_str` `assert!` on values longer than 128 / 64 bytes, and those values
   come from the LLM. `send_bootp_reply` checks the lengths and returns an error instead
 
+### 8. Backend Failure — Deliberate Silence
+
+**When the LLM call fails, this server sends nothing, and that is the protocol-correct answer.**
+
+RFC 951 defines exactly two operations, BOOTREQUEST and BOOTREPLY. There is no NAK — DHCPNAK is a
+DHCP message-type *option*, which BOOTP does not have — and no status field anywhere in the frame.
+The only thing that could go on the wire on failure is a BOOTREPLY, and a BOOTREPLY is an offer: the
+client reads `yiaddr`, `siaddr` and `file` and boots from them. A reply carrying 0.0.0.0 is either
+discarded as garbage or, on a lenient client, ends the retransmit loop and strands a machine that the
+next retry (or another BOOTP server on the segment) would have served.
+
+Silence is already what the protocol means by "not me". RFC 951 §7.1 has the client retransmit with
+backoff precisely so that a busy or absent server costs nothing, so a transient backend failure
+resolves itself on the client's next attempt — the same outcome the `Overloaded` category buys in
+protocols that can express it.
+
+The three outcomes are therefore distinguished **in the log only**, by `decision=`
+(`BootpServer::log_silence`):
+
+| `decision=` | Meaning |
+|---|---|
+| `model_decline` | The model ran `ignore_request` — it looked at the request and chose not to serve this client |
+| `no_answer` | The model produced no action at all |
+| `fail_closed_overloaded` | The LLM call errored and `WireFailure::classify` called it saturation |
+| `fail_closed_unavailable` | The LLM call errored otherwise |
+
+The error itself goes to `tracing::error!` and the TUI status stream. **Nothing derived from it ever
+reaches a datagram** — see `src/utils/wire_failure.rs` and `tests/wire_failure_test.rs`.
+
 ## LLM Integration
 
 ### Event Type

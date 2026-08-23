@@ -315,6 +315,17 @@ impl DcServer {
                                     execution_result.protocol_results.len()
                                 ));
 
+                                // Answering with nothing is a real answer in NMDC - plenty
+                                // of client commands ($Version, $MyINFO) want no reply - so
+                                // it is tagged, not treated as a failure. The tag is what
+                                // separates it in the log from the backend erroring below.
+                                if execution_result.protocol_results.is_empty() {
+                                    log.debug(format!(
+                                        "DC connection {} decision=model_no_actions",
+                                        connection_id
+                                    ));
+                                }
+
                                 for protocol_result in execution_result.protocol_results {
                                     match protocol_result {
                                         ActionResult::Output(data) => {
@@ -361,8 +372,56 @@ impl DcServer {
                                 }
                             }
                             Err(e) => {
-                                Log::new(Some(status_clone))
-                                    .warn(format!("LLM call failed: {}", e));
+                                let log = Log::new(Some(status_clone));
+                                let failure = crate::utils::WireFailure::classify(&e);
+                                let class = if failure.is_overloaded() {
+                                    "overloaded"
+                                } else {
+                                    "unavailable"
+                                };
+                                // The whole error - backend URL, model name, anyhow chain -
+                                // goes to the log and the status stream, where an operator
+                                // looks. Nothing derived from it reaches the peer.
+                                log.warn(format!(
+                                    "DC command failed on connection {}: decision=fail_closed_llm_error class={} error={}",
+                                    connection_id, class, e
+                                ));
+
+                                // Silence would leave a half-finished NMDC handshake
+                                // hanging until the client's own timeout. The hub answers
+                                // with a category instead, in two distinct NMDC shapes so
+                                // the client can tell a transient overload (chat notice,
+                                // session continues, retry is sensible) from a hard
+                                // failure ($Error, the protocol's own error command).
+                                let frame = match failure {
+                                    crate::utils::WireFailure::Overloaded => {
+                                        format!("<Hub> {}|", failure.prefixed_text())
+                                    }
+                                    crate::utils::WireFailure::Unavailable => {
+                                        format!("$Error {}|", failure.prefixed_text())
+                                    }
+                                };
+                                let bytes = frame.into_bytes();
+                                let mut write = write_half_arc.lock().await;
+                                if let Err(werr) = write.write_all(&bytes).await {
+                                    log.error(format!(
+                                        "Failed to write DC failure notice on connection {}: {}",
+                                        connection_id, werr
+                                    ));
+                                } else {
+                                    let _ = write.flush().await;
+                                    drop(write);
+                                    state_clone
+                                        .update_connection_stats(
+                                            server_id,
+                                            connection_id,
+                                            None,
+                                            Some(bytes.len() as u64),
+                                            None,
+                                            Some(1),
+                                        )
+                                        .await;
+                                }
                             }
                         }
                     }

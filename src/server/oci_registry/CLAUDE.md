@@ -174,7 +174,12 @@ model's silence must not look alike:
 - **Silence** — no usable action: **500 with code `UNKNOWN`** and the message
   "the registry backend returned no usable response". Never an empty catalogue,
   never a plausible 404, never a synthesized manifest.
-- **LLM error** — 503 `UNKNOWN` naming the failure.
+- **LLM error** — the call to the model failed. The peer gets a *category*, never
+  the error text: 503 `UNKNOWN` + `Retry-After: 1` when the backend is saturated
+  (so a client backs off) and 500 `UNKNOWN` otherwise. The error itself goes to
+  the log and the status stream, tagged `decision=fail_closed_llm_error`;
+  silence is tagged `decision=fail_closed_no_action` and the model's own refusal
+  `decision=model_reject`.
 - **Digest mismatch** — 404, with `detail.requested` and `detail.computed`.
 
 ## Push is not implemented

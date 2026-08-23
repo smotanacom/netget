@@ -47,8 +47,10 @@ Two things guard against that:
 | `test_turn_stops_relaying_after_the_lifetime_expires` | 3 | Relay works, then stops within the granted 5s lifetime — well before the 30s cleanup tick |
 | `test_turn_refuses_an_invented_relay_address` | 2 | A model-chosen relay address is refused with 508 and no XOR-RELAYED-ADDRESS; a bad magic cookie is dropped silently |
 | `test_turn_denied_allocation_and_refresh` | 3 | The model's refusal reaches the client as 486; nothing is relayed without an allocation; a granted Refresh reports the model's lifetime |
+| `static_default_test::test_turn_grants_nothing_without_policy_and_needs_no_llm` | 1 | With no operator policy, Allocate is fail-closed **and silent**, with zero LLM calls (`expect_calls(0)` on the event rule) |
+| `llm_failure_test::test_turn_answers_the_client_with_a_category_when_the_llm_errors` | 1 | With a policy configured but the backend erroring, the client gets a 500/508 Allocate error response whose reason phrase is a `WireFailure` category and leaks nothing |
 
-**14 LLM calls total** (each row includes its server-startup call). Slightly over the ~10
+**16 LLM calls total** (each row includes its server-startup call). Slightly over the ~10
 guidance, and the reason is that the four behaviours worth separating — relaying, channel
 framing, expiry, refusal — cannot share one server: the expiry test needs a 5-second
 allocation and the refusal tests need a model that says no.
@@ -89,4 +91,6 @@ Runtime is about 9s with the mock LLM (the expiry test's 6s sleep dominates).
 - Permission expiry (5 minutes) and channel expiry (10 minutes) — the timers exist and are
   enforced on the relay path, but a test would have to sleep for minutes.
 - The 256-allocation cap and its 508 refusal.
+- The LLM-error path for Refresh / CreatePermission / ChannelBind — they share
+  `call_llm_for_event`, so `llm_failure_test` covers the branch through Allocate only.
 - Concurrent relaying throughput.

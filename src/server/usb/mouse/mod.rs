@@ -31,6 +31,13 @@
 //!
 //! So the failure is dual-logged at ERROR and nothing is sent.
 //! `tests/server/usb_mouse/llm_failure_test.rs` pins both halves.
+//!
+//! Because the wire looks identical in every failure mode, the log is the only place the cases
+//! are distinguishable, and each carries a `decision=` tag: `decision=fail_closed_llm_error`
+//! when the backend erred, `decision=no_action` when the model answered with nothing, and
+//! `decision=model_action` when it queued reports. There is no `decision=model_reject`: this
+//! protocol advertises no verb with which a model can refuse (`wait_for_more` is holding still,
+//! which is an action).
 
 pub mod actions;
 
@@ -357,13 +364,19 @@ impl UsbMouseServer {
         )
         .await
         {
-            Ok(_) => info!(
-                "USB mouse LLM call completed (detach) for connection {}",
-                connection_id
-            ),
+            Ok(execution_result) => {
+                let acted = !execution_result.protocol_results.is_empty()
+                    || !execution_result.raw_actions.is_empty();
+                info!(
+                    "USB mouse LLM call completed (detach) for connection {} decision={}",
+                    connection_id,
+                    if acted { "model_action" } else { "no_action" }
+                )
+            }
             Err(e) => console_error!(
                 status_tx,
-                "LLM call failed for USB mouse detach on connection {}: {}",
+                "LLM call failed for USB mouse detach on connection {} \
+                 decision=fail_closed_llm_error: {}",
                 connection_id,
                 e
             ),
@@ -442,11 +455,21 @@ impl UsbMouseServer {
 
         // Process result
         match result {
-            Ok(_execution_result) => {
-                // Actions have already been executed by call_llm
+            Ok(execution_result) => {
+                // Actions have already been executed by call_llm. Distinguish "the model asked
+                // for pointer movement" from "the model answered with nothing" in the log: on
+                // the wire the two are identical (a mouse that does not move), so the log is
+                // the only place an operator can tell them apart. This protocol has no verb
+                // that refuses, so `decision=model_reject` cannot occur here; `wait_for_more`
+                // is the model deliberately holding still and counts as an action.
+                let acted = !execution_result.protocol_results.is_empty()
+                    || !execution_result.raw_actions.is_empty();
                 info!(
-                    "USB mouse LLM call completed for connection {}",
-                    connection_id
+                    "USB mouse LLM call completed for connection {} decision={} ({} action \
+                     results)",
+                    connection_id,
+                    if acted { "model_action" } else { "no_action" },
+                    execution_result.protocol_results.len()
                 );
 
                 // Set state back to idle
@@ -461,8 +484,8 @@ impl UsbMouseServer {
                 // dual-logged at ERROR rather than only reaching `netget.log`.
                 console_error!(
                     status_tx,
-                    "LLM call failed for USB mouse connection {}: {}; no HID report will be \
-                     sent, so the host's pointer does not move",
+                    "LLM call failed for USB mouse connection {} decision=fail_closed_llm_error: \
+                     {}; no HID report will be sent, so the host's pointer does not move",
                     connection_id,
                     e
                 );

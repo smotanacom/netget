@@ -36,9 +36,10 @@ Default `Content-Type: video/mp2t`.
 
 ## What actually works / does not
 
-- **The server does NOT synthesize MPEG-TS.** curl and the m3u8 structure validate fully (validated:
-  curl fetches the playlist, sees `#EXTM3U`/`application/vnd.apple.mpegurl`/segment URIs, then fetches
-  a segment and gets `video/mp2t` with the decoded bytes).
+- **The server does NOT synthesize MPEG-TS.** The m3u8 structure and the hex-decoded segment body
+  are asserted by `test_hls_playlist_and_segment`, over a raw `TcpStream` with hand-written HTTP.
+  The curl run (`tests/server/hls/curl_test.rs`) is `#[ignore]`d, so **no CI job establishes that a
+  real client accepts this output** — treat the curl validation as a manual check, not a result.
 - A real media player (ffplay/VLC) needs **valid segment bytes**, which the model must supply
   hex-encoded (e.g. a real `.ts`). Text segment bodies are for structural tests, not playback.
 - No LL-HLS, no `#EXT-X-KEY` encryption, no multivariant master-playlist bitrate switching beyond
@@ -46,7 +47,48 @@ Default `Content-Type: video/mp2t`.
 
 ## Fail-closed
 
-On LLM failure: HTTP 503, no fabricated playlist or segment; logged on both channels.
+Every path that cannot produce media answers the peer — silence would leave a player blocked
+until its own timeout — and the answer carries a **category only**, never an error string.
+`HlsResponse::failure` builds it from `crate::utils::WireFailure`:
+
+| Cause | Status | Body |
+|---|---|---|
+| LLM call errored, backend saturated (`WireFailure::Overloaded`) | 503 + `Retry-After: 5` | `netget: backend at capacity, retry later` |
+| LLM call errored, anything else (`WireFailure::Unavailable`) | 500 | `netget: request could not be processed` |
+| Model returned no action | 500 | same |
+| Playlist action carried neither `playlist` nor `segments` | 500 | same |
+| Segment action carried neither `data` nor `content` | 500 | same |
+| Segment `data` was undecodable hex, or an unknown `encoding` | 500 | same |
+
+The 503/500 split is the point: a player backs off on a transient overload and records a hard
+fault otherwise. Collapsing them makes an outage look permanent.
+
+Nothing derived from the error reaches the socket — not the backend URL, the model name, an
+`anyhow` chain, the `hex` crate's decode message, or the model's own `encoding` string. All of
+that goes to `tracing` and the status stream. `tests/wire_failure_test.rs` fails the build if the
+leaked idioms reappear.
+
+The empty-segment case is the one that used to be fail-*open*: an action with neither `data` nor
+`content` was served as `200 video/mp2t` with `Content-Length: 0`, which a player accepts as a
+valid (empty) segment — so the stream silently played nothing instead of reporting a fault.
+
+### `decision=` tags in the log
+
+Three failure causes must stay distinguishable to whoever reads `netget.log`, because an outage
+is not a policy decision:
+
+- `decision=model_reject` — the model itself chose a 4xx/5xx `status_code`
+- `decision=fail_closed_no_answer` — the model answered nothing usable
+- `decision=fail_closed_bad_action` — the model's action was malformed (bad hex, unknown encoding)
+- `decision=fail_closed_llm_error` / `decision=fail_closed_llm_overloaded` — the LLM call failed
+
+The success case is tagged `decision=model_answer`. Every tag also appears on the status stream
+line for the response.
+
+### Reason phrases
+
+`reason_phrase` maps the common codes and falls back to a status-*class* phrase. The previous
+blanket `_ => "OK"` framed a model-chosen 403 as `HTTP/1.1 403 OK`.
 
 ## Dashboard injection: connection stats yes, peer handle no
 

@@ -15,6 +15,7 @@ use crate::server::connection::ConnectionId;
 use crate::server::ProxyProtocol;
 use crate::state::app_state::AppState;
 use crate::state::ServerId;
+use crate::utils::WireFailure;
 use anyhow::{Context, Result};
 use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
@@ -237,8 +238,34 @@ pub async fn perform_mitm(
         )
         .await
         .unwrap_or_else(|e| {
-            error!("LLM consultation failed: {}", e);
-            RequestAction::Pass // Default to pass on error
+            // Fail closed. This used to default to `Pass`, which handed the decrypted request
+            // straight to its destination unfiltered - so the MITM path became an open relay
+            // for exactly as long as the backend was down, and the access log recorded each
+            // request as having been passed on purpose. The plaintext HTTP twin in mod.rs was
+            // fixed for this; only this half stayed open.
+            //
+            // The peer is told a category and nothing else: `WireFailure::prefixed_text()`
+            // returns `&'static str`, so no part of `e` can reach the wire. The error itself
+            // goes to the log and the status stream, which is where an operator looks.
+            let failure = WireFailure::classify(&e);
+            let status = if failure.is_overloaded() { 503 } else { 502 };
+            // Non-fatal: the client gets a 502/503, so WARN not ERROR.
+            warn!(
+                "MITM blocking {} {} with {} (decision=llm_error, overloaded={}): {}",
+                request_info.method,
+                request_info.url,
+                status,
+                failure.is_overloaded(),
+                e
+            );
+            let _ = status_tx.send(format!(
+                "[WARN] MITM blocking {} {} with {} (decision=llm_error): {}",
+                request_info.method, request_info.url, status, e
+            ));
+            RequestAction::Block {
+                status,
+                body: failure.prefixed_text().to_string(),
+            }
         });
 
         match action {
@@ -252,16 +279,15 @@ pub async fn perform_mitm(
                 trace!("Forwarded request to upstream server");
             }
             RequestAction::Block { status, body } => {
-                // Return error response to client
-                let response = format!(
-                    "HTTP/1.1 {} Blocked\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-                    status,
-                    body.len(),
-                    body
-                );
+                // Return error response to client. `body` is either the model's own reason or
+                // one of the two `WireFailure` categories - never an error string. A 503
+                // carries `Retry-After` (see `failure_response`) so a client backs off rather
+                // than recording a permanent fault, which is the whole point of keeping
+                // Overloaded distinct from Unavailable.
+                let response = failure_response(status, &body);
 
                 client_tls_stream
-                    .write_all(response.as_bytes())
+                    .write_all(&response)
                     .await
                     .context("Failed to send blocked response to client")?;
 
@@ -306,7 +332,12 @@ pub async fn perform_mitm(
         let response_str = String::from_utf8_lossy(response_data);
         trace!("Received response from upstream ({} bytes)", response_len);
 
-        // Parse HTTP response
+        // Parse HTTP response.
+        //
+        // `response_blocked` matters: after writing the first response this function degrades
+        // to an opaque bidirectional copy, which would happily forward the rest of the
+        // upstream response to the client and undo the block we just applied.
+        let mut response_blocked = false;
         let response_modified = if config.should_inspect_response(&request_info) {
             // Extract status code and headers
             let first_line = response_str.lines().next().unwrap_or("");
@@ -365,13 +396,12 @@ pub async fn perform_mitm(
                     None // No modification
                 }
                 Ok(ResponseAction::Block { status, body }) => {
-                    info!("LLM decision: Block response with status {}", status);
-                    Some(format!(
-                        "HTTP/1.1 {} Blocked\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-                        status,
-                        body.len(),
-                        body
-                    ).into_bytes())
+                    info!(
+                        "MITM blocking response to {} {} with {} (decision=model_reject)",
+                        request_info.method, request_info.url, status
+                    );
+                    response_blocked = true;
+                    Some(failure_response(status, &body))
                 }
                 Ok(ResponseAction::Modify {
                     status: new_status,
@@ -445,8 +475,26 @@ pub async fn perform_mitm(
                     Some(modified_response.into_bytes())
                 }
                 Err(e) => {
-                    error!("LLM consultation for response failed: {}", e);
-                    None // Pass through on error
+                    // Fail closed, same reasoning as the request side. Returning `None` here
+                    // delivered the upstream response to the client verbatim - including a
+                    // response the model was being asked to redact or block - so a backend
+                    // outage silently disabled response filtering altogether.
+                    let failure = WireFailure::classify(&e);
+                    let status = if failure.is_overloaded() { 503 } else { 502 };
+                    warn!(
+                        "MITM blocking response to {} {} with {} (decision=llm_error, overloaded={}): {}",
+                        request_info.method,
+                        request_info.url,
+                        status,
+                        failure.is_overloaded(),
+                        e
+                    );
+                    let _ = status_tx.send(format!(
+                        "[WARN] MITM blocking response to {} {} with {} (decision=llm_error): {}",
+                        request_info.method, request_info.url, status, e
+                    ));
+                    response_blocked = true;
+                    Some(failure_response(status, failure.prefixed_text()))
                 }
             }
         } else {
@@ -465,6 +513,16 @@ pub async fn perform_mitm(
             .context("Failed to send response to client")?;
 
         trace!("Sent response to client ({} bytes)", final_response.len());
+
+        if response_blocked {
+            // We refused this response. Falling through to the copy below would stream the
+            // remainder of the upstream response to the client anyway.
+            debug!(
+                "[ACCESS] {} MITM {}:{} -> response refused, connection closed",
+                peer_addr, dest_host, dest_port
+            );
+            return Ok(());
+        }
 
         // After first request/response, switch to bidirectional copy
         // This handles keep-alive connections and additional requests
@@ -548,12 +606,37 @@ async fn consult_llm_for_request(
             // Deserialize the RequestAction
             let action: RequestAction =
                 serde_json::from_slice(&bytes).context("Failed to deserialize RequestAction")?;
+            if let RequestAction::Block { status, .. } = &action {
+                // The model ruled against this request. Tagged separately from the two
+                // failure paths below so an operator can tell a policy decision from an
+                // outage in the log.
+                info!(
+                    "MITM blocking {} {} with {} (decision=model_reject)",
+                    request_info.method, request_info.url, status
+                );
+            }
             return Ok(action);
         }
     }
 
-    // Default to pass if no explicit action found
-    Ok(RequestAction::Pass)
+    // Fail closed, for the same reason the `Err` branch at the call site does: a request this
+    // proxy forwards is a request the model was asked to rule on and did not. The caller
+    // cannot tell the two apart from the action alone, so the distinction lives in the log -
+    // `no_decision` here, `llm_error` there - exactly so a silent model and a dead backend are
+    // never diagnosed as each other.
+    warn!(
+        "MITM blocking {} {} with 502: handler produced no filtering decision \
+         (decision=no_decision)",
+        request_info.method, request_info.url
+    );
+    let _ = status_tx.send(format!(
+        "[WARN] MITM blocking {} {} with 502 (decision=no_decision)",
+        request_info.method, request_info.url
+    ));
+    Ok(RequestAction::Block {
+        status: 502,
+        body: NO_DECISION_REQUEST_BODY.to_string(),
+    })
 }
 
 /// Consult LLM about an HTTP response in MITM mode
@@ -616,8 +699,69 @@ async fn consult_llm_for_response(
         }
     }
 
-    // Default to pass if no explicit action found
-    Ok(ResponseAction::Pass)
+    // Fail closed. `Pass` here delivered the upstream response to the client on the strength
+    // of a decision nobody made, and the access log then recorded it as a deliberate pass.
+    warn!(
+        "MITM blocking response to {} {} with 502: handler produced no filtering decision \
+         (decision=no_decision)",
+        request_info.method, request_info.url
+    );
+    let _ = status_tx.send(format!(
+        "[WARN] MITM blocking response to {} {} with 502 (decision=no_decision)",
+        request_info.method, request_info.url
+    ));
+    Ok(ResponseAction::Block {
+        status: 502,
+        body: NO_DECISION_RESPONSE_BODY.to_string(),
+    })
+}
+
+/// The peer-visible text when the handler answered but chose nothing.
+///
+/// A constant, not a `format!`, for the same reason [`WireFailure::text`] returns
+/// `&'static str`: a string built at the failure site is one interpolation away from carrying
+/// netget's internals onto a stranger's connection. See `src/utils/wire_failure.rs`.
+const NO_DECISION_REQUEST_BODY: &str =
+    "netget proxy: the filtering handler returned no decision for this request, so it was \
+     refused";
+
+const NO_DECISION_RESPONSE_BODY: &str =
+    "netget proxy: the filtering handler returned no decision for this response, so it was \
+     refused";
+
+/// Reason phrase for the handful of statuses this module synthesises itself.
+///
+/// The model may name any status in a `block` action, so this falls back to a generic phrase
+/// rather than indexing a table.
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        403 => "Forbidden",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Blocked",
+    }
+}
+
+/// Build a complete HTTP/1.1 error response for the client.
+///
+/// `body` must already be peer-safe - either the model's own reason or a `WireFailure`
+/// category. Nothing derived from an internal error may be passed here.
+fn failure_response(status: u16, body: &str) -> Vec<u8> {
+    let retry_after = if status == 503 {
+        "Retry-After: 5\r\n"
+    } else {
+        ""
+    };
+    format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: text/plain\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        reason_phrase(status),
+        retry_after,
+        body.len(),
+        body
+    )
+    .into_bytes()
 }
 
 /// Extract HTTP status code from response line

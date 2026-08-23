@@ -335,3 +335,79 @@ async fn test_saml_idp_metadata_and_error_response() -> E2EResult<()> {
     println!("=== Test passed ===\n");
     Ok(())
 }
+
+/// The fail-closed path: the model answered, but with nothing this handler can put on the
+/// wire. The peer must get a 5xx that is plainly *not* a sign-in, and the body must carry a
+/// category only — never the backend URL, the model name, a file path or netget's own retry
+/// text. An empty `200` here would be the dangerous shape: an SP reads it as a completed
+/// response with no assertion rather than as a server fault.
+#[tokio::test]
+async fn test_saml_idp_fails_closed_when_model_answers_nothing() -> E2EResult<()> {
+    println!("\n=== E2E Test: SAML IDP fails closed on an unusable answer ===");
+
+    let prompt = "Start a SAML Identity Provider on port {AVAILABLE_PORT}. \
+        Only answer requests you understand.";
+
+    let config = NetGetConfig::new(prompt).with_mock(|mock| {
+        mock.on_event("saml_idp_request")
+            .and_event_data_contains("path", "/sso")
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
+            .on_instruction_containing("SAML Identity Provider")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "saml-idp",
+                    "instruction": "SAML IDP that only answers what it understands"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let server = helpers::start_netget_server(config).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let response = reqwest::get(format!("http://127.0.0.1:{}/sso", server.port)).await?;
+    let status = response.status();
+    let body = response.text().await?;
+    println!("fail-closed response: {status} {body:?}");
+
+    assert!(
+        status.is_server_error(),
+        "an unusable answer must be a 5xx, not an empty 200 an SP would read as a completed \
+         response; got {status}"
+    );
+
+    // Only a category reaches the peer. These are the exact things that leaked in the
+    // incident tests/wire_failure_test.rs exists for.
+    for token in [
+        "✗",
+        "retries",
+        "http://",
+        "127.0.0.1",
+        "11434",
+        "qwen",
+        "/Users/",
+        "LLM",
+        "Ollama",
+        "ollama",
+        "anyhow",
+    ] {
+        assert!(
+            !body.contains(token),
+            "netget internals must never reach the peer, found {token:?} in:\n{body}"
+        );
+    }
+    assert!(
+        !body.to_lowercase().contains("saml"),
+        "the failure must not look like a SAML Response:\n{body}"
+    );
+
+    server.verify_mocks().await?;
+    server.stop().await?;
+    println!("=== Test passed ===\n");
+    Ok(())
+}

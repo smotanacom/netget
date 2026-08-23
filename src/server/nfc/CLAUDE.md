@@ -97,11 +97,35 @@ executed — a malformed value is an error, never something logged as if it had 
 
 ## Fail closed
 
-If the handler errors, returns no `respond_to_apdu`, or returns one that cannot be decoded,
-the tag answers **`6F00`** (ISO 7816-4 "no precise diagnosis") and logs at ERROR. It never
-falls through to `9000`. The model's own refusal (`6982`, `6A82`, `6D00`, …) is therefore
-structurally distinguishable from the model having said nothing — the OAuth2 failure mode in
-the root CLAUDE.md, avoided by construction.
+If the handler returns no `respond_to_apdu`, or returns one that cannot be decoded, the tag
+answers **`6F00`** (ISO 7816-4 "no precise diagnosis"). If the LLM call itself *errored*, the
+tag answers a status word chosen from `crate::utils::WireFailure`:
+
+| Category | Status word | Meaning to the reader |
+|----------|-------------|-----------------------|
+| `WireFailure::Overloaded` | `6400` | execution error, card state unchanged — transient, retry |
+| `WireFailure::Unavailable` | `6F00` | no precise diagnosis — card-side failure |
+
+Splitting the two is the APDU equivalent of HTTP 503 vs 500: a saturated backend must not be
+recorded by the reader as a permanently broken card. Nothing derived from the error reaches
+the wire — a response APDU has no free-text field, and the status word is a *category*. The
+error itself goes to the log and the TUI status stream only.
+
+It never falls through to `9000`. The model's own refusal (`6982`, `6A82`, `6D00`, …) is
+therefore structurally distinguishable from the model having said nothing — the OAuth2 failure
+mode in the root CLAUDE.md, avoided by construction.
+
+The five outcomes are tagged in the log so an operator can tell them apart, at WARN (the wire
+*is* answered, so none of them is fatal) except the first two, which are DEBUG:
+
+- `decision=model_answer` — the model answered with a success/warning SW (`90xx`, `61/62/63xx`)
+- `decision=model_reject` — the model answered with a refusal SW of its own choosing
+- `decision=fail_closed_no_action` — the handler ran and produced no `respond_to_apdu` → `6F00`
+- `decision=fail_closed_undecodable` — a `respond_to_apdu` that could not be decoded → `6F00`
+- `decision=fail_closed_llm_error` — the LLM call errored → `6400` / `6F00` by category
+
+The same `decision=fail_closed_llm_error` tag is used for a failed `nfc_server_started` call,
+where there is no reader to answer and the tag simply comes up with its built-in defaults.
 
 The tag always writes *something* back, so a reader is never left hanging on its own timeout.
 

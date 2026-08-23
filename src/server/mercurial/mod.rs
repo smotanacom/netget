@@ -43,6 +43,7 @@ use crate::server::mercurial::actions::{
     HG_HEADS_EVENT, HG_LISTKEYS_EVENT,
 };
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 use crate::{console_error, console_info};
 
 /// Null node ID: Mercurial's "no changeset" sentinel, and the correct `heads` answer for an
@@ -464,6 +465,12 @@ async fn handle_getbundle(
 ///
 /// `hg_error` is honoured for every command; anything else (no action, or an action for a
 /// different command) becomes a 500 with a log line naming the event.
+///
+/// Three outcomes are kept distinguishable in the log by a `decision=` tag: the model
+/// refused (`model_reject`), the model answered nothing usable (`fail_closed_no_action`),
+/// or the call itself failed (`fail_closed_llm_error` / `fail_closed_overloaded`). The peer
+/// is told only a category — 503 + `Retry-After` when the backend is saturated, 500
+/// otherwise — never the error text.
 async fn resolve(
     ctx: &RequestContext,
     event: &Event,
@@ -481,14 +488,33 @@ async fn resolve(
     {
         Ok(result) => result,
         Err(e) => {
-            error!("Mercurial: handling '{}' failed: {:#}", event.id(), e);
-            let _ = ctx
-                .status_tx
-                .send(format!("✗ Mercurial LLM error on {}: {}", event.id(), e));
-            return Err(build_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Server could not answer this command",
+            // The peer gets a category, the log gets the error. Nothing derived from `e`
+            // reaches the socket: `WireFailure::text` is a `&'static str` by design.
+            let failure = WireFailure::classify(&e);
+            let decision = if failure.is_overloaded() {
+                "fail_closed_overloaded"
+            } else {
+                "fail_closed_llm_error"
+            };
+            error!(
+                "Mercurial {} decision={} error={:#}",
+                event.id(),
+                decision,
+                e
+            );
+            let _ = ctx.status_tx.send(format!(
+                "✗ Mercurial {} decision={}: {}",
+                event.id(),
+                decision,
+                e
             ));
+            // Overload is transient; 503 + Retry-After tells hg to back off rather than
+            // record a permanent fault, which a bare 500 would.
+            return Err(if failure.is_overloaded() {
+                build_retryable_error_response(failure.text())
+            } else {
+                build_error_response(StatusCode::INTERNAL_SERVER_ERROR, failure.text())
+            });
         }
     };
 
@@ -505,6 +531,13 @@ async fn resolve(
                     .and_then(|v| v.as_str())
                     .unwrap_or("Error");
                 let code = data.get("code").and_then(|v| v.as_u64()).unwrap_or(500) as u16;
+                // The model answered, and its answer was a refusal. Distinct in the log from
+                // both "answered nothing" and "the call errored".
+                warn!(
+                    "Mercurial {} decision=model_reject code={}",
+                    event.id(),
+                    code
+                );
                 return Err(build_error_response(
                     StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                     message,
@@ -514,19 +547,21 @@ async fn resolve(
         }
     }
 
+    // The call succeeded and the model said nothing usable — a third case, kept separate
+    // from `decision=model_reject` and `decision=fail_closed_llm_error`.
     warn!(
-        "Mercurial: '{}' produced no {} and no hg_error action",
+        "Mercurial {} decision=fail_closed_no_action expected={}",
         event.id(),
         expected
     );
     let _ = ctx.status_tx.send(format!(
-        "✗ Mercurial: no usable action for {} (expected {})",
+        "✗ Mercurial {} decision=fail_closed_no_action (expected {})",
         event.id(),
         expected
     ));
     Err(build_error_response(
         StatusCode::INTERNAL_SERVER_ERROR,
-        "No answer was provided for this command",
+        WireFailure::Unavailable.text(),
     ))
 }
 
@@ -634,6 +669,17 @@ fn build_error_response(status: StatusCode, message: &str) -> Response<Full<Byte
     Response::builder()
         .status(status)
         .header("Content-Type", "text/plain")
+        .body(Full::new(Bytes::from(format!("Error: {}\n", message))))
+        .expect("static header values are valid")
+}
+
+/// A retryable failure: 503 with `Retry-After`, so hg backs off instead of treating the
+/// server as permanently broken. Same shape as `src/server/http_common/handler.rs`.
+fn build_retryable_error_response(message: &str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header("Content-Type", "text/plain")
+        .header(hyper::header::RETRY_AFTER, "1")
         .body(Full::new(Bytes::from(format!("Error: {}\n", message))))
         .expect("static header values are valid")
 }

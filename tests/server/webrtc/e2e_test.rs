@@ -5,7 +5,8 @@
 //! NetGet over the server's built-in WebSocket signalling endpoint, completes ICE and DTLS,
 //! and then a message is asserted to have crossed the data channel in both directions.
 //!
-//! LLM budget across the file: 9 mocked calls.
+//! LLM budget across the file: 10 mocked calls (plus one deliberately unmatched
+//! request in the backend-failure test, which the mock answers with HTTP 500).
 
 #[cfg(all(test, feature = "webrtc"))]
 mod webrtc_server_tests {
@@ -350,6 +351,84 @@ mod webrtc_server_tests {
             "rejection should carry the model's reason, got: {}",
             reason
         );
+
+        server.verify_mocks().await?;
+        server.stop().await?;
+        println!("=== Test passed ===\n");
+        Ok(())
+    }
+
+    /// A backend failure must refuse the offer with a *category*, never with the error.
+    ///
+    /// The mock has no rule for `webrtc_offer_received`, so the request comes back HTTP 500
+    /// and `call_llm` errors — the same shape as a real backend outage. The peer must still
+    /// get a `rejected` frame (silence would leave it waiting on its own timeout), and that
+    /// frame must not carry netget's internal error text. See `src/utils/wire_failure.rs`.
+    ///
+    /// LLM calls: 1 asserted (startup); the offer decision deliberately matches no rule.
+    #[tokio::test]
+    async fn test_webrtc_offer_backend_failure_rejects_without_leaking() -> E2EResult<()> {
+        println!("\n=== E2E Test: WebRTC offer rejected on backend failure ===");
+
+        let server = start_netget_server(
+            NetGetConfig::new("Open a webrtc server on port {AVAILABLE_PORT}").with_mock(|mock| {
+                mock.on_instruction_containing("webrtc")
+                    .respond_with_actions(serde_json::json!([
+                        {
+                            "type": "open_server",
+                            "port": 0,
+                            "base_stack": "webrtc",
+                            "instruction": "Admit peers"
+                        }
+                    ]))
+                    .expect_calls(1)
+                    .and()
+            }),
+        )
+        .await?;
+
+        let peer = TestPeer::new("netget", None).await?;
+        let offer = peer.gathered_offer().await?;
+
+        let mut signalling = Signalling::connect(server.port).await?;
+        signalling.send_offer("stranger", &offer).await?;
+
+        let frame = signalling.next_frame().await?;
+        assert_eq!(
+            frame.get("type").and_then(|v| v.as_str()),
+            Some("rejected"),
+            "a backend failure must fail closed with a rejection, not silence: {}",
+            frame
+        );
+        let reason = frame
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        // Exactly one of the two categories, and nothing else.
+        assert!(
+            reason == "netget: request could not be processed"
+                || reason == "netget: backend at capacity, retry later",
+            "rejection reason must be a WireFailure category, got: {}",
+            reason
+        );
+        for token in [
+            "\u{2717}",
+            "retries",
+            "http://",
+            "127.0.0.1",
+            "11434",
+            "LLM",
+            "ollama",
+            "Ollama",
+            "/Users/",
+        ] {
+            assert!(
+                !reason.contains(token),
+                "rejection reason leaked `{}`: {}",
+                token,
+                reason
+            );
+        }
 
         server.verify_mocks().await?;
         server.stop().await?;

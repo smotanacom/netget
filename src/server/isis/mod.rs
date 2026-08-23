@@ -573,13 +573,16 @@ impl IsisServer {
             }
         }
 
+        let src_mac_str = format!(
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]
+        );
+
         // Create event for LLM
         let mut event_data = serde_json::json!({
             "pdu_type": pdu_type_name,
             "packet_hex": hex::encode(isis_pdu),
-            "src_mac": format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                              src_mac[0], src_mac[1], src_mac[2],
-                              src_mac[3], src_mac[4], src_mac[5]),
+            "src_mac": src_mac_str,
         });
 
         if !area_addresses.is_empty() {
@@ -604,7 +607,11 @@ impl IsisServer {
         // respond, WITHOUT burning an LLM round-trip per captured PDU. The model is consulted
         // only when the operator opts in with how the router should behave.
         if !operator_wants_dynamic(app_state, server_id, &event.event_type.id).await {
-            debug!("IS-IS Hello observed passively: no operator policy configured, no response and no LLM call");
+            debug!(
+                "IS-IS {} from {} decision=passive_no_policy (no operator policy configured, \
+                 no response and no LLM call)",
+                pdu_type_name, src_mac_str
+            );
             let _ = status_tx.send(
                 "IS-IS Hello observed passively: no policy configured (static default, no LLM)"
                     .to_string(),
@@ -631,6 +638,12 @@ impl IsisServer {
                     console_info!(status_tx, "{}", message);
                 }
 
+                // ISO 10589 has no error PDU and no per-Hello response obligation: not answering
+                // simply means no adjacency forms. So the model choosing to say nothing
+                // (`ignore_pdu`, or no action at all) is a real, spec-valid answer and is only
+                // distinguished in the log, never on the wire.
+                let mut frames_sent = 0usize;
+
                 // Process protocol results - send frames via pcap
                 for protocol_result in execution_result.protocol_results {
                     if let Some(output_data) = protocol_result.get_all_output().first() {
@@ -642,15 +655,48 @@ impl IsisServer {
                         if let Err(e) = cap_guard.sendpacket(frame.as_ref()) {
                             console_error!(status_tx, "Failed to send IS-IS frame: {}", e);
                         } else {
+                            frames_sent += 1;
                             console_debug!(status_tx, "IS-IS sent {} bytes", frame.len());
                             trace!("IS-IS sent (hex): {}", hex::encode(&frame));
                         }
                     }
                 }
+
+                if frames_sent == 0 {
+                    // The model answered, and its answer was "say nothing". Distinct from a
+                    // backend failure below, and greppable as such.
+                    debug!(
+                        "IS-IS {} from {} decision=model_no_pdu (model answered with no PDU; \
+                         no adjacency formed)",
+                        pdu_type_name, src_mac_str
+                    );
+                } else {
+                    debug!(
+                        "IS-IS {} from {} decision=model_pdu frames={}",
+                        pdu_type_name, src_mac_str, frames_sent
+                    );
+                }
             }
             Err(e) => {
-                error!("IS-IS LLM call failed: {}", e);
-                let _ = status_tx.send(format!("✗ IS-IS LLM error: {}", e));
+                // IS-IS has no error PDU, and fabricating a Hello here would claim an adjacency
+                // netget cannot honour — on a routing protocol that is worse than silence. So
+                // the peer gets nothing (its own holding timer covers it) and the operator gets
+                // the whole error, plus the Overloaded/Unavailable split so a saturated backend
+                // is distinguishable from a broken one.
+                let category = crate::utils::WireFailure::classify(&e);
+                let decision = if category.is_overloaded() {
+                    "llm_error_overloaded_silent"
+                } else {
+                    "llm_error_unavailable_silent"
+                };
+                error!(
+                    "IS-IS {} from {} decision={} (no PDU emitted; IS-IS has no error PDU): {}",
+                    pdu_type_name, src_mac_str, decision, e
+                );
+                let _ = status_tx.send(format!(
+                    "✗ IS-IS LLM error (decision={}, no PDU emitted): {}",
+                    decision, e
+                ));
             }
         }
 

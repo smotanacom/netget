@@ -1,13 +1,18 @@
 # BGP Server Tests
 
-Two files, two different jobs.
+Five files, several different jobs. Derive the counts with `cargo test`, not from this table —
+they drift.
 
-| File | Kind | Needs a NetGet process | Runtime |
-|---|---|---|---|
-| `test.rs` | Wire-format conformance. Pure functions, no socket, no model. | no | milliseconds |
-| `e2e_test.rs` | Full socket path against a mocked model. | yes | ~6s total |
+| File | Kind | Needs a NetGet process |
+|---|---|---|
+| `test.rs` | Wire-format conformance. Pure functions, no socket, no model. | no |
+| `e2e_test.rs` | Full socket path against a mocked model. | yes |
+| `static_default_test.rs` | The handshake completes with **zero** LLM calls when no operator policy is configured. | yes |
+| `peer_inject_test.rs` | `AppState::send_to_client` injection into a live session. | in-process |
+| `llm_failure_test.rs` | The backend errors while a peering policy is configured: the peer must get NOTIFICATION Cease, not the configured OPEN. | yes |
 
-Both are declared in `tests/server/mod.rs` under `#[cfg(feature = "bgp")]`. 29 tests, all passing.
+All are declared in `tests/server/bgp/mod.rs`, which `tests/server/mod.rs` gates under
+`#[cfg(feature = "bgp")]`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features bgp --test server -- --test-threads=100 bgp

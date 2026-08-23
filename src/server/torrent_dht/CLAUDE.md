@@ -268,6 +268,34 @@ You are a BitTorrent DHT node. Respond to ping queries with your node ID. For fi
 - LLM call failures
 - Socket errors
 
+## When the LLM cannot answer
+
+A KRPC query is request/response: the querying node holds the transaction open, retries, and
+eventually marks this node bad. Silence is therefore a stall, not a "not me", so every path
+that produces no reply answers with a BEP 5 error message instead:
+
+```
+{"t": <echoed transaction id>, "y": "e", "e": [<code>, "<category text>"]}
+```
+
+- **`call_llm` returned `Err`** — `WireFailure::classify` picks the code: **202** ("Server
+  Error") for an overloaded backend, so the querying node retries later, **201** ("Generic
+  Error") for anything else. Logged `decision=fail_closed_llm_error`.
+- **The model answered with nothing that reaches the wire** — code 201, logged
+  `decision=fail_closed_no_action`. Distinct from the error case in the log, identical on
+  the wire, because the peer has no use for the difference.
+- **The model refused explicitly** with `send_dht_error_response` — its own code and message
+  go out unchanged, logged `decision=model_reject`. A successful reply logs
+  `decision=model_answer`.
+
+The peer-visible message is `WireFailure::text()`, a `&'static str`. The backend error, the
+model name and any path go to `tracing::error!` and the status stream only — never into the
+datagram. See `src/utils/wire_failure.rs` and `tests/server/torrent_dht/llm_failure_test.rs`.
+
+One path stays deliberately silent: a datagram that does not parse as a KRPC **query** (bad
+bencode, a `y` of `r`/`e`, a missing `t`). There is no transaction id to echo, and an
+unaddressed reply is discarded by the peer anyway.
+
 ## Connection State Tracking
 
 `protocol_info` is `ProtocolConnectionInfo::empty()`. `ProtocolConnectionInfo` is a generic

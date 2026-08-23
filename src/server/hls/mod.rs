@@ -28,8 +28,68 @@ use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::server::HlsProtocol;
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 use crate::{console_error, console_trace};
 use actions::{HLS_PLAYLIST_EVENT, HLS_SEGMENT_EVENT};
+
+/// One HTTP response, assembled before it is framed.
+///
+/// `retry_after` exists so the two failure categories stay distinguishable on the wire: an
+/// overloaded backend is transient and a player should back off and re-request, while anything
+/// else is a hard 500 it should not hammer.
+struct HlsResponse {
+    status: u16,
+    content_type: String,
+    body: Vec<u8>,
+    retry_after: bool,
+}
+
+impl HlsResponse {
+    fn new(status: u16, content_type: impl Into<String>, body: Vec<u8>) -> Self {
+        Self {
+            status,
+            content_type: content_type.into(),
+            body,
+            retry_after: false,
+        }
+    }
+
+    /// The peer-visible reply for an internal failure.
+    ///
+    /// The body is [`WireFailure::prefixed_text`] — a `&'static str` category, never the error.
+    /// The error goes to `tracing` and the status stream, which is where an operator looks.
+    /// `Overloaded` becomes 503 + `Retry-After` and `Unavailable` becomes 500, so a client backs
+    /// off on a transient saturation instead of recording a permanent fault.
+    fn failure(failure: WireFailure) -> Self {
+        Self {
+            status: if failure.is_overloaded() { 503 } else { 500 },
+            content_type: "text/plain; charset=utf-8".to_string(),
+            body: failure.prefixed_text().as_bytes().to_vec(),
+            retry_after: failure.is_overloaded(),
+        }
+    }
+}
+
+/// Why the peer got what it got, for the log only.
+///
+/// The three failure cases a reader of `netget.log` must be able to tell apart: the model
+/// deliberately answered with an error status, the model answered nothing usable, and the LLM
+/// call itself failed. Collapsing them makes an outage look like a policy decision.
+const DECISION_MODEL_ANSWER: &str = "model_answer";
+const DECISION_MODEL_REJECT: &str = "model_reject";
+const DECISION_NO_ANSWER: &str = "fail_closed_no_answer";
+const DECISION_BAD_ACTION: &str = "fail_closed_bad_action";
+const DECISION_LLM_ERROR: &str = "fail_closed_llm_error";
+const DECISION_LLM_OVERLOADED: &str = "fail_closed_llm_overloaded";
+
+/// `model_reject` when the model chose a 4xx/5xx itself, `model_answer` otherwise.
+fn decision_for_model_status(status: u16) -> &'static str {
+    if status >= 400 {
+        DECISION_MODEL_REJECT
+    } else {
+        DECISION_MODEL_ANSWER
+    }
+}
 
 pub struct HlsServer;
 
@@ -181,7 +241,7 @@ impl HlsServer {
             }
         };
 
-        let (status, content_type, body): (u16, String, Vec<u8>) = match call_llm(
+        let (reply, decision): (HlsResponse, &str) = match call_llm(
             &llm,
             &state,
             server_id,
@@ -200,17 +260,30 @@ impl HlsServer {
                 }
             }
             Err(e) => {
-                // Fail closed: 503, no fabricated media.
-                error!("HLS LLM error for {}: {}", path, e);
+                // Fail closed. The peer gets a category and a status it can act on; the error
+                // itself — backend URL, model name, anyhow chain — stays in the log.
+                let failure = WireFailure::classify(&e);
+                let decision = if failure.is_overloaded() {
+                    DECISION_LLM_OVERLOADED
+                } else {
+                    DECISION_LLM_ERROR
+                };
+                error!("HLS {} decision={} error={}", path, decision, e);
                 Log::new(Some(&status_tx)).error(format!(
-                    "HLS 503 for {} (LLM failure, fail-closed): {}",
-                    path, e
+                    "HLS fail-closed for {} (decision={}): {}",
+                    path, decision, e
                 ));
-                (503, "text/plain".to_string(), b"LLM unavailable".to_vec())
+                (HlsResponse::failure(failure), decision)
             }
         };
 
-        let response = build_http_response(status, &content_type, &body);
+        let HlsResponse {
+            status,
+            content_type,
+            body,
+            retry_after,
+        } = reply;
+        let response = build_http_response(status, &content_type, &body, retry_after);
         write_half.write_all(&response).await?;
         write_half.flush().await?;
 
@@ -224,7 +297,13 @@ impl HlsServer {
                 Some(1),
             )
             .await;
-        let _ = status_tx.send(format!("→ HLS {} {} ({} bytes)", status, path, body.len()));
+        let _ = status_tx.send(format!(
+            "→ HLS {} {} ({} bytes, decision={})",
+            status,
+            path,
+            body.len(),
+            decision
+        ));
         Ok(())
     }
 }
@@ -234,10 +313,17 @@ impl HlsServer {
 /// Accepts either a verbatim `playlist` string, or a structured `segments` array
 /// (`[{"uri":"seg0.ts","duration":6.0}, …]`) plus optional `target_duration`/`version` which are
 /// assembled into a valid media playlist here.
-fn render_playlist(action: &Option<serde_json::Value>) -> (u16, String, Vec<u8>) {
+fn render_playlist(action: &Option<serde_json::Value>) -> (HlsResponse, &'static str) {
     let ct = "application/vnd.apple.mpegurl".to_string();
     let Some(action) = action else {
-        return (503, "text/plain".into(), b"no playlist".to_vec());
+        warn!(
+            "HLS playlist decision={} (no action returned)",
+            DECISION_NO_ANSWER
+        );
+        return (
+            HlsResponse::failure(WireFailure::Unavailable),
+            DECISION_NO_ANSWER,
+        );
     };
     let status = action
         .get("status_code")
@@ -245,7 +331,10 @@ fn render_playlist(action: &Option<serde_json::Value>) -> (u16, String, Vec<u8>)
         .unwrap_or(200) as u16;
 
     if let Some(playlist) = action.get("playlist").and_then(|v| v.as_str()) {
-        return (status, ct, playlist.as_bytes().to_vec());
+        return (
+            HlsResponse::new(status, ct, playlist.as_bytes().to_vec()),
+            decision_for_model_status(status),
+        );
     }
 
     if let Some(segments) = action.get("segments").and_then(|v| v.as_array()) {
@@ -288,23 +377,36 @@ fn render_playlist(action: &Option<serde_json::Value>) -> (u16, String, Vec<u8>)
         if ended {
             m.push_str("#EXT-X-ENDLIST\n");
         }
-        return (status, ct, m.into_bytes());
+        return (
+            HlsResponse::new(status, ct, m.into_bytes()),
+            decision_for_model_status(status),
+        );
     }
 
-    // No usable field: honest 500 rather than a fabricated playlist.
-    warn!("HLS playlist action lacked both 'playlist' and 'segments'");
+    // No usable field: fail closed rather than fabricate a playlist. The peer gets a category;
+    // what the action actually lacked is a log line for the operator, not for a stranger.
+    warn!(
+        "HLS playlist decision={} (action lacked both 'playlist' and 'segments')",
+        DECISION_NO_ANSWER
+    );
     (
-        500,
-        "text/plain".into(),
-        b"playlist action missing 'playlist' or 'segments'".to_vec(),
+        HlsResponse::failure(WireFailure::Unavailable),
+        DECISION_NO_ANSWER,
     )
 }
 
 /// Render a media segment response. Body is either model text (`content`, utf8) or explicit
 /// hex-encoded binary (`encoding: "hex"`, `data`) which is decoded here.
-fn render_segment(action: &Option<serde_json::Value>) -> (u16, String, Vec<u8>) {
+fn render_segment(action: &Option<serde_json::Value>) -> (HlsResponse, &'static str) {
     let Some(action) = action else {
-        return (404, "text/plain".into(), b"not found".to_vec());
+        warn!(
+            "HLS segment decision={} (no action returned)",
+            DECISION_NO_ANSWER
+        );
+        return (
+            HlsResponse::failure(WireFailure::Unavailable),
+            DECISION_NO_ANSWER,
+        );
     };
     let status = action
         .get("status_code")
@@ -324,54 +426,118 @@ fn render_segment(action: &Option<serde_json::Value>) -> (u16, String, Vec<u8>) 
             .unwrap_or("utf8");
         match encoding {
             "hex" => match hex::decode(data.trim()) {
-                Ok(bytes) => return (status, content_type, bytes),
-                Err(e) => {
-                    warn!("HLS segment hex decode failed: {}", e);
+                Ok(bytes) => {
                     return (
-                        500,
-                        "text/plain".into(),
-                        format!("bad hex: {e}").into_bytes(),
+                        HlsResponse::new(status, content_type, bytes),
+                        decision_for_model_status(status),
+                    )
+                }
+                Err(e) => {
+                    // The decoder's message names offsets in the model's own string; the peer
+                    // gets the category, the operator gets the detail.
+                    warn!(
+                        "HLS segment decision={} (hex decode failed): {}",
+                        DECISION_BAD_ACTION, e
+                    );
+                    return (
+                        HlsResponse::failure(WireFailure::Unavailable),
+                        DECISION_BAD_ACTION,
                     );
                 }
             },
-            "utf8" => return (status, content_type, data.as_bytes().to_vec()),
-            other => {
+            "utf8" => {
                 return (
-                    500,
-                    "text/plain".into(),
-                    format!("unknown encoding {other:?}; use \"utf8\" or \"hex\"").into_bytes(),
+                    HlsResponse::new(status, content_type, data.as_bytes().to_vec()),
+                    decision_for_model_status(status),
                 )
+            }
+            other => {
+                warn!(
+                    "HLS segment decision={} (unknown encoding {:?}; expected \"utf8\" or \"hex\")",
+                    DECISION_BAD_ACTION, other
+                );
+                return (
+                    HlsResponse::failure(WireFailure::Unavailable),
+                    DECISION_BAD_ACTION,
+                );
             }
         }
     }
 
     if let Some(content) = action.get("content").and_then(|v| v.as_str()) {
-        return (status, content_type, content.as_bytes().to_vec());
+        return (
+            HlsResponse::new(status, content_type, content.as_bytes().to_vec()),
+            decision_for_model_status(status),
+        );
     }
 
-    (status, content_type, Vec::new())
+    // An action carrying neither `data` nor `content` is the model answering nothing usable.
+    // Serving it as 200 with an empty body would be fail-open: a player accepts a zero-length
+    // segment as a valid one and the stream silently plays nothing.
+    warn!(
+        "HLS segment decision={} (action carried neither 'data' nor 'content')",
+        DECISION_NO_ANSWER
+    );
+    (
+        HlsResponse::failure(WireFailure::Unavailable),
+        DECISION_NO_ANSWER,
+    )
 }
 
 /// Build an HTTP/1.1 response. `Connection: close` keeps this a clean one-request-per-connection
 /// server, which HLS clients (a new GET per playlist/segment) handle fine.
-fn build_http_response(status: u16, content_type: &str, body: &[u8]) -> Vec<u8> {
-    let reason = match status {
-        200 => "OK",
-        404 => "Not Found",
-        500 => "Internal Server Error",
-        503 => "Service Unavailable",
-        _ => "OK",
+fn build_http_response(status: u16, content_type: &str, body: &[u8], retry_after: bool) -> Vec<u8> {
+    let reason = reason_phrase(status);
+    // Only a 503 from the overload path carries Retry-After: it is the signal that tells a
+    // player to back off and re-request rather than treat the stream as dead.
+    let retry_header = if retry_after {
+        "Retry-After: 5\r\n"
+    } else {
+        ""
     };
     let mut resp = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
         status,
         reason,
         content_type,
-        body.len()
+        body.len(),
+        retry_header
     )
     .into_bytes();
     resp.extend_from_slice(body);
     resp
+}
+
+/// Reason phrase for a status code.
+///
+/// The fallback is class-correct rather than a blanket `"OK"`: a model picking 403 used to be
+/// framed as `HTTP/1.1 403 OK`, which is a contradiction on the wire.
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        204 => "No Content",
+        206 => "Partial Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        410 => "Gone",
+        416 => "Range Not Satisfiable",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        100..=199 => "Informational",
+        200..=299 => "Success",
+        300..=399 => "Redirection",
+        400..=499 => "Client Error",
+        500..=599 => "Server Error",
+        _ => "Unknown",
+    }
 }
 
 /// Parse the method and path from a partial HTTP request. Returns None until the request line and

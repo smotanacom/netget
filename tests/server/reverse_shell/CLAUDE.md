@@ -17,6 +17,14 @@ usable answer" and **half-close** the socket; the test asserts a subsequent read
 bytes). Equating "no answer" with "empty output, keep going" would be the fail-open shape that bit
 OAuth2 — an LLM outage would look like a working silent shell.
 
+**Assert the failure notice carries a category and nothing else.** The same test collects the
+bytes written before the FIN and asserts they contain `[netget] request could not be processed`
+— the `WireFailure::Unavailable` text — and none of the tokens that leaked in the incident
+`tests/wire_failure_test.rs` documents (`retries`, a backend URL, a model name, a `/Users/`
+path, `LLM`, `ollama`). A dropped shell session that says nothing is indistinguishable from the
+far-end implant dying; a session that says *why* in netget's own words is the bug that guard
+exists to stop. The wording, not just the presence, is what the assertion pins.
+
 **Event rules before the instruction rule.** Rules match in order; `on_instruction_containing`
 would otherwise answer a network event with `open_server`.
 

@@ -82,6 +82,23 @@ and ignored the rest, so a chosen error was dropped and the caller received eith
 `get_startup_examples`, which ends `action('mcp_error_response', code=-32601, ...)`, could not
 work before this.
 
+### Three outcomes, three `decision=` tags
+
+An operator has to be able to tell apart a model that refused, a model that said nothing, and a
+backend that broke. All three are logged (tracing + the status stream) with a stable tag:
+
+| Outcome | Caller receives | Log tag |
+|---|---|---|
+| Handler returns `mcp_error_response` | that JSON-RPC error, verbatim | `decision=model_reject` |
+| Handler runs but produces no usable action | the per-method default (see Methods) | `decision=model_no_answer` |
+| LLM call errors, backend saturated | `-32000`, `data.retryable = true` | `decision=fail_closed_llm_error_overloaded` |
+| LLM call errors, anything else | `-32603`, `data.retryable = false` | `decision=fail_closed_llm_error_unavailable` |
+
+The two failure codes are deliberately distinct so a client backs off on saturation instead of
+recording a permanent fault. The peer-visible `message` is `WireFailure::text()` — a
+`&'static str`, so the backend URL, the model name and the `anyhow` context chain cannot reach
+the wire no matter how the error is shaped. They go to the log line above instead.
+
 ## Correlation
 
 The JSON-RPC `id` is echoed on every reply, success and error alike; `handle_jsonrpc` clones it

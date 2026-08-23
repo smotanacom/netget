@@ -85,6 +85,34 @@ async fn test_mongodb_answers_ok_zero_when_llm_fails() -> E2EResult<()> {
          server went silent, which is the defect: {error:?}"
     );
 
+    // The driver must see a *command* failure carrying a code, not a transport error. Code 1
+    // is InternalError, the `WireFailure::Unavailable` mapping; the mock backend here is
+    // simply unmatched, not saturated, so 365 (`TemporarilyUnavailable`, the `Overloaded`
+    // mapping) would be wrong.
+    match &*error.kind {
+        mongodb::error::ErrorKind::Command(cmd) => {
+            assert_eq!(
+                cmd.code, 1,
+                "expected InternalError (1) for a non-overload backend failure: {error:?}"
+            );
+        }
+        other => panic!("expected a MongoDB command error, got {other:?}"),
+    }
+
+    // The category, and nothing derived from the error. If netget's retry text, a backend URL
+    // or a model name ever reaches the wire again, this catches it at the driver.
+    assert!(
+        message.contains("request could not be processed")
+            || message.contains("backend at capacity"),
+        "errmsg must carry a category only: {error:?}"
+    );
+    for leak in ["http://", "ollama", "127.0.0.1:11434", "retries", ".rs:"] {
+        assert!(
+            !message.contains(leak),
+            "internal detail `{leak}` reached the wire: {error:?}"
+        );
+    }
+
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
