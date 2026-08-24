@@ -125,7 +125,14 @@ impl KubernetesClient {
     /// Takes the `kube::Client` rather than calling `try_default()` itself, so the
     /// handle built once at connect time is the one every operation uses.
     #[allow(clippy::too_many_arguments)]
-    pub async fn execute_operation(
+    /// Run one operation. Raises no event, calls no LLM.
+    ///
+    /// Deliberately free of any path back into `notify_response`: that would make the async
+    /// type self-referential (notify -> operation -> notify), which rustc cannot prove
+    /// `Send`, so `tokio::spawn` refuses it. Follow-up actions the model returns for a
+    /// response event run through here, which breaks that cycle and bounds the loop.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_operation_once(
         k8s_client: &kube::Client,
         client_id: ClientId,
         operation: String,
@@ -134,9 +141,7 @@ impl KubernetesClient {
         name: Option<String>,
         data: Option<serde_json::Value>,
         label_selector: Option<String>,
-        app_state: Arc<AppState>,
-        llm_client: OllamaClient,
-        status_tx: mpsc::UnboundedSender<String>,
+        app_state: &Arc<AppState>,
     ) -> Result<serde_json::Value> {
         // Determine namespace
         let ns = if let Some(n) = namespace {
@@ -205,6 +210,52 @@ impl KubernetesClient {
             )),
         };
 
+        result
+    }
+
+    pub async fn execute_operation(
+        k8s_client: &kube::Client,
+        client_id: ClientId,
+        operation: String,
+        resource_type: String,
+        namespace: Option<String>,
+        name: Option<String>,
+        data: Option<serde_json::Value>,
+        label_selector: Option<String>,
+        app_state: Arc<AppState>,
+        llm_client: OllamaClient,
+        status_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<serde_json::Value> {
+        // Resolve the namespace here too: the notify payload below reports it, and
+        // `run_operation_once` takes ownership of the Option.
+        let ns = if let Some(n) = namespace.clone() {
+            n
+        } else {
+            app_state
+                .with_client_mut(client_id, |client| {
+                    client
+                        .get_protocol_field("namespace")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .await
+                .flatten()
+                .unwrap_or_else(|| "default".to_string())
+        };
+
+        let result = Self::run_operation_once(
+            k8s_client,
+            client_id,
+            operation.clone(),
+            resource_type.clone(),
+            namespace,
+            name,
+            data,
+            label_selector,
+            &app_state,
+        )
+        .await;
+
         match result {
             Ok(response) => {
                 info!("Kubernetes client {} operation successful", client_id);
@@ -222,6 +273,7 @@ impl KubernetesClient {
                 });
                 let notify = tokio::spawn(Self::notify_response(
                     client_id,
+                    k8s_client.clone(),
                     event_data,
                     app_state.clone(),
                     llm_client,
@@ -246,6 +298,7 @@ impl KubernetesClient {
     /// call for a human answer.
     async fn notify_response(
         client_id: ClientId,
+        k8s_client: kube::Client,
         event_data: serde_json::Value,
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
@@ -274,11 +327,55 @@ impl KubernetesClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
+                }
+
+                // Execute what the model asked for. These were discarded, so answering
+                // k8s_resource_received did nothing -- a model that listed pods and wanted
+                // to fetch the logs of one it had just seen was ignored.
+                //
+                // Dispatch goes through `run_operation_once`, which raises no event: that
+                // bounds the loop and keeps the async type non-recursive, which is what
+                // tokio::spawn's Send bound requires.
+                use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                for action in actions {
+                    let Ok(ClientActionResult::Custom { name, data }) =
+                        protocol.execute_action(action.clone())
+                    else {
+                        continue;
+                    };
+                    if name != "k8s_operation" {
+                        continue;
+                    }
+                    let str_of =
+                        |k: &str| data.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let outcome = Self::run_operation_once(
+                        &k8s_client,
+                        client_id,
+                        str_of("operation").unwrap_or_default(),
+                        str_of("resource_type").unwrap_or_default(),
+                        str_of("namespace"),
+                        str_of("name"),
+                        data.get("spec").cloned().filter(|v| !v.is_null()),
+                        str_of("label_selector"),
+                        &app_state,
+                    )
+                    .await;
+                    match outcome {
+                        Ok(v) => info!(
+                            "Kubernetes client {} follow-up -> {}",
+                            client_id,
+                            crate::utils::truncate_for_log(&v.to_string(), 120)
+                        ),
+                        Err(e) => error!(
+                            "Kubernetes client {} follow-up action failed: {}",
+                            client_id, e
+                        ),
+                    }
                 }
             }
             Err(e) => {
