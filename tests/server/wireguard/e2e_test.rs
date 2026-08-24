@@ -314,17 +314,25 @@ fn protocol_advertises_wireguard_add_peer_as_the_only_async_action() {
 }
 
 #[test]
-fn metadata_is_beta_not_stable() {
+fn metadata_is_experimental_until_a_real_peer_handshakes() {
     use ::netget::protocol::metadata::DevelopmentState;
-    // Stable requires validation against a real client, which has never happened
-    // for this protocol (root + a WireGuard backend required). It must not claim
-    // Stable. If a future change earns Stable via a real interop test, update
-    // this assertion together with the metadata and both CLAUDE.md files.
+    // This assertion used to demand Beta, on the reasoning that Stable requires validation
+    // against a real client and that has never happened here. The reasoning is right and it
+    // proves more than it was used for: Beta is defined as "human-reviewed, works against real
+    // clients", so the very same missing evidence rules Beta out as well.
+    //
+    // Nothing has completed a handshake against this server. `boringtun` was evaluated as an
+    // in-test peer and deliberately not adopted, and the only root-gated harness is #[ignore]d
+    // and asserts on NetGet's own log line rather than on peer behaviour. NetGet also
+    // implements none of the WireGuard protocol itself and cannot bring an interface up on
+    // macOS without an external wireguard-go binary.
+    //
+    // When a real peer does complete a real exchange, raise this and the metadata together.
     let proto = WireguardProtocol::new();
     assert_eq!(
         proto.metadata().state,
-        DevelopmentState::Beta,
-        "WireGuard must be Beta until a real client completes a handshake against it"
+        DevelopmentState::Experimental,
+        "WireGuard must stay Experimental until a real peer completes a handshake against it"
     );
 }
 

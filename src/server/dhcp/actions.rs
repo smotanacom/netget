@@ -79,7 +79,14 @@ impl Protocol for DhcpProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            .state(DevelopmentState::Beta)
+            // Experimental, not Beta. Beta means "works against real clients", and this
+            // protocol's own e2e_testing note below states that no real DHCP client can be
+            // pointed at it: dhclient/ipconfig bind UDP/68, need root, and cannot target an
+            // ephemeral loopback port. The test peer is an RFC 2131/2132 decoder written in the
+            // test file — a genuinely independent reading of the spec, and a good test, but not
+            // a third-party implementation. Promoting again means decoding the replies with an
+            // independent codec crate as well.
+            .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(67))
             .implementation("dhcproto v0.12 for parsing and encoding")
             .llm_control("Discover→Offer, Request→Ack flow + lease options")
