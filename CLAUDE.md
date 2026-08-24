@@ -93,7 +93,18 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   event and a `log_packet` action **that do not exist**, all `#[ignore]`d behind root so the
   mismatch never surfaced. The bar for Stable is a test that a real independent peer completed a
   real exchange — treat any Stable claim without one as this same bug.
-- **Beta** — human-reviewed, works against real clients (12 protocols).
+
+  **That demotion undershot, and the correction is the useful lesson.** `wireguard` was moved
+  Stable→Beta on the grounds that it had never been validated against a real client — but that
+  is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
+  months. It is now Experimental. When you demote for missing evidence, check which ratings that
+  evidence actually supports rather than stepping down one notch by reflex.
+- **Beta** — human-reviewed, works against real clients (10 protocols: `dns`, `doh`, `dot`,
+  `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`). `dhcp` and `wireguard` were removed in
+  August 2026 — neither has a third-party peer. dhcp's own metadata says no real DHCP client can
+  be pointed at it (dhclient/ipconfig bind UDP/68, need root, cannot target an ephemeral loopback
+  port), so its peer is an in-test RFC 2131 decoder: an independent reading of the spec, but not
+  an independent implementation. Re-derive this list rather than trusting it; the counts drift.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
   majority (~99).
 - **Incomplete** — hidden from the LLM entirely (`is_available_to_llm()` returns false). **None
