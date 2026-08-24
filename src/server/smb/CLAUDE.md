@@ -216,8 +216,8 @@ declared set and the event's action list drift apart again.
 | `operation` | Expected action | Effect on the wire |
 |---|---|---|
 | `session_setup` | `smb_auth_success` / `smb_auth_deny` | STATUS_SUCCESS with a session id, or STATUS_ACCESS_DENIED |
-| `create` | `smb_create_file` / `smb_create_directory` | FILE_ATTRIBUTE_NORMAL (0x80) or FILE_ATTRIBUTE_DIRECTORY (0x10) in the CREATE response, and the handle is recorded as one or the other |
-| `read` | `smb_read_file` | the decoded `content` becomes the READ response body |
+| `create` | `smb_create_file` / `smb_create_directory` | FILE_ATTRIBUTE_NORMAL (0x80) or FILE_ATTRIBUTE_DIRECTORY (0x10) in the CREATE response, and the handle is recorded as one or the other; **neither action ⇒ STATUS_ACCESS_DENIED and no handle** |
+| `read` | `smb_read_file` | the decoded `content` becomes the READ response body; **absent action ⇒ STATUS_ACCESS_DENIED** |
 | `write` | `smb_write_file` | STATUS_SUCCESS with `bytes_written`; **absent action ⇒ STATUS_ACCESS_DENIED** |
 | `query_info` | `smb_get_file_info` | `size` in the QUERY_INFO response |
 | `query_directory` | `smb_list_directory` | the `files` array becomes the directory listing |
@@ -228,10 +228,25 @@ FileDispositionInformation (MS-SMB2 2.2.39). This server does not implement SET_
 all, so neither action could ever have been requested. Implementing delete means
 implementing SET_INFO first.
 
-**Write is fail-closed.** A `write` whose LLM response contains no `smb_write_file` is
-refused with STATUS_ACCESS_DENIED. Silence from the model, an LLM outage and an explicit
-denial must not be indistinguishable from approval (see the fail-open note in the root
-`CLAUDE.md`).
+**Create, read and write are all fail-closed.** An operation whose LLM response contains no
+corresponding action is refused with STATUS_ACCESS_DENIED. Silence from the model, an LLM
+outage and an explicit denial must not be indistinguishable from approval (see the fail-open
+note in the root `CLAUDE.md`).
+
+Write was fail-closed first; `create` and `read` were not, and both were the fail-open shape:
+
+- **CREATE** read only `smb_create_directory` from the answer and treated its absence as
+  "regular file", so an answer with *no* create action at all — a model that refused, a
+  static handler with an empty list, a reply that deserialised but said nothing — returned
+  STATUS_SUCCESS **and a live file handle**. Opening a handle is an access decision, so it
+  now requires an affirmative `smb_create_file` or `smb_create_directory`.
+- **READ** with no `smb_read_file` returned STATUS_SUCCESS whose body was the literal bytes
+  `File not found or empty` — a *successful* read of fabricated content, indistinguishable
+  from a file that genuinely holds that text.
+
+Neither wire response can carry the difference between "the model refused" and "the model
+said nothing", so the log does: `decision=model_reject` when the answer had actions but none
+of the expected type, `decision=fail_closed_no_action` when it had none at all.
 
 ### Payload encoding (read before writing prompts)
 
