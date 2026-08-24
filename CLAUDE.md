@@ -743,9 +743,18 @@ Assume other agents work in this repo concurrently.
   **first** and say so — but prefer leaving it alone and reporting it.
 - **Don't fan out a large agent wave while the API is failing.** If agents start returning
   "stalled" or the tool-permission classifier times out, stop and wait instead of launching the
-  next slice. One 23-agent wave during a degraded period burned ~3.8M tokens for 2 usable
-  results, and the dead agents left half-written files in the shared tree for someone else to
-  trip over.
+  next slice. Three waves were attempted during one degraded period and burned **~9.8M tokens to
+  return 5 usable results**; the dead agents also left half-written files in the shared tree for
+  someone else to trip over.
+
+  Two diagnoses that looked obvious and were both **wrong**, recorded so they are not re-tried:
+  (1) *a cold `target/` making agents queue on the build lock* — warming the cache first changed
+  nothing; (2) *agents blocking >180s inside `cargo check` with no output* — a rewritten wave that
+  forbade cargo entirely still lost 28 of 29 agents. The stall is in the agent infrastructure, not
+  in what the agents were asked to do, so **rewriting the task does not rescue it — only waiting
+  does.** The tell is uniformity: when nearly every agent dies with the same "no progress for
+  180000ms" on all 6 retries while one or two trivial ones succeed, that is the platform, not the
+  prompt.
 - **Pause and report** if you hit an error in code you did not modify. It is almost always
   another agent mid-edit; retry rather than "fixing" their file.
 - **Verify HEAD, not the working tree.** During parallel work the working tree is routinely
