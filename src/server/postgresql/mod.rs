@@ -379,21 +379,35 @@ impl PostgresqlHandler {
             return Ok(PgOutcome::Close);
         }
 
-        // No response action matched. An empty result set is the safest reply for a SELECT
-        // (the client still gets a valid, if empty, row description).
-        warn!("PostgreSQL: no response action produced for {:?}", sql);
-        let _ = self
-            .status_tx
-            .send("[WARN] PostgreSQL: no response action produced".to_string());
-
-        if sql.trim_start().to_uppercase().starts_with("SELECT") {
-            Ok(PgOutcome::Rows {
-                fields: Arc::new(Vec::new()),
-                rows: Vec::new(),
-            })
-        } else {
-            Ok(PgOutcome::Tag("OK".to_string()))
-        }
+        // No response action matched: the handler ran but produced nothing this protocol can
+        // encode — a model that refused, a static handler with an empty list, or an answer
+        // whose actions were all unrecognised.
+        //
+        // This used to answer success. A SELECT got an empty result set, which reads as "the
+        // query ran and matched no rows" — a factual claim about the data that nothing
+        // supports. Worse, anything else got the command tag `OK`, so an INSERT, UPDATE or
+        // DELETE the model declined was reported to the client as having completed, and a
+        // caller would carry on believing the write landed.
+        //
+        // Neither is recoverable by the client, because success is indistinguishable from a
+        // real one. Fail closed instead, with the same shape the backend-error path above uses
+        // so the two are consistent on the wire. 02000 (no_data) is deliberately NOT used: it
+        // would again assert something about the data rather than about netget.
+        warn!(
+            "PostgreSQL: no response action produced for {:?} (decision=fail_closed_no_action)",
+            sql
+        );
+        let _ = self.status_tx.send(
+            "[ERROR] PostgreSQL: no response action produced (decision=fail_closed_no_action)"
+                .to_string(),
+        );
+        Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+            "ERROR".to_string(),
+            "XX000".to_string(),
+            crate::utils::WireFailure::Unavailable
+                .prefixed_text()
+                .to_string(),
+        ))))
     }
 
     /// Resolve `sql`, storing the outcome so a following Execute reuses it (one LLM call per
