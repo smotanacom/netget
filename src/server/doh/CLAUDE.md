@@ -15,9 +15,30 @@ DoH contributes the HTTPS/HTTP2 transport and the RFC 8484 request encodings;
 every DNS semantic - the action set, action execution, response construction -
 is the DNS protocol's, reached through delegation (see below). Both the GET
 (base64url `?dns=`) and POST (`application/dns-message` body) paths are
-exercised by `tests/server/doh/e2e_test.rs` against a real hyper/rustls client.
+exercised by `tests/server/doh/e2e_test.rs` against **reqwest** (hyper + rustls under the hood).
 Not covered: HTTP/1.1, CA-signed or custom certificates, rate limiting, caching,
 EDNS0.
+
+### ALPN
+
+The listener advertises **`h2`**, via
+`tls_cert_manager::generate_default_tls_config_with_alpn(&["h2"])` rather than the shared
+`generate_default_tls_config()` — `dot`, `tls` and `quic` are built from that default and
+document themselves as ALPN-less, so it must stay that way for them.
+
+It advertised nothing until August 2026, and this server speaks only HTTP/2. A client that
+negotiates normally therefore had no way to learn the protocol: it fell back to HTTP/1.1 and
+hyper's `http2::Builder` rejected the connection with "http2 error", or it refused outright.
+
+**The E2E test could not have caught this**, because `create_insecure_client()` uses
+`http2_prior_knowledge()`, which asserts HTTP/2 out of band and skips ALPN entirely. Dropping
+that option does not fix the coverage either: under `danger_accept_invalid_certs` reqwest builds
+its own rustls `ClientConfig` that does not offer `h2`, so it simply sends HTTP/1.1 and fails.
+`server_advertises_h2_alpn` covers the property directly instead, and also asserts the shared
+default is still ALPN-less so this cannot be "fixed" by changing it under the other three.
+
+Still unproven end to end: that a client which negotiates via ALPN completes a real DoH query.
+That needs a client which offers `h2` while trusting a self-signed certificate.
 
 ## Library Choices
 

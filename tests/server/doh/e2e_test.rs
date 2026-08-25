@@ -86,6 +86,13 @@ fn create_insecure_client() -> E2EResult<Client> {
     use rustls::crypto::CryptoProvider;
     let _ = CryptoProvider::install_default(rustls::crypto::ring::default_provider());
 
+    // `http2_prior_knowledge()` asserts HTTP/2 out of band and skips ALPN entirely, so nothing
+    // below exercises protocol negotiation. That is a real gap in coverage — see
+    // `server_advertises_h2_alpn` for what does cover it, and the note in
+    // src/server/doh/CLAUDE.md for why this client cannot: under
+    // `danger_accept_invalid_certs` reqwest builds its own rustls ClientConfig that does not
+    // offer `h2`, so dropping prior knowledge here just makes it send HTTP/1.1 to an
+    // HTTP/2-only server.
     let client = Client::builder()
         .danger_accept_invalid_certs(true)
         .http2_prior_knowledge()
@@ -208,4 +215,35 @@ async fn test_doh_server() -> E2EResult<()> {
     server.stop().await?;
 
     Ok(())
+}
+
+/// The DoH listener must advertise `h2` in the TLS handshake.
+///
+/// RFC 8484 DoH runs over HTTP/2 and this server speaks nothing else, so a client that
+/// negotiates normally has to be told `h2` during the handshake — otherwise it falls back to
+/// HTTP/1.1, which hyper's `http2::Builder` rejects with "http2 error", or it refuses outright.
+///
+/// The server advertised no ALPN at all until August 2026 and `test_doh_server` did not catch
+/// it, because that test connects with `http2_prior_knowledge()` and so never negotiates. This
+/// asserts the property that test cannot: the config the listener is built from offers exactly
+/// `h2`, and nothing else that the server could not honour.
+#[test]
+fn server_advertises_h2_alpn() {
+    let config = ::netget::server::tls_cert_manager::generate_default_tls_config_with_alpn(&["h2"])
+        .expect("build DoH TLS config");
+    assert_eq!(
+        config.alpn_protocols,
+        vec![b"h2".to_vec()],
+        "DoH must advertise exactly h2: anything less leaves a negotiating client unable to \
+         reach an HTTP/2-only server, anything more advertises a protocol it cannot speak"
+    );
+
+    // The shared default must stay ALPN-less: `dot`, `tls` and `quic` are built from it and
+    // document themselves as negotiating nothing.
+    let shared = ::netget::server::tls_cert_manager::generate_default_tls_config()
+        .expect("build shared TLS config");
+    assert!(
+        shared.alpn_protocols.is_empty(),
+        "the shared default gained ALPN, which changes dot/tls/quic behaviour out from under them"
+    );
 }
