@@ -282,12 +282,43 @@ impl WhoisClient {
                 .await
                 {
                     Ok(ClientLlmResult {
-                        actions: _,
+                        actions,
                         memory_updates,
                     }) => {
                         // Update memory
                         if let Some(mem) = memory_updates {
                             app_state.set_memory_for_client(client_id, mem).await;
+                        }
+
+                        // Execute what the model asked for. These were discarded, so a
+                        // model that read a registry response and wanted to follow the
+                        // referral to the registrar -- the chase that is most of what
+                        // WHOIS is used for -- was silently ignored.
+                        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                        for action in actions {
+                            let Ok(ClientActionResult::Custom { name, data }) =
+                                protocol.execute_action(action.clone())
+                            else {
+                                continue;
+                            };
+                            if name != "whois_query" {
+                                continue;
+                            }
+                            let Some(q) = data.get("query").and_then(|v| v.as_str()) else {
+                                continue;
+                            };
+                            match Self::run_query_once(&remote_addr, q).await {
+                                Ok(resp) => info!(
+                                    "WHOIS client {} follow-up query {:?} returned {} bytes",
+                                    client_id,
+                                    q,
+                                    resp.len()
+                                ),
+                                Err(e) => error!(
+                                    "WHOIS client {} follow-up query {:?} failed: {}",
+                                    client_id, q, e
+                                ),
+                            }
                         }
                     }
                     Err(e) => {
@@ -315,6 +346,31 @@ impl WhoisClient {
 
     /// Put one executed action on the wire. Shared by the LLM path and injected commands
     /// so the encoding of `query_whois` exists exactly once.
+    /// Run one WHOIS query on a **fresh** connection and return the response.
+    ///
+    /// Raises no event and calls no LLM.
+    ///
+    /// The new connection is not incidental. RFC 3912 is one query per connection: the
+    /// server answers and closes, and `apply_action` says so itself ("a second one on the
+    /// same connection is outside RFC 3912 and most servers ignore it"). So a follow-up
+    /// the model asks for after reading a response -- the referral chase that is most of
+    /// what WHOIS is for, where the registry tells you which registrar to ask next --
+    /// genuinely needs its own connection.
+    ///
+    /// Raising no event also bounds the chain and keeps the async type non-recursive,
+    /// which is what tokio::spawn's Send bound requires.
+    async fn run_query_once(remote_addr: &str, query: &str) -> Result<String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = TcpStream::connect(remote_addr)
+            .await
+            .with_context(|| format!("WHOIS follow-up could not reach {remote_addr}"))?;
+        stream.write_all(format!("{query}\r\n").as_bytes()).await?;
+        stream.flush().await?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await?;
+        Ok(response)
+    }
+
     async fn apply_action<W>(
         result: ClientActionResult,
         write_half: &Arc<Mutex<W>>,

@@ -65,7 +65,6 @@ const DISCARDED_BASELINE: &[&str] = &[
     "oauth2",
     "saml",
     "webrtc",
-    "whois",
 ];
 
 fn client_dirs() -> Vec<(String, String, String)> {
