@@ -69,7 +69,10 @@ maintains data and search results through conversation context.
 7. Process action result:
     - `ActionResult::Custom { name: "elasticsearch_response", .. }`: Build HTTP response
       with status/body
-8. If no action, return default JSON `{"acknowledged": true}`
+8. If no action, **fail closed**: 500 with the standard Elasticsearch error envelope
+   (`type: "server_error"`) carrying the `WireFailure` category. It used to return
+   `{"acknowledged": true}` — the most affirmative body in the API, sent exactly when nothing
+   affirmed anything, so a declined create-index or delete-by-query read as applied.
 9. Keep the connection open for further requests
 
 ### Operation Detection

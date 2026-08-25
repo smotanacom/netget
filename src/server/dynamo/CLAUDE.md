@@ -67,7 +67,10 @@ through conversation context rather than persistent storage.
 7. Process action result:
     - `ActionResult::Custom { name: "dynamo_response", .. }`: Build HTTP response with
       status/body
-8. If no action, return empty JSON `{}`
+8. If no action, **fail closed**: 500 `{"__type":"InternalServerError", …}` carrying the
+   `WireFailure` category. It used to return `{}`, which *is* the documented success body for
+   PutItem and DeleteItem — so a declined write looked performed — and reads as "no such item"
+   for GetItem.
 9. Close connection (HTTP/1.1 without keep-alive)
 
 ### Operation Detection
