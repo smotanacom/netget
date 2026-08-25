@@ -229,7 +229,9 @@ async fn handle_s3_request_with_llm(
                 .find_map(|result| match result {
                     ActionResult::Custom { name, .. } => match name.as_str() {
                         "s3_error" => Some("model_reject"),
-                        "s3_object" | "s3_object_list" | "s3_bucket_list" => Some("model_answer"),
+                        "s3_object" | "s3_object_list" | "s3_bucket_list" | "s3_write_result" => {
+                            Some("model_answer")
+                        }
                         _ => None,
                     },
                     _ => None,
@@ -251,17 +253,27 @@ async fn handle_s3_request_with_llm(
                 return Ok(response);
             }
 
-            // No S3 actions found, return empty 200 OK. Logged at WARN because the model
-            // produced nothing this protocol can turn into a response — for the write verbs
-            // that empty 200 reads as success, so it must be visible in the log.
+            // The model produced nothing this protocol can turn into a response.
+            //
+            // This used to answer an empty 200 OK, and for PutObject, CreateBucket,
+            // DeleteObject and HeadObject an empty 200 is exactly what S3 returns on success —
+            // so a model that declined the operation was reported to the caller as having
+            // performed it. It could not simply be made to refuse, because until
+            // `send_s3_write_result` existed those four verbs had no affirmative action at all
+            // and refusing would have made them permanently impossible. Now they have one, so
+            // silence can mean what it should.
             log.warn(format!(
                 "S3 {} {} decision={} (no S3 response action; {} action(s) failed to \
-                 execute) — answering empty 200 OK",
+                 execute) — answering 500 InternalError",
                 operation, path, decision, failures
             ));
             Ok(Response::builder()
-                .status(StatusCode::OK)
-                .body(Full::new(Bytes::new()))
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header("Content-Type", "application/xml")
+                .body(Full::new(Bytes::from(build_error_xml(
+                    "InternalError",
+                    crate::utils::WireFailure::Unavailable.text(),
+                ))))
                 .unwrap())
         }
         Err(e) => {
@@ -522,6 +534,41 @@ fn process_s3_action_result(
                             .header("Content-Type", "application/xml")
                             .body(Full::new(Bytes::from(xml)))
                             .unwrap(),
+                    )
+                }
+                "s3_write_result" => {
+                    // A body-less acknowledgement: PutObject/CreateBucket/HeadObject answer
+                    // 200, DeleteObject answers 204. Each header is attached only when the
+                    // model supplied it, so an unadorned acknowledgement is still valid.
+                    let status = data
+                        .get("status_code")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(200) as u16;
+                    let status =
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+                    Log::new(Some(status_tx))
+                        .debug(format!("Sending S3 write acknowledgement ({})", status));
+
+                    let mut builder = Response::builder().status(status);
+                    for (field, header) in [
+                        ("etag", "ETag"),
+                        ("location", "Location"),
+                        ("content_type", "Content-Type"),
+                        ("last_modified", "Last-Modified"),
+                    ] {
+                        if let Some(v) = data.get(field).and_then(|v| v.as_str()) {
+                            builder = builder.header(header, v);
+                        }
+                    }
+                    if let Some(v) = data.get("content_length").and_then(|v| v.as_u64()) {
+                        builder = builder.header("Content-Length", v.to_string());
+                    }
+
+                    Some(
+                        builder
+                            .body(Full::new(Bytes::new()))
+                            .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))),
                     )
                 }
                 "s3_error" => {
