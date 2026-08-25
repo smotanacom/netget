@@ -326,10 +326,17 @@ impl MongodbProtocol {
     }
 
     fn execute_insert_response(&self, action: serde_json::Value) -> Result<ActionResult> {
+        // Declared `required: true`, so it is an error to omit it — not a licence to invent
+        // one. Defaulting to 1 reported a successful insert of a document that nothing said
+        // was inserted, so a malformed answer reached the driver as an acknowledged write.
         let inserted_count = action
             .get("inserted_count")
             .and_then(|v| v.as_u64())
-            .unwrap_or(1);
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mongodb_insert_response requires `inserted_count` (a non-negative integer);                      it is how many documents were actually stored and cannot be assumed"
+                )
+            })?;
 
         debug!("MongoDB insert_response: {} documents", inserted_count);
         let _ = self.status_tx.send(format!(

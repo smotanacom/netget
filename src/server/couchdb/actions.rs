@@ -832,10 +832,20 @@ impl Server for CouchDbProtocol {
                 })
             }
             "send_doc_response" => {
+                // Declared `required: true`. Defaulting to `true` meant an omitted or
+                // mistyped flag — `"false"` as a string, `0`, `null` — collapsed to success,
+                // so a model refusing a document write was reported to the client as having
+                // performed it.
                 let success = action
                     .get("success")
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "send_doc_response requires `success` (a JSON boolean, not a \
+                             string); it decides whether the document write is reported as \
+                             applied and must be stated explicitly"
+                        )
+                    })?;
 
                 let doc_id = action
                     .get("doc_id")

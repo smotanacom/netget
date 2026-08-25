@@ -554,6 +554,10 @@ impl Server for ZookeeperProtocol {
         // wire that no client can correlate.
         let xid = action.get("xid").and_then(|v| v.as_i64()).map(|v| v as i32);
         let zxid = action.get("zxid").and_then(|v| v.as_i64()).unwrap_or(0);
+        // Shared by every action below. The dedicated success responses (create, get_data,
+        // …) do not declare `error_code` and are affirmative by construction, so 0 is right
+        // for them; `zookeeper_response` DOES declare it required and is checked in its own
+        // arm, because there 0 is a grant rather than a shape.
         let error_code = action
             .get("error_code")
             .and_then(|v| v.as_i64())
@@ -642,6 +646,22 @@ impl Server for ZookeeperProtocol {
                 }
             }
             "zookeeper_response" => {
+                // `error_code` is declared `required: true` on this action, and it is the one
+                // action whose whole purpose is to say whether the operation succeeded.
+                // Defaulting it to 0 meant an answer that omitted it — or supplied a
+                // non-integer — was encoded as a successful reply, so a model that meant
+                // NONODE or NOAUTH silently granted the operation instead.
+                if !action
+                    .get("error_code")
+                    .map(|v| v.is_i64() || v.is_u64())
+                    .unwrap_or(false)
+                {
+                    return Err(anyhow!(
+                        "zookeeper_response requires `error_code` (an integer; 0 = OK, \
+                         -101 = NONODE, -110 = NODEEXISTS, -102 = NOAUTH) - it decides success \
+                         or failure and must be stated, not assumed"
+                    ));
+                }
                 // Reject invalid hex loudly instead of silently sending a body-less reply:
                 // a truncated body desynchronizes the client for the rest of the connection.
                 match action.get("data_hex").and_then(|v| v.as_str()) {
