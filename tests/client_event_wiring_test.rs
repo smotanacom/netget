@@ -61,7 +61,6 @@ const DISCARDED_BASELINE: &[&str] = &[
     "elasticsearch",
     "grpc",
     "isis",
-    "mdns",
     "oauth2",
     "saml",
     "webrtc",
