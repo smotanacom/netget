@@ -79,15 +79,39 @@ async fn injected_cql_reaches_our_own_server() {
     let server_id = ServerForm {
         protocol: "cassandra".to_string(),
         port: Some(0),
+        // One script handler branching on the request, not a blanket `*` static rule.
+        //
+        // The server fails closed on a request no handler answers, which is correct -- but
+        // it means the CQL handshake has to be answered in kind: STARTUP wants
+        // cassandra_ready and OPTIONS wants cassandra_supported. A `*` rule answering
+        // everything with cassandra_result_rows made the driver's STARTUP fail with
+        // "netget: no handler answer for this request", so the client never connected.
+        //
+        // It cannot be several static rules either: EventHandler has only `event_pattern`
+        // and `handler`, so every rule registered against a given event id matches every
+        // occurrence and first-match-wins.
         event_handlers: Some(vec![serde_json::json!({
             "event_pattern": "*",
             "handler": {
-                "type": "static",
-                "actions": [ {
-                    "type": "cassandra_result_rows",
-                    "columns": [ { "name": "marker", "type": "varchar" } ],
-                    "rows": [ ["served"] ]
-                } ]
+                "type": "script",
+                "language": "python",
+                "resident": true,
+                "code": r#"
+def handle(event_type, event, message):
+    if event_type == "cassandra_startup":
+        return [{"type": "cassandra_ready"}]
+    if event_type == "cassandra_options":
+        return [{"type": "cassandra_supported"}]
+    if event_type == "cassandra_auth":
+        return [{"type": "cassandra_auth_success"}]
+    if event_type == "cassandra_prepare":
+        return [{"type": "cassandra_prepared"}]
+    return [{
+        "type": "cassandra_result_rows",
+        "columns": [{"name": "marker", "type": "varchar"}],
+        "rows": [["served"]],
+    }]
+"#
             }
         })]),
         ..Default::default()
