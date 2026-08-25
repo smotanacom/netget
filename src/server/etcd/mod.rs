@@ -776,12 +776,14 @@ impl EtcdServer {
         // Process LLM action results to build response
         let mut meta_lock = meta.lock().await;
         let mut revision: i64 = 0;
+        let mut answered = false;
 
         for protocol_result in &execution_result.protocol_results {
             if let crate::llm::actions::protocol_trait::ActionResult::Custom { name, data } =
                 protocol_result
             {
                 if name == "etcd_put_response" {
+                    answered = true;
                     // LLM provided put response
                     revision = data
                         .get("revision")
@@ -799,9 +801,26 @@ impl EtcdServer {
             }
         }
 
-        // If LLM didn't provide revision, increment it ourselves
-        if revision == 0 {
-            meta_lock.increment_revision();
+        // A Put with no `etcd_put_response` used to fall through here, bump the revision and
+        // return a normal PutResponse — so a model that declined the write, a static handler
+        // with an empty action list, or an answer whose actions were all unrecognised was
+        // reported to the client as a committed write, complete with a fresh revision number
+        // that nothing had written. A client cannot tell that from a real commit.
+        //
+        // Refuse with the same gRPC failure shape the backend-error path uses. INTERNAL, not
+        // UNAVAILABLE: nothing is saturated, so inviting a retry would be wrong.
+        if !answered {
+            drop(meta_lock);
+            Log::new(Some(&status_tx)).warn(
+                "etcd Put could not be answered: the handler produced no etcd_put_response \
+                 (decision=fail_closed_no_action). Replying grpc-status 13 (INTERNAL); no \
+                 revision is being invented."
+                    .to_string(),
+            );
+            return Err(GrpcFailure::new(
+                GRPC_INTERNAL,
+                crate::utils::WireFailure::Unavailable.prefixed_text(),
+            ));
         }
 
         let response = PutResponse {
