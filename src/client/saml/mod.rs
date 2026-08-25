@@ -376,15 +376,19 @@ impl SamlClient {
 
     /// Initiate SAML SSO authentication
     #[allow(clippy::too_many_arguments)]
-    pub async fn initiate_sso(
+    /// Build the AuthnRequest and SSO URL and store them. Raises no event, calls no LLM.
+    ///
+    /// Split out so a follow-up action the model returns for a SAML event can run without
+    /// re-entering `notify_event`. That path would otherwise be mutually recursive --
+    /// notify_event -> apply_action -> initiate_sso -> notify_event -- which rustc rejects
+    /// while inferring the async types, quite apart from letting one SSO drive the model
+    /// round in circles.
+    pub async fn build_sso_request(
         client_id: ClientId,
         relay_state: Option<String>,
         force_authn: bool,
-        app_state: Arc<AppState>,
-        llm_client: OllamaClient,
-        status_tx: mpsc::UnboundedSender<String>,
-        dispatch: Dispatch,
-    ) -> Result<()> {
+        app_state: &Arc<AppState>,
+    ) -> Result<(String, String, String)> {
         info!("SAML client {} initiating SSO", client_id);
 
         // Get IdP URL and SP configuration from client
@@ -458,6 +462,21 @@ impl SamlClient {
                     .set_protocol_field("sso_url".to_string(), serde_json::json!(sso_url.clone()));
             })
             .await;
+
+        Ok((idp_url, sso_url, request_id))
+    }
+
+    pub async fn initiate_sso(
+        client_id: ClientId,
+        relay_state: Option<String>,
+        force_authn: bool,
+        app_state: Arc<AppState>,
+        llm_client: OllamaClient,
+        status_tx: mpsc::UnboundedSender<String>,
+        dispatch: Dispatch,
+    ) -> Result<()> {
+        let (idp_url, sso_url, request_id) =
+            Self::build_sso_request(client_id, relay_state, force_authn, &app_state).await?;
 
         // Notify LLM about SSO URL
         let event = Event::new(
@@ -619,11 +638,57 @@ impl SamlClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
+                }
+
+                // Execute what the model asked for. These were discarded, so answering a
+                // SAML event did nothing -- a model that read an IdP response and wanted
+                // to start a fresh AuthnRequest (a re-authentication, which is exactly
+                // what force_authn exists for) was silently ignored.
+                //
+                // Dispatch goes through `build_sso_request`, which does the work and
+                // raises no event. Calling `initiate_sso` here instead would be mutually
+                // recursive -- notify_event -> apply_action -> initiate_sso ->
+                // notify_event -- which rustc rejects while inferring the async types,
+                // quite apart from letting one SSO drive the model round in circles.
+                use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                for action in actions {
+                    let Ok(ClientActionResult::Custom { name, data }) =
+                        protocol.execute_action(action.clone())
+                    else {
+                        continue;
+                    };
+                    if name != "saml_initiate_sso" {
+                        info!(
+                            "SAML client {} follow-up '{}' has no non-notifying path; skipped",
+                            client_id, name
+                        );
+                        continue;
+                    }
+                    let relay_state = data
+                        .get("relay_state")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let force_authn = data
+                        .get("force_authn")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    match Self::build_sso_request(client_id, relay_state, force_authn, &app_state)
+                        .await
+                    {
+                        Ok((_, sso_url, _)) => info!(
+                            "SAML client {} follow-up built SSO URL {}",
+                            client_id, sso_url
+                        ),
+                        Err(e) => error!(
+                            "SAML client {} follow-up saml_initiate_sso failed: {}",
+                            client_id, e
+                        ),
+                    }
                 }
             }
             Err(e) => {
