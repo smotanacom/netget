@@ -748,6 +748,42 @@ impl ElasticsearchClient {
     /// Raise `elasticsearch_response_received` off the caller's task. Never awaited by a
     /// caller that holds the command loop: an event handler may park this call for a human
     /// answer.
+    /// Issue one Elasticsearch request and return `(status, body)`. Raises no event and
+    /// calls no LLM.
+    ///
+    /// Follow-up actions the model returns for `elasticsearch_response_received` run
+    /// through here. Calling `search`/`index_document`/... instead would be recursive --
+    /// each of those ends in `spawn_response_notification`, which calls
+    /// `call_llm_with_response`, which is where the follow-ups are executed -- and rustc
+    /// rejects the resulting async type. Raising nothing also bounds the chain: one search
+    /// cannot drive the model round in circles.
+    async fn run_request_once(
+        client_id: ClientId,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        app_state: &Arc<AppState>,
+    ) -> Result<(u16, serde_json::Value)> {
+        let cluster_url = Self::get_cluster_url(app_state, client_id).await?;
+        let url = format!(
+            "{}/{}",
+            cluster_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+        let http_client = reqwest::Client::new();
+        let mut req = http_client.request(method, &url);
+        if let Some(b) = body {
+            req = req.json(&b);
+        }
+        let response = req.send().await.context("Elasticsearch request failed")?;
+        let status_code = response.status().as_u16();
+        let response_body: serde_json::Value = response
+            .json()
+            .await
+            .unwrap_or(serde_json::json!({"error": "Failed to parse response"}));
+        Ok((status_code, response_body))
+    }
+
     fn spawn_response_notification(
         client_id: ClientId,
         operation: String,
@@ -816,15 +852,75 @@ impl ElasticsearchClient {
             .await
             {
                 Ok(ClientLlmResult {
-                    actions: _,
+                    actions,
                     memory_updates,
                 }) => {
                     // Update memory
                     if let Some(mem) = memory_updates {
                         app_state.set_memory_for_client(client_id, mem).await;
                     }
-                    // Note: Actions are intentionally not executed here to avoid recursion.
-                    // For HTTP-based clients like Elasticsearch, responses don't trigger new operations.
+
+                    // Execute what the model asked for. These were discarded behind a note
+                    // saying it was "to avoid recursion" and that "responses don't trigger
+                    // new operations" -- the recursion was real, the claim was not. Reading
+                    // search hits and then fetching one of the documents, or refining the
+                    // query, is exactly what a search client is for, and none of it worked.
+                    //
+                    // `run_request_once` issues the request and raises no event, which both
+                    // breaks the cycle and bounds the chain.
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        let index = data.get("index").and_then(|v| v.as_str()).unwrap_or("_all");
+                        let plan = match name.as_str() {
+                            "search" => Some((
+                                reqwest::Method::POST,
+                                format!("{index}/_search"),
+                                Some(serde_json::json!({"query": data.get("query").cloned()
+                                    .unwrap_or(serde_json::json!({"match_all": {}}))})),
+                            )),
+                            "get_document" => data.get("id").and_then(|v| v.as_str()).map(|id| {
+                                (reqwest::Method::GET, format!("{index}/_doc/{id}"), None)
+                            }),
+                            "delete_document" => {
+                                data.get("id").and_then(|v| v.as_str()).map(|id| {
+                                    (reqwest::Method::DELETE, format!("{index}/_doc/{id}"), None)
+                                })
+                            }
+                            "index_document" => Some((
+                                reqwest::Method::POST,
+                                format!("{index}/_doc"),
+                                data.get("document").cloned(),
+                            )),
+                            other => {
+                                info!(
+                                    "Elasticsearch client {} follow-up '{}' has no \
+                                     non-notifying path; skipped",
+                                    client_id, other
+                                );
+                                None
+                            }
+                        };
+                        let Some((method, path, body)) = plan else {
+                            continue;
+                        };
+                        match Self::run_request_once(client_id, method, &path, body, &app_state)
+                            .await
+                        {
+                            Ok((code, _)) => info!(
+                                "Elasticsearch client {} follow-up {} -> HTTP {}",
+                                client_id, name, code
+                            ),
+                            Err(e) => error!(
+                                "Elasticsearch client {} follow-up {} failed: {}",
+                                client_id, name, e
+                            ),
+                        }
+                    }
                     // New operations are only triggered by the initial connection or explicit user actions.
                 }
                 Err(e) => {

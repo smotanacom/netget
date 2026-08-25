@@ -119,10 +119,10 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
                 .on_event("elasticsearch_connected")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_request",
-                        "method": "PUT",
-                        "path": "/test-index/_doc/test-doc-1",
-                        "body": json!({"title": "Test", "content": "Hello World"})
+                        "type": "index_document",
+                        "index": "test-index",
+                        "id": "test-doc-1",
+                        "document": json!({"title": "Test", "content": "Hello World"})
                     }
                 ]))
                 .expect_calls(1)
@@ -132,10 +132,9 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
                 .and_event_data_contains("status_code", "200")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_request",
-                        "method": "POST",
-                        "path": "/test-index/_search",
-                        "body": json!({"query": {"match_all": {}}})
+                        "type": "search",
+                        "index": "test-index",
+                        "query": json!({"match_all": {}})
                     }
                 ]))
                 .expect_calls(1)
@@ -256,7 +255,7 @@ async fn test_elasticsearch_client_bulk_operations() -> E2EResult<()> {
                 .on_event("elasticsearch_connected")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_bulk",
+                        "type": "bulk_operation",
                         "operations": [
                             {"index": {"_index": "products", "_id": "1"}},
                             {"name": "laptop", "price": 999},
@@ -393,10 +392,10 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .on_event("elasticsearch_connected")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_request",
-                        "method": "PUT",
-                        "path": "/test-index/_doc/test-doc-1",
-                        "body": json!({"test": "data"})
+                        "type": "index_document",
+                        "index": "test-index",
+                        "id": "test-doc-1",
+                        "document": json!({"test": "data"})
                     }
                 ]))
                 .expect_calls(1)
@@ -406,9 +405,9 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .and_event_data_contains("result", "created")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_request",
-                        "method": "GET",
-                        "path": "/test-index/_doc/test-doc-1"
+                        "type": "get_document",
+                        "index": "test-index",
+                        "id": "test-doc-1"
                     }
                 ]))
                 .expect_calls(1)
@@ -418,9 +417,9 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .and_event_data_contains("found", "true")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_request",
-                        "method": "DELETE",
-                        "path": "/test-index/_doc/test-doc-1"
+                        "type": "delete_document",
+                        "index": "test-index",
+                        "id": "test-doc-1"
                     }
                 ]))
                 .expect_calls(1)
