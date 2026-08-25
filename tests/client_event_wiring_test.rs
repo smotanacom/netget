@@ -56,7 +56,7 @@ const NEVER_EMITTED_BASELINE: &[&str] = &[
 ];
 
 /// Clients that discard at least one `call_llm_for_client` result.
-const DISCARDED_BASELINE: &[&str] = &["dc", "elasticsearch", "grpc", "isis", "oauth2", "webrtc"];
+const DISCARDED_BASELINE: &[&str] = &["dc", "grpc", "isis", "oauth2", "webrtc"];
 
 fn client_dirs() -> Vec<(String, String, String)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/client");
