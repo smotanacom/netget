@@ -284,14 +284,52 @@ impl IsisClient {
                                     &status_tx,
                                 )) {
                                     Ok(ClientLlmResult {
-                                        actions: _,
+                                        actions,
                                         memory_updates,
                                     }) => {
                                         // Update memory
                                         if let Some(mem) = memory_updates {
                                             memory = mem;
                                         }
-                                        // Note: ISIS client is passive (capture only), no actions to send
+
+                                        // IS-IS is a receive-only sniffer, so most of its
+                                        // vocabulary really is interpretation: analyze_topology
+                                        // and wait_for_more put nothing on the wire, and there
+                                        // is no transmit handle to put it on.
+                                        //
+                                        // `stop_capture` is the exception and was being thrown
+                                        // away with the rest, so a model that decided it had
+                                        // seen enough could not stop the capture -- the client
+                                        // ran until someone removed it. The capture loop polls
+                                        // client status, so marking it Disconnected ends it.
+                                        use crate::llm::actions::client_trait::{
+                                            Client, ClientActionResult,
+                                        };
+                                        for action in &actions {
+                                            let stop =
+                                                matches!(
+                                                    protocol.execute_action(action.clone()),
+                                                    Ok(ClientActionResult::Disconnect)
+                                                ) || action.get("type").and_then(|v| v.as_str())
+                                                    == Some("stop_capture");
+                                            if stop {
+                                                info!(
+                                                    "IS-IS client {} stopping capture on the \
+                                                     model's request",
+                                                    client_id
+                                                );
+                                                // This whole closure runs on the blocking
+                                                // pool (pcap is a blocking API), so the
+                                                // status update goes through the same
+                                                // `block_on` bridge the LLM call above uses.
+                                                runtime.block_on(app_state.update_client_status(
+                                                    client_id,
+                                                    ClientStatus::Disconnected,
+                                                ));
+                                                let _ = status_tx.send("__UPDATE_UI__".to_string());
+                                                break;
+                                            }
+                                        }
                                     }
                                     Err(e) => {
                                         error!("ISIS client {} LLM error: {}", client_id, e);
