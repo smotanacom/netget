@@ -111,6 +111,7 @@ impl DynamoDbClient {
         let command_rx =
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
         let task_registrar = app_state.clone();
+        let conn_llm = _llm_client.clone();
         let task_handle = tokio::spawn(Self::command_loop(
             command_rx,
             client_id,
@@ -120,6 +121,70 @@ impl DynamoDbClient {
         ));
         task_registrar
             .register_client_task(client_id, task_handle)
+            .await;
+
+        // Raise the connected event.
+        //
+        // DYNAMODB_CLIENT_CONNECTED_EVENT was declared and nothing raised it, and this
+        // client never called the LLM at all -- so the model was never consulted when a
+        // DynamoDB client came up, and the injected-command path was the only way an
+        // action could reach the wire.
+        //
+        // From a registered task, not inline: a dashboard-created client defaults to a
+        // `*` -> manual rule and awaiting a parked answer would block creation. Operations
+        // go through run_operation_once, which raises no event.
+        let conn_state = app_state.clone();
+        let conn_status = status_tx.clone();
+        let conn_task = tokio::spawn(async move {
+            let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
+            let protocol = crate::client::dynamodb::actions::DynamoDbClientProtocol::new();
+            let event = Event::new(
+                &crate::client::dynamodb::actions::DYNAMODB_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({}),
+            );
+            match crate::client::llm_budget::call_llm_for_client(
+                &conn_llm,
+                &conn_state,
+                client_id.to_string(),
+                &instruction,
+                "",
+                Some(&event),
+                &protocol,
+                &conn_status,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if let Some(mem) = result.memory_updates {
+                        conn_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in result.actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        if let Err(e) =
+                            Self::run_operation_once(client_id, &name, &data, &conn_state).await
+                        {
+                            error!(
+                                "DynamoDB client {} connect-time {} failed: {}",
+                                client_id, name, e
+                            );
+                        }
+                    }
+                }
+                Err(e) => error!(
+                    "DynamoDB client {} LLM error on connected event: {}",
+                    client_id, e
+                ),
+            }
+        });
+        task_registrar
+            .register_client_task(client_id, conn_task)
             .await;
 
         // Return a dummy local address (DynamoDB is HTTP-based)

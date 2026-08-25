@@ -104,6 +104,8 @@ impl KubernetesClient {
         let command_rx =
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
         let task_registrar = app_state.clone();
+        let conn_llm = _llm_client.clone();
+        let conn_k8s = k8s_client.clone();
         let task_handle = tokio::spawn(Self::command_loop(
             command_rx,
             k8s_client,
@@ -114,6 +116,83 @@ impl KubernetesClient {
         ));
         task_registrar
             .register_client_task(client_id, task_handle)
+            .await;
+
+        // Raise the connected event.
+        //
+        // K8S_CLIENT_CONNECTED_EVENT was declared and nothing raised it, so the model was
+        // never consulted when a Kubernetes client came up.
+        //
+        // From a registered task, not inline: a dashboard-created client defaults to a
+        // `*` -> manual rule and awaiting a parked answer would block creation. Operations
+        // go through run_operation_once, which raises no event.
+        let conn_state = app_state.clone();
+        let conn_status = status_tx.clone();
+        let conn_task = tokio::spawn(async move {
+            let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
+            let protocol = crate::client::kubernetes::actions::KubernetesClientProtocol::new();
+            let event = Event::new(
+                &crate::client::kubernetes::actions::K8S_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({}),
+            );
+            match crate::client::llm_budget::call_llm_for_client(
+                &conn_llm,
+                &conn_state,
+                client_id.to_string(),
+                &instruction,
+                "",
+                Some(&event),
+                &protocol,
+                &conn_status,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if let Some(mem) = result.memory_updates {
+                        conn_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in result.actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        if name != "k8s_operation" {
+                            continue;
+                        }
+                        let str_of =
+                            |k: &str| data.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+                        if let Err(e) = Self::run_operation_once(
+                            &conn_k8s,
+                            client_id,
+                            str_of("operation").unwrap_or_default(),
+                            str_of("resource_type").unwrap_or_default(),
+                            str_of("namespace"),
+                            str_of("name"),
+                            data.get("spec").cloned().filter(|v| !v.is_null()),
+                            str_of("label_selector"),
+                            &conn_state,
+                        )
+                        .await
+                        {
+                            error!(
+                                "Kubernetes client {} connect-time operation failed: {}",
+                                client_id, e
+                            );
+                        }
+                    }
+                }
+                Err(e) => error!(
+                    "Kubernetes client {} LLM error on connected event: {}",
+                    client_id, e
+                ),
+            }
+        });
+        task_registrar
+            .register_client_task(client_id, conn_task)
             .await;
 
         // Return a dummy local address (Kubernetes API is HTTP-based, connectionless)
