@@ -252,12 +252,33 @@ async fn handle_sqs_request_with_llm(
                 }
             }
 
-            // No SQS response action found, return empty success
-            Log::new(Some(&status_tx)).debug("SQS → 200 response (default)");
+            // The handler ran but produced no `sqs_response` — a model that refused, a static
+            // handler with an empty action list, or an answer whose actions were all
+            // unrecognised.
+            //
+            // This used to answer 200 `{}`, at debug level. For SendMessage or DeleteMessage
+            // that is a successful call as far as any AWS SDK is concerned, so a declined send
+            // was reported as delivered and a declined delete as removed; for ReceiveMessage it
+            // reads as "the queue is empty", a claim about the queue nothing supports.
+            //
+            // Fail closed with the same AWS error envelope the backend-error arm below uses.
+            Log::new(Some(&status_tx)).warn(
+                "SQS: no sqs_response action produced (decision=fail_closed_no_action); \
+                 answering 500 rather than an empty 200"
+                    .to_string(),
+            );
 
             let request_id = new_request_id();
 
-            Ok(build_sqs_response(200, &request_id, "{}".to_string()))
+            Ok(build_sqs_response(
+                500,
+                &request_id,
+                serde_json::json!({
+                    "__type": "InternalFailure",
+                    "message": crate::utils::WireFailure::Unavailable.prefixed_text(),
+                })
+                .to_string(),
+            ))
         }
         Err(e) => {
             Log::new(Some(&status_tx))
