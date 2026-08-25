@@ -112,6 +112,81 @@ impl Http3Client {
         });
         app_state.register_client_task(client_id, cmd_task).await;
 
+        // Raise the connected event.
+        //
+        // It was declared and nothing ever raised it, and nothing else called this
+        // client's request code either -- so a HTTP/3 client initialised itself and
+        // then did nothing for the rest of its life. The command channel was, until now,
+        // the only thing that could reach the wire at all.
+        //
+        // Raised from a registered task rather than inline: a dashboard-created client
+        // defaults to a `*` -> manual rule, and awaiting a parked answer here would block
+        // client creation itself. Requests go through `perform_request`, which raises no
+        // event, so a connect instruction cannot start an unbounded chain.
+        let conn_state = app_state.clone();
+        let conn_llm = llm_client.clone();
+        let status_tx_c = status_tx.clone();
+        let conn_task = tokio::spawn(async move {
+            let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
+            let protocol = crate::client::http3::actions::Http3ClientProtocol::new();
+            let event = Event::new(
+                &crate::client::http3::actions::HTTP3_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({ "base_url": base_url.clone() }),
+            );
+            match crate::client::llm_budget::call_llm_for_client(
+                &conn_llm,
+                &conn_state,
+                client_id.to_string(),
+                &instruction,
+                "",
+                Some(&event),
+                &protocol,
+                &status_tx_c,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if let Some(mem) = result.memory_updates {
+                        conn_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in result.actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        if name != "http3_request" {
+                            continue;
+                        }
+                        if let Err(e) = Self::perform_request(
+                            client_id,
+                            data["method"].as_str().unwrap_or("GET").to_string(),
+                            data["path"].as_str().unwrap_or("/").to_string(),
+                            data["headers"].as_object().cloned(),
+                            data["body"].as_str().map(|s| s.to_string()),
+                            data["priority"].as_u64().map(|p| p as u8),
+                            &conn_state,
+                        )
+                        .await
+                        {
+                            error!(
+                                "HTTP/3 client {} connect-time request failed: {}",
+                                client_id, e
+                            );
+                        }
+                    }
+                }
+                Err(e) => error!(
+                    "HTTP/3 client {} LLM error on connected event: {}",
+                    client_id, e
+                ),
+            }
+        });
+        app_state.register_client_task(client_id, conn_task).await;
+
         // Return the remote address
         Ok(remote_sock_addr)
     }

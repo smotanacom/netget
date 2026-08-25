@@ -39,8 +39,6 @@ const NEVER_EMITTED_BASELINE: &[&str] = &[
     "dc",
     "dynamodb",
     "git",
-    "http2",
-    "http3",
     "icmp",
     "imap",
     "kubernetes",
