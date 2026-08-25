@@ -116,11 +116,70 @@ impl NpmClient {
         // Registered with AppState so stop_client can abort it —
         // dropping a JoinHandle only detaches it in Tokio.
         let task_registrar = app_state.clone();
+        let connected_llm_client = llm_client.clone();
+        let connected_status_tx = status_tx.clone();
         let task_handle = tokio::spawn(Self::command_loop(
             command_rx, client_id, app_state, llm_client, status_tx,
         ));
         task_registrar
             .register_client_task(client_id, task_handle)
+            .await;
+
+        // Raise the connected event.
+        //
+        // It was declared and never emitted, so the model was never consulted when a
+        // NPM client came up -- and this protocol's own
+        // `get_startup_examples()` shows a `npm_connected` handler, which could not
+        // possibly have fired.
+        //
+        // Raised from its own registered task rather than inline: a dashboard-created
+        // client defaults to a `*` -> manual rule, and awaiting a parked answer here would
+        // block client creation itself.
+        let connected_state = task_registrar.clone();
+        let connected_llm = connected_llm_client;
+        let connected_status = connected_status_tx;
+        let connected = tokio::spawn(async move {
+            let Some(instruction) = connected_state.get_instruction_for_client(client_id).await
+            else {
+                return;
+            };
+            let protocol = crate::client::npm::actions::NpmClientProtocol::new();
+            let event = Event::new(
+                &crate::client::npm::actions::NPM_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({ "registry_url": registry_url.clone(), }),
+            );
+            match crate::client::llm_budget::call_llm_for_client(
+                &connected_llm,
+                &connected_state,
+                client_id.to_string(),
+                &instruction,
+                "",
+                Some(&event),
+                &protocol,
+                &connected_status,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if let Some(mem) = result.memory_updates {
+                        connected_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    Self::run_follow_ups(
+                        client_id,
+                        result.actions,
+                        &connected_state,
+                        &connected_status,
+                    )
+                    .await;
+                }
+                Err(e) => error!(
+                    "NPM client {} LLM error on connected event: {}",
+                    client_id, e
+                ),
+            }
+        });
+        task_registrar
+            .register_client_task(client_id, connected)
             .await;
 
         // Return a dummy local address (NPM is HTTP-based)
