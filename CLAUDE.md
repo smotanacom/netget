@@ -113,10 +113,12 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   `git`, `jsonrpc`, `oauth2`, `saml_sp`, `proxy`, `http2`); anything with no independent peer at
   all (`memcached`, `modbus`, `named_pipe`, `openvpn`, `pty`, `radius`, `socket_file`, `stdio`,
   `websocket`); `mqtt`, whose rumqttc tests are all `#[ignore]`d; and `rss`, whose test currently
-  fails. `dhcp` and `wireguard` were removed for the same reason — neither has a third-party peer. dhcp's own metadata says no real DHCP client can
-  be pointed at it (dhclient/ipconfig bind UDP/68, need root, cannot target an ephemeral loopback
-  port), so its peer is an in-test RFC 2131 decoder: an independent reading of the spec, but not
-  an independent implementation. Re-derive this list rather than trusting it; the counts drift.
+  fails. `dhcp` and `wireguard` were removed for the same reason — neither has a third-party
+  peer. dhcp's own metadata says no real DHCP client can be pointed at it (dhclient/ipconfig bind
+  UDP/68, need root, and cannot target an ephemeral loopback port), so its peer is an in-test RFC
+  2131 decoder: an independent reading of the spec, but not an independent implementation.
+
+  Re-derive this list rather than trusting it; the counts drift.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
   majority (~99).
 - **Incomplete** — hidden from the LLM entirely (`is_available_to_llm()` returns false). **None
