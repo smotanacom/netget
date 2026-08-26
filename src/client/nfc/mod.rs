@@ -126,6 +126,73 @@ impl NfcClient {
         });
         app_state.register_client_task(client_id, cmd_task).await;
 
+        // Watch the reader for cards arriving and leaving.
+        //
+        // nfc_card_detected and nfc_card_disconnected are both advertised in
+        // get_event_types(), so the model can be told a card will appear and write a
+        // handler for it -- and nothing raised either, so that handler waited forever. A
+        // card being presented is the entire trigger an NFC client exists to react to; its
+        // example answer is `read_ndef`, which is now implemented and reachable.
+        let watch_ctx = ctx.clone();
+        let watch_reader = selected_reader.clone();
+        let watch_state = app_state.clone();
+        let watch_llm = llm_client.clone();
+        let watch_tx = status_tx.clone();
+        let watch_task = tokio::spawn(async move {
+            let mut present = false;
+            loop {
+                if watch_state.get_client(client_id).await.is_none() {
+                    return;
+                }
+                // PC/SC is a blocking C API, so the probe runs on the blocking pool.
+                let probe_ctx = watch_ctx.clone();
+                let probe_reader = watch_reader.clone();
+                let atr = tokio::task::spawn_blocking(move || -> Option<String> {
+                    let card = probe_ctx
+                        .connect(&probe_reader, pcsc::ShareMode::Shared, pcsc::Protocols::ANY)
+                        .ok()?;
+                    let mut buf = [0u8; pcsc::MAX_ATR_SIZE];
+                    card.get_attribute(pcsc::Attribute::AtrString, &mut buf)
+                        .ok()
+                        .map(hex::encode_upper)
+                })
+                .await
+                .unwrap_or(None);
+
+                match (present, atr) {
+                    (false, Some(atr)) => {
+                        present = true;
+                        info!("NFC client {} card detected (ATR {})", client_id, atr);
+                        Self::raise_card_event(
+                            &NFC_CARD_DETECTED_EVENT,
+                            serde_json::json!({ "atr": atr }),
+                            client_id,
+                            &watch_state,
+                            &watch_llm,
+                            &watch_tx,
+                        )
+                        .await;
+                    }
+                    (true, None) => {
+                        present = false;
+                        info!("NFC client {} card removed", client_id);
+                        Self::raise_card_event(
+                            &NFC_CARD_DISCONNECTED_EVENT,
+                            serde_json::json!({}),
+                            client_id,
+                            &watch_state,
+                            &watch_llm,
+                            &watch_tx,
+                        )
+                        .await;
+                    }
+                    _ => {}
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        });
+        app_state.register_client_task(client_id, watch_task).await;
+
         // Send initial event to LLM: readers listed
         {
             let event = Event::new(
@@ -275,6 +342,42 @@ impl NfcClient {
     ///
     /// `Err` means the protocol rejected the action (unknown verb / bad params); a
     /// PC/SC failure is `Ok(Executed(..))` with the reason, because the action did run.
+    /// Raise one card-presence event at the model.
+    ///
+    /// Executes nothing it answers with: the command loop owns the card path, and a
+    /// presence-driven action chain would re-fire every time a card is tapped.
+    async fn raise_card_event(
+        event_type: &'static std::sync::LazyLock<crate::protocol::EventType>,
+        data: serde_json::Value,
+        client_id: ClientId,
+        app_state: &Arc<AppState>,
+        llm_client: &OllamaClient,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
+            return;
+        };
+        let memory = app_state
+            .get_memory_for_client(client_id)
+            .await
+            .unwrap_or_default();
+        let event = Event::new(event_type, data);
+        if let Err(e) = call_llm_for_client(
+            llm_client,
+            app_state,
+            client_id.to_string(),
+            &instruction,
+            &memory,
+            Some(&event),
+            &NfcClientProtocol,
+            status_tx,
+        )
+        .await
+        {
+            error!("NFC client {} LLM error on card event: {}", client_id, e);
+        }
+    }
+
     /// NDEF file identifier, defaulting to E104 -- the value nearly every Type 4 tag uses
     /// and the one the Capability Container normally points at.
     fn ndef_file_id(data: &serde_json::Value) -> [u8; 2] {

@@ -1200,13 +1200,59 @@ async fn execute_couchdb_action(
             .await);
         }
         "watch_changes" => {
-            console_info!(status_tx, "Changes feed watching not yet fully implemented");
+            // Long-poll `/{db}/_changes` in its own registered task and raise
+            // `couchdb_change_detected` per change.
+            //
+            // This verb used to answer "Changes feed not yet implemented", which meant
+            // COUCHDB_CLIENT_CHANGE_DETECTED_EVENT -- advertised in get_event_types(), so
+            // the model could be told it exists and write a handler for it -- could never
+            // fire. Watching a database for changes is the one thing CouchDB is chosen
+            // for over a plain document store.
+            let database = action
+                .get("database")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if database.is_empty() {
+                return Ok(send_response_event(
+                    client_id,
+                    "watch_changes",
+                    false,
+                    serde_json::json!({}),
+                    Some("watch_changes needs a database".to_string()),
+                    app_state,
+                    llm_client,
+                    status_tx,
+                    notify,
+                )
+                .await);
+            }
+
+            let base_url = app_state
+                .with_client_mut(client_id, |c| {
+                    c.get_protocol_field("remote_addr")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .await
+                .flatten()
+                .unwrap_or_default();
+
+            let watch_state = app_state.clone();
+            let watch_llm = llm_client.clone();
+            let watch_tx = status_tx.clone();
+            let db = database.clone();
+            let handle = tokio::spawn(async move {
+                watch_changes_feed(client_id, base_url, db, watch_state, watch_llm, watch_tx).await;
+            });
+            app_state.register_client_task(client_id, handle).await;
+
             return Ok(send_response_event(
                 client_id,
                 "watch_changes",
-                false,
-                serde_json::json!({}),
-                Some("Changes feed not yet implemented".to_string()),
+                true,
+                serde_json::json!({ "database": database, "watching": true }),
+                None,
                 app_state,
                 llm_client,
                 status_tx,
@@ -1415,4 +1461,103 @@ async fn send_conflict_event(
         }
     }
     Vec::new()
+}
+
+/// Long-poll a database's `_changes` feed, raising `couchdb_change_detected` per change.
+///
+/// Long-poll rather than `feed=continuous`: each request returns a complete JSON body, so
+/// there is no partial-line framing to get wrong, and the loop stops cleanly when the
+/// client goes away. `since` advances to the sequence the server reports, so a change is
+/// reported once.
+///
+/// Raises no action execution of its own -- the event's answer is handled by the normal
+/// event path -- so a busy database cannot drive an unbounded chain from here.
+async fn watch_changes_feed(
+    client_id: ClientId,
+    base_url: String,
+    database: String,
+    app_state: Arc<AppState>,
+    llm_client: OllamaClient,
+    status_tx: mpsc::UnboundedSender<String>,
+) {
+    let http = reqwest::Client::new();
+    let mut since = "now".to_string();
+    loop {
+        if app_state.get_client(client_id).await.is_none() {
+            return;
+        }
+        let url = format!(
+            "{}/{}/_changes?feed=longpoll&since={}&timeout=30000",
+            base_url.trim_end_matches('/'),
+            database,
+            since
+        );
+        let body: serde_json::Value = match http.get(&url).send().await {
+            Ok(r) => match r.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        "CouchDB client {} changes feed decode failed: {}",
+                        client_id,
+                        e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    "CouchDB client {} changes feed request failed: {}",
+                    client_id,
+                    e
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
+        };
+        if let Some(seq) = body.get("last_seq") {
+            since = seq
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| seq.to_string());
+        }
+        let Some(results) = body.get("results").and_then(|r| r.as_array()) else {
+            continue;
+        };
+        for change in results {
+            let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
+                continue;
+            };
+            let event = Event::new(
+                &crate::client::couchdb::actions::COUCHDB_CLIENT_CHANGE_DETECTED_EVENT,
+                serde_json::json!({
+                    "database": database,
+                    "doc_id": change.get("id").and_then(|v| v.as_str()).unwrap_or_default(),
+                    "seq": change.get("seq"),
+                    "deleted": change.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false),
+                }),
+            );
+            let memory = app_state
+                .get_memory_for_client(client_id)
+                .await
+                .unwrap_or_default();
+            if let Err(e) = call_llm_for_client(
+                &llm_client,
+                &app_state,
+                client_id.to_string(),
+                &instruction,
+                &memory,
+                Some(&event),
+                &crate::client::couchdb::actions::CouchDbClientProtocol::new(),
+                &status_tx,
+            )
+            .await
+            {
+                error!(
+                    "CouchDB client {} LLM error on couchdb_change_detected: {}",
+                    client_id, e
+                );
+            }
+        }
+    }
 }

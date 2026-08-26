@@ -64,13 +64,13 @@ pub struct IcmpClient;
 #[derive(Clone)]
 struct PendingRequest {
     sent_at: Instant,
-    #[allow(dead_code)]
     identifier: u16,
-    #[allow(dead_code)]
     sequence: u16,
-    #[allow(dead_code)]
     destination_ip: Ipv4Addr,
 }
+
+/// How long a request waits for its reply before `icmp_timeout` is raised.
+const ICMP_REPLY_TIMEOUT_SECS: u64 = 5;
 
 impl IcmpClient {
     /// Connect ICMP client with LLM action handling
@@ -370,7 +370,90 @@ impl IcmpClient {
                         }
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // No data available
+                        // No data available. Sweep for requests that will never be
+                        // answered before sleeping.
+                        //
+                        // `icmp_timeout` is advertised in get_event_types(), so the model
+                        // can be told it exists and write a handler for it -- and nothing
+                        // raised it, so that handler waited forever. PendingRequest has
+                        // carried `sent_at`, `identifier`, `sequence` and
+                        // `destination_ip` for exactly this all along, every one of them
+                        // marked #[allow(dead_code)]: the event was designed and never
+                        // wired up. A ping that gets no reply IS the interesting result
+                        // for a reachability check, and it was the one outcome the model
+                        // was never told about.
+                        let expired: Vec<PendingRequest> = {
+                            let mut pending = pending_clone.lock().await;
+                            let now = Instant::now();
+                            let stale: Vec<(u16, u16)> = pending
+                                .iter()
+                                .filter(|(_, r)| {
+                                    now.duration_since(r.sent_at)
+                                        > std::time::Duration::from_secs(ICMP_REPLY_TIMEOUT_SECS)
+                                })
+                                .map(|(k, _)| *k)
+                                .collect();
+                            stale.iter().filter_map(|k| pending.remove(k)).collect()
+                        };
+                        for req in expired {
+                            tracing::info!(
+                                "ICMP client {} request to {} (id {}, seq {}) timed out",
+                                client_id,
+                                req.destination_ip,
+                                req.identifier,
+                                req.sequence
+                            );
+                            if let Some(instruction) =
+                                state_clone.get_instruction_for_client(client_id).await
+                            {
+                                let event = Event::new(
+                                    &crate::client::icmp::actions::ICMP_TIMEOUT_EVENT,
+                                    serde_json::json!({
+                                        "destination_ip": req.destination_ip.to_string(),
+                                        "identifier": req.identifier,
+                                        "sequence": req.sequence,
+                                        "waited_ms": req.sent_at.elapsed().as_millis() as u64,
+                                    }),
+                                );
+                                match call_llm_for_client(
+                                    &llm_clone,
+                                    &state_clone,
+                                    client_id.to_string(),
+                                    &instruction,
+                                    &client_data_clone.lock().await.memory.clone(),
+                                    Some(&event),
+                                    protocol_clone.as_ref(),
+                                    &status_clone,
+                                )
+                                .await
+                                {
+                                    Ok(result) => {
+                                        if let Some(new_memory) = result.memory_updates {
+                                            client_data_clone.lock().await.memory = new_memory;
+                                        }
+                                        if let Err(e) = Self::execute_actions(
+                                            result.actions,
+                                            &socket_clone,
+                                            &pending_clone,
+                                            target_ip,
+                                            &status_clone,
+                                            protocol_clone.as_ref(),
+                                        )
+                                        .await
+                                        {
+                                            error!(
+                                                "ICMP client {} timeout action failed: {}",
+                                                client_id, e
+                                            );
+                                        }
+                                    }
+                                    Err(e) => error!(
+                                        "ICMP client {} LLM error on icmp_timeout: {}",
+                                        client_id, e
+                                    ),
+                                }
+                            }
+                        }
                         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                         continue;
                     }

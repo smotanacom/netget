@@ -31,7 +31,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Clients that declare at least one event type nothing emits.
-const NEVER_EMITTED_BASELINE: &[&str] = &["amqp", "couchdb", "icmp", "nfc"];
+const NEVER_EMITTED_BASELINE: &[&str] = &[];
 
 /// Clients that discard at least one `call_llm_for_client` result.
 const DISCARDED_BASELINE: &[&str] = &[];

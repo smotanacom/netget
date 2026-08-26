@@ -117,8 +117,17 @@ impl AmqpClient {
         let cmd_session = session.clone();
         let cmd_state = state.clone();
         let cmd_status_tx = status_tx.clone();
+        let cmd_llm = llm_client.clone();
         let cmd_task = tokio::spawn(async move {
-            command_loop(command_rx, cmd_session, client_id, cmd_state, cmd_status_tx).await;
+            command_loop(
+                command_rx,
+                cmd_session,
+                client_id,
+                cmd_state,
+                cmd_llm,
+                cmd_status_tx,
+            )
+            .await;
         });
         state.register_client_task(client_id, cmd_task).await;
 
@@ -159,7 +168,16 @@ impl AmqpClient {
                     // shows) did nothing at all.
                     for action in actions {
                         match protocol.execute_action(action) {
-                            Ok(result) => match apply_action(result, &session, client_id).await {
+                            Ok(result) => match apply_action(
+                                result,
+                                &session,
+                                client_id,
+                                &state,
+                                &llm_client,
+                                &status_tx,
+                            )
+                            .await
+                            {
                                 Ok(AmqpApplied::Executed(detail)) => {
                                     debug!("AMQP client {}: {}", client_id, detail);
                                 }
@@ -233,6 +251,9 @@ async fn apply_action(
     action_result: ClientActionResult,
     session: &Arc<AmqpSession>,
     client_id: ClientId,
+    state: &Arc<AppState>,
+    llm_client: &OllamaClient,
+    status_tx: &mpsc::UnboundedSender<String>,
 ) -> Result<AmqpApplied> {
     match action_result {
         ClientActionResult::Custom { name, data } => match name.as_str() {
@@ -245,8 +266,75 @@ async fn apply_action(
                 let id = channel.id();
                 session.channels.lock().await.push(channel);
                 info!("AMQP client {} opened channel {}", client_id, id);
+
+                // amqp_channel_opened is advertised in get_event_types(), so the model can
+                // be told it exists and write a handler for it -- and nothing raised it.
+                raise_amqp_event(
+                    &crate::client::amqp::actions::AMQP_CLIENT_CHANNEL_OPENED_EVENT,
+                    serde_json::json!({ "channel_id": id }),
+                    client_id,
+                    state,
+                    llm_client,
+                    status_tx,
+                )
+                .await;
+
                 Ok(AmqpApplied::Executed(format!(
                     "Channel.Open/Open-Ok completed; channel {id} is open"
+                )))
+            }
+            "consume" => {
+                let queue = data
+                    .get("queue_name")
+                    .and_then(|v| v.as_str())
+                    .context("Missing queue_name for consume")?
+                    .to_string();
+                let (channel, _) = session.channel_for_publish().await?;
+                let consumer = channel
+                    .basic_consume(
+                        queue.as_str().into(),
+                        format!("netget-{client_id}").as_str().into(),
+                        lapin::options::BasicConsumeOptions::default(),
+                        lapin::types::FieldTable::default(),
+                    )
+                    .await
+                    .context("Basic.Consume failed")?;
+
+                // Each delivery raises amqp_message_received. Without a consumer that
+                // event was unreachable: it is advertised in get_event_types(), so the
+                // model could be told messages would arrive and then never hear one.
+                let consume_state = state.clone();
+                let consume_llm = llm_client.clone();
+                let consume_tx = status_tx.clone();
+                let consume_queue = queue.clone();
+                let handle = tokio::spawn(async move {
+                    use futures::StreamExt;
+                    let mut consumer = consumer;
+                    while let Some(delivery) = consumer.next().await {
+                        let Ok(delivery) = delivery else { continue };
+                        let body = String::from_utf8_lossy(&delivery.data).to_string();
+                        let _ = delivery
+                            .ack(lapin::options::BasicAckOptions::default())
+                            .await;
+                        raise_amqp_event(
+                            &crate::client::amqp::actions::AMQP_CLIENT_MESSAGE_RECEIVED_EVENT,
+                            serde_json::json!({
+                                "queue_name": consume_queue,
+                                "message_body": body,
+                            }),
+                            client_id,
+                            &consume_state,
+                            &consume_llm,
+                            &consume_tx,
+                        )
+                        .await;
+                    }
+                });
+                state.register_client_task(client_id, handle).await;
+
+                Ok(AmqpApplied::Executed(format!(
+                    "Basic.Consume on '{queue}' accepted; deliveries raise \
+                     amqp_message_received"
                 )))
             }
             "publish" => {
@@ -344,6 +432,7 @@ async fn command_loop(
     session: Arc<AmqpSession>,
     client_id: ClientId,
     state: Arc<AppState>,
+    llm_client: OllamaClient,
     status_tx: mpsc::UnboundedSender<String>,
 ) {
     use crate::llm::actions::protocol_trait::Protocol;
@@ -358,14 +447,18 @@ async fn command_loop(
             Err(e) => Ok(ClientSendOutcome::Rejected {
                 error: e.to_string(),
             }),
-            Ok(result) => match apply_action(result, &session, client_id).await {
-                // Never `Sent`: the AMQP method really did complete on the wire, but lapin
-                // frames and writes it internally and reports no byte count, so there is no
-                // honest number to put in `bytes_sent`.
-                Ok(AmqpApplied::Executed(detail)) => Ok(ClientSendOutcome::Executed { detail }),
-                Ok(AmqpApplied::Disconnect) => Ok(ClientSendOutcome::Disconnected),
-                Err(e) => Err(e),
-            },
+            Ok(result) => {
+                match apply_action(result, &session, client_id, &state, &llm_client, &status_tx)
+                    .await
+                {
+                    // Never `Sent`: the AMQP method really did complete on the wire, but lapin
+                    // frames and writes it internally and reports no byte count, so there is no
+                    // honest number to put in `bytes_sent`.
+                    Ok(AmqpApplied::Executed(detail)) => Ok(ClientSendOutcome::Executed { detail }),
+                    Ok(AmqpApplied::Disconnect) => Ok(ClientSendOutcome::Disconnected),
+                    Err(e) => Err(e),
+                }
+            }
         };
 
         let outcome_json = match &outcome {
@@ -400,5 +493,40 @@ async fn command_loop(
             state.remove_client_handle(client_id).await;
             break;
         }
+    }
+}
+
+/// Raise one AMQP event at the model. Executes nothing it answers with: the connect path
+/// and the command loop own the session, and a delivery-driven action chain would be
+/// unbounded on a busy queue.
+async fn raise_amqp_event(
+    event_type: &'static std::sync::LazyLock<crate::protocol::EventType>,
+    data: serde_json::Value,
+    client_id: ClientId,
+    state: &Arc<AppState>,
+    llm_client: &OllamaClient,
+    status_tx: &mpsc::UnboundedSender<String>,
+) {
+    let Some(instruction) = state.get_instruction_for_client(client_id).await else {
+        return;
+    };
+    let memory = state
+        .get_memory_for_client(client_id)
+        .await
+        .unwrap_or_default();
+    let event = Event::new(event_type, data);
+    if let Err(e) = call_llm_for_client(
+        llm_client,
+        state,
+        client_id.to_string(),
+        &instruction,
+        &memory,
+        Some(&event),
+        &AmqpClientProtocol::new(),
+        status_tx,
+    )
+    .await
+    {
+        error!("AMQP client {} LLM error on event: {}", client_id, e);
     }
 }
