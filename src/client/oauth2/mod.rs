@@ -52,6 +52,13 @@ enum Applied {
 enum Dispatch {
     /// Raise it here and now. Used by the connected-event LLM path.
     Inline,
+    /// Do the work and raise nothing at all.
+    ///
+    /// Used for a flow the model asks for in answer to `oauth2_token_obtained` or
+    /// `oauth2_error`. Without it a refresh answered on a token event would raise another
+    /// token event, whose answer could refresh again -- an unbounded credential loop, on
+    /// the one client in this tree where that matters most.
+    Silent,
     /// Hand it to a registered task. Used by the injected-command loop, so a manual
     /// (human-answered) routing rule on `oauth2_token_obtained` / `oauth2_error` cannot
     /// hold up the command's outcome, or the next injected command.
@@ -1362,6 +1369,8 @@ impl OAuth2Client {
         dispatch: Dispatch,
     ) {
         match dispatch {
+            // Deliberately nothing: see `Dispatch::Silent`.
+            Dispatch::Silent => {}
             Dispatch::Inline => {
                 Self::raise_event(client_id, event, app_state, llm_client, status_tx).await
             }
@@ -1376,48 +1385,92 @@ impl OAuth2Client {
         }
     }
 
-    /// The event -> LLM round-trip itself.
-    async fn raise_event(
+    /// The event -> LLM round-trip itself, plus whatever the model answers.
+    ///
+    /// Returns a boxed future rather than being a plain `async fn`. Executing the answer
+    /// closes a cycle -- raise_event -> apply_action -> a token flow -> notify_event ->
+    /// raise_event -- and rustc cannot infer the type of a self-referential chain of
+    /// `async fn`s. Boxing one member of the cycle turns that edge into an ordinary
+    /// dynamic call.
+    fn raise_event(
         client_id: NetGetClientId,
         event: Event,
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
-    ) {
-        let protocol = Arc::new(OAuth2ClientProtocol::new());
-        let instruction = app_state
-            .get_instruction_for_client(client_id)
-            .await
-            .unwrap_or_default();
-        let memory = app_state
-            .get_memory_for_client(client_id)
-            .await
-            .unwrap_or_default();
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let protocol = Arc::new(OAuth2ClientProtocol::new());
+            let instruction = app_state
+                .get_instruction_for_client(client_id)
+                .await
+                .unwrap_or_default();
+            let memory = app_state
+                .get_memory_for_client(client_id)
+                .await
+                .unwrap_or_default();
 
-        match call_llm_for_client(
-            &llm_client,
-            &app_state,
-            client_id.to_string(),
-            &instruction,
-            &memory,
-            Some(&event),
-            protocol.as_ref(),
-            &status_tx,
-        )
-        .await
-        {
-            Ok(ClientLlmResult {
-                actions: _,
-                memory_updates,
-            }) => {
-                if let Some(mem) = memory_updates {
-                    app_state.set_memory_for_client(client_id, mem).await;
+            match call_llm_for_client(
+                &llm_client,
+                &app_state,
+                client_id.to_string(),
+                &instruction,
+                &memory,
+                Some(&event),
+                protocol.as_ref(),
+                &status_tx,
+            )
+            .await
+            {
+                Ok(ClientLlmResult {
+                    actions,
+                    memory_updates,
+                }) => {
+                    if let Some(mem) = memory_updates {
+                        app_state.set_memory_for_client(client_id, mem).await;
+                    }
+
+                    // Do what the model asked for. This was discarded, so answering
+                    // oauth2_token_obtained or oauth2_error did nothing -- a model that saw a
+                    // token expire and wanted to refresh it, or saw an error and wanted to
+                    // fall back to another grant, was ignored on the only events that report
+                    // either.
+                    //
+                    // Every flow runs with Dispatch::Silent, so it raises no further event.
+                    // That bound is not optional here: a refresh answered on a token event
+                    // would raise another token event, whose answer could refresh again.
+                    use crate::llm::actions::client_trait::Client;
+                    for action in actions {
+                        match protocol.execute_action(action.clone()) {
+                            Ok(result) => {
+                                if let Err(e) = Self::apply_action(
+                                    result,
+                                    Dispatch::Silent,
+                                    client_id,
+                                    app_state.clone(),
+                                    llm_client.clone(),
+                                    status_tx.clone(),
+                                )
+                                .await
+                                {
+                                    error!(
+                                        "OAuth2 client {} follow-up action failed: {}",
+                                        client_id, e
+                                    );
+                                }
+                            }
+                            Err(e) => error!(
+                                "OAuth2 client {} rejected its own follow-up action: {}",
+                                client_id, e
+                            ),
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("LLM error for OAuth2 client {}: {}", client_id, e);
                 }
             }
-            Err(e) => {
-                error!("LLM error for OAuth2 client {}: {}", client_id, e);
-            }
-        }
+        })
     }
 
     /// Drain injected commands until the channel closes (the client was removed) or an
