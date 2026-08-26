@@ -184,8 +184,18 @@ async fn test_doh_server() -> E2EResult<()> {
 
     println!("DoH server started on port {}", server.port);
 
-    // Wait for server to fully initialize
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Wait on the server's own readiness line rather than a fixed sleep.
+    //
+    // This was `sleep(3s)`, which is both slower than it needs to be and unreliable: under
+    // --test-threads=100 on a 12-core box three seconds is not always enough for the child to
+    // bind, and the first query then failed against a socket nobody was listening on. That is
+    // the whole reason this test appeared in the load-flaky list. `wait_for_log` returns as
+    // soon as the listener is actually up, and gives up after 20s with a clear message instead
+    // of failing later as a mysterious query timeout.
+    server
+        .wait_for_log("DoH server listening on", 20)
+        .await
+        .map_err(|e| format!("DoH server never reported a listening socket: {e}"))?;
 
     // Create HTTP client
     let client = create_insecure_client()?;
