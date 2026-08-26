@@ -173,7 +173,10 @@ impl Protocol for MongodbProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — the official mongodb Rust driver —
+            // covering handshake plus CRUD commands. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation("bson v3.0 with manual OP_MSG parsing (section kind 0 only)")
             .llm_control("Query responses (documents, counts, errors)")
             .e2e_testing("mongodb official client crate")

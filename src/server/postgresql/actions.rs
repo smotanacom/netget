@@ -79,7 +79,10 @@ impl Protocol for PostgresqlProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — tokio-postgres —
+            // covering startup, simple and extended query protocol. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation("pgwire v0.35 protocol library")
             .llm_control("Query responses (columns, rows, types)")
             .e2e_testing("tokio-postgres client")

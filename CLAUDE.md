@@ -99,9 +99,21 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (10 protocols: `dns`, `doh`, `dot`,
-  `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`). `dhcp` and `wireguard` were removed in
-  August 2026 — neither has a third-party peer. dhcp's own metadata says no real DHCP client can
+- **Beta** — human-reviewed, works against real clients (24 protocols). The original ten are
+  `dns`, `doh`, `dot`, `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`; August 2026 added
+  fourteen that are each driven by the protocol's own third-party client in a test that is **not**
+  `#[ignore]`d — `amqp` (lapin), `cassandra` (scylla), `coap` (coap-lite), `imap` (async-imap),
+  `ldap` (ldap3), `mongodb` (official driver), `mssql` (tiberius), `mysql` (mysql_async),
+  `postgresql` (tokio-postgres), `redis` (redis-rs), `ssh` (russh), `sqs` (aws-sdk-sqs), `webdav`
+  (reqwest_dav), `zookeeper` (zookeeper-async). Each protocol's `metadata()` names its client.
+
+  Deliberately **not** promoted despite an audit suggesting them: anything whose only evidence is
+  a generic HTTP client (`reqwest` proves an HTTP server answers, not that the protocol on top is
+  right — `couchdb`, `etcd`, `oci_registry`, `kubernetes`, `openapi`, `spark`, `xmlrpc`, `yarn`,
+  `git`, `jsonrpc`, `oauth2`, `saml_sp`, `proxy`, `http2`); anything with no independent peer at
+  all (`memcached`, `modbus`, `named_pipe`, `openvpn`, `pty`, `radius`, `socket_file`, `stdio`,
+  `websocket`); `mqtt`, whose rumqttc tests are all `#[ignore]`d; and `rss`, whose test currently
+  fails. `dhcp` and `wireguard` were removed for the same reason — neither has a third-party peer. dhcp's own metadata says no real DHCP client can
   be pointed at it (dhclient/ipconfig bind UDP/68, need root, cannot target an ephemeral loopback
   port), so its peer is an in-test RFC 2131 decoder: an independent reading of the spec, but not
   an independent implementation. Re-derive this list rather than trusting it; the counts drift.

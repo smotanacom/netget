@@ -516,7 +516,10 @@ impl Protocol for ImapProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — async-imap —
+            // covering login, SELECT, FETCH, SEARCH and LOGOUT driven by a real IMAP client. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation(
                 "Manual line-based IMAP4rev1 parsing (tag/command/args split), plain TCP only",
             )

@@ -290,7 +290,10 @@ impl Protocol for WebDavProtocol {
             // client (reqwest_dav) rather than only against status codes. Not Beta — the
             // property model is fixed (no PROPPATCH dead properties), and locks are accepted
             // but never enforced.
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — reqwest_dav —
+            // covering PROPFIND/PUT/GET/DELETE driven by a real WebDAV client. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation(
                 "hyper v1.0 HTTP/1.1 with WebDAV methods answered directly; DAV:multistatus \
                  XML generated from model-supplied entries. No filesystem of any kind.",

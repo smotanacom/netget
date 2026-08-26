@@ -82,7 +82,10 @@ impl Protocol for CassandraProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — scylla —
+            // covering the official Rust CQL driver completing a session and statements. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation(
                 "cassandra-protocol v3.0 for frame parsing; response bodies built by hand. \
                  Protocol v4 only.",

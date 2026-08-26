@@ -77,7 +77,10 @@ impl Protocol for SshProtocol {
             // Not Beta: there is no E2E test for SSH at all, and until recently the SFTP
             // subsystem advertised no actions whatsoever, so no handler could answer an SFTP
             // request. Raise this to Beta once tests/server/ssh exists and passes.
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — russh —
+            // covering a real SSH client completing auth and a channel exchange. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(22))
             .implementation("russh v0.40, russh-sftp v2.0; ephemeral Ed25519 host key")
             .llm_control("Auth decisions, shell banner and output, SFTP reads and listings")

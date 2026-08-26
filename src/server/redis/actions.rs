@@ -82,7 +82,10 @@ impl Protocol for RedisProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — redis-rs —
+            // covering RESP commands driven by the standard Rust client. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation("redis-protocol v6.0 (RESP2 parsing), manual RESP2 encoding")
             .llm_control("All Redis commands (GET, SET, INCR, etc.)")
             .e2e_testing("redis-rs client")

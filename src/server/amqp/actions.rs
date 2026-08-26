@@ -762,7 +762,10 @@ impl Protocol for AmqpProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — lapin —
+            // covering publish/consume round-trip, refusal, and an unimplemented method closing the channel. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation(
                 "Hand-written AMQP 0-9-1 frame and method codec (lapin is a client library and \
                  is not used by the broker)",

@@ -409,7 +409,10 @@ impl Protocol for ZookeeperProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — zookeeper-async —
+            // covering a real ZooKeeper client completing session and node operations. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation(
                 "Hand-rolled ZooKeeper wire protocol. The ConnectRequest/ConnectResponse \
                  session handshake, pings and closeSession are answered by the server; every \
