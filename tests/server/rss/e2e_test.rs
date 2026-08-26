@@ -192,13 +192,15 @@ IMPORTANT: Respond with the generate_rss_feed action containing all the feed dat
             // Mock 4: GET /nonexistent.xml (404) - MUST BE FOURTH (most specific)
             .on_event("rss_feed_requested")
             .and_event_data_contains("path", "/nonexistent.xml")
-            .respond_with_actions(serde_json::json!([
-                {
-                    "type": "send_http_response",
-                    "status": 404,
-                    "body": "Not Found"
-                }
-            ]))
+            // RSS has one verb, `generate_rss_feed`, and no error action — "not found" is
+            // expressed by producing no feed, which the server answers with 404. That fallback
+            // is the fail-closed direction (it withholds a feed rather than inventing one), so
+            // unlike the S3 empty-200 case it is the right answer rather than a gap.
+            //
+            // This used to answer `send_http_response`, which RSS cannot execute:
+            // tests/helpers/mock_action_names.rs rejects it, so the test failed before the
+            // server was ever reached.
+            .respond_with_actions(serde_json::json!([]))
             .expect_calls(1)
             .and()
             // Mock 5: Server startup - MUST BE LAST (less specific)
