@@ -942,6 +942,8 @@ Read before assuming a subsystem is sound:
   - `git::e2e_test::test_git_with_scripting` asserts a wall-clock "near-instant" bound and fails
     at `--test-threads=100` while passing 3/3 in isolation.
   - `doh::e2e_test::test_doh_server` sleeps 3s for startup and uses 10s timeouts; same story.
+  - `db2::peer_inject_test::injected_close_connection_sends_eof_and_counters_move` waits on an
+    injected close reaching a socket; passes in isolation, fails intermittently at 100 threads.
   - The fourteen real-client suites promoted to Beta in August 2026 (amqp, cassandra, …) had ten
     of 96 fail at `--test-threads=30` and all 96 pass at 10 and in isolation.
 
