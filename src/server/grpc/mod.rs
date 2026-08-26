@@ -55,7 +55,7 @@ const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 /// error reached the client as `13 INTERNAL` with the real code smuggled into the text of
 /// `grpc-message`.
 #[cfg(feature = "grpc")]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i32)]
 pub enum GrpcStatus {
     Ok = 0,
@@ -919,7 +919,24 @@ impl DynamicGrpcService {
                         .unwrap_or("Internal error")
                         .to_string();
 
-                    let status = GrpcStatus::parse(code);
+                    // `GrpcStatus::parse` maps "OK" (and "0") to GrpcStatus::Ok, so a model
+                    // answering the *error* action with code "OK" produced grpc-status 0 — a
+                    // successful RPC with an empty body, carrying the error text in
+                    // grpc-message where no client looks. An action whose entire purpose is to
+                    // fail cannot be allowed to report success; that is the same confusion
+                    // between a refusal and an approval the root CLAUDE.md warns about, just
+                    // arriving via contradictory model output rather than via silence.
+                    let parsed = GrpcStatus::parse(code);
+                    let status = if parsed == GrpcStatus::Ok {
+                        warn!(
+                            "gRPC grpc_error asked for status OK; sending UNKNOWN instead \
+                             (decision=model_reject code_coerced): {}",
+                            message
+                        );
+                        GrpcStatus::Unknown
+                    } else {
+                        parsed
+                    };
                     debug!("gRPC error: {} ({:?}) - {}", code, status, message);
                     return Err(GrpcFailure::new(status, message));
                 }
