@@ -70,20 +70,20 @@ mod webdav_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Client connected
-                    .on_event("http_connected")
+                    .on_event("webdav_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_request",
-                            "method": "PROPFIND",
+                            // WebDAV's own verb. `send_http_request` is the HTTP
+                            // client's, and WebDAV cannot execute it.
+                            "type": "propfind",
                             "path": "/",
-                            "headers": {"Depth": "1"},
-                            "body": ""
+                            "depth": "1"
                         }
                     ]))
                     .expect_calls(1)
                     .and()
                     // Mock 3: Client receives multistatus response
-                    .on_event("http_response_received")
+                    .on_event("webdav_response_received")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "wait_for_more"
@@ -184,20 +184,18 @@ mod webdav_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Client connected - send PROPFIND
-                .on_event("http_connected")
+                .on_event("webdav_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_request",
-                        "method": "PROPFIND",
+                        "type": "propfind",
                         "path": "/",
-                        "headers": {"Depth": "1"},
-                        "body": ""
+                        "depth": "1"
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 3: Client receives response
-                .on_event("http_response_received")
+                .on_event("webdav_response_received")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "wait_for_more"

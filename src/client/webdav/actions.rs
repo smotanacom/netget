@@ -296,34 +296,46 @@ impl Protocol for WebdavClientProtocol {
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         // Sync actions (response to events) - similar to async actions
-        vec![ActionDefinition {
-            name: "propfind".to_string(),
-            description: "Send another PROPFIND in response to received data".to_string(),
-            parameters: vec![
-                Parameter {
-                    name: "path".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "Resource path".to_string(),
-                    required: true,
-                },
-                Parameter {
-                    name: "depth".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "Depth header".to_string(),
-                    required: false,
-                },
-            ],
-            example: json!({
-                "type": "propfind",
-                "path": "/dav/folder/",
-                "depth": "1"
-            }),
-            log_template: Some(
-                LogTemplate::new()
-                    .with_info("-> WebDAV propfind {path}")
-                    .with_debug("WebDAV propfind: path={path} depth={depth}"),
-            ),
-        }]
+        vec![
+            ActionDefinition {
+                name: "wait_for_more".to_string(),
+                description: "Do nothing and wait for the next WebDAV response. The \
+                    correct answer when what arrived needs no follow-up -- without it the \
+                    model has to invent an action it does not want."
+                    .to_string(),
+                parameters: vec![],
+                example: json!({ "type": "wait_for_more" }),
+                log_template: None,
+            },
+            ActionDefinition {
+                name: "propfind".to_string(),
+                description: "Send another PROPFIND in response to received data".to_string(),
+                parameters: vec![
+                    Parameter {
+                        name: "path".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Resource path".to_string(),
+                        required: true,
+                    },
+                    Parameter {
+                        name: "depth".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Depth header".to_string(),
+                        required: false,
+                    },
+                ],
+                example: json!({
+                    "type": "propfind",
+                    "path": "/dav/folder/",
+                    "depth": "1"
+                }),
+                log_template: Some(
+                    LogTemplate::new()
+                        .with_info("-> WebDAV propfind {path}")
+                        .with_debug("WebDAV propfind: path={path} depth={depth}"),
+                ),
+            },
+        ]
     }
     fn protocol_name(&self) -> &'static str {
         "WebDAV"
