@@ -275,6 +275,179 @@ impl NfcClient {
     ///
     /// `Err` means the protocol rejected the action (unknown verb / bad params); a
     /// PC/SC failure is `Ok(Executed(..))` with the reason, because the action did run.
+    /// NDEF file identifier, defaulting to E104 -- the value nearly every Type 4 tag uses
+    /// and the one the Capability Container normally points at.
+    fn ndef_file_id(data: &serde_json::Value) -> [u8; 2] {
+        data.get("file_id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| hex::decode(s.trim()).ok())
+            .filter(|b| b.len() == 2)
+            .map(|b| [b[0], b[1]])
+            .unwrap_or([0xE1, 0x04])
+    }
+
+    /// Transmit one APDU on a freshly-connected card. Blocking PC/SC, off the runtime.
+    async fn transmit_apdu(
+        ctx: &pcsc::Context,
+        reader: &std::ffi::CStr,
+        apdu: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let ctx = ctx.clone();
+        let reader = reader.to_owned();
+        tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+            let card = ctx
+                .connect(&reader, pcsc::ShareMode::Shared, pcsc::Protocols::ANY)
+                .context("PC/SC connect failed (is a card on the reader?)")?;
+            let mut rx = vec![0u8; pcsc::MAX_BUFFER_SIZE];
+            let response = card
+                .transmit(&apdu, &mut rx)
+                .context("PC/SC transmit failed")?;
+            Ok(response.to_vec())
+        })
+        .await
+        .context("PC/SC blocking task panicked")?
+    }
+
+    /// True when an APDU response ends in the success status word 0x9000.
+    fn apdu_ok(response: &[u8]) -> bool {
+        response.len() >= 2 && response[response.len() - 2..] == [0x90, 0x00]
+    }
+
+    /// Read the NDEF message from an NFC Forum Type 4 tag.
+    ///
+    /// The sequence is fixed by NFC Forum Type 4 Tag Operation: SELECT the NDEF
+    /// application by AID D2760000850101, SELECT the NDEF file by its ID from the
+    /// Capability Container, then READ BINARY -- first the two-byte NLEN, then that many
+    /// bytes. It is expressed here as ordinary APDUs so it rides the same PC/SC transmit
+    /// path `send_apdu` uses.
+    ///
+    /// Untested against real hardware: this machine has no PC/SC reader. The byte
+    /// sequences are taken from the specification rather than observed, which is what
+    /// `Experimental` is for -- see `src/client/nfc/CLAUDE.md`.
+    async fn read_ndef(
+        ctx: &pcsc::Context,
+        reader: &std::ffi::CStr,
+        file_id: [u8; 2],
+    ) -> Result<Vec<u8>> {
+        // SELECT the NDEF application (by name).
+        let select_app = vec![
+            0x00, 0xA4, 0x04, 0x00, 0x07, 0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01, 0x00,
+        ];
+        let r = Self::transmit_apdu(ctx, reader, select_app).await?;
+        if !Self::apdu_ok(&r) {
+            anyhow::bail!(
+                "SELECT NDEF application refused (SW {})",
+                hex::encode_upper(&r)
+            );
+        }
+
+        // SELECT the NDEF file (by identifier).
+        let select_file = vec![0x00, 0xA4, 0x00, 0x0C, 0x02, file_id[0], file_id[1]];
+        let r = Self::transmit_apdu(ctx, reader, select_file).await?;
+        if !Self::apdu_ok(&r) {
+            anyhow::bail!("SELECT NDEF file refused (SW {})", hex::encode_upper(&r));
+        }
+
+        // READ BINARY the 2-byte NLEN header, then the message itself.
+        let r = Self::transmit_apdu(ctx, reader, vec![0x00, 0xB0, 0x00, 0x00, 0x02]).await?;
+        if !Self::apdu_ok(&r) || r.len() < 4 {
+            anyhow::bail!("READ BINARY of NLEN failed (SW {})", hex::encode_upper(&r));
+        }
+        let nlen = u16::from_be_bytes([r[0], r[1]]) as usize;
+        if nlen == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut message = Vec::with_capacity(nlen);
+        let mut offset = 2usize;
+        while message.len() < nlen {
+            let want = std::cmp::min(0xFF, nlen - message.len()) as u8;
+            let apdu = vec![0x00, 0xB0, (offset >> 8) as u8, (offset & 0xFF) as u8, want];
+            let r = Self::transmit_apdu(ctx, reader, apdu).await?;
+            if !Self::apdu_ok(&r) {
+                anyhow::bail!("READ BINARY failed (SW {})", hex::encode_upper(&r));
+            }
+            message.extend_from_slice(&r[..r.len() - 2]);
+            offset += want as usize;
+        }
+        Ok(message)
+    }
+
+    /// Write an NDEF message to an NFC Forum Type 4 tag.
+    ///
+    /// NLEN is zeroed first and written last, which the specification requires: a reader
+    /// that interrupts the write mid-way then sees an empty message rather than a
+    /// truncated one it would parse as valid.
+    ///
+    /// Untested against real hardware, as for [`Self::read_ndef`].
+    async fn write_ndef(
+        ctx: &pcsc::Context,
+        reader: &std::ffi::CStr,
+        file_id: [u8; 2],
+        message: &[u8],
+    ) -> Result<()> {
+        let select_app = vec![
+            0x00, 0xA4, 0x04, 0x00, 0x07, 0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01, 0x00,
+        ];
+        let r = Self::transmit_apdu(ctx, reader, select_app).await?;
+        if !Self::apdu_ok(&r) {
+            anyhow::bail!(
+                "SELECT NDEF application refused (SW {})",
+                hex::encode_upper(&r)
+            );
+        }
+        let select_file = vec![0x00, 0xA4, 0x00, 0x0C, 0x02, file_id[0], file_id[1]];
+        let r = Self::transmit_apdu(ctx, reader, select_file).await?;
+        if !Self::apdu_ok(&r) {
+            anyhow::bail!("SELECT NDEF file refused (SW {})", hex::encode_upper(&r));
+        }
+
+        // NLEN = 0 while the body is in flight.
+        let r = Self::transmit_apdu(ctx, reader, vec![0x00, 0xD6, 0x00, 0x00, 0x02, 0x00, 0x00])
+            .await?;
+        if !Self::apdu_ok(&r) {
+            anyhow::bail!(
+                "UPDATE BINARY of NLEN failed (SW {})",
+                hex::encode_upper(&r)
+            );
+        }
+
+        let mut written = 0usize;
+        while written < message.len() {
+            let chunk = std::cmp::min(0xFF - 6, message.len() - written);
+            let offset = 2 + written;
+            let mut apdu = vec![
+                0x00,
+                0xD6,
+                (offset >> 8) as u8,
+                (offset & 0xFF) as u8,
+                chunk as u8,
+            ];
+            apdu.extend_from_slice(&message[written..written + chunk]);
+            let r = Self::transmit_apdu(ctx, reader, apdu).await?;
+            if !Self::apdu_ok(&r) {
+                anyhow::bail!("UPDATE BINARY failed (SW {})", hex::encode_upper(&r));
+            }
+            written += chunk;
+        }
+
+        // Publish the real length last.
+        let nlen = (message.len() as u16).to_be_bytes();
+        let r = Self::transmit_apdu(
+            ctx,
+            reader,
+            vec![0x00, 0xD6, 0x00, 0x00, 0x02, nlen[0], nlen[1]],
+        )
+        .await?;
+        if !Self::apdu_ok(&r) {
+            anyhow::bail!(
+                "UPDATE BINARY of final NLEN failed (SW {})",
+                hex::encode_upper(&r)
+            );
+        }
+        Ok(())
+    }
+
     async fn apply_nfc_action(
         ctx: &pcsc::Context,
         reader: &std::ffi::CStr,
@@ -348,9 +521,69 @@ impl NfcClient {
                     }
                 }
             }
+            ClientActionResult::Custom { name, data } if name == "read_ndef" => {
+                let file_id = Self::ndef_file_id(&data);
+                match Self::read_ndef(ctx, reader, file_id).await {
+                    Ok(message) => {
+                        let hex_msg = hex::encode_upper(&message);
+                        info!(
+                            "NFC client {} read {} byte NDEF message",
+                            client_id,
+                            message.len()
+                        );
+                        // NFC_NDEF_READ_EVENT was declared and never emitted; nothing
+                        // could read an NDEF message at all until now.
+                        Self::notify_ndef_read(
+                            &message, client_id, app_state, llm_client, status_tx,
+                        )
+                        .await;
+                        Ok(NfcApplied::Executed(format!(
+                            "read_ndef: {} bytes ({})",
+                            message.len(),
+                            if hex_msg.is_empty() {
+                                "empty"
+                            } else {
+                                &hex_msg
+                            }
+                        )))
+                    }
+                    Err(e) => Ok(NfcApplied::Executed(format!("read_ndef failed: {e:#}"))),
+                }
+            }
+            ClientActionResult::Custom { name, data } if name == "write_ndef" => {
+                let file_id = Self::ndef_file_id(&data);
+                // Accept either a hex payload or plain text, and say which was used --
+                // never guess, since "48656C6C6F" is both valid hex and valid text.
+                let (bytes, how) = match data.get("message_hex").and_then(|v| v.as_str()) {
+                    Some(h) => match hex::decode(h.trim()) {
+                        Ok(b) => (b, "message_hex"),
+                        Err(e) => {
+                            return Ok(NfcApplied::Executed(format!(
+                                "write_ndef: message_hex is not valid hexadecimal: {e}"
+                            )))
+                        }
+                    },
+                    None => match data.get("message").and_then(|v| v.as_str()) {
+                        Some(t) => (t.as_bytes().to_vec(), "message"),
+                        None => {
+                            return Ok(NfcApplied::Executed(
+                                "write_ndef needs message_hex or message".to_string(),
+                            ))
+                        }
+                    },
+                };
+                match Self::write_ndef(ctx, reader, file_id, &bytes).await {
+                    Ok(()) => Ok(NfcApplied::Sent {
+                        bytes_sent: bytes.len(),
+                        response_hex: format!("write_ndef ok ({} from {})", bytes.len(), how),
+                    }),
+                    Err(e) => Ok(NfcApplied::Executed(format!("write_ndef failed: {e:#}"))),
+                }
+            }
             ClientActionResult::Custom { name, .. } => Ok(NfcApplied::Executed(format!(
-                "'{name}' is declared but not implemented by the NFC client; only \
-                 send_apdu / send_apdu_raw reach the card (see src/client/nfc/CLAUDE.md)"
+                "'{name}' is declared but not implemented by the NFC client; \
+                 send_apdu / send_apdu_raw / read_ndef / write_ndef reach the card \
+                 (see src/client/nfc/CLAUDE.md)"
             ))),
             ClientActionResult::Disconnect => {
                 info!("NFC client {} disconnecting card session", client_id);
@@ -370,6 +603,50 @@ impl NfcClient {
             other => Ok(NfcApplied::Executed(format!(
                 "unhandled action result {other:?}"
             ))),
+        }
+    }
+
+    /// Raise `nfc_ndef_read` so the model can act on the message that was read.
+    ///
+    /// The event was declared and never emitted, because nothing could read an NDEF
+    /// message at all.
+    async fn notify_ndef_read(
+        message: &[u8],
+        client_id: ClientId,
+        app_state: &Arc<AppState>,
+        llm_client: &OllamaClient,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
+            return;
+        };
+        let event = Event::new(
+            &NFC_NDEF_READ_EVENT,
+            json!({
+                "length": message.len(),
+                "message_hex": hex::encode_upper(message),
+                // Best-effort text view. NDEF records are typed and this is not a parse,
+                // so the hex above stays the authoritative field.
+                "message_text": String::from_utf8_lossy(message).to_string(),
+            }),
+        );
+        let memory = app_state
+            .get_memory_for_client(client_id)
+            .await
+            .unwrap_or_default();
+        if let Err(e) = call_llm_for_client(
+            llm_client,
+            app_state,
+            client_id.to_string(),
+            &instruction,
+            &memory,
+            Some(&event),
+            &NfcClientProtocol,
+            status_tx,
+        )
+        .await
+        {
+            error!("NFC client {} LLM error on nfc_ndef_read: {}", client_id, e);
         }
     }
 
