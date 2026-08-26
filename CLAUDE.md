@@ -935,7 +935,15 @@ Read before assuming a subsystem is sound:
 - **Verify against a clean baseline, not against "does it pass".** The suite has pre-existing
   failures, so a red run proves nothing on its own. Run the same suite at unmodified `HEAD` in a
   throwaway worktree and **diff the two failure sets** — only the difference is yours. This is
-  what separates a real regression from the repo's existing red and from load-flaky tests (the
-  suite has at least one: `git::e2e_test::test_git_with_scripting` asserts a wall-clock
-  "near-instant" bound and fails under parallel load while passing 3/3 in isolation).
-  Cross-check any suspect failure by re-running it in isolation before calling it a regression.
+  what separates a real regression from the repo's existing red and from load-flaky tests.
+  **Cross-check any suspect failure by re-running it in isolation before calling it a
+  regression** — several here only fail under load:
+
+  - `git::e2e_test::test_git_with_scripting` asserts a wall-clock "near-instant" bound and fails
+    at `--test-threads=100` while passing 3/3 in isolation.
+  - `doh::e2e_test::test_doh_server` sleeps 3s for startup and uses 10s timeouts; same story.
+  - The fourteen real-client suites promoted to Beta in August 2026 (amqp, cassandra, …) had ten
+    of 96 fail at `--test-threads=30` and all 96 pass at 10 and in isolation.
+
+  A protocol whose e2e test binds sockets and waits on a mocked model is timing-sensitive by
+  construction, so treat a lone failure in a 100-thread run as unproven until re-run.
