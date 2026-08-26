@@ -43,21 +43,24 @@ For any other package, return a 404 error with: {"error": "Package not found"}"#
                 {
                     "type": "open_server",
                     "port": 0,
-                    "base_stack": "HTTP",
+                    "base_stack": "NPM",
                     "instruction": "NPM registry - serve package metadata"
                 }
             ]))
             .expect_calls(1)
             .and()
-            // Mock 2: HTTP request for express package
-            .on_event("http_request")
-            .and_event_data_contains("uri", "/express")
+            // Mock 2: package metadata request.
+            //
+            // The event id is NPM_PACKAGE_REQUEST and the field is `path`. These rules said
+            // `http_request` / `uri`, neither of which this protocol ever emits, so they never
+            // matched: the mock answered nothing, the request failed, and the failure surfaced
+            // as an assertion on the HTTP status rather than on the mock.
+            .on_event("NPM_PACKAGE_REQUEST")
+            .and_event_data_contains("path", "/express")
             .respond_with_actions(serde_json::json!([
                 {
-                    "type": "send_http_response",
-                    "status": 200,
-                    "headers": {"Content-Type": "application/json"},
-                    "body": json!({
+                    "type": "npm_package_metadata",
+                    "metadata": json!({
                         "name": "express",
                         "version": "4.18.2",
                         "description": "Fast, unopinionated, minimalist web framework",
@@ -67,7 +70,7 @@ For any other package, return a 404 error with: {"error": "Package not found"}"#
                         "dist": {
                             "tarball": "http://localhost:0/express/-/express-4.18.2.tgz"
                         }
-                    }).to_string()
+                    })
                 }
             ]))
             .expect_calls(1)
@@ -166,20 +169,19 @@ When a client requests any package, return a 404 error with JSON: {"error": "Pac
                 {
                     "type": "open_server",
                     "port": 0,
-                    "base_stack": "HTTP",
+                    "base_stack": "NPM",
                     "instruction": "NPM registry - return 404 for all packages"
                 }
             ]))
             .expect_calls(1)
             .and()
-            // Mock 2: HTTP request for non-existent package
-            .on_event("http_request")
+            // Mock 2: request for a non-existent package
+            .on_event("NPM_PACKAGE_REQUEST")
             .respond_with_actions(serde_json::json!([
                 {
-                    "type": "send_http_response",
-                    "status": 404,
-                    "headers": {"Content-Type": "application/json"},
-                    "body": json!({"error": "Package not found"}).to_string()
+                    "type": "npm_error",
+                    "error": "Package not found",
+                    "status_code": 404
                 }
             ]))
             .expect_calls(1)
@@ -330,21 +332,19 @@ For any other package, return 404 error."#,
                     {
                         "type": "open_server",
                         "port": 0,
-                        "base_stack": "HTTP",
+                        "base_stack": "NPM",
                         "instruction": "NPM registry - serve package and tarball"
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 2: Package metadata request
-                .on_event("http_request")
-                .and_event_data_contains("uri", "/netget-test-pkg")
+                .on_event("NPM_PACKAGE_REQUEST")
+                .and_event_data_contains("path", "/netget-test-pkg")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_response",
-                        "status": 200,
-                        "headers": {"Content-Type": "application/json"},
-                        "body": json!({
+                        "type": "npm_package_metadata",
+                        "metadata": json!({
                             "name": "netget-test-pkg",
                             "version": "1.0.0",
                             "description": "Test package for NetGet NPM registry",
@@ -352,20 +352,18 @@ For any other package, return 404 error."#,
                             "dist": {
                                 "tarball": format!("http://127.0.0.1:0/netget-test-pkg/-/netget-test-pkg-1.0.0.tgz")
                             }
-                        }).to_string()
+                        })
                     }
                 ]))
                 .expect_at_most(1)
                 .and()
                 // Mock 3: Tarball download request
-                .on_event("http_request")
-                .and_event_data_contains("uri", ".tgz")
+                .on_event("NPM_TARBALL_REQUEST")
+                .and_event_data_contains("path", ".tgz")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_response",
-                        "status": 200,
-                        "headers": {"Content-Type": "application/octet-stream"},
-                        "body": tarball_base64.clone()
+                        "type": "npm_package_tarball",
+                        "tarball_data": tarball_base64.clone()
                     }
                 ]))
                 .expect_at_most(1)
@@ -527,21 +525,21 @@ For any other search query, return empty results: {"objects": [], "total": 0}"#;
                 {
                     "type": "open_server",
                     "port": 0,
-                    "base_stack": "HTTP",
+                    "base_stack": "NPM",
                     "instruction": "NPM registry - handle search requests"
                 }
             ]))
             .expect_calls(1)
             .and()
             // Mock 2: Search request
-            .on_event("http_request")
-            .and_event_data_contains("uri", "/search")
+            .on_event("NPM_SEARCH_REQUEST")
+            .and_event_data_contains("path", "/search")
             .respond_with_actions(serde_json::json!([
                 {
-                    "type": "send_http_response",
-                    "status": 200,
-                    "headers": {"Content-Type": "application/json"},
-                    "body": json!({
+                    // NPM's own verb. `send_http_response` is not in this protocol's
+                    // vocabulary, so the server rejected it and answered its fallback.
+                    "type": "npm_package_search",
+                    "results": json!({
                         "objects": [
                             {
                                 "package": {
@@ -562,7 +560,7 @@ For any other search query, return empty results: {"objects": [], "total": 0}"#;
                         ],
                         "total": 1,
                         "time": "Mon Jan 01 2024 00:00:00 GMT+0000"
-                    }).to_string()
+                    })
                 }
             ]))
             .expect_calls(1)
