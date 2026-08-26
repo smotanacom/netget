@@ -31,6 +31,16 @@ async fn test_mssql_answers_error_token_when_llm_fails() -> E2EResult<()> {
                     "instruction": "Answer queries about a users table"
                 }
             ]))
+            .and()
+            // The login is a decision now; admit it so the test can reach the query path it
+            // is actually about.
+            .on_event("mssql_login")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "mssql_login_ack"
+                }
+            ]))
+            .expect_at_least(1)
             .expect_calls(1)
             .and()
         // No rule for `mssql_query`: every statement fails.
@@ -113,6 +123,16 @@ async fn test_mssql_fails_closed_when_no_response_action_is_produced() -> E2ERes
                     "instruction": "Answer queries about a users table"
                 }
             ]))
+            .and()
+            // The login is a decision now; admit it so the test can reach the query path it
+            // is actually about.
+            .on_event("mssql_login")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "mssql_login_ack"
+                }
+            ]))
+            .expect_at_least(1)
             .expect_calls(1)
             .and()
             // The call succeeds and the model answers with nothing usable.

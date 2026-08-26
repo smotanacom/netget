@@ -126,8 +126,31 @@ does not begin with one of those keywords yields an empty DONE.
 
 ## Not implemented
 
-- **Authentication** — username, password and database are ignored. No NTLM, no
-  Windows auth, no Azure AD.
+- **Password verification** — no NTLM, no Windows auth, no Azure AD, and the password in the
+  LOGIN7 packet is never checked (or even parsed: it is deliberately not put into the event,
+  because that would send a credential to the model and into the event log).
+
+  The *decision*, however, is now the model's. Every TDS Login used to be accepted
+  unconditionally — there was no `mssql_login` event and no action that could decline one, so
+  an instruction like "only allow the user `reporting`" could not be enforced and the model was
+  never asked. Authentication decided by default is the pattern the root `CLAUDE.md` calls the
+  most dangerous in this codebase.
+
+  `mssql_login` now fires with `username`, `database` and `app_name` parsed from LOGIN7
+  (MS-TDS 2.2.6.4). Admission requires an explicit `mssql_login_ack`; `mssql_error_response`
+  refuses with the model's own error. Three things refuse, kept apart in the log because the
+  wire can only carry one error number: `decision=model_reject`,
+  `decision=fail_closed_no_action` (the handler ran and produced neither verdict) and
+  `decision=fail_closed_llm_error`. All three send SQL Server's own 18456 "Login failed for
+  user" at severity 14, which every driver already maps to an authentication failure, and then
+  close — TDS cannot continue a session whose login failed.
+
+  A malformed or truncated LOGIN7 yields empty strings rather than an error, so an unparseable
+  login still reaches the model and is refused on the same no-answer path. It must never be the
+  reason a login is *granted*.
+
+  Note for tests: a server that only mocks `mssql_query` no longer gets a session at all. Every
+  suite here answers `mssql_login` with `mssql_login_ack` explicitly.
 - **TLS** — pre-login advertises ENCRYPT_NOT_SUP.
 - **Prepared statements / RPC parameters** — see above.
 - **Transactions, MARS, cursors, bulk load, `nvarchar(max)`, VARBINARY, XML,
