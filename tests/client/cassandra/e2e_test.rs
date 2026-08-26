@@ -30,8 +30,26 @@ mod cassandra_client_tests {
                     ]))
                     .expect_calls(1)
                     .and()
-                    // Mock 2: Query received from client
-                    .on_event("cassandra_query_received")
+                    // Mock 2: the CQL handshake. STARTUP must be answered with
+                    // cassandra_ready and OPTIONS with cassandra_supported, or the server
+                    // fails closed and the driver never finishes connecting -- so
+                    // cassandra_connected never fires and every later rule sees 0 calls.
+                    .on_event("cassandra_startup")
+                    .respond_with_actions(serde_json::json!([
+                        { "type": "cassandra_ready" }
+                    ]))
+                    .expect_calls(1)
+                    .and()
+                    .on_event("cassandra_options")
+                    .respond_with_actions(serde_json::json!([
+                        { "type": "cassandra_supported" }
+                    ]))
+                    .expect_at_least(0)
+                    .and()
+                    // Mock 3: Query received from client. The event is `cassandra_query`;
+                    // `cassandra_query_received` was never an event this server raises, so
+                    // this rule could not match and the query went unanswered.
+                    .on_event("cassandra_query")
                     .and_event_data_contains("query", "SELECT * FROM system.local")
                     .respond_with_actions(serde_json::json!([
                         {
@@ -78,7 +96,7 @@ mod cassandra_client_tests {
                 .on_event("cassandra_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "execute_cassandra_query",
+                        "type": "execute_cql_query",
                         "query": "SELECT * FROM system.local"
                     }
                 ]))
@@ -143,7 +161,7 @@ mod cassandra_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Query received with consistency level
-                    .on_event("cassandra_query_received")
+                    .on_event("cassandra_query")
                     .and_event_data_contains("query", "SELECT * FROM system.local")
                     .respond_with_actions(serde_json::json!([
                         {
@@ -190,7 +208,7 @@ mod cassandra_client_tests {
                     .on_event("cassandra_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "execute_cassandra_query",
+                            "type": "execute_cql_query",
                             "query": "SELECT * FROM system.local",
                             "consistency": "QUORUM"
                         }
@@ -254,7 +272,7 @@ mod cassandra_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: First query (system.local)
-                    .on_event("cassandra_query_received")
+                    .on_event("cassandra_query")
                     .and_event_data_contains("query", "system.local")
                     .respond_with_actions(serde_json::json!([
                         {
@@ -270,7 +288,7 @@ mod cassandra_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: Second query (system.peers)
-                    .on_event("cassandra_query_received")
+                    .on_event("cassandra_query")
                     .and_event_data_contains("query", "system.peers")
                     .respond_with_actions(serde_json::json!([
                         {
@@ -315,7 +333,7 @@ mod cassandra_client_tests {
                     .on_event("cassandra_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "execute_cassandra_query",
+                            "type": "execute_cql_query",
                             "query": "SELECT * FROM system.local"
                         }
                     ]))
@@ -325,7 +343,7 @@ mod cassandra_client_tests {
                     .on_event("cassandra_response_received")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "execute_cassandra_query",
+                            "type": "execute_cql_query",
                             "query": "SELECT * FROM system.peers"
                         }
                     ]))

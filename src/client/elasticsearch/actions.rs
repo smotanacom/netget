@@ -257,6 +257,19 @@ impl Protocol for ElasticsearchClientProtocol {
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![
             ActionDefinition {
+                name: "wait_for_more".to_string(),
+                description:
+                    "Do nothing and wait for the next Elasticsearch response. The correct answer \
+                    when what arrived needs no follow-up -- without it the model has to \
+                    invent an action it does not want."
+                        .to_string(),
+                parameters: vec![],
+                example: json!({
+                    "type": "wait_for_more"
+                }),
+                log_template: None,
+            },
+            ActionDefinition {
                 name: "index_document".to_string(),
                 description: "Index another document in response to search results".to_string(),
                 parameters: vec![

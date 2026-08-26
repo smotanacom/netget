@@ -84,7 +84,7 @@ mod mysql_client_tests {
                 .on_event("mysql_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "execute_mysql_query",
+                        "type": "execute_query",
                         "query": "SELECT 1"
                     }
                 ]))
@@ -180,7 +180,7 @@ mod mysql_client_tests {
                 .on_event("mysql_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "execute_mysql_query",
+                        "type": "execute_query",
                         "query": "SELECT * FROM users"
                     }
                 ]))
@@ -269,7 +269,7 @@ mod mysql_client_tests {
                 .on_event("mysql_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "execute_mysql_query",
+                        "type": "execute_query",
                         "query": "BEGIN"
                     }
                 ]))
@@ -278,7 +278,7 @@ mod mysql_client_tests {
                 .on_event("mysql_query_result")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "execute_mysql_query",
+                        "type": "execute_query",
                         "query": "INSERT INTO logs VALUES ('test')"
                     }
                 ]))
