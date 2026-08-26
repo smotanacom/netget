@@ -33,6 +33,17 @@ mod mssql_client_tests {
                 ]))
                 .expect_calls(1)
                 .and()
+                // The MSSQL server makes login a model decision: `mssql_login_ack` admits the
+                // session and nothing else does, so a suite that only mocks `mssql_query` never
+                // gets a connection to run a query on.
+                .on_event("mssql_login")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "mssql_login_ack"
+                    }
+                ]))
+                .expect_at_least(1)
+                .and()
                 // Mock 2: SELECT 1 query received
                 .on_event("mssql_query")
                 .and_event_data_contains("query", "SELECT 1")
@@ -143,6 +154,17 @@ mod mssql_client_tests {
                     }
                 ]))
                 .expect_calls(1)
+                .and()
+                // The MSSQL server makes login a model decision: `mssql_login_ack` admits the
+                // session and nothing else does, so a suite that only mocks `mssql_query` never
+                // gets a connection to run a query on.
+                .on_event("mssql_login")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "mssql_login_ack"
+                    }
+                ]))
+                .expect_at_least(1)
                 .and()
                 // Mock 2: SELECT * FROM users query
                 .on_event("mssql_query")
