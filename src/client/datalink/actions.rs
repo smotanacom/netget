@@ -11,21 +11,6 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::LazyLock;
 
-/// DataLink client frame injected event
-pub static DATALINK_CLIENT_FRAME_INJECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
-        "datalink_frame_injected",
-        "Raw Ethernet frame successfully injected",
-        json!({"type": "wait_for_more"}),
-    )
-    .with_parameters(vec![Parameter {
-        name: "frame_length".to_string(),
-        type_hint: "number".to_string(),
-        description: "Length of injected frame in bytes".to_string(),
-        required: true,
-    }])
-});
-
 /// DataLink client frame captured event (for promiscuous mode listening)
 pub static DATALINK_CLIENT_FRAME_CAPTURED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(

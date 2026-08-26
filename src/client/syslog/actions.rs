@@ -40,37 +40,6 @@ pub static SYSLOG_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(||
     ])
 });
 
-/// Syslog message sent event
-pub static SYSLOG_MESSAGE_SENT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
-        "syslog_message_sent",
-        "Syslog message successfully sent to server",
-        json!({
-            "type": "disconnect"
-        }),
-    )
-    .with_parameters(vec![
-        Parameter {
-            name: "facility".to_string(),
-            type_hint: "string".to_string(),
-            description: "Syslog facility".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "severity".to_string(),
-            type_hint: "string".to_string(),
-            description: "Syslog severity".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "message".to_string(),
-            type_hint: "string".to_string(),
-            description: "Log message".to_string(),
-            required: true,
-        },
-    ])
-});
-
 /// Syslog client protocol action handler
 pub struct SyslogClientProtocol;
 
