@@ -138,10 +138,30 @@ Current implementation uses `"stream": false` and returns full response at once.
 - LLM generates chunks via actions
 - Stream chunks back to client
 
-### 2. Mock Model Management
+### 2. Model Management is a decision, not a rubber stamp
 
-Model management endpoints (`/api/pull`, `/api/create`, `/api/delete`) return success without actually doing anything.
-This is fine for a mock server but clients may expect model persistence.
+`/api/pull`, `/api/create`, `/api/copy` and `/api/delete` perform nothing — there is no model
+store here, by design. What changed in August 2026 is **who decides what to report**.
+
+They used to answer `{"status": "success"}` unconditionally, with no event and no `call_llm`
+anywhere in the path, and `/api/pull` invented a digest of `sha256:0000000000000000`. So a
+server instructed "this instance only serves llama2, refuse anything else" reported every pull
+as downloaded and every delete as removed: the instruction could not be wrong, it simply had no
+effect. That is the fail-open shape from the root `CLAUDE.md` in its purest form — the decision
+was never asked for.
+
+All four now raise **`ollama_admin_request`** (`operation`, `model`, `destination`) and require
+an explicit **`ollama_admin_ok`** to report success. `ollama_error_response` refuses with the
+model's own message and status. Three outcomes refuse, kept apart in the log:
+`decision=model_reject`, `decision=fail_closed_no_action`, `decision=fail_closed_llm_error` —
+the last two carry only a `WireFailure` category, never the backend error.
+
+`ollama_admin_ok` may carry `digest` and `total`, which `/api/pull` echoes. Nothing is invented:
+omit them and the reply is just `{"status": "success"}`.
+
+Still hardcoded, and still worth fixing the same way: `/api/show` and `/api/embeddings` answer
+with canned data without consulting the model (`/api/embeddings` returns sequential floats, see
+below). They are read paths rather than state changes, which is the only reason they were left.
 
 ### 3. Static Embeddings
 

@@ -107,6 +107,94 @@ pub static OLLAMA_MODELS_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     ])
 });
 
+/// Acknowledge a model-management operation.
+///
+/// Separate from `ollama_error_response` so that accept and refuse share no code path — the
+/// separation `src/server/radius/` established.
+fn ollama_admin_ok_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "ollama_admin_ok".to_string(),
+        description: "Confirm a model-management operation (pull, create, copy, delete). \
+                      Without this action the operation is refused - there is no implicit \
+                      success."
+            .to_string(),
+        parameters: vec![
+            Parameter {
+                name: "digest".to_string(),
+                type_hint: "string".to_string(),
+                description: "Digest to report for a pull, e.g. \"sha256:...\". Omit for other \
+                              operations."
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "total".to_string(),
+                type_hint: "number".to_string(),
+                description: "Total size in bytes to report for a pull. Omit for other \
+                              operations."
+                    .to_string(),
+                required: false,
+            },
+        ],
+        example: json!({
+            "type": "ollama_admin_ok",
+            "digest": "sha256:2f4b1c1e0a",
+            "total": 3826793677i64
+        }),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("-> Ollama {operation} acknowledged")
+                .with_debug("Ollama ollama_admin_ok: digest={digest} total={total}"),
+        ),
+    }
+}
+
+/// Model-management event: `/api/pull`, `/api/create`, `/api/copy`, `/api/delete`.
+///
+/// These four endpoints used to answer `{"status":"success"}` unconditionally, without an
+/// event and without consulting the model at all — so a server told "this instance only
+/// serves llama2, refuse everything else" reported every pull as downloaded and every delete
+/// as removed. `/api/pull` additionally invented a digest of `sha256:0000000000000000`.
+pub static OLLAMA_ADMIN_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "ollama_admin_request",
+        "A client asked to pull, create, copy or delete a model. Confirm with \
+         ollama_admin_ok, or refuse with ollama_error_response.",
+        json!({
+            "type": "ollama_admin_ok"
+        }),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "operation".to_string(),
+            type_hint: "string".to_string(),
+            description: "One of: pull, create, copy, delete".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "model".to_string(),
+            type_hint: "string".to_string(),
+            description: "Model the request names (the `name` or `model` field)".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "destination".to_string(),
+            type_hint: "string".to_string(),
+            description: "Destination model name, for copy".to_string(),
+            required: false,
+        },
+    ])
+    .with_actions(vec![
+        ollama_admin_ok_action(),
+        ollama_error_response_action(),
+    ])
+    .with_log_template(
+        LogTemplate::new()
+            .with_info("{client_ip} Ollama {operation} {model}")
+            .with_debug("Ollama admin {operation}: model={model} destination={destination}"),
+    )
+});
+
 /// Ollama protocol action handler
 pub struct OllamaProtocol {}
 
@@ -127,6 +215,7 @@ impl Protocol for OllamaProtocol {
             ollama_generate_response_action(),
             ollama_chat_response_action(),
             ollama_models_response_action(),
+            ollama_admin_ok_action(),
             ollama_error_response_action(),
         ]
     }
@@ -247,6 +336,19 @@ impl Server for OllamaProtocol {
             "ollama_generate_response" => self.execute_ollama_generate_response(action),
             "ollama_chat_response" => self.execute_ollama_chat_response(action),
             "ollama_models_response" => self.execute_ollama_models_response(action),
+            "ollama_admin_ok" => {
+                let mut data = json!({});
+                if let Some(d) = action.get("digest").and_then(|v| v.as_str()) {
+                    data["digest"] = json!(d);
+                }
+                if let Some(t) = action.get("total").and_then(|v| v.as_u64()) {
+                    data["total"] = json!(t);
+                }
+                Ok(ActionResult::Custom {
+                    name: "ollama_admin_ok".to_string(),
+                    data,
+                })
+            }
             "ollama_error_response" => self.execute_ollama_error_response(action),
             _ => Err(anyhow::anyhow!("Unknown Ollama action: {}", action_type)),
         }
@@ -398,5 +500,6 @@ fn get_ollama_event_types() -> Vec<EventType> {
         OLLAMA_GENERATE_REQUEST_EVENT.clone(),
         OLLAMA_CHAT_REQUEST_EVENT.clone(),
         OLLAMA_MODELS_REQUEST_EVENT.clone(),
+        OLLAMA_ADMIN_REQUEST_EVENT.clone(),
     ]
 }
