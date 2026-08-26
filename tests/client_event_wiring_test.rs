@@ -42,8 +42,6 @@ const NEVER_EMITTED_BASELINE: &[&str] = &[
     "imap",
     "mqtt",
     "nfc",
-    "ntp",
-    "socket_file",
     "syslog",
     "telnet",
     "webrtc",

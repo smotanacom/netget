@@ -108,8 +108,17 @@ impl NtpClient {
                     &app_state,
                     client_id.to_string(),
                     &instruction,
-                    "",   // No memory initially
-                    None, // No event for initial call
+                    "", // No memory initially
+                    // The connected event, not `None`.
+                    //
+                    // NTP_CLIENT_CONNECTED_EVENT was declared and nothing raised it, so
+                    // this call arrived with no event attached: an `ntp_connected` handler
+                    // the operator or the model wrote could never match, and
+                    // `client_llm_action_set` could not union the event's own actions in.
+                    Some(&Event::new(
+                        &crate::client::ntp::actions::NTP_CLIENT_CONNECTED_EVENT,
+                        serde_json::json!({ "remote_addr": remote_addr.clone() }),
+                    )),
                     protocol.as_ref(),
                     &status_tx,
                 )
