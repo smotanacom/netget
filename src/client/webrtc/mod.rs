@@ -444,13 +444,25 @@ impl WebRtcClient {
             .await
             {
                 Ok(ClientLlmResult {
-                    actions: _,
-                    memory_updates: _,
+                    actions,
+                    memory_updates,
                 }) => {
-                    debug!(
-                        "WebRTC client {} processed signaling connected event",
-                        client_id
-                    );
+                    if let Some(mem) = memory_updates {
+                        app_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    // Signaling is connected but no data channel exists yet, so there is
+                    // genuinely nothing to send on. Say which actions could not run rather
+                    // than dropping them silently -- and note that the memory update WAS
+                    // being dropped too, so anything the model learned here was lost.
+                    if !actions.is_empty() {
+                        info!(
+                            "WebRTC client {}: {} action(s) answered at signaling-connected \
+                             cannot run yet -- no data channel is open; they are actionable \
+                             at webrtc_channel_opened",
+                            client_id,
+                            actions.len()
+                        );
+                    }
                 }
                 Err(e) => {
                     warn!(
@@ -624,6 +636,9 @@ impl WebRtcClient {
         let status_tx_on_open = status_tx.clone();
         let llm_on_open = llm_client.clone();
         let label_on_open = channel_label.clone();
+        // The channel itself, so an action the model returns when the channel opens can
+        // actually be sent. Without it the answer had nowhere to go and was dropped.
+        let dc_on_open = Arc::clone(&data_channel);
 
         data_channel.on_open(Box::new(move || {
             let app_state = Arc::clone(&app_state_on_open);
@@ -631,6 +646,7 @@ impl WebRtcClient {
             let client_data = Arc::clone(&client_data_on_open);
             let llm_client = llm_on_open.clone();
             let label = label_on_open.clone();
+            let dc = Arc::clone(&dc_on_open);
 
             Box::pin(async move {
                 info!(
@@ -669,11 +685,51 @@ impl WebRtcClient {
                     .await
                     {
                         Ok(ClientLlmResult {
-                            actions: _,
+                            actions,
                             memory_updates,
                         }) => {
                             if let Some(mem) = memory_updates {
                                 client_data.lock().await.memory = mem;
+                            }
+
+                            // Send what the model asked for. These were discarded, so a
+                            // model told to greet the peer as soon as the channel opened
+                            // could not: the opening message is exactly what this event
+                            // exists to prompt, and nothing came of it.
+                            //
+                            // Same execution shape as the on_message handler below; a
+                            // send raises no event, so this cannot loop.
+                            use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                            for action in actions {
+                                match protocol.as_ref().execute_action(action) {
+                                    Ok(ClientActionResult::SendData(bytes)) => {
+                                        match dc.send(&bytes.into()).await {
+                                            Ok(n) => info!(
+                                                "WebRTC client {} sent {} bytes on '{}' \
+                                                 when the channel opened",
+                                                client_id, n, label
+                                            ),
+                                            Err(e) => error!(
+                                                "WebRTC client {} failed to send on '{}': {}",
+                                                client_id, label, e
+                                            ),
+                                        }
+                                    }
+                                    Ok(ClientActionResult::Disconnect) => {
+                                        info!(
+                                            "WebRTC client {} closing channel '{}' on the \
+                                             model's request",
+                                            client_id, label
+                                        );
+                                        let _ = dc.close().await;
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => error!(
+                                        "WebRTC client {} rejected its own channel-open \
+                                         action: {}",
+                                        client_id, e
+                                    ),
+                                }
                             }
                         }
                         Err(e) => {
