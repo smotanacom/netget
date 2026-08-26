@@ -74,8 +74,8 @@ Ten response actions, one per operation shape. All are advertised on `nfs_operat
 | `nfs_write_response` | `write` | `size`, `mode`, `mtime` |
 | `nfs_create_response` | `create`, `create_exclusive`, `symlink` | `fileid`, `size`, `mode` |
 | `nfs_mkdir_response` | `mkdir` | `fileid`, `mode` |
-| `nfs_remove_response` | `remove` | `success` |
-| `nfs_rename_response` | `rename` | `success` |
+| `nfs_remove_response` | `remove` | `success` (**required, and honoured** — see below) |
+| `nfs_rename_response` | `rename` | `success` (**required, and honoured** — see below) |
 | `nfs_readdir_response` | `readdir` | `entries[{name, fileid, attr?}]`, `eof` |
 
 Any response may carry `"error"` instead; the mapping to NFS status is coarse — the string is
@@ -83,6 +83,19 @@ logged, not parsed, and each operation returns its own fixed code (`lookup`/`rem
 NFS3ERR_NOENT, `read`/`write`/`setattr`/`create`/`mkdir`/`rename` → NFS3ERR_ACCES, `readdir` →
 NFS3ERR_NOTDIR, `create_exclusive` → NFS3ERR_EXIST, `readlink` → NFS3ERR_INVAL). Returning
 `"error": "Is a directory"` will not produce NFS3ERR_ISDIR.
+
+### `success` on remove and rename
+
+Both actions declare `success` as a required boolean, and for a long time **neither read it**.
+Only a non-empty `error` string produced a failure, so `{"type": "nfs_remove_response",
+"success": false}` — the obvious way for a model to refuse — was reported to the client as a
+completed removal. Same for rename.
+
+Now: `true` performs the operation, `false` is NFS3ERR_ACCES logged `decision=model_reject`,
+and an answer that omits the flag is NFS3ERR_SERVERFAULT logged
+`decision=fail_closed_no_success` rather than an assumed success. SERVERFAULT for the omission
+follows the same reasoning as the table below — a definite code like NFS3ERR_NOENT would tell
+the client the file is gone, which it caches and acts on.
 
 ### When the model does not answer at all
 

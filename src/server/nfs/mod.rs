@@ -782,8 +782,33 @@ impl NFSFileSystem for LlmNfsFileSystem {
                             return Err(nfsstat3::NFS3ERR_ACCES);
                         }
 
-                        debug!("NFS rename succeeded: {} -> {}", from_name, to_name);
-                        return Ok(());
+                        // Same defect as `remove`: `success` is declared required on
+                        // `nfs_rename_response` and was never read, so a model refusing with
+                        // `success: false` renamed the file anyway as far as the client knew.
+                        match action.get("success").and_then(|v| v.as_bool()) {
+                            Some(true) => {
+                                debug!("NFS rename succeeded: {} -> {}", from_name, to_name);
+                                return Ok(());
+                            }
+                            Some(false) => {
+                                debug!(
+                                    "NFS rename refused by handler for {} -> {} \
+                                     (decision=model_reject)",
+                                    from_name, to_name
+                                );
+                                return Err(nfsstat3::NFS3ERR_ACCES);
+                            }
+                            None => {
+                                warn!(
+                                    "NFS rename: nfs_rename_response for {} -> {} omitted the \
+                                     required `success` boolean \
+                                     (decision=fail_closed_no_success); refusing rather than \
+                                     assuming the rename happened",
+                                    from_name, to_name
+                                );
+                                return Err(nfsstat3::NFS3ERR_SERVERFAULT);
+                            }
+                        }
                     }
                 }
                 Err(self.llm_no_answer("rename", "nfs_rename_response"))
