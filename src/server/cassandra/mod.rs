@@ -453,21 +453,42 @@ impl CassandraServer {
                             .get("message")
                             .and_then(|v| v.as_str())
                             .unwrap_or("Unknown error");
-                        self.send_error(frame.stream_id, error_code, message, stream, status_tx)
-                            .await?;
+                        self.send_model_error(
+                            frame.stream_id,
+                            "STARTUP",
+                            error_code,
+                            message,
+                            stream,
+                            connection_id,
+                            status_tx,
+                        )
+                        .await?;
                         return Ok(true);
                     }
                     _ => {}
                 },
+                ActionResult::CloseConnection => {
+                    return Ok(false);
+                }
                 _ => {
                     warn!("Unexpected action result for STARTUP");
                 }
             }
         }
 
-        // If no action was executed, send a default READY
-        self.send_ready(frame.stream_id, stream, status_tx).await?;
-        Ok(true)
+        // Fail closed: a CQL session is granted by an explicit `cassandra_ready` or
+        // `cassandra_authenticate` and by nothing else. Falling through to READY here handed
+        // out an unauthenticated session on silence, so the model had no way to make a refusal
+        // distinguishable from a backend outage.
+        self.send_no_answer_error(
+            frame.stream_id,
+            "STARTUP",
+            stream,
+            connection_id,
+            status_tx,
+        )
+        .await?;
+        Ok(false)
     }
 
     /// Handle OPTIONS frame
@@ -543,12 +564,23 @@ impl CassandraServer {
                             .get("message")
                             .and_then(|v| v.as_str())
                             .unwrap_or("Unknown error");
-                        self.send_error(frame.stream_id, error_code, message, stream, status_tx)
-                            .await?;
+                        self.send_model_error(
+                            frame.stream_id,
+                            "OPTIONS",
+                            error_code,
+                            message,
+                            stream,
+                            connection_id,
+                            status_tx,
+                        )
+                        .await?;
                         return Ok(true);
                     }
                     _ => {}
                 },
+                ActionResult::CloseConnection => {
+                    return Ok(false);
+                }
                 _ => {
                     warn!("Unexpected action result for OPTIONS");
                 }
@@ -648,8 +680,16 @@ impl CassandraServer {
                             .get("message")
                             .and_then(|v| v.as_str())
                             .unwrap_or("Unknown error");
-                        self.send_error(frame.stream_id, error_code, message, stream, status_tx)
-                            .await?;
+                        self.send_model_error(
+                            frame.stream_id,
+                            "QUERY",
+                            error_code,
+                            message,
+                            stream,
+                            connection_id,
+                            status_tx,
+                        )
+                        .await?;
                         return Ok(true);
                     }
                     _ => {}
@@ -663,8 +703,9 @@ impl CassandraServer {
             }
         }
 
-        // Default: send empty result
-        self.send_result_rows(frame.stream_id, vec![], vec![], stream, status_tx)
+        // Fail closed: an empty RESULT/Rows frame means "no rows matched", which is an
+        // answer about the data. A missing handler answer is not that.
+        self.send_no_answer_error(frame.stream_id, "QUERY", stream, connection_id, status_tx)
             .await?;
         Ok(true)
     }
@@ -1087,8 +1128,16 @@ impl CassandraServer {
                             .get("message")
                             .and_then(|v| v.as_str())
                             .unwrap_or("Unknown error");
-                        self.send_error(frame.stream_id, error_code, message, stream, status_tx)
-                            .await?;
+                        self.send_model_error(
+                            frame.stream_id,
+                            "PREPARE",
+                            error_code,
+                            message,
+                            stream,
+                            connection_id,
+                            status_tx,
+                        )
+                        .await?;
                         return Ok(true);
                     }
                     _ => {}
@@ -1102,17 +1151,10 @@ impl CassandraServer {
             }
         }
 
-        // Default: send empty prepared result
-        self.send_prepared(
-            frame.stream_id,
-            statement_id,
-            vec![],
-            None,
-            param_count,
-            stream,
-            status_tx,
-        )
-        .await?;
+        // Fail closed: handing back a valid statement id would let a later EXECUTE run off a
+        // preparation nobody approved.
+        self.send_no_answer_error(frame.stream_id, "PREPARE", stream, connection_id, status_tx)
+            .await?;
         Ok(true)
     }
 
@@ -1224,8 +1266,16 @@ impl CassandraServer {
                             .get("message")
                             .and_then(|v| v.as_str())
                             .unwrap_or("Unknown error");
-                        self.send_error(frame.stream_id, error_code, message, stream, status_tx)
-                            .await?;
+                        self.send_model_error(
+                            frame.stream_id,
+                            "EXECUTE",
+                            error_code,
+                            message,
+                            stream,
+                            connection_id,
+                            status_tx,
+                        )
+                        .await?;
                         return Ok(true);
                     }
                     _ => {}
@@ -1239,8 +1289,9 @@ impl CassandraServer {
             }
         }
 
-        // Default: send empty result
-        self.send_result_rows(frame.stream_id, vec![], vec![], stream, status_tx)
+        // Fail closed: an empty RESULT/Rows frame means "no rows matched", which is an
+        // answer about the data. A missing handler answer is not that.
+        self.send_no_answer_error(frame.stream_id, "EXECUTE", stream, connection_id, status_tx)
             .await?;
         Ok(true)
     }
@@ -1493,6 +1544,66 @@ impl CassandraServer {
             .await
     }
 
+    /// Answer a stage the handler left unanswered.
+    ///
+    /// A no-answer is not permission. Silence used to fall through to the success frame for
+    /// the stage - READY for STARTUP, an empty RESULT/Rows for QUERY and EXECUTE, a valid
+    /// statement id for PREPARE - so an LLM outage, a handler that returned nothing, and a
+    /// model that deliberately refused were indistinguishable on the wire, and two of the
+    /// three granted the client exactly what it asked for.
+    ///
+    /// Every success frame here has to be produced by an explicit action; nothing synthesises
+    /// one. An empty Rows result in particular is a statement about the data ("no rows
+    /// matched") and must never be manufactured by a failure.
+    ///
+    /// The log carries `decision=fail_closed_no_answer`, distinct from
+    /// `decision=fail_closed_llm_error` (backend failed) and `decision=model_reject` (the
+    /// handler asked for an ERROR), because the CQL wire cannot tell the three apart.
+    async fn send_no_answer_error(
+        &self,
+        stream_id: i16,
+        stage: &str,
+        stream: &mut TcpStream,
+        connection_id: ConnectionId,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) -> Result<()> {
+        Log::new(Some(status_tx)).warn(format!(
+            "Cassandra connection {} decision=fail_closed_no_answer stage={}: handler produced \
+             no recognised action, answering ERROR 0x{:04X} (Server error)",
+            connection_id, stage, CASSANDRA_ERROR_SERVER_ERROR
+        ));
+        self.send_error(
+            stream_id,
+            CASSANDRA_ERROR_SERVER_ERROR,
+            "netget: no handler answer for this request",
+            stream,
+            status_tx,
+        )
+        .await
+    }
+
+    /// Send the ERROR frame a handler explicitly asked for.
+    ///
+    /// Logged as `decision=model_reject` so a deliberate refusal is separable from the two
+    /// failure paths above, which reach the same opcode.
+    async fn send_model_error(
+        &self,
+        stream_id: i16,
+        stage: &str,
+        error_code: u32,
+        message: &str,
+        stream: &mut TcpStream,
+        connection_id: ConnectionId,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) -> Result<()> {
+        Log::new(Some(status_tx)).info(format!(
+            "Cassandra connection {} decision=model_reject stage={}: ERROR 0x{:04X}",
+            connection_id, stage, error_code
+        ));
+        self.send_error(stream_id, error_code, message, stream, status_tx)
+            .await
+    }
+
     /// Send ERROR response
     async fn send_error(
         &self,
@@ -1618,11 +1729,13 @@ impl CassandraServer {
                                 .get("message")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("Unknown error");
-                            self.send_error(
+                            self.send_model_error(
                                 frame.stream_id,
+                                "AUTH_RESPONSE",
                                 error_code,
                                 message,
                                 stream,
+                                connection_id,
                                 status_tx,
                             )
                             .await?;
