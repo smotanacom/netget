@@ -82,15 +82,32 @@ async fn injected_mssql_query_reaches_our_own_server() {
     let server_id = ServerForm {
         protocol: "mssql".to_string(),
         port: Some(0),
+        // One script handler branching on the event, not a blanket `*` static rule.
+        //
+        // Login is a model decision now, and the server fails closed when nothing answers
+        // it -- correctly. A `*` rule answering everything with mssql_query_response left
+        // LOGIN7 unanswered, so tiberius got "Login failed for user ''" and the client
+        // never connected.
+        //
+        // It cannot be two static rules either: EventHandler has only `event_pattern` and
+        // `handler`, so every rule against a given event id matches every occurrence and
+        // first-match-wins.
         event_handlers: Some(vec![serde_json::json!({
             "event_pattern": "*",
             "handler": {
-                "type": "static",
-                "actions": [{
-                    "type": "mssql_query_response",
-                    "columns": [{"name": "marker", "type": "NVARCHAR"}],
-                    "rows": [["dashboard-marker"]]
-                }]
+                "type": "script",
+                "language": "python",
+                "resident": true,
+                "code": r#"
+def handle(event_type, event, message):
+    if event_type == "mssql_login":
+        return [{"type": "mssql_login_ack"}]
+    return [{
+        "type": "mssql_query_response",
+        "columns": [{"name": "marker", "type": "NVARCHAR"}],
+        "rows": [["dashboard-marker"]],
+    }]
+"#
             }
         })]),
         ..Default::default()
