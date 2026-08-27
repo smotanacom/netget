@@ -814,13 +814,26 @@ Assume other agents work in this repo concurrently.
   mid-edit and its failures belong to nobody. Check the committed state in a throwaway
   worktree: `git worktree add --detach <tmp> HEAD && cargo check --all-features` with its own
   `CARGO_TARGET_DIR`. Remove the worktree afterwards.
-- **`--ollama-lock` does nothing.** The flag is parsed, stored on `AppState`, read back by
-  `get_ollama_lock_enabled()` and passed to `OllamaClient::new_with_options(url, lock_enabled)`
-  — which ignores it, with a comment saying locking is "handled at a different layer". Nothing
-  in `src/` is that layer. Every test passes the flag, so it looks like LLM access is
-  serialised across processes and it is not. Don't reason about concurrency from it.
+- **`--ollama-lock` does nothing, and now says so.** The flag is parsed, stored on `AppState`,
+  read back by `get_ollama_lock_enabled()` and passed to
+  `OllamaClient::new_with_options(url, lock_enabled)` — which ignores it, with a comment saying
+  locking is "handled at a different layer". Nothing in `src/` is that layer. Every test passes
+  the flag, so it looked as though LLM access were serialised across processes. Its `--help`
+  now declares it deprecated and ignored, and `tests/ollama_lock_is_a_noop_test.rs` fails if
+  the old claims come back or if an `ollama.lock` ever appears. **Still don't reason about
+  concurrency from it** — `--llm-max-concurrent`, `--llm-queue-timeout` and `--llm-max-queued`
+  are the real bounds. Deleting the flag remains the better end state and is unfinished: the
+  parameter threads through `AppState::new_with_options` (~146 call sites) and the harness
+  passes it to every spawned binary.
   Concurrent `git` work should
   use worktrees.
+- **Do not run a full sweep while anything else is building.** `tests/examples` and
+  `tests/terminal_snapshot` *spawn `target/debug/netget`*, and `target/` is shared with every
+  other agent and with your own narrow-feature builds. A concurrent build replaces that binary
+  mid-run, and the sweep then reports things like `Protocol 'SOCKS5' exists but is not compiled
+  into this build` for protocols that are in fact compiled, or hangs a pty snapshot test. Those
+  are contention artefacts, not regressions — check for other `cargo test` processes before
+  believing a binary-spawning failure.
 - Never `pkill cargo`; use `./cargo-isolated-kill.sh`.
 - The user runs `netget --mcp` interactively. **Never kill netget processes.**
 
