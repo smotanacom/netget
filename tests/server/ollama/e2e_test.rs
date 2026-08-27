@@ -106,6 +106,10 @@ async fn test_ollama_list_models() -> E2EResult<()> {
     }
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ Ollama List Models test completed\n");
@@ -205,6 +209,10 @@ async fn test_ollama_generate() -> E2EResult<()> {
     assert!(!response_text.is_empty(), "Response should not be empty");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ Ollama Generate test completed\n");
@@ -313,6 +321,10 @@ async fn test_ollama_chat() -> E2EResult<()> {
     assert!(!content.is_empty(), "Response content should not be empty");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ Ollama Chat test completed\n");
@@ -371,6 +383,10 @@ async fn test_ollama_invalid_endpoint() -> E2EResult<()> {
     );
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ Ollama Invalid Endpoint test completed\n");

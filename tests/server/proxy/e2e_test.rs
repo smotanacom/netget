@@ -41,6 +41,10 @@ mod proxy_server_tests {
         println!("✅ Proxy server started successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         // Cleanup
@@ -80,6 +84,10 @@ mod proxy_server_tests {
 
         println!("✅ Proxy server started successfully");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -117,6 +125,10 @@ mod proxy_server_tests {
 
         println!("✅ Proxy server started successfully");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -154,6 +166,10 @@ mod proxy_server_tests {
 
         println!("✅ Proxy server started successfully");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -198,6 +214,10 @@ mod proxy_server_tests {
 
         println!("✅ Proxy server initialized in MITM mode with certificate generation");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -260,6 +280,10 @@ mod proxy_server_tests {
         // lives in tests/server/proxy/test.rs.
         println!("✅ Proxy server started in MITM mode (no traffic driven by this test)");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -319,6 +343,10 @@ mod proxy_server_tests {
 
         println!("✅ Proxy server started in MITM modify config (no traffic driven)");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -376,6 +404,10 @@ mod proxy_server_tests {
 
         println!("✅ Proxy server started in MITM blocking config (no traffic driven)");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -449,6 +481,10 @@ mod proxy_server_tests {
 
         println!("✅ CA certificate exported to {}", ca_path.display());
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -494,6 +530,10 @@ mod proxy_server_tests {
 
         println!("✅ MITM proxy initialized with response modification enabled");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -537,6 +577,10 @@ mod proxy_server_tests {
 
         println!("✅ MITM proxy initialized with response blocking enabled");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 

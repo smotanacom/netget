@@ -307,6 +307,10 @@ async fn test_socks5_basic_connect() -> E2EResult<()> {
     }
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -407,6 +411,10 @@ async fn test_socks5_with_authentication() -> E2EResult<()> {
     }
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -495,6 +503,10 @@ async fn test_socks5_connection_rejection() -> E2EResult<()> {
     println!("✓ Connection correctly denied");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -583,6 +595,10 @@ async fn test_socks5_domain_name() -> E2EResult<()> {
     println!("✓ CONNECT with domain name successful");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -746,6 +762,10 @@ async fn test_socks5_mitm_inspection() -> E2EResult<()> {
     println!("✓ MITM inspection successful");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup

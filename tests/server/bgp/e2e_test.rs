@@ -248,6 +248,10 @@ mod e2e_bgp {
         .concat();
         assert_eq!(update, expected_update, "advertised route is malformed");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -329,6 +333,10 @@ mod e2e_bgp {
             "a peer without the four-octet AS capability was sent four-octet ASNs"
         );
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -391,6 +399,10 @@ mod e2e_bgp {
             "connection should close after NOTIFICATION, got {closed:?}"
         );
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -438,6 +450,10 @@ mod e2e_bgp {
         assert_eq!((msg[19], msg[20]), (6, 5));
         assert_eq!(msg.len(), 21, "no diagnostic data was requested");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -530,6 +546,10 @@ mod e2e_bgp {
             }
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -607,6 +627,10 @@ mod e2e_bgp {
             "a NOTIFICATION must close the session without a reply, got {closed:?}"
         );
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())

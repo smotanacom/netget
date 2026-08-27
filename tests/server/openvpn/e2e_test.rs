@@ -224,6 +224,10 @@ async fn test_real_openvpn_client_accepts_our_reset_reply() -> E2EResult<()> {
         server_log
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -387,6 +391,10 @@ async fn test_reset_reply_is_spec_correct_and_control_packets_are_acked() -> E2E
         server_log
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -434,6 +442,10 @@ async fn test_rejected_peer_receives_nothing() -> E2EResult<()> {
         server_log
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -470,6 +482,10 @@ async fn test_absent_decision_fails_closed() -> E2EResult<()> {
         server_log
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

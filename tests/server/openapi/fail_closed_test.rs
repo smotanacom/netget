@@ -87,6 +87,10 @@ async fn test_openapi_no_action_fails_closed() -> E2EResult<()> {
     assert_eq!(json["error"], "Internal Server Error");
     assert_eq!(json["message"], "request could not be processed");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
 

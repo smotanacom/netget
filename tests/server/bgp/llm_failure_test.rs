@@ -148,6 +148,10 @@ async fn test_bgp_open_fails_closed_when_the_backend_errors() -> E2EResult<()> {
         msg.len() - 21
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

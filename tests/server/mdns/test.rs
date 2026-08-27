@@ -119,6 +119,10 @@ async fn test_mdns_service_advertisement() -> E2EResult<()> {
     // Shutdown mDNS daemon
     let _ = mdns.shutdown();
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test completed ===\n");
@@ -213,6 +217,10 @@ async fn test_mdns_multiple_services() -> E2EResult<()> {
     // Shutdown mDNS daemon
     let _ = mdns.shutdown();
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test completed ===\n");
@@ -302,6 +310,10 @@ async fn test_mdns_service_with_properties() -> E2EResult<()> {
 
     let _ = mdns.shutdown();
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test completed ===\n");
@@ -385,6 +397,10 @@ async fn test_mdns_custom_service_type() -> E2EResult<()> {
 
     let _ = mdns.shutdown();
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test completed ===\n");

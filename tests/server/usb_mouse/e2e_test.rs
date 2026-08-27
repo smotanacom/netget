@@ -175,6 +175,10 @@ mod usb_mouse_e2e {
             );
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -250,6 +254,10 @@ mod usb_mouse_e2e {
             "a drag must end by releasing the button"
         );
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -297,6 +305,10 @@ mod usb_mouse_e2e {
             .wait_for_log("USB mouse host detached on connection", 10)
             .await?;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())

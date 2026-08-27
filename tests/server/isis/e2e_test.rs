@@ -60,6 +60,10 @@ mod e2e_isis {
         println!("  [TEST] ✓ IS-IS server started successfully");
 
         // Verify mock expectations
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        instance.wait_for_mocks(30).await;
         instance.verify_mocks().await?;
 
         Ok(())
@@ -135,6 +139,10 @@ mod e2e_isis {
         println!("  [TEST] ✓ IS-IS Hello exchange test structure validated");
 
         // Verify mock expectations
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        instance.wait_for_mocks(30).await;
         instance.verify_mocks().await?;
 
         Ok(())
@@ -198,6 +206,10 @@ mod e2e_isis {
         println!("  [TEST] ✓ Multiple neighbor test structure validated");
 
         // Verify mock expectations
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        instance.wait_for_mocks(30).await;
         instance.verify_mocks().await?;
 
         Ok(())

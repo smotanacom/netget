@@ -107,6 +107,10 @@ mod usb_keyboard_llm_failure {
             "the interface must still advertise the HID class"
         );
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())

@@ -99,6 +99,10 @@ async fn test_mssql_answers_error_token_when_llm_fails() -> E2EResult<()> {
         ),
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -196,6 +200,10 @@ async fn test_mssql_fails_closed_when_no_response_action_is_produced() -> E2ERes
         ),
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

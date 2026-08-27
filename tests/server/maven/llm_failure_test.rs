@@ -75,6 +75,10 @@ Serve a library com.example:hello-world:1.0.0";
     let body = response.text().await?;
     assert_no_leak(&body);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -128,6 +132,10 @@ Serve a library com.example:hello-world:1.0.0";
     let body = response.text().await?;
     assert_no_leak(&body);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

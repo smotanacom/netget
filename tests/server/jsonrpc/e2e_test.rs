@@ -132,6 +132,10 @@ async fn test_jsonrpc_basic_method_call() -> E2EResult<()> {
     println!("✓ JSON-RPC Basic Method Call test completed\n");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -214,6 +218,10 @@ async fn test_jsonrpc_notification() -> E2EResult<()> {
     println!("✓ JSON-RPC Notification test completed\n");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -321,6 +329,10 @@ async fn test_jsonrpc_batch_request() -> E2EResult<()> {
     println!("✓ JSON-RPC Batch Request test completed\n");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -426,6 +438,10 @@ async fn test_jsonrpc_method_not_found() -> E2EResult<()> {
     println!("✓ JSON-RPC Method Not Found test completed\n");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())

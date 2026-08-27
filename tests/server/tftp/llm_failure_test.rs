@@ -139,6 +139,10 @@ async fn test_tftp_read_request_errors_when_llm_fails() -> E2EResult<()> {
     assert_eq!(code, 0, "LLM failure is reported as 'not defined' (code 0)");
     println!("  [TEST] RRQ failure -> ERROR {code}: {message}");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -217,6 +221,10 @@ async fn test_tftp_read_transfer_errors_when_llm_fails_mid_stream() -> E2EResult
     assert_eq!(code, 0, "LLM failure is reported as 'not defined' (code 0)");
     println!("  [TEST] mid-transfer failure -> ERROR {code}: {message}");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -292,6 +300,10 @@ async fn test_tftp_write_data_block_errors_when_llm_fails() -> E2EResult<()> {
     );
     println!("  [TEST] write-block failure -> ERROR {code}: {message}");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

@@ -153,6 +153,10 @@ async fn test_snmp_basic_get() -> E2EResult<()> {
     println!("✓ sysName query succeeded");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -244,6 +248,10 @@ async fn test_snmp_get_next() -> E2EResult<()> {
     println!("✓ SNMP GETNEXT verified");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -372,6 +380,10 @@ async fn test_snmp_interface_stats() -> E2EResult<()> {
     }
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -491,6 +503,10 @@ async fn test_snmp_custom_mib() -> E2EResult<()> {
     }
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;

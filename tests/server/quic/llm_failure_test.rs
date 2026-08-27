@@ -128,6 +128,10 @@ async fn test_quic_resets_the_stream_when_the_llm_fails() -> E2EResult<()> {
     connection.close(0u32.into(), b"done");
     endpoint.wait_idle().await;
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

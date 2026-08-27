@@ -124,6 +124,10 @@ mod webrtc_signaling_llm_failure_tests {
         alice.close(None).await.ok();
         tokio::time::sleep(Duration::from_millis(300)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -191,6 +195,10 @@ mod webrtc_signaling_llm_failure_tests {
         bob.close(None).await.ok();
         tokio::time::sleep(Duration::from_millis(300)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())

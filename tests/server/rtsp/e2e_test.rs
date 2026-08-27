@@ -174,6 +174,10 @@ async fn test_rtsp_setup_play_streams_rtp() -> E2EResult<()> {
     assert_eq!(buf[1] & 0x7F, 0, "payload type must be PCMU");
     assert_eq!(len - 12, 160, "expected a 20 ms PCMU frame");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())

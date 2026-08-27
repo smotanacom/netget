@@ -133,6 +133,10 @@ async fn test_snowflake_login_and_query() -> E2EResult<()> {
         serde_json::json!("json")
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     println!("✓ Snowflake login + query passed\n");
     Ok(())
@@ -197,6 +201,10 @@ async fn test_snowflake_login_refused() -> E2EResult<()> {
         "refused login must not carry a token"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     println!("✓ Snowflake login refusal passed\n");
     Ok(())

@@ -65,6 +65,10 @@ async fn test_spark_version_static_and_applications() -> E2EResult<()> {
     assert_eq!(a[0]["id"], "app-20161116163331-0000");
     assert_eq!(a[0]["attempts"][0]["completed"], false);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -139,6 +143,10 @@ async fn test_spark_jobs_stages_executors() -> E2EResult<()> {
     assert!(e.is_array());
     assert_eq!(e[0]["id"], "driver");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

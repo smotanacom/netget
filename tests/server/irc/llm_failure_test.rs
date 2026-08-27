@@ -102,6 +102,10 @@ async fn test_irc_answers_numeric_400_when_llm_fails() -> E2EResult<()> {
         .map_err(|_| "the server did not close the link after ERROR")??;
     assert_eq!(n, 0, "expected EOF after ERROR, got: {trailing}");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

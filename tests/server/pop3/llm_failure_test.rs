@@ -76,6 +76,10 @@ async fn test_pop3_answers_err_when_greeting_llm_fails() -> E2EResult<()> {
         "the text should name the source of the failure: {greeting}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -144,6 +148,10 @@ async fn test_pop3_refuses_user_when_llm_fails() -> E2EResult<()> {
         "the -ERR should carry an RFC 2449 response code: {reply}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

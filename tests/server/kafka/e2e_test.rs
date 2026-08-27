@@ -355,6 +355,10 @@ async fn test_kafka_api_versions_and_metadata() -> E2EResult<()> {
     drop(stream);
 
     tokio::time::sleep(Duration::from_millis(200)).await;
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -610,6 +614,10 @@ async fn test_kafka_produce_fetch_roundtrip() -> E2EResult<()> {
 
     drop(stream);
     tokio::time::sleep(Duration::from_millis(200)).await;
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

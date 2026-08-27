@@ -92,6 +92,10 @@ async fn test_reverse_shell_command_output() -> E2EResult<()> {
         "Expected the model-supplied shell output 'www-data', got: {response:?}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -182,6 +186,10 @@ async fn test_reverse_shell_fails_closed_on_no_answer() -> E2EResult<()> {
         );
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

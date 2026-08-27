@@ -129,6 +129,10 @@ Always respond quickly with these standard capabilities."#;
     println!("✓ Capabilities test passed");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -206,6 +210,10 @@ This represents the tip of the default branch."#;
     }
 
     println!("✓ Heads test passed");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }
@@ -302,6 +310,10 @@ Each line represents one branch with its head node IDs."#;
     }
 
     println!("✓ Branchmap test passed");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }
@@ -398,6 +410,10 @@ Each line is tab-separated: bookmark name, then node ID."#;
     }
 
     println!("✓ Listkeys test passed");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }
@@ -465,6 +481,10 @@ Test error handling for non-existent repositories."#;
     }
 
     println!("✓ Error handling test passed");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }

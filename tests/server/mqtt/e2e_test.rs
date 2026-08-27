@@ -29,6 +29,10 @@ async fn test_mqtt_broker_starts() -> E2EResult<()> {
 
     println!("✓ MQTT broker started on port {}", test_state.port);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -144,6 +148,10 @@ async fn test_mqtt_basic_connect() -> E2EResult<()> {
 
     println!("✓ MQTT client connected successfully");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())

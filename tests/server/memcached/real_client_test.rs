@@ -106,6 +106,10 @@ async fn libmemcached_memcat_reads_a_value_the_model_invented() -> E2EResult<()>
     );
     assert!(ok, "memcat exited non-zero. Output: {:?}", output);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -177,6 +181,10 @@ async fn libmemcached_memstat_and_memping_accept_our_replies() -> E2EResult<()> 
         ping_output
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

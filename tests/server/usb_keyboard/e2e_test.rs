@@ -185,6 +185,10 @@ mod usb_keyboard_e2e {
         );
         assert_eq!(reports[5], vec![0u8; REPORT_LEN]);
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -261,6 +265,10 @@ mod usb_keyboard_e2e {
         client.control_out(set_leds_setup(), &[0x02]).await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -305,6 +313,10 @@ mod usb_keyboard_e2e {
             .wait_for_log("USB keyboard host detached on connection", 10)
             .await?;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())

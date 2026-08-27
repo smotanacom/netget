@@ -402,6 +402,10 @@ mod usb_smartcard_e2e {
             "a handler that returns no respond_to_apdu must produce 6F00, never 9000"
         );
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -487,6 +491,10 @@ mod usb_smartcard_e2e {
             .wait_for_log("USB smart card host detached on connection", 10)
             .await?;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())

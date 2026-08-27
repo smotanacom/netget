@@ -78,6 +78,10 @@ async fn test_nntp_answers_400_when_greeting_llm_fails() -> E2EResult<()> {
         .map_err(|_| "the server did not close the connection after the 400 greeting")??;
     assert_eq!(n, 0, "expected EOF after 400, got: {trailing}");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -138,6 +142,10 @@ async fn test_nntp_answers_403_when_command_llm_fails() -> E2EResult<()> {
         "a backend failure must never be reported as success: {reply}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -200,6 +208,10 @@ async fn test_nntp_answers_400_when_greeting_answer_is_empty() -> E2EResult<()> 
         .map_err(|_| "the server did not close the connection after the 400 greeting")??;
     assert_eq!(n, 0, "expected EOF after 400, got: {trailing}");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -288,6 +300,10 @@ else:
         "the session must stay usable after a 403, got: {second}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

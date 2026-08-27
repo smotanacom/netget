@@ -615,6 +615,10 @@ async fn test_websocket_wire_protocol_against_raw_client() -> E2EResult<()> {
     let code = u16::from_be_bytes([close.payload[0], close.payload[1]]);
     assert_eq!(code, 1000, "the server must echo the peer's close code");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -656,6 +660,10 @@ async fn test_non_upgrade_request_is_refused_without_a_model_call() -> E2EResult
 
     // The mock expects exactly one call (open_server); if any of the above had reached the
     // model, verify_mocks would report the extra invocation.
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -730,6 +738,10 @@ async fn test_websocket_subprotocol_and_rejection() -> E2EResult<()> {
     let (status, _headers, _) = read_http_response(&mut stream).await?;
     assert_eq!(status, 404, "the handler's rejection status must be used");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -767,6 +779,10 @@ async fn test_websocket_with_websocat() -> E2EResult<()> {
         "websocat should have received its own message echoed back; got:\n{output}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

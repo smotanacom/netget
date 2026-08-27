@@ -196,6 +196,10 @@ async fn test_coap_get_post_and_not_found_with_coap_client() -> E2EResult<()> {
         "a 4.04 with no payload must not acquire one"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -340,6 +344,10 @@ async fn test_coap_message_layer_echo_and_ping() -> E2EResult<()> {
         "/status?none via NON"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

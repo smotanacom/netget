@@ -354,6 +354,10 @@ async fn test_vnc_handshake_and_server_init() -> E2EResult<()> {
         "shifts must describe BGRX byte order"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -508,6 +512,10 @@ async fn test_vnc_llm_draws_screen_and_handles_input() -> E2EResult<()> {
         output.join("\n")
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -571,6 +579,10 @@ async fn test_vnc_placeholder_when_model_gives_no_usable_answer() -> E2EResult<(
         output.join("\n")
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

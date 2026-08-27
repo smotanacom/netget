@@ -156,6 +156,10 @@ async fn test_tftp_read_request_with_mocks() -> E2EResult<()> {
     client.send_to(&ack_packet, peer_addr).await?;
 
     // Verify mocks were called as expected
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -230,6 +234,10 @@ async fn test_tftp_write_request_with_mocks() -> E2EResult<()> {
     assert_eq!(ack_block, 1, "Expected ACK 1");
 
     // Verify mocks were called as expected
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -288,6 +296,10 @@ async fn test_tftp_file_not_found_with_mocks() -> E2EResult<()> {
     assert_eq!(error_msg, "File not found");
 
     // Verify mocks were called as expected
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -386,6 +398,10 @@ async fn test_tftp_multi_block_transfer_with_mocks() -> E2EResult<()> {
     assert_eq!(&received_data[512..], &block2_data[..]);
 
     // Verify mocks were called as expected
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())

@@ -84,6 +84,10 @@ async fn test_ipsec_ikev2_sa_init_detection() -> E2EResult<()> {
     println!("✓ IKEv2 handshake detection successful");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -147,6 +151,10 @@ async fn test_ipsec_ikev2_auth_detection() -> E2EResult<()> {
     println!("✓ IKEv2 AUTH detection successful");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -210,6 +218,10 @@ async fn test_ipsec_ikev1_detection() -> E2EResult<()> {
     println!("✓ IKEv1 detection successful");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -280,6 +292,10 @@ async fn test_ipsec_multiple_exchange_types() -> E2EResult<()> {
     println!("✓ Multiple IKE exchange types detected");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -339,6 +355,10 @@ async fn test_ipsec_concurrent_connections() -> E2EResult<()> {
     println!("✓ Concurrent IPSec connections handled");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;

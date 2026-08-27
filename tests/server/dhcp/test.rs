@@ -422,6 +422,10 @@ async fn test_dhcp_discover_offer_and_request_ack() -> E2EResult<()> {
         "the server must keep serving after dropping a malformed datagram"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -503,6 +507,10 @@ async fn test_dhcp_nak_rejects_request() -> E2EResult<()> {
         "option 54 (server identifier) is required in a DHCPNAK"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

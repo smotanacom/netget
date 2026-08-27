@@ -287,6 +287,10 @@ ACKNOWLEDGMENT (ACK method):
     println!("\n✓ All SIP tests passed!");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
 
     // Cleanup

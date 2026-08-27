@@ -371,6 +371,10 @@ async fn test_ipp_get_printer_attributes() -> E2EResult<()> {
     println!("✓ IPP Get-Printer-Attributes test completed\n");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -474,6 +478,10 @@ async fn test_ipp_print_job() -> E2EResult<()> {
     println!("✓ IPP Print-Job test completed\n");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -579,6 +587,10 @@ async fn test_ipp_status_only_response() -> E2EResult<()> {
     println!("✓ IPP status-only response test completed\n");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())

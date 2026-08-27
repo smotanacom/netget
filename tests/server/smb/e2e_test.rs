@@ -160,6 +160,10 @@ async fn test_smb_negotiate() -> E2EResult<()> {
 
     println!("  [TEST] ✓ SMB2 Negotiate successful");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -248,6 +252,10 @@ async fn test_smb_session_setup() -> E2EResult<()> {
 
     println!("  [TEST] ✓ SMB2 Session Setup successful");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -331,6 +339,10 @@ async fn test_smb_concurrent_connections() -> E2EResult<()> {
 
     println!("  [TEST] ✓ Multiple concurrent connections successful");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -415,6 +427,10 @@ async fn test_smb_server_responsiveness() -> E2EResult<()> {
 
     println!("  [TEST] ✓ Server is responsive to SMB traffic");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -454,6 +470,10 @@ async fn test_smb_correct_stack() -> E2EResult<()> {
 
     println!("  [TEST] ✓ Server started with {} stack", server.stack);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -547,6 +567,10 @@ async fn test_smb_auth_llm_controlled() -> E2EResult<()> {
 
     println!("  [TEST] ✓ Denied login answered with STATUS_ACCESS_DENIED");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -615,6 +639,10 @@ async fn test_smb_connection_tracking() -> E2EResult<()> {
 
     println!("  [TEST] ✓ Connection lifecycle completed");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -923,6 +951,10 @@ async fn test_smb_read_binary_content_is_decoded() -> E2EResult<()> {
     println!("  [TEST] ✓ {} binary bytes returned intact", payload.len());
 
     drop(stream);
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -1005,6 +1037,10 @@ async fn test_smb_default_encoding_is_literal_text() -> E2EResult<()> {
     println!("  [TEST] ✓ ambiguous string delivered literally");
 
     drop(stream);
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -1087,6 +1123,10 @@ async fn test_smb_write_requires_model_approval() -> E2EResult<()> {
     println!("  [TEST] ✓ unapproved write refused with STATUS_ACCESS_DENIED");
 
     drop(stream);
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -1167,6 +1207,10 @@ async fn test_smb_write_approved_reports_byte_count() -> E2EResult<()> {
     println!("  [TEST] ✓ {} bytes acknowledged", count);
 
     drop(stream);
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

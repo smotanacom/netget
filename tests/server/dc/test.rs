@@ -153,6 +153,10 @@ async fn test_dc_authentication() -> E2EResult<()> {
     );
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -266,6 +270,10 @@ async fn test_dc_hub_info() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -379,6 +387,10 @@ async fn test_dc_chat() -> E2EResult<()> {
     }
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -511,6 +523,10 @@ async fn test_dc_search() -> E2EResult<()> {
     }
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;

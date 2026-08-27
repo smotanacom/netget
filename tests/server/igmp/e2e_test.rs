@@ -196,6 +196,10 @@ membership report for 239.255.255.250."#;
         }
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -302,6 +306,10 @@ a membership report for that group. Ignore queries for groups you haven't joined
         }
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -370,6 +378,10 @@ you can suppress your own report (this is optional per IGMP spec)."#;
         println!("  [TEST] ✓ Server accepted peer report");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -472,6 +484,10 @@ you can suppress your own report (this is optional per IGMP spec)."#;
         println!("  [TEST] ✓ Received {} report(s) total", reports_received);
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;

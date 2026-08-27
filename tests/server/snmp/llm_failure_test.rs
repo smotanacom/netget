@@ -152,6 +152,10 @@ async fn test_snmp_answers_gen_err_when_llm_fails() -> E2EResult<()> {
     );
     assert_eq!(error_status, 5, "expected genErr(5)");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

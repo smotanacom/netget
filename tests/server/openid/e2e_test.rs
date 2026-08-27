@@ -321,6 +321,10 @@ Answer each openid_request according to its endpoint_type:
     println!("\n✅ All OpenID Connect endpoints tested successfully!");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -431,6 +435,10 @@ unsupported_grant_type and status_code 400.
     println!("\n✅ Error handling tests passed!");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -519,6 +527,10 @@ async fn test_openid_no_usable_answer_fails_closed_without_leaking() -> E2EResul
     }
     println!("✓ failed closed with a category only: {body}");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
 

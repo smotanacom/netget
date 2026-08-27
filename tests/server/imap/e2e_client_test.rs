@@ -123,6 +123,10 @@ mod e2e_imap_client {
             .map_err(|e| format!("Logout failed: {}", e))?;
         println!("  [TEST] ✓ Logout successful");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");
@@ -199,6 +203,10 @@ mod e2e_imap_client {
             }
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");
@@ -302,6 +310,10 @@ mod e2e_imap_client {
         timeout(Duration::from_secs(30), session.logout())
             .await
             .map_err(|_| "Logout timeout")??;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");
@@ -374,6 +386,10 @@ mod e2e_imap_client {
         timeout(Duration::from_secs(30), session.logout())
             .await
             .map_err(|_| "Logout timeout")??;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");
@@ -470,6 +486,10 @@ mod e2e_imap_client {
         timeout(Duration::from_secs(30), session.logout())
             .await
             .map_err(|_| "Logout timeout")??;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");
@@ -559,6 +579,10 @@ mod e2e_imap_client {
         timeout(Duration::from_secs(30), session.logout())
             .await
             .map_err(|_| "Logout timeout")??;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");
@@ -639,6 +663,10 @@ mod e2e_imap_client {
         timeout(Duration::from_secs(30), session.logout())
             .await
             .map_err(|_| "Logout timeout")??;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");
@@ -716,6 +744,10 @@ mod e2e_imap_client {
         timeout(Duration::from_secs(30), session.logout())
             .await
             .map_err(|_| "Logout timeout")??;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");
@@ -793,6 +825,10 @@ mod e2e_imap_client {
         timeout(Duration::from_secs(30), session.logout())
             .await
             .map_err(|_| "Logout timeout")??;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");
@@ -876,6 +912,10 @@ mod e2e_imap_client {
 
         println!("  [TEST] ✓ All concurrent connections successful");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");
@@ -946,6 +986,10 @@ mod e2e_imap_client {
             .map_err(|_| "Logout timeout")??;
         println!("  [TEST] ✓ LOGOUT successful");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("  [TEST] ✓ Test completed successfully\n");

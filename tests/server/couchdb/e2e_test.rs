@@ -51,6 +51,10 @@ async fn test_couchdb_server_info() -> E2EResult<()> {
     assert_eq!(body["couchdb"], "Welcome");
     assert_eq!(body["version"], "3.5.1");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -129,6 +133,10 @@ async fn test_couchdb_database_operations() -> E2EResult<()> {
     let resp = client.delete(format!("{}/testdb", base_url)).send().await?;
     assert_eq!(resp.status(), 200);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -249,6 +257,10 @@ async fn test_couchdb_document_crud() -> E2EResult<()> {
         .await?;
     assert_eq!(resp.status(), 200);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -299,6 +311,10 @@ async fn test_couchdb_conflict_detection() -> E2EResult<()> {
     let body: serde_json::Value = resp.json().await?;
     assert_eq!(body["error"], "conflict");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -375,6 +391,10 @@ async fn test_couchdb_bulk_operations() -> E2EResult<()> {
     let body: serde_json::Value = resp.json().await?;
     assert_eq!(body["total_rows"], 2);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -424,6 +444,10 @@ async fn test_couchdb_view_query() -> E2EResult<()> {
     assert_eq!(body["total_rows"], 2);
     assert_eq!(body["rows"].as_array().unwrap().len(), 2);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -499,6 +523,10 @@ async fn test_couchdb_basic_auth() -> E2EResult<()> {
         .await?;
     assert_eq!(resp.status(), 200);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -545,6 +573,10 @@ async fn test_couchdb_changes_feed() -> E2EResult<()> {
     assert_eq!(body["last_seq"], "2-def");
     assert_eq!(body["results"].as_array().unwrap().len(), 2);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())

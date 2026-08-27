@@ -233,6 +233,10 @@ async fn test_tls_echo_server() -> E2EResult<()> {
     println!("\n=== All TLS tests passed! ===");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -354,6 +358,10 @@ async fn test_tls_http_like_server() -> E2EResult<()> {
     println!("\n=== All TLS HTTP-like tests passed! ===");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())

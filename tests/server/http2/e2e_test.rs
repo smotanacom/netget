@@ -195,6 +195,10 @@ Set Content-Type header appropriately (text/plain for /, application/json for /a
     println!("✓ GET /nonexistent returned 404");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Stop the server
@@ -326,6 +330,10 @@ Set Content-Type: application/json for all responses."#;
     println!("✓ POST /api/users returned 201 with success message");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Stop the server
@@ -414,6 +422,10 @@ Set Content-Type: application/json."#;
     println!("✓ All 3 concurrent requests succeeded via HTTP/2 multiplexing");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Stop the server

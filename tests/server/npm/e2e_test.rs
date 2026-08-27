@@ -13,6 +13,28 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
+/// Run an `npm` subcommand under a wall-clock bound.
+///
+/// `std::process::Command::output()` blocks the async worker and waits forever. npm
+/// retries an unresponsive registry with its own backoff, so a registry that answers
+/// wrongly does not fail the test -- it hangs it, and a hung test in a suite run with
+/// `--test-threads=100` takes the whole suite with it. This one could not be run to
+/// completion at all until it was skipped.
+///
+/// Bounded, a broken registry produces a failure that names the step and the timeout.
+async fn npm(args: &[&str], dir: &std::path::Path, what: &str) -> E2EResult<std::process::Output> {
+    let out = timeout(
+        Duration::from_secs(60),
+        tokio::process::Command::new("npm")
+            .args(args)
+            .current_dir(dir)
+            .output(),
+    )
+    .await
+    .map_err(|_| format!("npm {what} did not finish within 60s"))??;
+    Ok(out)
+}
+
 #[tokio::test]
 async fn test_npm_package_metadata() -> E2EResult<()> {
     println!("\n=== E2E Test: NPM Package Metadata ===");
@@ -323,8 +345,14 @@ For any other package, return 404 error."#,
         tarball_base64
     );
 
+    // The tarball URL in the packument has to name the port the server actually bound,
+    // which is not known until it starts -- and the mocks are configured before that. The
+    // response closure captures this cell and the test fills it in once the port is known.
+    let served_port = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0));
+    let metadata_port = served_port.clone();
+
     let config = NetGetConfig::new(&prompt)
-        .with_mock(|mock| {
+        .with_mock(move |mock| {
             mock
                 // Mock 1: Server startup
                 .on_instruction_containing("Open NPM registry")
@@ -341,21 +369,39 @@ For any other package, return 404 error."#,
                 // Mock 2: Package metadata request
                 .on_event("NPM_PACKAGE_REQUEST")
                 .and_event_data_contains("path", "/netget-test-pkg")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "npm_package_metadata",
-                        "metadata": json!({
-                            "name": "netget-test-pkg",
-                            "version": "1.0.0",
-                            "description": "Test package for NetGet NPM registry",
-                            "main": "index.js",
-                            "dist": {
-                                "tarball": format!("http://127.0.0.1:0/netget-test-pkg/-/netget-test-pkg-1.0.0.tgz")
-                            }
-                        })
-                    }
-                ]))
-                .expect_at_most(1)
+                .respond_with_actions_from_event(move |_e| {
+                    // A registry packument, not a package.json.
+                    //
+                    // `GET /<pkg>` must return `dist-tags` and a `versions` map. This used
+                    // to return a flat {name, version, description, dist} object, which is
+                    // what a package.json looks like -- npm found no versions in it,
+                    // printed nothing, and exited 0. `npm view --json` then produced empty
+                    // stdout and the test failed inside serde with "EOF while parsing a
+                    // value", which names the parser rather than the problem.
+                    let port = metadata_port.load(std::sync::atomic::Ordering::SeqCst);
+                    serde_json::json!([
+                        {
+                            "type": "npm_package_metadata",
+                            "metadata": json!({
+                                "name": "netget-test-pkg",
+                                "dist-tags": { "latest": "1.0.0" },
+                                "versions": {
+                                    "1.0.0": {
+                                        "name": "netget-test-pkg",
+                                        "version": "1.0.0",
+                                        "description": "Test package for NetGet NPM registry",
+                                        "main": "index.js",
+                                        "dist": {
+                                            "tarball": format!("http://127.0.0.1:{port}/netget-test-pkg/-/netget-test-pkg-1.0.0.tgz")
+                                        }
+                                    }
+                                }
+                            })
+                        }
+                    ])
+                })
+                // npm fetches the packument once for `view` and again for `install`.
+                .expect_at_least(1)
                 .and()
                 // Mock 3: Tarball download request
                 .on_event("NPM_TARBALL_REQUEST")
@@ -378,6 +424,9 @@ For any other package, return 404 error."#,
     .map_err(|_| "Server startup timeout")??;
     println!("NPM registry started on port {}", server.port);
 
+    // Now the packument's tarball URL can name a port that exists.
+    served_port.store(server.port, std::sync::atomic::Ordering::SeqCst);
+
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Create a temporary directory for npm install
@@ -388,14 +437,19 @@ For any other package, return 404 error."#,
     let npm_config = format!("http://127.0.0.1:{}", server.port);
     println!("Setting npm registry to: {}", npm_config);
 
-    let config_status = Command::new("npm")
-        .arg("config")
-        .arg("set")
-        .arg("registry")
-        .arg(&npm_config)
-        .arg("--location=project")
-        .current_dir(npm_test_dir.path())
-        .status()?;
+    let config_out = npm(
+        &[
+            "config",
+            "set",
+            "registry",
+            &npm_config,
+            "--location=project",
+        ],
+        npm_test_dir.path(),
+        "config set registry",
+    )
+    .await?;
+    let config_status = config_out.status;
 
     if !config_status.success() {
         println!("✗ Failed to configure npm registry");
@@ -404,16 +458,31 @@ For any other package, return 404 error."#,
 
     // Test: npm view (get package metadata)
     println!("\nTesting: npm view netget-test-pkg...");
-    let view_output = Command::new("npm")
-        .arg("view")
-        .arg("netget-test-pkg")
-        .arg("--json")
-        .arg("--registry")
-        .arg(&npm_config)
-        .current_dir(npm_test_dir.path())
-        .output()?;
+    let view_output = npm(
+        &[
+            "view",
+            "netget-test-pkg",
+            "--json",
+            "--registry",
+            &npm_config,
+        ],
+        npm_test_dir.path(),
+        "view netget-test-pkg",
+    )
+    .await?;
 
     if view_output.status.success() {
+        // Report what npm actually said before trying to parse it. `npm view --json` can
+        // exit 0 having written nothing to stdout, and `serde_json` then fails with
+        // "EOF while parsing a value" -- which names the parser and not the problem.
+        if view_output.stdout.is_empty() {
+            return Err(format!(
+                "npm view exited {} with empty stdout. stderr: {}",
+                view_output.status,
+                String::from_utf8_lossy(&view_output.stderr)
+            )
+            .into());
+        }
         let view_json: Value = serde_json::from_slice(&view_output.stdout)?;
         println!("✓ npm view succeeded");
         println!(
@@ -439,13 +508,12 @@ For any other package, return 404 error."#,
 
     // Test: npm install
     println!("\nTesting: npm install netget-test-pkg...");
-    let install_output = Command::new("npm")
-        .arg("install")
-        .arg("netget-test-pkg")
-        .arg("--registry")
-        .arg(&npm_config)
-        .current_dir(npm_test_dir.path())
-        .output()?;
+    let install_output = npm(
+        &["install", "netget-test-pkg", "--registry", &npm_config],
+        npm_test_dir.path(),
+        "install netget-test-pkg",
+    )
+    .await?;
 
     if install_output.status.success() {
         println!("✓ npm install succeeded");

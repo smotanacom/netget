@@ -77,6 +77,10 @@ async fn test_redis_answers_resp_error_when_llm_fails() -> E2EResult<()> {
          reply and desynchronise the connection: {detail:?}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

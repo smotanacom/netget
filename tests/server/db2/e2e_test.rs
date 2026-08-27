@@ -161,6 +161,10 @@ async fn test_db2_handshake_and_statement() -> E2EResult<()> {
     // Success SQLCA is the single NULL indicator byte 0xFF.
     assert_eq!(rd.body, vec![0xFF], "success SQLCARD must be a null SQLCA");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     println!("✓ Db2 handshake + statement passed\n");
     Ok(())

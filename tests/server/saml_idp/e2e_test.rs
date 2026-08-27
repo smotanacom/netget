@@ -169,6 +169,10 @@ async fn test_saml_idp_sso_posts_assertion_to_acs_url() -> E2EResult<()> {
         "RelayState must be echoed to the SP"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -235,6 +239,10 @@ async fn test_saml_idp_escapes_relay_state() -> E2EResult<()> {
         "the double quote that would break out of the value attribute must be escaped"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -330,6 +338,10 @@ async fn test_saml_idp_metadata_and_error_response() -> E2EResult<()> {
         "an unescaped error message is reflected HTML injection"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -406,6 +418,10 @@ async fn test_saml_idp_fails_closed_when_model_answers_nothing() -> E2EResult<()
         "the failure must not look like a SAML Response:\n{body}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

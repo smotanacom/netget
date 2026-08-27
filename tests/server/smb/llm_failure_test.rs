@@ -279,6 +279,10 @@ async fn test_smb_create_errors_when_llm_fails() -> E2EResult<()> {
     println!("  [TEST] CREATE -> STATUS_INTERNAL_ERROR, MessageId echoed");
 
     drop(stream);
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -375,6 +379,10 @@ async fn test_smb_read_errors_when_llm_fails_and_connection_survives() -> E2ERes
     println!("  [TEST] CLOSE still answered - connection left in a sane state");
 
     drop(stream);
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

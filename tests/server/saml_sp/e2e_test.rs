@@ -113,6 +113,10 @@ async fn test_saml_sp_processes_assertion() -> E2EResult<()> {
         "every attribute the handler supplied must be rendered:\n{body}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -185,6 +189,10 @@ async fn test_saml_sp_accepts_a_forged_assertion() -> E2EResult<()> {
         "the session is whatever the handler said, not what the assertion proved"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -270,6 +278,10 @@ async fn test_saml_sp_escapes_hostile_user_id() -> E2EResult<()> {
          rather than dropped:\n{body}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -350,6 +362,10 @@ async fn test_saml_sp_builds_authn_request() -> E2EResult<()> {
         "RelayState must be carried to the IDP:\n{html}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -431,6 +447,10 @@ async fn test_saml_sp_fails_closed_when_the_handler_answers_nothing() -> E2EResu
         );
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

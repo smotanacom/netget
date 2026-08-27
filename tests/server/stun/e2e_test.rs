@@ -153,6 +153,10 @@ async fn test_stun_basic_binding_request() -> E2EResult<()> {
     println!("\n=== All STUN tests passed! ===");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
 
     // Cleanup
@@ -263,6 +267,10 @@ async fn test_stun_multiple_clients() -> E2EResult<()> {
     println!("✓ Multiple concurrent clients successful");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
 
     // Cleanup
@@ -363,6 +371,10 @@ async fn test_stun_xor_mapped_address() -> E2EResult<()> {
         Err(_) => panic!("Failed to receive: timeout after 5 seconds"),
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -439,6 +451,10 @@ async fn test_stun_invalid_magic_cookie() -> E2EResult<()> {
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -508,6 +524,10 @@ async fn test_stun_malformed_short_packet() -> E2EResult<()> {
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -590,6 +610,10 @@ async fn test_stun_request_with_attributes() -> E2EResult<()> {
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -694,6 +718,10 @@ async fn test_stun_rapid_requests() -> E2EResult<()> {
         "Should receive at least one response"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())

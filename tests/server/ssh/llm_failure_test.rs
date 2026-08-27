@@ -76,6 +76,10 @@ async fn test_ssh_denies_auth_when_llm_fails() -> E2EResult<()> {
          failure must never be able to grant access"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -190,6 +194,10 @@ async fn test_ssh_disconnects_when_shell_command_llm_fails() -> E2EResult<()> {
         "the session must not end at a prompt: {transcript:?}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -293,6 +301,10 @@ async fn test_ssh_exec_reports_failure_when_llm_fails() -> E2EResult<()> {
         );
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

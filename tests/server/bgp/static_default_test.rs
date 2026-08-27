@@ -133,6 +133,10 @@ async fn test_bgp_open_handshake_needs_no_llm() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Asserts bgp_open and bgp_established rules were each hit 0 times: NO LLM call on the path.
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

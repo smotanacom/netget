@@ -67,6 +67,10 @@ async fn test_mongodb_find_with_mocks() -> E2EResult<()> {
     assert_eq!(documents[1].get_str("name")?, "Bob");
     assert_eq!(documents[1].get_i32("age")?, 25);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }
@@ -115,6 +119,10 @@ async fn test_mongodb_insert_with_mocks() -> E2EResult<()> {
     let result = collection.insert_one(doc).await?;
     assert!(result.inserted_id.as_object_id().is_some());
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }
@@ -163,6 +171,10 @@ async fn test_mongodb_update_with_mocks() -> E2EResult<()> {
     assert_eq!(result.matched_count, 1);
     assert_eq!(result.modified_count, 1);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }
@@ -208,6 +220,10 @@ async fn test_mongodb_delete_with_mocks() -> E2EResult<()> {
     let result = collection.delete_one(filter).await?;
     assert_eq!(result.deleted_count, 1);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }
@@ -254,6 +270,10 @@ async fn test_mongodb_error_with_mocks() -> E2EResult<()> {
         println!("MongoDB error (expected): {}", e);
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }

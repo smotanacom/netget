@@ -93,6 +93,10 @@ async fn test_oauth2_token_reports_a_server_error_not_invalid_grant() -> E2EResu
         "a failure must never hand out a token: {body}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -126,6 +130,10 @@ async fn test_oauth2_introspect_reports_a_server_error_not_inactive() -> E2EResu
          is indistinguishable from a real denial: {body}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -149,6 +157,10 @@ async fn test_oauth2_revoke_reports_a_server_error_not_success() -> E2EResult<()
          A 200 says it is gone, and nothing processed the request: {status}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -199,6 +211,10 @@ async fn test_oauth2_authorize_reports_a_server_error() -> E2EResult<()> {
         "expected an RFC 6749 5.2 server-side error code: {text}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

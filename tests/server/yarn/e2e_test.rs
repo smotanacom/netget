@@ -64,6 +64,10 @@ async fn test_yarn_cluster_info_static_and_metrics() -> E2EResult<()> {
     // A field the model omitted must still be present (defaulted to 0) so clients parse it.
     assert_eq!(m["clusterMetrics"]["lostNodes"], 0);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -127,6 +131,10 @@ async fn test_yarn_apps_list_and_by_id() -> E2EResult<()> {
     let single: serde_json::Value = serde_json::from_str(&app.text().await?)?;
     assert_eq!(single["app"]["finalStatus"], "SUCCEEDED");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -186,6 +194,10 @@ async fn test_yarn_submit_application_accepted() -> E2EResult<()> {
         "202 must carry a Location header pointing at the new app, got {location:?}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

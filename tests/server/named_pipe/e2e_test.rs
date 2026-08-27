@@ -82,6 +82,10 @@ async fn test_named_pipe_request_response() -> E2EResult<()> {
         "Response FIFO should carry PONG, got: {response:?}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
 
@@ -163,6 +167,10 @@ async fn test_named_pipe_llm_failure_answers_with_a_category_only() -> E2EResult
         );
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
 

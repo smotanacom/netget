@@ -92,6 +92,10 @@ async fn test_ntp_time_response_needs_no_llm() -> E2EResult<()> {
     );
 
     // Asserts the ntp_request rule was hit 0 times: the mechanical path took NO LLM call.
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

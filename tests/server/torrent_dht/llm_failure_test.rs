@@ -147,6 +147,10 @@ async fn test_dht_answers_krpc_error_when_llm_fails() -> E2EResult<()> {
     // `send_dht_error_response` never writes this line, only a failed call does.
     server.wait_for_log(FAIL_CLOSED_LOG, 15).await?;
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

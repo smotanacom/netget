@@ -118,6 +118,10 @@ async fn test_rdp_negotiation_response_tls() -> E2EResult<()> {
     );
     println!("✓ NEG_RSP TLS bytes match MS-RDPBCGR literal");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -168,6 +172,10 @@ async fn test_rdp_fails_closed_on_no_answer() -> E2EResult<()> {
     );
     println!("✓ Fail-closed NEG_FAILURE bytes match");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -219,6 +227,10 @@ async fn test_rdp_model_rejects_connection() -> E2EResult<()> {
     );
     println!("✓ Model rejection NEG_FAILURE bytes match");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

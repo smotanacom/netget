@@ -112,6 +112,10 @@ mod tests {
             Err(e) => println!("[INFO] CreateTable attempt: {}", e),
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test Complete ===\n");
@@ -223,6 +227,10 @@ mod tests {
             }
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test Complete ===\n");
@@ -321,6 +329,10 @@ mod tests {
             Err(e) => println!("[INFO] UpdateItem attempt: {}", e),
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test Complete ===\n");
@@ -420,6 +432,10 @@ mod tests {
             Err(e) => println!("[INFO] DeleteItem attempt: {}", e),
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test Complete ===\n");
@@ -527,6 +543,10 @@ mod tests {
             }
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test Complete ===\n");
@@ -626,6 +646,10 @@ mod tests {
             }
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test Complete ===\n");
@@ -717,6 +741,10 @@ mod tests {
         }
 
         // Verify mocks
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -775,6 +803,10 @@ mod tests {
             Err(e) => println!("[INFO] DescribeTable attempt: {}", e),
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test Complete ===\n");

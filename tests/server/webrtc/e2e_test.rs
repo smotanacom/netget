@@ -286,6 +286,10 @@ mod webrtc_server_tests {
         // server received "ping from peer" over the same data channel.
         println!("✓ data channel carried messages in both directions");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test passed ===\n");
@@ -352,6 +356,10 @@ mod webrtc_server_tests {
             reason
         );
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test passed ===\n");
@@ -430,6 +438,10 @@ mod webrtc_server_tests {
             );
         }
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test passed ===\n");
@@ -495,6 +507,10 @@ mod webrtc_server_tests {
             reason
         );
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test passed ===\n");
@@ -593,6 +609,10 @@ mod webrtc_server_tests {
             "server logged a panic while handling malformed signalling"
         );
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         println!("=== Test passed ===\n");

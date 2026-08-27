@@ -86,6 +86,10 @@ async fn test_imap_answers_bye_when_greeting_llm_fails() -> E2EResult<()> {
         .map_err(|_| "the server did not close the connection after BYE")??;
     assert_eq!(n, 0, "expected EOF after BYE, got: {trailing}");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -153,6 +157,10 @@ async fn test_imap_refuses_login_when_llm_fails() -> E2EResult<()> {
         "the NO should carry an RFC 5530 response code: {reply}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
