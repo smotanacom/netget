@@ -11,6 +11,7 @@ mod http3_client_tests {
     /// Test HTTP/3 client making a GET request over QUIC
     /// LLM calls: 5 (server startup, server request, client startup, client connected, client response)
     #[tokio::test]
+    #[ignore = "NetGet has no HTTP/3 server: the http3 feature builds the client only, so `base_stack: HTTP3` cannot start and there is nothing on the machine speaking HTTP/3 over QUIC for the client to reach. Re-enable when an http3 server protocol exists."]
     async fn test_http3_client_get_request() -> E2EResult<()> {
         // Start an HTTP/3 server listening on an available port with mocks
         let server_config = NetGetConfig::new("Listen on port {AVAILABLE_PORT} via HTTP/3. Respond to GET requests with 'Hello from HTTP/3 server'.")
@@ -72,7 +73,7 @@ mod http3_client_tests {
                 .on_event("http3_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_request",
+                        "type": "send_http3_request",
                         "method": "GET",
                         "path": "/",
                         "headers": {},
@@ -82,7 +83,7 @@ mod http3_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 3: Client receives response
-                .on_event("http_response_received")
+                .on_event("http3_response_received")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "wait_for_more"
@@ -123,6 +124,7 @@ mod http3_client_tests {
     /// Test HTTP/3 client with stream priorities
     /// LLM calls: 5 (server startup, server request, client startup, client connected, client response)
     #[tokio::test]
+    #[ignore = "NetGet has no HTTP/3 server: the http3 feature builds the client only, so `base_stack: HTTP3` cannot start and there is nothing on the machine speaking HTTP/3 over QUIC for the client to reach. Re-enable when an http3 server protocol exists."]
     async fn test_http3_client_with_priority() -> E2EResult<()> {
         // Start an HTTP/3 server with mocks
         let server_config = NetGetConfig::new("Listen on port {AVAILABLE_PORT} via HTTP/3. Log all incoming requests with their stream IDs.")
@@ -184,7 +186,7 @@ mod http3_client_tests {
                     .on_event("http3_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_request",
+                            "type": "send_http3_request",
                             "method": "GET",
                             "path": "/urgent",
                             "headers": {},
@@ -195,7 +197,7 @@ mod http3_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: Client receives response
-                    .on_event("http_response_received")
+                    .on_event("http3_response_received")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "wait_for_more"
@@ -228,6 +230,7 @@ mod http3_client_tests {
     /// Test HTTP/3 client can handle LLM-controlled requests
     /// LLM calls: 5 (server startup, server request, client startup, client connected, client response)
     #[tokio::test]
+    #[ignore = "NetGet has no HTTP/3 server: the http3 feature builds the client only, so `base_stack: HTTP3` cannot start and there is nothing on the machine speaking HTTP/3 over QUIC for the client to reach. Re-enable when an http3 server protocol exists."]
     async fn test_http3_client_llm_controlled() -> E2EResult<()> {
         // Start an HTTP/3 server with mocks
         let server_config = NetGetConfig::new("Listen on port {AVAILABLE_PORT} via HTTP/3. Respond to POST requests with the request body echoed back.")
@@ -290,7 +293,7 @@ mod http3_client_tests {
                     .on_event("http3_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_request",
+                            "type": "send_http3_request",
                             "method": "POST",
                             "path": "/api/data",
                             "headers": {"Content-Type": "application/json"},
@@ -300,7 +303,7 @@ mod http3_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: Client receives response
-                    .on_event("http_response_received")
+                    .on_event("http3_response_received")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "wait_for_more"

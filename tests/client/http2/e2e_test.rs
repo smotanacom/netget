@@ -30,10 +30,10 @@ mod http2_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Server receives GET request
-                    .on_event("http_request_received")
+                    .on_event("http2_request")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_response",
+                            "type": "send_http2_response",
                             "status": 200,
                             "headers": {"Content-Type": "text/plain"},
                             "body": "Hello from HTTP/2 server"
@@ -69,10 +69,10 @@ mod http2_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Client connected
-                    .on_event("http_connected")
+                    .on_event("http2_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_request",
+                            "type": "send_http2_request",
                             "method": "GET",
                             "path": "/",
                             "headers": {},
@@ -82,7 +82,7 @@ mod http2_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: Client receives response
-                    .on_event("http_response_received")
+                    .on_event("http2_response_received")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "wait_for_more"
@@ -144,10 +144,10 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Server receives custom header request
-                .on_event("http_request_received")
+                .on_event("http2_request")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_response",
+                        "type": "send_http2_response",
                         "status": 200,
                         "headers": {},
                         "body": "Request logged"
@@ -183,10 +183,10 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Client connected - send request with custom headers
-                .on_event("http_connected")
+                .on_event("http2_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_request",
+                        "type": "send_http2_request",
                         "method": "GET",
                         "path": "/",
                         "headers": {"X-Custom-Header": "test-value"},
@@ -196,7 +196,7 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 3: Client receives response
-                .on_event("http_response_received")
+                .on_event("http2_response_received")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "wait_for_more"
@@ -250,11 +250,11 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Server receives /first request
-                .on_event("http_request_received")
+                .on_event("http2_request")
                 .and_event_data_contains("path", "/first")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_response",
+                        "type": "send_http2_response",
                         "status": 200,
                         "headers": {},
                         "body": "/first"
@@ -263,11 +263,11 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 3: Server receives /second request
-                .on_event("http_request_received")
+                .on_event("http2_request")
                 .and_event_data_contains("path", "/second")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_response",
+                        "type": "send_http2_response",
                         "status": 200,
                         "headers": {},
                         "body": "/second"
@@ -302,17 +302,17 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Client connected - send first request
-                .on_event("http_connected")
+                .on_event("http2_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_request",
+                        "type": "send_http2_request",
                         "method": "GET",
                         "path": "/first",
                         "headers": {},
                         "body": ""
                     },
                     {
-                        "type": "send_http_request",
+                        "type": "send_http2_request",
                         "method": "GET",
                         "path": "/second",
                         "headers": {},

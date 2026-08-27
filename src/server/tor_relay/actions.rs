@@ -317,7 +317,35 @@ fn tor_relay_response_actions() -> Vec<ActionDefinition> {
         detect_relay_cell_action(),
         send_destroy_action(),
         close_connection_action(),
+        tor_relay_log_action(),
     ]
+}
+
+/// `tor_relay_log` was executable but never advertised.
+///
+/// `execute_action` has always handled it, and it is the only verb this relay has that
+/// writes nothing to the wire -- so it is the answer for a circuit event that needs
+/// observing rather than acting on. Leaving it undeclared meant the model could not ask
+/// for it and had to choose between send_destroy, detect_relay_cell and inventing
+/// something: the mirror of the advertised-but-unexecutable bug, and equally invisible.
+fn tor_relay_log_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "tor_relay_log".to_string(),
+        description: "Record an observation about the circuit without sending anything. \
+                      The correct answer when a cell needs noting rather than answering."
+            .to_string(),
+        parameters: vec![Parameter {
+            name: "message".to_string(),
+            type_hint: "string".to_string(),
+            description: "What to record".to_string(),
+            required: true,
+        }],
+        example: json!({
+            "type": "tor_relay_log",
+            "message": "circuit created"
+        }),
+        log_template: None,
+    }
 }
 
 // ============================================================================
