@@ -454,42 +454,20 @@ pub async fn start_server_from_action(
             let (mac, iface, host_str, port_num) =
                 defaults.apply(mac_address.clone(), interface.clone(), host.clone(), port);
 
-            // For port-based protocols with port 0, find available port
+            // Port 0 is passed straight through to the protocol's own bind, so the OS
+            // assigns it atomically.
             //
-            // KNOWN RACE, and the same one exists in the unmigrated path below. This binds
-            // a probe listener, reads the port it was given, drops it, and lets the
-            // protocol bind that port a moment later. Between the drop and the real bind
-            // the port belongs to nobody, so a concurrent starter can take it: under a
-            // hundred parallel tests, `ServerForm::create` fails roughly once every few
-            // runs with "Address already in use (os error 48)" for a request that asked
-            // for port 0, which is the one request that should never be able to collide.
+            // This used to bind a probe listener, read the port it was given, drop it, and
+            // let the protocol bind that same port a moment later. Between the drop and
+            // the real bind the port belonged to nobody, so a concurrent starter could
+            // take it -- under a hundred parallel tests `ServerForm::create` failed every
+            // few runs with "Address already in use" for a request that asked for port 0,
+            // which is the one request that should never be able to collide.
             //
-            // The fix is to stop resolving it here and pass 0 through to the protocol's
-            // own bind, so the OS assigns it atomically -- `spawn()` already returns the
-            // bound address, and the reconciliation further down already records a port
-            // that differs from what was asked for. It is left alone here only because it
-            // is on the startup path of all 116 protocols and the server suite cannot be
-            // run to completion in this environment to prove the change out.
-            let final_port_num = if let Some(p) = port_num {
-                if p == 0 {
-                    // Find available port
-                    use tokio::net::TcpListener;
-                    let bind_host = host_str.as_deref().unwrap_or("127.0.0.1");
-                    let listener = TcpListener::bind(format!("{}:0", bind_host))
-                        .await
-                        .map_err(|e| anyhow::anyhow!("Failed to find available port: {}", e))?;
-                    let found_port = listener
-                        .local_addr()
-                        .map_err(|e| anyhow::anyhow!("Failed to get local address: {}", e))?
-                        .port();
-                    drop(listener);
-                    Some(found_port)
-                } else {
-                    Some(p)
-                }
-            } else {
-                None
-            };
+            // Nothing downstream needs the number early: `spawn()` returns the bound
+            // address, `update_server_local_addr` records it, and the "listening on"
+            // status line is already emitted whenever the requested port was 0.
+            let final_port_num = port_num;
 
             // Construct legacy listen_addr for backwards compatibility
             // (protocols still receive this field, but new protocols should ignore it)
@@ -511,21 +489,10 @@ pub async fn start_server_from_action(
                 )
             })?;
 
-            // If port is 0, find an available port automatically
-            let actual_port = if port_value == 0 {
-                use tokio::net::TcpListener;
-                let listener = TcpListener::bind("127.0.0.1:0")
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to find available port: {}", e))?;
-                let found_port = listener
-                    .local_addr()
-                    .map_err(|e| anyhow::anyhow!("Failed to get local address: {}", e))?
-                    .port();
-                drop(listener);
-                found_port
-            } else {
-                port_value
-            };
+            // Port 0 goes through to the protocol's bind, same as the migrated path
+            // above and for the same reason: resolving it here and binding it later loses
+            // the port to whoever asks in between.
+            let actual_port = port_value;
 
             // Get default listen address (always 127.0.0.1 for security)
             let listen_addr: SocketAddr = format!("127.0.0.1:{}", actual_port)
