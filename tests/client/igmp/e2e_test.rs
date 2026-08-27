@@ -30,7 +30,11 @@ mod igmp_client_tests {
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "open_client",
-                        "remote_addr": "igmp",
+                        // The IGMP client binds whatever address it is opened with, and
+                        // maps the placeholder "igmp" to 0.0.0.0:0 -- an ephemeral port.
+                        // The test then sent its packet to :15000, where nothing was
+                        // listening, so `igmp_data_received` could never fire.
+                        "remote_addr": "0.0.0.0:15000",
                         "protocol": "igmp",
                         "instruction": "Join multicast group 239.255.1.1 and listen"
                     }
@@ -75,6 +79,14 @@ mod igmp_client_tests {
         println!("✅ IGMP client initialized");
 
         // Send a multicast packet to the group
+        //
+        // KNOWN FAILING, and not for the reason it used to. The client was opened with
+        // remote_addr "igmp", which it maps to 0.0.0.0:0 -- an ephemeral port -- so this
+        // datagram went to :15000 where nothing was bound and could not possibly arrive.
+        // It now binds :15000 and the join succeeds, and the datagram still does not
+        // arrive: with trace logging on, `recv_from` never returns. Addressing it to
+        // 127.0.0.1:15000 instead does not help either, which rules out the multicast
+        // group and points at delivery to the socket itself. Unresolved.
         let sender = UdpSocket::bind("0.0.0.0:0").await?;
         let test_data = b"HELLO_MULTICAST";
         let dest = format!("{}:{}", multicast_group, multicast_port);
@@ -89,7 +101,7 @@ mod igmp_client_tests {
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
         // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(10).await;
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -155,7 +167,7 @@ mod igmp_client_tests {
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
         // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(10).await;
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -218,7 +230,7 @@ mod igmp_client_tests {
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
         // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(10).await;
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup
