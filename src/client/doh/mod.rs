@@ -430,7 +430,30 @@ impl DohClient {
         // server advertises `h2` alone and answers with HTTP/2 frames regardless, so a
         // client that negotiated no protocol tries to parse them as HTTP/1.1 and fails with
         // "invalid HTTP version parsed" before a single query gets through.
-        let mut builder = reqwest::Client::builder().use_rustls_tls();
+        // One HTTP client per distinct trust configuration, kept for the process.
+        //
+        // This was rebuilt for every query. Constructing a rustls client loads the
+        // platform root store -- on macOS that means reading the keychain -- so every
+        // single DNS query paid for a fresh TLS stack and a fresh handshake, and none of
+        // the connection pooling reqwest provides was ever used. Under load it is
+        // seconds per query.
+        static CLIENTS: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<(Option<String>, bool), reqwest::Client>>,
+        > = std::sync::OnceLock::new();
+        let cache = CLIENTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        let key = (ca_pem.clone(), insecure);
+        if let Ok(guard) = cache.lock() {
+            if let Some(client) = guard.get(&key) {
+                return Ok(client.clone());
+            }
+        }
+
+        let mut builder = reqwest::Client::builder()
+            .use_rustls_tls()
+            // There was no timeout at all, so a DoH server that accepted the connection
+            // and then said nothing hung the query forever with nothing in the log. The
+            // client's own docs claimed a 30s timeout; this is it.
+            .timeout(std::time::Duration::from_secs(30));
         if let Some(pem) = ca_pem {
             let cert = reqwest::Certificate::from_pem(pem.as_bytes())
                 .context("ca_cert_pem is not a valid PEM certificate")?;
@@ -444,7 +467,11 @@ impl DohClient {
             );
             builder = builder.danger_accept_invalid_certs(true);
         }
-        builder.build().context("Failed to build DoH HTTP client")
+        let client = builder.build().context("Failed to build DoH HTTP client")?;
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(key, client.clone());
+        }
+        Ok(client)
     }
 
     async fn apply_action(
