@@ -103,7 +103,7 @@ mod cassandra_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 3: Response received
-                .on_event("cassandra_response_received")
+                .on_event("cassandra_result_received")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "wait_for_more"
@@ -216,7 +216,7 @@ mod cassandra_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: Response received
-                    .on_event("cassandra_response_received")
+                    .on_event("cassandra_result_received")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "wait_for_more"
@@ -340,7 +340,7 @@ mod cassandra_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: First response received - send second query
-                    .on_event("cassandra_response_received")
+                    .on_event("cassandra_result_received")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "execute_cql_query",
@@ -350,7 +350,7 @@ mod cassandra_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 4: Second response received - wait
-                    .on_event("cassandra_response_received")
+                    .on_event("cassandra_result_received")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "wait_for_more"

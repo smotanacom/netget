@@ -371,7 +371,7 @@ impl Server for WireguardProtocol {
                 .await?;
 
             Ok(ActionResult::Custom {
-                name: "wireguard_peer_added".to_string(),
+                name: "wireguard_peer_connected".to_string(),
                 data: json!({
                     "public_key": public_key,
                     "allowed_ips": allowed_ips,

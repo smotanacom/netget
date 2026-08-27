@@ -38,7 +38,7 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Index request
-                .on_event("http_request_received")
+                .on_event("http_request")
                 .and_event_data_contains("method", "PUT")
                 .respond_with_actions(json!([
                     {
@@ -58,7 +58,7 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 3: Search request
-                .on_event("http_request_received")
+                .on_event("http_request")
                 .and_event_data_contains("method", "POST")
                 .and_event_data_contains("path", "/_search")
                 .respond_with_actions(json!([
@@ -201,7 +201,7 @@ async fn test_elasticsearch_client_bulk_operations() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Bulk request
-                .on_event("http_request_received")
+                .on_event("http_request")
                 .and_event_data_contains("path", "/_bulk")
                 .respond_with_actions(json!([
                     {
@@ -323,7 +323,7 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Index request
-                .on_event("http_request_received")
+                .on_event("http_request")
                 .and_event_data_contains("method", "PUT")
                 .respond_with_actions(json!([
                     {
@@ -336,7 +336,7 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 3: Get request
-                .on_event("http_request_received")
+                .on_event("http_request")
                 .and_event_data_contains("method", "GET")
                 .respond_with_actions(json!([
                     {
@@ -349,7 +349,7 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 4: Delete request
-                .on_event("http_request_received")
+                .on_event("http_request")
                 .and_event_data_contains("method", "DELETE")
                 .respond_with_actions(json!([
                     {

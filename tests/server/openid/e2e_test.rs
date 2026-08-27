@@ -3,7 +3,7 @@
 //! Tests the full OIDC flow using HTTP requests.
 //!
 //! These tests drive the **`openid`** protocol. They previously started
-//! `"base_stack": "http"` and mocked `http_request_received`, which exercised the generic
+//! `"base_stack": "http"` and mocked `http_request`, which exercised the generic
 //! HTTP server and never touched `src/server/openid/` at all — and made the suite
 //! unbuildable in a `--features openid` build, because that build has no HTTP protocol to
 //! start. They now open an `openid` server, answer its `openid_request` event, and assert

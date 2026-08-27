@@ -103,14 +103,19 @@ fn every_mocked_event_id_is_declared_by_some_protocol() {
     let mut sources = Vec::new();
     // Deliberately scoped to tests/server for now.
     //
-    // tests/client has ~59 sites naming events no client declares — imap mocks
-    // `imap_command_received` while the client raises `imap_connected`, and so on — and that
-    // cleanup is already underway in its own right. Widening this scan to tests/client is a
-    // one-line change and should happen once those land; scoping it here lets the guard start
-    // protecting the server suite immediately instead of waiting on that.
+    // Scans the whole `tests` tree, client suites and shared helpers included.
+    //
+    // It was scoped to tests/server while ~59 sites in tests/client named events no client
+    // declares -- imap mocking `imap_command_received` against a client that raises
+    // `imap_connected`, and so on. Those are fixed, so the guard now covers them.
+    //
+    // Including the helpers matters most: a bad id in tests/helpers is not one protocol's
+    // problem, it is silently wrong for every suite that uses the helper. Two lived there
+    // (`http_request_received`, `tcp_connection_received`) and neither belonged to any
+    // protocol in the tree.
     rust_sources(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/server")
+            .join("tests")
             .as_path(),
         &mut sources,
     );

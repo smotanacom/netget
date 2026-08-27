@@ -31,7 +31,7 @@ mod http3_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Server receives GET request
-                    .on_event("http_request_received")
+                    .on_event("http_request")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "send_http_response",
@@ -144,7 +144,7 @@ mod http3_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Server receives high-priority request
-                    .on_event("http_request_received")
+                    .on_event("http_request")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "send_http_response",
@@ -250,7 +250,7 @@ mod http3_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Server receives POST request
-                    .on_event("http_request_received")
+                    .on_event("http_request")
                     .and_event_data_contains("method", "POST")
                     .respond_with_actions(serde_json::json!([
                         {

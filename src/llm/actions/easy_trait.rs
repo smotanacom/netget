@@ -75,7 +75,7 @@ pub trait Easy: Send + Sync {
     /// Get list of event type IDs this Easy protocol handles
     ///
     /// Used by EventHandler to route events to Easy protocol.
-    /// Should return event type IDs from underlying protocol (e.g., ["http_request_received"])
+    /// Should return event type IDs from underlying protocol (e.g., ["http_request"])
     fn get_handled_event_type_ids(&self) -> Vec<&'static str>;
 
     /// Get description of this Easy protocol for help messages

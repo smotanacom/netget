@@ -41,7 +41,7 @@ mod tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Client connects (peer added)
-                    .on_event("wireguard_peer_added")
+                    .on_event("wireguard_peer_connected")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "authorize_peer",

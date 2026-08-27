@@ -32,7 +32,7 @@ mod mysql_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Client connection received
-                .on_event("mysql_connection_received")
+                .on_event("mysql_connected")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "accept_connection"
@@ -91,7 +91,7 @@ mod mysql_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 3: Query response received
-                .on_event("mysql_query_result")
+                .on_event("mysql_result_received")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "wait_for_more"
@@ -146,7 +146,7 @@ mod mysql_client_tests {
                 ]))
                 .expect_calls(1)
                 .and()
-                .on_event("mysql_connection_received")
+                .on_event("mysql_connected")
                 .respond_with_actions(serde_json::json!([{"type": "accept_connection"}]))
                 .expect_at_least(0)
                 .and()
@@ -227,7 +227,7 @@ mod mysql_client_tests {
                         ]))
                         .expect_calls(1)
                         .and()
-                        .on_event("mysql_connection_received")
+                        .on_event("mysql_connected")
                         .respond_with_actions(serde_json::json!([{"type": "accept_connection"}]))
                         .expect_at_least(0)
                         .and()
@@ -275,7 +275,7 @@ mod mysql_client_tests {
                 ]))
                 .expect_at_least(0)
                 .and()
-                .on_event("mysql_query_result")
+                .on_event("mysql_result_received")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "execute_query",

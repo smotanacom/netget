@@ -253,7 +253,7 @@ impl NetGetConfig {
     ///
     /// let config = NetGetConfig::new("Start TCP server on port 0")
     ///     .with_mock(|mock| {
-    ///         mock.on_event("tcp_connection_received")
+    ///         mock.on_event("tcp_connection_opened")
     ///             .respond_with_actions(json!([
     ///                 {"type": "send_tcp_data", "data": "48656c6c6f"}
     ///             ]))

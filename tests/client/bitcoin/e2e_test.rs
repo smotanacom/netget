@@ -37,7 +37,7 @@ mod bitcoin_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Server receives POST request (JSON-RPC call)
-                .on_event("http_request_received")
+                .on_event("http_request")
                 .and_event_data_contains("method", "POST")
                 .respond_with_actions(serde_json::json!([
                     {
@@ -149,7 +149,7 @@ mod bitcoin_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Server receives POST request
-                .on_event("http_request_received")
+                .on_event("http_request")
                 .and_event_data_contains("method", "POST")
                 .respond_with_actions(serde_json::json!([
                     {

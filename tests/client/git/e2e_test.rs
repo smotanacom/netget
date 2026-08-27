@@ -48,8 +48,8 @@ async fn test_git_clone() -> E2EResult<()> {
             ]))
             .expect_calls(1)
             .and()
-            // Mock 3: Clone completed (git_operation_complete event)
-            .on_event("git_operation_complete")
+            // Mock 3: Clone completed (git_operation_completed event)
+            .on_event("git_operation_completed")
             .respond_with_actions(serde_json::json!([
                 {
                     "type": "wait_for_more"
@@ -123,7 +123,7 @@ async fn test_git_log() -> E2EResult<()> {
             .expect_calls(1)
             .and()
             // Mock 3: Operation complete
-            .on_event("git_operation_complete")
+            .on_event("git_operation_completed")
             .respond_with_actions(serde_json::json!([
                 {
                     "type": "wait_for_more"

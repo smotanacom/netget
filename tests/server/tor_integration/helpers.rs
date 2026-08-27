@@ -120,7 +120,7 @@ impl TorTestNetwork {
                     //
                     // This server is opened with base_stack HTTP, and HTTP raises `http_request`
                     // and answers with `send_http_response` whose status field is `status`.
-                    // The rule named `http_request_received` / `http_response` / `status_code`,
+                    // The rule named `http_request` / `http_response` / `status_code`,
                     // none of which exists, so it never matched and none of it was validated —
                     // `assert_actions_valid_for_event` skips an event id it cannot resolve.
                     .on_event("http_request")
