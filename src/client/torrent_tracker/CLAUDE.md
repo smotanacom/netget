@@ -87,12 +87,51 @@ d5:filesd20:<info_hash>d8:completei10e10:incompletei5eeee
     - Data: file statistics (complete, incomplete, downloaded)
     - LLM analyzes: popularity, health of torrent
 
+## The response chain is executed and bounded (August 2026)
+
+`notify_response` — the function that tells the model what the tracker replied — destructured
+the answer as `Ok(ClientLlmResult { memory_updates, .. })`. The `..` dropped the actions. So
+every chain was exactly one step deep: the model asked for an announce, the peer list came
+back, the model was told about it, decided what to do next, and was ignored. **A tracker
+client could make one request per instruction and then went deaf** — which is also why the
+"No automatic re-announce - LLM must explicitly trigger re-announces" note below was
+misleading: the LLM *could not* trigger one, because the only moment it had to ask was the
+moment its answer was thrown away.
+
+Executing the answer makes the cycle real (announce → `tracker_announce_response` → announce),
+so it is **bounded, not cut**: `MAX_FOLLOWUP_DEPTH = 6` counts LLM turns in one chain, and
+hitting it logs and reports on the status stream rather than failing silently.
+
+`apply_action` returns an explicitly boxed `Pin<Box<dyn Future + Send>>` instead of being an
+`async fn`. That is load-bearing, not style: the cycle is `apply_action` → `deliver` →
+`notify_response` → `apply_action`, and three `async fn`s in a cycle cannot have their opaque
+return types inferred (E0391). Boxing at the *call* site does not fix it — coercing to
+`dyn Future` still needs the callee's opaque type — so the type is named at the definition.
+`+ Send` is explicit because `Notify::Deferred` awaits it inside a `tokio::spawn`.
+
+`get_event_types()` now returns clones of the two emitted statics. It used to rebuild them by
+hand and the copies had already drifted: the rebuilt pair carried no `with_parameters`, so the
+model was never told an announce response contains `interval`, `complete`, `incomplete` and
+`peers` — the entire content of the event it was being asked about — and their example action
+was a literal `{"type": "placeholder"}`, which this protocol cannot execute.
+
+Proven by `tests/client/torrent_tracker/followup_chain_test.rs`: a loopback stub tracker plus
+the in-process mock LLM, asserting the stub sees **both** the announce and the follow-up
+scrape. Reverting `notify_response` to the `..` shape makes it fail on the second assertion,
+which is the check that the test is worth having.
+
+Note the mock uses **one** rule branching on the event data, not two. The client greets the
+model on connect by reusing `tracker_announce_response` with `status: "connected"`, so the real
+reply and the greeting share an event id — two rules there would have the first answer both and
+the second report zero calls.
+
 ## Limitations
 
 1. **No UDP tracker support** - Only HTTP/HTTPS trackers (UDP trackers use different protocol)
 2. **Simplified peer parsing** - Binary compact peer format not fully parsed
 3. **No tracker tier support** - Single tracker only (multi-tracker not implemented)
-4. **No automatic re-announce** - LLM must explicitly trigger re-announces
+4. **No automatic re-announce** - the LLM must explicitly ask for one, but it now *can*: it is
+   asked on every `tracker_announce_response` and its answer is carried out.
 
 ## Testing Strategy
 

@@ -5,10 +5,12 @@ pub use actions::TorrentTrackerClientProtocol;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::torrent_tracker::actions::{
@@ -45,6 +47,13 @@ struct TrackerResponse {
 struct ScrapeResponse {
     files: Option<serde_bencode::value::Value>,
 }
+
+/// How many LLM turns one announce/scrape chain may take before it is cut.
+///
+/// The cycle is real: an announce produces `tracker_announce_response`, whose answer may be
+/// another announce. Executing the answer (which this client did not used to do) is what makes
+/// the recursion possible, so it is bounded rather than avoided by staying silent.
+const MAX_FOLLOWUP_DEPTH: u8 = 6;
 
 /// BitTorrent Tracker client
 pub struct TorrentTrackerClient;
@@ -147,6 +156,7 @@ impl TorrentTrackerClient {
                                         client_id,
                                         result,
                                         Notify::Inline,
+                                        0,
                                         &remote_addr,
                                         &app_state_clone,
                                         &llm_client,
@@ -210,6 +220,7 @@ impl TorrentTrackerClient {
                     client_id,
                     result,
                     Notify::Deferred,
+                    0,
                     &tracker_url,
                     &app_state,
                     &llm_client,
@@ -261,11 +272,14 @@ impl TorrentTrackerClient {
     /// Deliver a tracker response event to the LLM, inline or from its own registered
     /// task depending on `notify`.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     async fn deliver(
         notify: Notify,
         client_id: ClientId,
         event_type: &'static crate::protocol::EventType,
         event_data: serde_json::Value,
+        depth: u8,
+        tracker_url: &str,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
@@ -273,7 +287,14 @@ impl TorrentTrackerClient {
         match notify {
             Notify::Inline => {
                 Self::notify_response(
-                    client_id, event_type, event_data, app_state, llm_client, status_tx,
+                    client_id,
+                    event_type,
+                    event_data,
+                    depth,
+                    tracker_url.to_string(),
+                    app_state,
+                    llm_client,
+                    status_tx,
                 )
                 .await
             }
@@ -281,11 +302,14 @@ impl TorrentTrackerClient {
                 let state_clone = app_state.clone();
                 let llm_clone = llm_client.clone();
                 let status_clone = status_tx.clone();
+                let tracker_url = tracker_url.to_string();
                 let notify_handle = tokio::spawn(async move {
                     TorrentTrackerClient::notify_response(
                         client_id,
                         event_type,
                         event_data,
+                        depth,
+                        tracker_url,
                         &state_clone,
                         &llm_clone,
                         &status_clone,
@@ -301,11 +325,26 @@ impl TorrentTrackerClient {
         }
     }
 
-    /// Fire one tracker response event at the LLM and apply any memory update.
+    /// Fire one tracker response event at the LLM, apply any memory update, and **carry out
+    /// what it answered with**.
+    ///
+    /// The answer used to be destructured as `Ok(ClientLlmResult { memory_updates, .. })` —
+    /// the actions dropped by the `..`. That cut every chain at one step: the model asked for
+    /// an announce, the tracker's peer list came back, the model was told about it, chose what
+    /// to do next, and was ignored. A tracker client could make exactly one request per
+    /// instruction and then went deaf.
+    ///
+    /// Executing here makes the cycle real — announce → `tracker_announce_response` →
+    /// announce — so it is bounded rather than cut. `depth` counts LLM turns in one chain and
+    /// [`MAX_FOLLOWUP_DEPTH`] stops it; [`Self::apply_action`] returns an explicitly boxed
+    /// future so the three-function cycle's opaque types can be inferred at all.
+    #[allow(clippy::too_many_arguments)]
     async fn notify_response(
         client_id: ClientId,
         event_type: &'static crate::protocol::EventType,
         event_data: serde_json::Value,
+        depth: u8,
+        tracker_url: String,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
@@ -333,9 +372,72 @@ impl TorrentTrackerClient {
         )
         .await
         {
-            Ok(ClientLlmResult { memory_updates, .. }) => {
+            Ok(ClientLlmResult {
+                actions,
+                memory_updates,
+            }) => {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
+                }
+
+                if actions.is_empty() {
+                    return;
+                }
+                if depth >= MAX_FOLLOWUP_DEPTH {
+                    warn!(
+                        "Tracker client {} stopped a follow-up chain at depth {}: {} action(s) \
+                         not executed",
+                        client_id,
+                        depth,
+                        actions.len()
+                    );
+                    let _ = status_tx.send(format!(
+                        "[CLIENT] ⚠ tracker client {} hit the follow-up depth limit ({}); \
+                         {} action(s) were not executed",
+                        client_id,
+                        MAX_FOLLOWUP_DEPTH,
+                        actions.len()
+                    ));
+                    return;
+                }
+
+                for action in actions {
+                    match protocol.as_ref().execute_action(action) {
+                        Ok(result) => {
+                            match Self::apply_action(
+                                client_id,
+                                result,
+                                Notify::Inline,
+                                depth + 1,
+                                &tracker_url,
+                                app_state,
+                                llm_client,
+                                status_tx,
+                            )
+                            .await
+                            {
+                                Ok(Applied::Disconnect) => {
+                                    app_state
+                                        .update_client_status(client_id, ClientStatus::Disconnected)
+                                        .await;
+                                    let _ = status_tx.send("__UPDATE_UI__".to_string());
+                                    return;
+                                }
+                                Ok(Applied::Executed(detail)) => {
+                                    trace!("Tracker client {} follow-up: {}", client_id, detail);
+                                }
+                                Err(e) => {
+                                    error!("Tracker client {} follow-up failed: {}", client_id, e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                "Tracker client {} rejected follow-up action: {}",
+                                client_id, e
+                            );
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -347,142 +449,158 @@ impl TorrentTrackerClient {
     /// Apply one already-executed action result. The single place a tracker announce or
     /// scrape is issued from, so an injected action behaves exactly like an LLM-produced
     /// one.
-    async fn apply_action(
+    #[allow(clippy::too_many_arguments)]
+    /// Returns an explicitly boxed future rather than being an `async fn`, and that is load-
+    /// bearing: the chain is `apply_action` -> `deliver` -> `notify_response` ->
+    /// `apply_action`, and three `async fn`s in a cycle cannot have their opaque return types
+    /// inferred (E0391). Boxing at the *call* site does not help -- coercing to
+    /// `dyn Future` still needs the callee's opaque type. Naming the type here breaks the
+    /// cycle at the definition. `+ Send` is explicit because `Notify::Deferred` awaits this
+    /// inside a `tokio::spawn`.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_action<'a>(
         client_id: ClientId,
         result: ClientActionResult,
         notify: Notify,
-        tracker_url: &str,
-        app_state: &Arc<AppState>,
-        llm_client: &OllamaClient,
-        status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<Applied> {
-        match result {
-            ClientActionResult::Custom { name, data } if name == "tracker_announce" => {
-                let info_hash = data
-                    .get("info_hash")
-                    .and_then(|v| v.as_str())
-                    .context("Missing info_hash")?;
-                let peer_id = data
-                    .get("peer_id")
-                    .and_then(|v| v.as_str())
-                    .context("Missing peer_id")?;
-                let port = data
-                    .get("port")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing port")? as u16;
-                let uploaded = data.get("uploaded").and_then(|v| v.as_u64()).unwrap_or(0);
-                let downloaded = data.get("downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
-                let left = data.get("left").and_then(|v| v.as_u64()).unwrap_or(0);
-                let event_type = data
-                    .get("event")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("started");
+        depth: u8,
+        tracker_url: &'a str,
+        app_state: &'a Arc<AppState>,
+        llm_client: &'a OllamaClient,
+        status_tx: &'a mpsc::UnboundedSender<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<Applied>> + Send + 'a>> {
+        Box::pin(async move {
+            match result {
+                ClientActionResult::Custom { name, data } if name == "tracker_announce" => {
+                    let info_hash = data
+                        .get("info_hash")
+                        .and_then(|v| v.as_str())
+                        .context("Missing info_hash")?;
+                    let peer_id = data
+                        .get("peer_id")
+                        .and_then(|v| v.as_str())
+                        .context("Missing peer_id")?;
+                    let port = data
+                        .get("port")
+                        .and_then(|v| v.as_u64())
+                        .context("Missing port")? as u16;
+                    let uploaded = data.get("uploaded").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let downloaded = data.get("downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let left = data.get("left").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let event_type = data
+                        .get("event")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("started");
 
-                // Build announce URL
-                let announce_url = format!(
-                    "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&event={}",
-                    tracker_url, info_hash, peer_id, port, uploaded, downloaded, left, event_type
-                );
+                    // Build announce URL
+                    let announce_url = format!(
+                        "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&event={}",
+                        tracker_url, info_hash, peer_id, port, uploaded, downloaded, left, event_type
+                    );
 
-                trace!(
-                    "Tracker client {} announcing to: {}",
-                    client_id,
-                    announce_url
-                );
+                    trace!(
+                        "Tracker client {} announcing to: {}",
+                        client_id,
+                        announce_url
+                    );
 
-                // Make HTTP GET request
-                let response = reqwest::get(&announce_url).await?;
-                let body = response.bytes().await?;
+                    // Make HTTP GET request
+                    let response = reqwest::get(&announce_url).await?;
+                    let body = response.bytes().await?;
 
-                // Parse bencode response
-                match serde_bencode::from_bytes::<TrackerResponse>(&body) {
-                    Ok(tracker_resp) => {
-                        trace!("Tracker response: {:?}", tracker_resp);
+                    // Parse bencode response
+                    match serde_bencode::from_bytes::<TrackerResponse>(&body) {
+                        Ok(tracker_resp) => {
+                            trace!("Tracker response: {:?}", tracker_resp);
 
-                        Self::deliver(
-                            notify,
-                            client_id,
-                            &TRACKER_ANNOUNCE_RESPONSE_EVENT,
-                            serde_json::json!({
-                                "interval": tracker_resp.interval,
-                                "complete": tracker_resp.complete,
-                                "incomplete": tracker_resp.incomplete,
-                                "peers": format!("{:?}", tracker_resp.peers),
-                            }),
-                            app_state,
-                            llm_client,
-                            status_tx,
-                        )
-                        .await;
+                            Self::deliver(
+                                notify,
+                                client_id,
+                                &TRACKER_ANNOUNCE_RESPONSE_EVENT,
+                                serde_json::json!({
+                                    "interval": tracker_resp.interval,
+                                    "complete": tracker_resp.complete,
+                                    "incomplete": tracker_resp.incomplete,
+                                    "peers": format!("{:?}", tracker_resp.peers),
+                                }),
+                                depth,
+                                tracker_url,
+                                app_state,
+                                llm_client,
+                                status_tx,
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            error!("Failed to parse tracker response: {}", e);
+                            return Ok(Applied::Executed(format!(
+                                "tracker_announce sent; the tracker's reply could not be \
+                                 bdecoded: {e}"
+                            )));
+                        }
                     }
-                    Err(e) => {
-                        error!("Failed to parse tracker response: {}", e);
-                        return Ok(Applied::Executed(format!(
-                            "tracker_announce sent; the tracker's reply could not be \
-                             bdecoded: {e}"
-                        )));
-                    }
+                    Ok(Applied::Executed("tracker_announce completed".to_string()))
                 }
-                Ok(Applied::Executed("tracker_announce completed".to_string()))
-            }
-            ClientActionResult::Custom { name, data } if name == "tracker_scrape" => {
-                let info_hash = data
-                    .get("info_hash")
-                    .and_then(|v| v.as_str())
-                    .context("Missing info_hash")?;
+                ClientActionResult::Custom { name, data } if name == "tracker_scrape" => {
+                    let info_hash = data
+                        .get("info_hash")
+                        .and_then(|v| v.as_str())
+                        .context("Missing info_hash")?;
 
-                // Build scrape URL
-                let scrape_url = format!("{}?info_hash={}", tracker_url, info_hash);
+                    // Build scrape URL
+                    let scrape_url = format!("{}?info_hash={}", tracker_url, info_hash);
 
-                trace!("Tracker client {} scraping: {}", client_id, scrape_url);
+                    trace!("Tracker client {} scraping: {}", client_id, scrape_url);
 
-                // Make HTTP GET request
-                let response = reqwest::get(&scrape_url).await?;
-                let body = response.bytes().await?;
+                    // Make HTTP GET request
+                    let response = reqwest::get(&scrape_url).await?;
+                    let body = response.bytes().await?;
 
-                // Parse bencode response
-                match serde_bencode::from_bytes::<ScrapeResponse>(&body) {
-                    Ok(scrape_resp) => {
-                        trace!("Scrape response: {:?}", scrape_resp);
+                    // Parse bencode response
+                    match serde_bencode::from_bytes::<ScrapeResponse>(&body) {
+                        Ok(scrape_resp) => {
+                            trace!("Scrape response: {:?}", scrape_resp);
 
-                        Self::deliver(
-                            notify,
-                            client_id,
-                            &TRACKER_SCRAPE_RESPONSE_EVENT,
-                            serde_json::json!({
-                                "files": format!("{:?}", scrape_resp.files),
-                            }),
-                            app_state,
-                            llm_client,
-                            status_tx,
-                        )
-                        .await;
+                            Self::deliver(
+                                notify,
+                                client_id,
+                                &TRACKER_SCRAPE_RESPONSE_EVENT,
+                                serde_json::json!({
+                                    "files": format!("{:?}", scrape_resp.files),
+                                }),
+                                depth,
+                                tracker_url,
+                                app_state,
+                                llm_client,
+                                status_tx,
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            error!("Failed to parse scrape response: {}", e);
+                            return Ok(Applied::Executed(format!(
+                                "tracker_scrape sent; the tracker's reply could not be \
+                                 bdecoded: {e}"
+                            )));
+                        }
                     }
-                    Err(e) => {
-                        error!("Failed to parse scrape response: {}", e);
-                        return Ok(Applied::Executed(format!(
-                            "tracker_scrape sent; the tracker's reply could not be \
-                             bdecoded: {e}"
-                        )));
-                    }
+                    Ok(Applied::Executed("tracker_scrape completed".to_string()))
                 }
-                Ok(Applied::Executed("tracker_scrape completed".to_string()))
+                ClientActionResult::Disconnect => {
+                    info!("Tracker client {} disconnecting", client_id);
+                    app_state
+                        .update_client_status(client_id, ClientStatus::Disconnected)
+                        .await;
+                    // Every exit path drops the handle so the dashboard stops offering
+                    // [ send ] into a dead client.
+                    app_state.remove_client_handle(client_id).await;
+                    let _ = status_tx.send("__UPDATE_UI__".to_string());
+                    Ok(Applied::Disconnect)
+                }
+                other => Ok(Applied::Executed(format!(
+                    "{other:?} produced no tracker request"
+                ))),
             }
-            ClientActionResult::Disconnect => {
-                info!("Tracker client {} disconnecting", client_id);
-                app_state
-                    .update_client_status(client_id, ClientStatus::Disconnected)
-                    .await;
-                // Every exit path drops the handle so the dashboard stops offering
-                // [ send ] into a dead client.
-                app_state.remove_client_handle(client_id).await;
-                let _ = status_tx.send("__UPDATE_UI__".to_string());
-                Ok(Applied::Disconnect)
-            }
-            other => Ok(Applied::Executed(format!(
-                "{other:?} produced no tracker request"
-            ))),
-        }
+        })
     }
 }
 
