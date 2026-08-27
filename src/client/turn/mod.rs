@@ -137,6 +137,35 @@ impl TurnClient {
                         client_id,
                         result.actions.len()
                     );
+
+                    // Run them. They were counted, logged and dropped, so a client told
+                    // to "connect and allocate a relay" connected and then sat there --
+                    // nothing ever reached the socket, and the server saw no request at
+                    // all. They go through `handle_action_result`, the same function the
+                    // read loop and the injected-command path use, so the wire encoding
+                    // exists once.
+                    use crate::llm::actions::client_trait::Client;
+                    for action in result.actions {
+                        let executed = match protocol.as_ref().execute_action(action) {
+                            Ok(executed) => executed,
+                            Err(e) => {
+                                error!("TURN client {} rejected action: {}", client_id, e);
+                                continue;
+                            }
+                        };
+                        if let Err(e) = Self::handle_action_result(
+                            executed,
+                            &socket_arc,
+                            remote_sock_addr,
+                            &client_data,
+                            &status_tx,
+                            client_id,
+                        )
+                        .await
+                        {
+                            error!("TURN client {} initial action failed: {}", client_id, e);
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("TURN client {} initial LLM call failed: {}", client_id, e);

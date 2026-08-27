@@ -103,7 +103,44 @@ mod turn_client_tests {
         // Start TURN server
         let server_config = NetGetConfig::new(
             "Start TURN relay server on port {AVAILABLE_PORT}. Accept all allocation and permission requests."
-        );
+        )
+        .with_mock(|mock| {
+            mock
+                // These two tests configured no server mock at all, so the server's own
+                // startup instruction reached mock_ollama with nothing to match, got a
+                // 500, and no server ever started -- which surfaced as the client's rules
+                // reporting zero calls.
+                .on_instruction_containing("TURN relay server")
+                .respond_with_actions(serde_json::json!([{"type": "open_server", "port": 0, "base_stack": "TURN", "instruction": "TURN relay server"}]))
+                .expect_calls(1)
+                .and()
+                .on_event("turn_allocate_request")
+                // transaction_id must be echoed from the request or the client cannot
+                // correlate the reply.
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_allocate_response",
+                    "relay_address": "127.0.0.1:50000",
+                    "lifetime_seconds": 600,
+                    "transaction_id": e["transaction_id"]
+                }]))
+                .expect_at_least(1)
+                .and()
+                .on_event("turn_create_permission_request")
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_create_permission_response",
+                    "transaction_id": e["transaction_id"]
+                }]))
+                .expect_at_least(0)
+                .and()
+                .on_event("turn_refresh_request")
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_refresh_response",
+                    "transaction_id": e["transaction_id"],
+                    "lifetime_seconds": 600
+                }]))
+                .expect_at_least(0)
+                .and()
+        });
 
         let mut server = start_netget_server(server_config).await?;
 
@@ -163,7 +200,44 @@ mod turn_client_tests {
         // Start TURN server
         let server_config = NetGetConfig::new(
             "Start TURN relay server on port {AVAILABLE_PORT}. Accept all allocation and refresh requests."
-        );
+        )
+        .with_mock(|mock| {
+            mock
+                // These two tests configured no server mock at all, so the server's own
+                // startup instruction reached mock_ollama with nothing to match, got a
+                // 500, and no server ever started -- which surfaced as the client's rules
+                // reporting zero calls.
+                .on_instruction_containing("TURN relay server")
+                .respond_with_actions(serde_json::json!([{"type": "open_server", "port": 0, "base_stack": "TURN", "instruction": "TURN relay server"}]))
+                .expect_calls(1)
+                .and()
+                .on_event("turn_allocate_request")
+                // transaction_id must be echoed from the request or the client cannot
+                // correlate the reply.
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_allocate_response",
+                    "relay_address": "127.0.0.1:50000",
+                    "lifetime_seconds": 600,
+                    "transaction_id": e["transaction_id"]
+                }]))
+                .expect_at_least(1)
+                .and()
+                .on_event("turn_create_permission_request")
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_create_permission_response",
+                    "transaction_id": e["transaction_id"]
+                }]))
+                .expect_at_least(0)
+                .and()
+                .on_event("turn_refresh_request")
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_refresh_response",
+                    "transaction_id": e["transaction_id"],
+                    "lifetime_seconds": 600
+                }]))
+                .expect_at_least(0)
+                .and()
+        });
 
         let mut server = start_netget_server(server_config).await?;
 
