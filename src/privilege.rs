@@ -391,13 +391,53 @@ fn has_packet_capture_capability() -> bool {
 
         // macOS/BSD: capture goes through a /dev/bpf* clone device, whose
         // permissions can be relaxed independently of root (ChmodBPF).
+        //
+        // **A BPF device is exclusive: one open handle each.** So "could not open
+        // /dev/bpf0" says nothing about permission when some other capture already
+        // holds it — libpcap itself answers this by scanning upward until it finds a
+        // free one, and this probe has to do the same or it will disagree with the
+        // library it is gating.
+        //
+        // Scanning only 0..4 made the answer depend on load. Running the suite at
+        // --test-threads=100, or alongside another netget, occupies the first few
+        // devices and the probe then reported "no capture access" on a host that
+        // plainly had it — `is_met_by()` refuses ARP, DataLink and IS-IS at startup on
+        // that answer, so those servers became un-startable whenever the machine was
+        // busy. It showed up as `isis_spawn_outcome_matches_capture_privilege` failing
+        // with "spawn returned Ok without capture privilege": the capture opened fine,
+        // and only the probe disagreed.
+        //
+        // `EBUSY` is therefore *positive* evidence — the device exists and we were
+        // allowed to try, it is merely in use. Only `EACCES`/`EPERM` on every device we
+        // can see is a real denial.
         #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
         {
-            for n in 0..4 {
-                if std::fs::File::open(format!("/dev/bpf{}", n)).is_ok() {
-                    debug!("Opened /dev/bpf{} - L2 capture available without root", n);
-                    return true;
+            let mut denied = false;
+            for n in 0..256 {
+                match std::fs::File::open(format!("/dev/bpf{}", n)) {
+                    Ok(_) => {
+                        debug!("Opened /dev/bpf{} - L2 capture available without root", n);
+                        return true;
+                    }
+                    Err(e) => match e.raw_os_error() {
+                        // In use by someone else: we were permitted to try, which is
+                        // what the caller is actually asking about.
+                        Some(libc::EBUSY) => {
+                            debug!("/dev/bpf{} is busy - capture access is present", n);
+                            return true;
+                        }
+                        Some(libc::EACCES) | Some(libc::EPERM) => {
+                            denied = true;
+                            continue;
+                        }
+                        // Past the last device the system created.
+                        Some(libc::ENOENT) | Some(libc::ENXIO) => break,
+                        _ => continue,
+                    },
                 }
+            }
+            if denied {
+                debug!("every /dev/bpf* refused permission - no L2 capture access");
             }
         }
 
