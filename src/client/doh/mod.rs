@@ -379,8 +379,13 @@ impl DohClient {
                             error!("DoH client {} {}", client_id, detail);
                         }
                         Err(e) => {
-                            error!("DoH client {} query failed: {}", client_id, e);
-                            let _ = status_tx.send(format!("[CLIENT] DoH query failed: {}", e));
+                            // `{:#}` rather than `{}`: reqwest's real cause (connection
+                            // refused, TLS rejected, bad status) lives in the source chain,
+                            // and `{}` prints only our own "DoH POST request failed"
+                            // context -- which names the operation and says nothing about
+                            // why it failed.
+                            error!("DoH client {} query failed: {:#}", client_id, e);
+                            let _ = status_tx.send(format!("[CLIENT] DoH query failed: {:#}", e));
                         }
                     }
                 }
@@ -420,7 +425,12 @@ impl DohClient {
             .await
             .unwrap_or((None, false));
 
-        let mut builder = reqwest::Client::builder();
+        // rustls explicitly, not reqwest's default TLS backend. RFC 8484 DoH runs over
+        // HTTP/2, and the peer is reached only if ALPN offers `h2` -- NetGet's own DoH
+        // server advertises `h2` alone and answers with HTTP/2 frames regardless, so a
+        // client that negotiated no protocol tries to parse them as HTTP/1.1 and fails with
+        // "invalid HTTP version parsed" before a single query gets through.
+        let mut builder = reqwest::Client::builder().use_rustls_tls();
         if let Some(pem) = ca_pem {
             let cert = reqwest::Certificate::from_pem(pem.as_bytes())
                 .context("ca_cert_pem is not a valid PEM certificate")?;
