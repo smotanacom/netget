@@ -6,6 +6,25 @@ Layer 2 Address Resolution Protocol (ARP) server that captures and responds to A
 Allows the LLM to respond to "who has" queries with custom MAC addresses, enabling ARP spoofing simulation, network
 mapping experiments, and honeypot operations.
 
+### It cannot run on loopback, and now says so
+
+`arp` is an **Ethernet-only BPF keyword**. On a link type with no Ethernet header — loopback
+(`lo`/`lo0`, DLT_NULL/DLT_LOOP), tunnels, raw-IP devices — libpcap compiles the filter to
+"expression rejects all packets" and returns an error, so `spawn()` refuses. That refusal is
+correct: an ARP server there would sit in `ServerStatus::Running` having captured nothing,
+forever, which is precisely the failure `tests/capture_startup_reports_failure_test.rs` exists
+to prevent. Point it at a real Ethernet or Wi-Fi interface.
+
+What *was* wrong is that the error quoted libpcap's optimiser rather than the reason. It now
+names the interface and explains the link layer.
+
+This is the same trap `src/tui/wireshark.rs` documents for `isis`, and it bit the test suite
+in a way worth remembering: `arp_spawn_outcome_matches_capture_privilege` asserted "capture
+access implies spawn succeeds on loopback", which is true for `datalink` and `isis` and false
+here. It was **green in CI and red on any developer machine with `/dev/bpf*` access** — the
+unprivileged runner passed for the unrelated reason that the capture open failed before the
+filter was ever compiled. The test now asserts the honest contract in both branches.
+
 ### Default behaviour: static (answer nothing), no LLM
 
 An ARP reply is **not wire-determined** — the MAC advertised is a policy choice

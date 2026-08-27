@@ -114,10 +114,28 @@ impl ArpServer {
                         )
                     })?;
 
-                // Apply ARP filter to receiving capture
-                cap_rx
-                    .filter("arp", true)
-                    .context("failed to apply the 'arp' BPF filter")?;
+                // Apply ARP filter to receiving capture.
+                //
+                // Without the filter the capture hands *every* frame on the segment to the
+                // LLM, so a failure here has to refuse the start rather than fall through.
+                //
+                // The common failure is not a broken expression: `arp` is an Ethernet-only
+                // BPF keyword, and on a link type that cannot carry ARP at all — loopback
+                // (DLT_NULL/DLT_LOOP), a tunnel, a raw-IP device — libpcap compiles it to
+                // "expression rejects all packets" and returns an error. That message names
+                // the optimiser, not the problem, and an operator who asked for ARP on `lo0`
+                // deserves to be told that loopback has no link layer for ARP to live on.
+                // Same trap as `isis`, which `src/tui/wireshark.rs` already documents.
+                cap_rx.filter("arp", true).with_context(|| {
+                    format!(
+                        "failed to apply the 'arp' BPF filter on '{}'. ARP is an Ethernet-only \
+                         protocol, so this fails on any interface with no Ethernet link layer — \
+                         loopback (lo/lo0), tunnels and raw-IP devices carry no ARP and libpcap \
+                         rejects the filter outright. Point this server at a real Ethernet or \
+                         Wi-Fi interface.",
+                        interface_clone
+                    )
+                })?;
 
                 // Open capture for sending (separate instance)
                 let cap_tx = Capture::from_device(device)
