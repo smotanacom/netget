@@ -225,7 +225,50 @@ pub async fn run_non_interactive(
         return run_server(&state, llm, new_status_rx).await;
     }
 
+    // Client mode: stay alive while a client is still connected.
+    //
+    // This used to return here, so the process exited 500ms after the instruction was
+    // interpreted. That is fine for a client whose whole exchange happens during
+    // interpretation, and wrong for any client that listens: an IGMP client asked to
+    // "join a group and log all received data" bound its socket, joined the group, logged
+    // that its receive loop was listening, and was killed before a single datagram could
+    // arrive. The same applies to every client with a read loop.
+    run_clients(&state).await;
+
     Ok(())
+}
+
+/// Block while any client is still connected, or until Ctrl+C.
+///
+/// Returns immediately when there are no clients at all, so a one-shot instruction that
+/// started nothing still exits rather than hanging.
+async fn run_clients(state: &AppState) {
+    use tokio::time::{sleep, Duration};
+
+    let shutdown = Arc::new(Mutex::new(false));
+    let shutdown_clone = shutdown.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        *shutdown_clone.lock().await = true;
+    });
+
+    loop {
+        let live = state
+            .get_all_clients()
+            .await
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    c.status,
+                    crate::state::ClientStatus::Connecting | crate::state::ClientStatus::Connected
+                )
+            })
+            .count();
+        if live == 0 || *shutdown.lock().await {
+            return;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Run a server in non-interactive mode

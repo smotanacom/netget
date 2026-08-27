@@ -16,7 +16,12 @@ mod igmp_client_tests {
     async fn test_igmp_client_join_and_receive() -> E2EResult<()> {
         // Start IGMP client and instruct it to join a multicast group
         let multicast_group = "239.255.1.1";
-        let multicast_port = 15000;
+        // Allocated, not hardcoded. A fixed port in a suite that runs in parallel is
+        // shared with whatever else happens to be bound to it -- and a multicast socket
+        // sets SO_REUSEPORT, so a second listener does not fail to bind, it silently
+        // competes for the datagrams. The client here bound :15000 and its receive loop
+        // logged that it was listening, and the packet still went somewhere else.
+        let multicast_port = get_available_port().await?;
 
         let client_config = NetGetConfig::new(format!(
             "Start IGMP client on port {}. Join multicast group {} and log all received data.",
@@ -34,7 +39,7 @@ mod igmp_client_tests {
                         // maps the placeholder "igmp" to 0.0.0.0:0 -- an ephemeral port.
                         // The test then sent its packet to :15000, where nothing was
                         // listening, so `igmp_data_received` could never fire.
-                        "remote_addr": "0.0.0.0:15000",
+                        "remote_addr": format!("0.0.0.0:{}", multicast_port),
                         "protocol": "igmp",
                         "instruction": "Join multicast group 239.255.1.1 and listen"
                     }
@@ -79,14 +84,6 @@ mod igmp_client_tests {
         println!("✅ IGMP client initialized");
 
         // Send a multicast packet to the group
-        //
-        // KNOWN FAILING, and not for the reason it used to. The client was opened with
-        // remote_addr "igmp", which it maps to 0.0.0.0:0 -- an ephemeral port -- so this
-        // datagram went to :15000 where nothing was bound and could not possibly arrive.
-        // It now binds :15000 and the join succeeds, and the datagram still does not
-        // arrive: with trace logging on, `recv_from` never returns. Addressing it to
-        // 127.0.0.1:15000 instead does not help either, which rules out the multicast
-        // group and points at delivery to the socket itself. Unresolved.
         let sender = UdpSocket::bind("0.0.0.0:0").await?;
         let test_data = b"HELLO_MULTICAST";
         let dest = format!("{}:{}", multicast_group, multicast_port);
