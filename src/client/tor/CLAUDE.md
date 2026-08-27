@@ -34,6 +34,43 @@ Pinned by `tests/client/tor/test.rs`, including a `connect()` that must refuse i
 anything near 14s means it contacted a directory authority before refusing. The smoke test's
 `CLIENT_SKIPS` is now empty and Tor is swept like every other client.
 
+## The model's answer is executed (August 2026)
+
+Two of the three LLM call sites asked the model what to do and threw the answer away — the
+defect class described in the root CLAUDE.md under "Known systemic issues". Both are fixed:
+
+| Event | Was | Now |
+|---|---|---|
+| `tor_connected` | `Ok(_) => trace!("LLM called successfully")` | actions executed against the circuit |
+| `tor_bootstrap_complete` | `if let Err(e) = call_llm_for_client(..)` — no success arm at all | actions executed; no circuit exists yet, so the directory verbs are the ones that can act and a `send_tor_data` is refused **out loud** |
+| `tor_data_received` | executed (correct) | executed through the same shared function |
+
+Three things this changed beyond "the answer is used":
+
+- **`disconnect` now actually disconnects.** It used to `break` the `for action in actions`
+  loop and nothing else, so it stopped executing the rest of that one answer and went straight
+  back to reading. The model could not close a Tor client at all. `apply_actions` returns
+  `true` and the read loop breaks on it.
+- **The `tor_connected` call moved inside the read-loop task**, after
+  `register_command_channel`. It needs the write half to carry out what the model answers
+  with, and per the root CLAUDE.md a manual `*` routing rule parks this call until a human
+  answers — the dashboard's `[ send ]` has to reach the client for the whole park, which it
+  could not when the call preceded registration.
+- **The directory verbs live in one function** (`run_directory_action`), not inlined in the
+  read loop, so the bootstrap path can reach them. That is the point: `tor_bootstrap_complete`
+  reports `relay_count` and `valid_after` precisely so the model can query the consensus it
+  just learned about, and until now every such query was discarded.
+
+No depth bound is needed. Reporting a directory result raises no event, and the only recursive
+path — `tor_data_received` → action → more data — is driven one iteration at a time by the read
+loop, the same shape as `datalink`.
+
+**Not proven end-to-end.** `tests/client/tor/e2e_test.rs` is `#[ignore]`d because arti needs a
+full real consensus that `tor_relay` cannot serve, so there is no test in which a real peer
+observes these actions on the wire. `tests/client/tor/apply_actions_test.rs` pins the executor's
+contract directly instead — the disconnect return, the loud refusal with no circuit, and a
+rejected verb reaching the operator. Treat the wire behaviour as unverified.
+
 ## Library Choice
 
 **Arti** (`arti-client` v0.36)

@@ -8,3 +8,6 @@ pub mod test;
 
 #[cfg(all(test, feature = "tor"))]
 mod command_channel_test;
+
+#[cfg(all(test, feature = "tor"))]
+mod apply_actions_test;
