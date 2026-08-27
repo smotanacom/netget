@@ -269,10 +269,30 @@ When a client requests any package, return a 404 error with JSON: {"error": "Pac
 async fn test_npm_with_real_cli() -> E2EResult<()> {
     println!("\n=== E2E Test: NPM with Real npm CLI ===");
 
-    // Check if npm CLI is available
-    if Command::new("npm").arg("--version").output().is_err() {
-        println!("⚠️  npm CLI not available, skipping test");
-        return Ok(());
+    // The npm CLI *is* the evidence this test exists to produce - it is what makes NPM's
+    // Beta rating honest. A machine without it must say so, not report a silent pass: a
+    // vacuous green here is exactly how a maturity claim outlives the thing that justified
+    // it.
+    let npm_version = Command::new("npm").arg("--version").output();
+    match npm_version {
+        Ok(out) if out.status.success() => {
+            println!("npm CLI {}", String::from_utf8_lossy(&out.stdout).trim())
+        }
+        Ok(out) => {
+            return Err(format!(
+                "`npm --version` exited {}: this test's whole point is driving the real npm CLI",
+                out.status
+            )
+            .into())
+        }
+        Err(e) => {
+            return Err(format!(
+                "npm CLI not available ({e}): this test's whole point is driving the real npm \
+                 CLI against NetGet's registry, and skipping it would leave NPM's maturity \
+                 rating resting on nothing"
+            )
+            .into())
+        }
     }
 
     // Create a minimal valid npm tarball for testing
@@ -471,40 +491,33 @@ For any other package, return 404 error."#,
     )
     .await?;
 
-    if view_output.status.success() {
-        // Report what npm actually said before trying to parse it. `npm view --json` can
-        // exit 0 having written nothing to stdout, and `serde_json` then fails with
-        // "EOF while parsing a value" -- which names the parser and not the problem.
-        if view_output.stdout.is_empty() {
-            return Err(format!(
-                "npm view exited {} with empty stdout. stderr: {}",
-                view_output.status,
-                String::from_utf8_lossy(&view_output.stderr)
-            )
-            .into());
-        }
-        let view_json: Value = serde_json::from_slice(&view_output.stdout)?;
-        println!("✓ npm view succeeded");
-        println!(
-            "  Package: {}",
-            view_json
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
-        println!(
-            "  Version: {}",
-            view_json
-                .get("version")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
-    } else {
-        println!(
-            "✗ npm view failed: {}",
-            String::from_utf8_lossy(&view_output.stderr)
-        );
-    }
+    assert!(
+        view_output.status.success(),
+        "`npm view` failed against NetGet's registry ({}): {}",
+        view_output.status,
+        String::from_utf8_lossy(&view_output.stderr)
+    );
+    // Report what npm actually said before trying to parse it. `npm view --json` can
+    // exit 0 having written nothing to stdout, and `serde_json` then fails with
+    // "EOF while parsing a value" -- which names the parser and not the problem.
+    assert!(
+        !view_output.stdout.is_empty(),
+        "npm view exited {} with empty stdout. stderr: {}",
+        view_output.status,
+        String::from_utf8_lossy(&view_output.stderr)
+    );
+    let view_json: Value = serde_json::from_slice(&view_output.stdout)?;
+    assert_eq!(
+        view_json.get("name").and_then(|v| v.as_str()),
+        Some("netget-test-pkg"),
+        "npm resolved a different package than the registry served: {view_json}"
+    );
+    assert_eq!(
+        view_json.get("version").and_then(|v| v.as_str()),
+        Some("1.0.0"),
+        "npm resolved a different version than the packument's dist-tags named: {view_json}"
+    );
+    println!("✓ npm view resolved netget-test-pkg@1.0.0 from NetGet");
 
     // Test: npm install
     println!("\nTesting: npm install netget-test-pkg...");
@@ -515,32 +528,37 @@ For any other package, return 404 error."#,
     )
     .await?;
 
-    if install_output.status.success() {
-        println!("✓ npm install succeeded");
+    assert!(
+        install_output.status.success(),
+        "`npm install` failed against NetGet's registry ({}): {}",
+        install_output.status,
+        String::from_utf8_lossy(&install_output.stderr)
+    );
 
-        // Verify package was installed
-        let node_modules = npm_test_dir
-            .path()
-            .join("node_modules")
-            .join("netget-test-pkg");
-        if node_modules.exists() {
-            println!("✓ Package installed to node_modules/");
-
-            // Verify package.json exists
-            let installed_pkg_json = node_modules.join("package.json");
-            if installed_pkg_json.exists() {
-                println!("✓ package.json exists in installed package");
-            }
-        } else {
-            println!("⚠️  Package directory not found in node_modules");
-        }
-    } else {
-        println!("⚠️  npm install failed (expected - tarball serving may need refinement)");
-        println!(
-            "   stderr: {}",
-            String::from_utf8_lossy(&install_output.stderr)
-        );
-    }
+    // Installing is the assertion that matters: it means npm fetched the packument, chose a
+    // version, downloaded the tarball NetGet served, verified its integrity and unpacked it.
+    // A `view` alone only proves the metadata endpoint answers.
+    let installed = npm_test_dir
+        .path()
+        .join("node_modules")
+        .join("netget-test-pkg");
+    assert!(
+        installed.is_dir(),
+        "npm install exited 0 but node_modules/netget-test-pkg does not exist. stderr: {}",
+        String::from_utf8_lossy(&install_output.stderr)
+    );
+    let installed_pkg_json = installed.join("package.json");
+    assert!(
+        installed_pkg_json.is_file(),
+        "the installed package has no package.json - the tarball NetGet served did not unpack"
+    );
+    let unpacked: Value = serde_json::from_slice(&fs::read(&installed_pkg_json)?)?;
+    assert_eq!(
+        unpacked.get("name").and_then(|v| v.as_str()),
+        Some("netget-test-pkg"),
+        "the unpacked package.json is not the one the test tarball contained: {unpacked}"
+    );
+    println!("✓ npm install unpacked NetGet's tarball into node_modules/");
 
     println!("✓ NPM with Real CLI test completed\n");
 
