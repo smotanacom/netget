@@ -69,8 +69,8 @@ async fn test_couchdb_client_connect() -> E2EResult<()> {
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last response routinely lands
     // after the sleep expires, and the test reports it as never having happened.
-    server.wait_for_mocks(10).await;
-    client.wait_for_mocks(10).await;
+    server.wait_for_mocks(30).await;
+    client.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
     server.stop().await?;
@@ -179,8 +179,8 @@ async fn test_couchdb_client_database_operations() -> E2EResult<()> {
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last response routinely lands
     // after the sleep expires, and the test reports it as never having happened.
-    server.wait_for_mocks(10).await;
-    client.wait_for_mocks(10).await;
+    server.wait_for_mocks(30).await;
+    client.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
     server.stop().await?;
@@ -319,8 +319,8 @@ async fn test_couchdb_client_document_crud() -> E2EResult<()> {
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last response routinely lands
     // after the sleep expires, and the test reports it as never having happened.
-    server.wait_for_mocks(10).await;
-    client.wait_for_mocks(10).await;
+    server.wait_for_mocks(30).await;
+    client.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
     server.stop().await?;
@@ -453,8 +453,8 @@ async fn test_couchdb_client_conflict_handling() -> E2EResult<()> {
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last response routinely lands
     // after the sleep expires, and the test reports it as never having happened.
-    server.wait_for_mocks(10).await;
-    client.wait_for_mocks(10).await;
+    server.wait_for_mocks(30).await;
+    client.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
     server.stop().await?;
@@ -570,8 +570,8 @@ async fn test_couchdb_client_bulk_operations() -> E2EResult<()> {
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last response routinely lands
     // after the sleep expires, and the test reports it as never having happened.
-    server.wait_for_mocks(10).await;
-    client.wait_for_mocks(10).await;
+    server.wait_for_mocks(30).await;
+    client.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
     server.stop().await?;
