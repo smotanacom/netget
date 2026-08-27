@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::client::elasticsearch::actions::{
     ELASTICSEARCH_CLIENT_CONNECTED_EVENT, ELASTICSEARCH_CLIENT_RESPONSE_RECEIVED_EVENT,
@@ -802,6 +802,7 @@ impl ElasticsearchClient {
                 app_state,
                 llm_client,
                 status_tx,
+                0,
             )
             .await
             {
@@ -813,7 +814,13 @@ impl ElasticsearchClient {
         })
     }
 
+    /// How many follow-ups deep this client will keep reporting results to the model.
+    /// Each report can produce another request, which produces another report; without a
+    /// bound a model that answers `search` with `search` would loop on the LLM forever.
+    const MAX_FOLLOWUP_DEPTH: u8 = 4;
+
     /// Helper: Call LLM with response
+    #[allow(clippy::too_many_arguments)]
     async fn call_llm_with_response(
         client_id: ClientId,
         operation: String,
@@ -822,6 +829,7 @@ impl ElasticsearchClient {
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
+        depth: u8,
     ) -> Result<()> {
         if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
             let protocol = Arc::new(ElasticsearchClientProtocol::new());
@@ -911,17 +919,53 @@ impl ElasticsearchClient {
                         match Self::run_request_once(client_id, method, &path, body, &app_state)
                             .await
                         {
-                            Ok((code, _)) => info!(
-                                "Elasticsearch client {} follow-up {} -> HTTP {}",
-                                client_id, name, code
-                            ),
+                            Ok((code, body)) => {
+                                info!(
+                                    "Elasticsearch client {} follow-up {} -> HTTP {}",
+                                    client_id, name, code
+                                );
+                                // Tell the model what the follow-up returned. Without this
+                                // the chain was exactly one step deep: a `search` issued in
+                                // response to an index confirmation ran, and its hits went
+                                // nowhere -- so the model could never read the results of a
+                                // search it had asked for, which is what a search client is
+                                // for. Boxed because the cycle is real, bounded because it
+                                // would otherwise be endless.
+                                if depth + 1 < Self::MAX_FOLLOWUP_DEPTH {
+                                    if let Err(e) = Box::pin(Self::call_llm_with_response(
+                                        client_id,
+                                        name.clone(),
+                                        code,
+                                        body,
+                                        app_state.clone(),
+                                        llm_client.clone(),
+                                        status_tx.clone(),
+                                        depth + 1,
+                                    ))
+                                    .await
+                                    {
+                                        error!(
+                                            "Elasticsearch client {} follow-up notification \
+                                             failed: {}",
+                                            client_id, e
+                                        );
+                                    }
+                                } else {
+                                    warn!(
+                                        "Elasticsearch client {} reached the follow-up depth \
+                                         limit ({}); not reporting {} to the model",
+                                        client_id,
+                                        Self::MAX_FOLLOWUP_DEPTH,
+                                        name
+                                    );
+                                }
+                            }
                             Err(e) => error!(
                                 "Elasticsearch client {} follow-up {} failed: {}",
                                 client_id, name, e
                             ),
                         }
                     }
-                    // New operations are only triggered by the initial connection or explicit user actions.
                 }
                 Err(e) => {
                     error!("LLM error for Elasticsearch client {}: {}", client_id, e);

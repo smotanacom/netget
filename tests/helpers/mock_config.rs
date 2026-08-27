@@ -724,3 +724,26 @@ impl MockCallRecord {
         )
     }
 }
+
+/// Poll until every expectation in `config` is satisfied, or `timeout_secs` elapses.
+///
+/// "Satisfied" means each rule has reached its `expect_calls` / `expect_at_least` floor;
+/// `expect_at_most` needs no waiting, since exceeding it cannot be cured by waiting longer.
+/// Returns quietly either way — the caller's `verify_mocks` is what asserts, and it names
+/// the rule that fell short. This exists only so a test stops racing the exchange it is
+/// testing.
+pub async fn wait_for_mock_expectations(config: &MockLlmConfig, timeout_secs: u64) {
+    let start = std::time::Instant::now();
+    let deadline = std::time::Duration::from_secs(timeout_secs);
+    loop {
+        let satisfied = config.rules.iter().all(|rule| {
+            let actual = rule.actual_calls.load(std::sync::atomic::Ordering::SeqCst);
+            let floor = rule.expected_calls.or(rule.min_calls).unwrap_or(0);
+            actual >= floor
+        });
+        if satisfied || start.elapsed() >= deadline {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}

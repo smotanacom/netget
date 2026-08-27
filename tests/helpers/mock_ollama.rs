@@ -1144,3 +1144,29 @@ fn extract_context_from_prompt(prompt: &str) -> LlmContext {
 
     context
 }
+
+impl MockOllamaServer {
+    /// Wait until every expectation this server's rules declare is satisfied, or
+    /// `timeout_secs` elapses. Returns quietly either way; `verify_calls` asserts.
+    pub async fn wait_for_expectations(&self, timeout_secs: u64) {
+        let start = std::time::Instant::now();
+        let deadline = std::time::Duration::from_secs(timeout_secs);
+        loop {
+            {
+                let config = self.config.lock().await;
+                let satisfied = config.rules.iter().all(|rule| {
+                    let actual = rule.actual_calls.load(std::sync::atomic::Ordering::SeqCst);
+                    let floor = rule.expected_calls.or(rule.min_calls).unwrap_or(0);
+                    actual >= floor
+                });
+                if satisfied {
+                    return;
+                }
+            }
+            if start.elapsed() >= deadline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+}

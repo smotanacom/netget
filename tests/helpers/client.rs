@@ -1,7 +1,7 @@
 // Client-specific test helpers
 
 use super::common::*;
-use super::mock_config::MockLlmConfig;
+use super::mock_config::{wait_for_mock_expectations, MockLlmConfig};
 use super::netget::NetGetConfig;
 use std::time::Duration;
 use tokio::process::Child;
@@ -146,6 +146,24 @@ impl NetGetClient {
     /// Get all output lines
     pub async fn get_output(&self) -> Vec<String> {
         self.output_lines.lock().await.clone()
+    }
+
+    /// Wait until every mock expectation is satisfied, or `timeout_secs` elapses.
+    ///
+    /// The thing a protocol exchange actually finishes with is the last LLM call it
+    /// provokes, and that is what the expectations describe -- so this waits on the
+    /// exchange itself rather than on a sleep long enough to probably cover it. A test
+    /// that slept 2s and then verified was reporting "expected 1, got 0" for a step that
+    /// completed a few hundred milliseconds later.
+    ///
+    /// Returns quietly on timeout: `verify_mocks` is still the thing that asserts, and it
+    /// reports which rule fell short. This only removes the race.
+    #[allow(dead_code)]
+    pub async fn wait_for_mocks(&self, timeout_secs: u64) {
+        let Some(ref mock_config) = self.mock_config else {
+            return;
+        };
+        wait_for_mock_expectations(mock_config, timeout_secs).await;
     }
 
     /// Verify all mock expectations were met

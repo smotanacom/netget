@@ -130,8 +130,18 @@ Each operation builds the appropriate HTTP request:
 
 2. **elasticsearch_response_received**
     - Triggered after each operation
-    - Parameters: `operation`, `status_code`, `response`
+    - Parameters: `operation`, `status_code`, `response` — note these are the **top-level**
+      fields. `result`, `found`, `hits` and `items` live *inside* `response`, so an
+      `event_handlers` rule or a test mock keyed on them at the top level never matches.
     - LLM analyzes response and decides next action
+
+    Follow-up operations report their own results too, bounded by
+    `MAX_FOLLOWUP_DEPTH` (4). They used to run and report nothing, on the stated
+    reasoning that "responses don't trigger new operations" — so the chain was exactly one
+    step deep and a `search` issued in reply to an index confirmation sent its hits
+    nowhere. The model could not read the results of a search it had itself asked for.
+    The recursion this avoided is real (report → action → report), so the call is boxed;
+    the depth bound is what actually keeps it finite.
 
 ## Logging Strategy
 
