@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::client::http2::actions::HTTP2_CLIENT_RESPONSE_RECEIVED_EVENT;
 use crate::client::llm_budget::call_llm_for_client;
@@ -163,7 +163,7 @@ impl Http2Client {
                         if name != "http2_request" {
                             continue;
                         }
-                        if let Err(e) = Self::perform_request(
+                        match Self::perform_request(
                             client_id,
                             data["method"].as_str().unwrap_or("GET").to_string(),
                             data["path"].as_str().unwrap_or("/").to_string(),
@@ -174,10 +174,25 @@ impl Http2Client {
                         )
                         .await
                         {
-                            error!(
+                            // The exchange used to be dropped here, so the very first
+                            // request -- the one the connect instruction asks for -- never
+                            // raised `http2_response_received`. The model was told to make
+                            // a request and then never told what came back.
+                            Ok(exchange) => {
+                                Self::notify_response(
+                                    client_id,
+                                    exchange,
+                                    conn_state.clone(),
+                                    conn_llm.clone(),
+                                    status_tx_c.clone(),
+                                    0,
+                                )
+                                .await;
+                            }
+                            Err(e) => error!(
                                 "HTTP/2 client {} connect-time request failed: {}",
                                 client_id, e
-                            );
+                            ),
                         }
                     }
                 }
@@ -351,6 +366,7 @@ impl Http2Client {
                         state_clone,
                         llm_clone,
                         status_clone,
+                        0,
                     )
                     .await;
                 });
@@ -392,7 +408,7 @@ impl Http2Client {
             client_id, method, path, headers, body, &app_state, &status_tx,
         )
         .await?;
-        Self::notify_response(client_id, exchange, app_state, llm_client, status_tx).await;
+        Self::notify_response(client_id, exchange, app_state, llm_client, status_tx, 0).await;
         Ok(())
     }
 
@@ -505,94 +521,125 @@ impl Http2Client {
         }
     }
 
+    /// How many exchanges deep this client keeps following the model's answers. Each
+    /// response can ask for another request, which produces another response; without a
+    /// bound a model that answers every response with a request never stops.
+    const MAX_FOLLOWUP_DEPTH: u8 = 4;
+
     /// Hand a completed exchange to the LLM as an `http2_response_received` event.
-    async fn notify_response(
+    ///
+    /// Boxed with an explicit `+ Send` because the chain is genuinely self-referential
+    /// (report -> request -> report) and the future is awaited inside a `tokio::spawn`.
+    fn notify_response(
         client_id: ClientId,
         exchange: Http2Exchange,
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
-    ) {
-        let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
-            return;
-        };
+        depth: u8,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
 
-        let protocol = Arc::new(crate::client::http2::actions::Http2ClientProtocol::new());
-        let event = Event::new(
-            &HTTP2_CLIENT_RESPONSE_RECEIVED_EVENT,
-            serde_json::json!({
-                "status_code": exchange.status_code,
-                "status_text": exchange.status_text,
-                "http_version": exchange.http_version,
-                "headers": exchange.headers,
-                "body": exchange.body,
-            }),
-        );
+            let protocol = Arc::new(crate::client::http2::actions::Http2ClientProtocol::new());
+            let event = Event::new(
+                &HTTP2_CLIENT_RESPONSE_RECEIVED_EVENT,
+                serde_json::json!({
+                    "status_code": exchange.status_code,
+                    "status_text": exchange.status_text,
+                    "http_version": exchange.http_version,
+                    "headers": exchange.headers,
+                    "body": exchange.body,
+                }),
+            );
 
-        let memory = app_state
-            .get_memory_for_client(client_id)
+            let memory = app_state
+                .get_memory_for_client(client_id)
+                .await
+                .unwrap_or_default();
+
+            match call_llm_for_client(
+                &llm_client,
+                &app_state,
+                client_id.to_string(),
+                &instruction,
+                &memory,
+                Some(&event),
+                protocol.as_ref(),
+                &status_tx,
+            )
             .await
-            .unwrap_or_default();
+            {
+                Ok(ClientLlmResult {
+                    actions,
+                    memory_updates,
+                }) => {
+                    // Update memory
+                    if let Some(mem) = memory_updates {
+                        app_state.set_memory_for_client(client_id, mem).await;
+                    }
 
-        match call_llm_for_client(
-            &llm_client,
-            &app_state,
-            client_id.to_string(),
-            &instruction,
-            &memory,
-            Some(&event),
-            protocol.as_ref(),
-            &status_tx,
-        )
-        .await
-        {
-            Ok(ClientLlmResult {
-                actions,
-                memory_updates,
-            }) => {
-                // Update memory
-                if let Some(mem) = memory_updates {
-                    app_state.set_memory_for_client(client_id, mem).await;
+                    // Execute what the model asked for. These were discarded, so a model that
+                    // read a response and wanted to follow it with another request was
+                    // silently ignored -- the entire purpose of raising the event.
+                    //
+                    // They run through `perform_request`, which raises no event: that bounds
+                    // the loop, and avoids making notify -> apply -> make -> notify a
+                    // self-referential async chain that rustc cannot prove `Send`.
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        if name != "http2_request" {
+                            continue;
+                        }
+                        match Self::perform_request(
+                            client_id,
+                            data["method"].as_str().unwrap_or("GET").to_string(),
+                            data["path"].as_str().unwrap_or("/").to_string(),
+                            data["headers"].as_object().cloned(),
+                            data["body"].as_str().map(|s| s.to_string()),
+                            &app_state,
+                            &status_tx,
+                        )
+                        .await
+                        {
+                            Ok(exchange) => {
+                                if depth + 1 < Self::MAX_FOLLOWUP_DEPTH {
+                                    Self::notify_response(
+                                        client_id,
+                                        exchange,
+                                        app_state.clone(),
+                                        llm_client.clone(),
+                                        status_tx.clone(),
+                                        depth + 1,
+                                    )
+                                    .await;
+                                } else {
+                                    warn!(
+                                        "HTTP/2 client {} reached the follow-up depth limit \
+                                     ({}); not reporting the response to the model",
+                                        client_id,
+                                        Self::MAX_FOLLOWUP_DEPTH
+                                    );
+                                }
+                            }
+                            Err(e) => error!(
+                                "HTTP/2 client {} follow-up request failed: {}",
+                                client_id, e
+                            ),
+                        }
+                    }
                 }
-
-                // Execute what the model asked for. These were discarded, so a model that
-                // read a response and wanted to follow it with another request was
-                // silently ignored -- the entire purpose of raising the event.
-                //
-                // They run through `perform_request`, which raises no event: that bounds
-                // the loop, and avoids making notify -> apply -> make -> notify a
-                // self-referential async chain that rustc cannot prove `Send`.
-                use crate::llm::actions::client_trait::{Client, ClientActionResult};
-                for action in actions {
-                    let Ok(ClientActionResult::Custom { name, data }) =
-                        protocol.execute_action(action.clone())
-                    else {
-                        continue;
-                    };
-                    if name != "http2_request" {
-                        continue;
-                    }
-                    let result = Self::perform_request(
-                        client_id,
-                        data["method"].as_str().unwrap_or("GET").to_string(),
-                        data["path"].as_str().unwrap_or("/").to_string(),
-                        data["headers"].as_object().cloned(),
-                        data["body"].as_str().map(|s| s.to_string()),
-                        &app_state,
-                        &status_tx,
-                    )
-                    .await;
-                    if let Err(e) = result {
-                        error!(
-                            "HTTP/2 client {} follow-up request failed: {}",
-                            client_id, e
-                        );
-                    }
+                Err(e) => {
+                    error!("LLM error for HTTP/2 client {}: {}", client_id, e);
                 }
             }
-            Err(e) => {
-                error!("LLM error for HTTP/2 client {}: {}", client_id, e);
-            }
-        }
+        })
     }
 }

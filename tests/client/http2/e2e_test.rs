@@ -264,7 +264,10 @@ mod http2_client_tests {
                 .and()
                 // Mock 2: Server receives /first request
                 .on_event("http2_request")
-                .and_event_data_contains("path", "/first")
+                // `uri`, not `path`: the http2_request event carries method/uri/version/
+                // headers/body. A constraint on a field that is not there can never
+                // match, so both requests fell through to a real LLM call.
+                .and_event_data_contains("uri", "/first")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "send_http2_response",
@@ -277,7 +280,10 @@ mod http2_client_tests {
                 .and()
                 // Mock 3: Server receives /second request
                 .on_event("http2_request")
-                .and_event_data_contains("path", "/second")
+                // `uri`, not `path`: the http2_request event carries method/uri/version/
+                // headers/body. A constraint on a field that is not there can never
+                // match, so both requests fell through to a real LLM call.
+                .and_event_data_contains("uri", "/second")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "send_http2_response",
