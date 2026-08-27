@@ -796,6 +796,38 @@ pub struct ServerPrefill {
     pub feedback_instructions: Option<String>,
 }
 
+impl ServerPrefill {
+    /// Snapshot a running server for an update form.
+    ///
+    /// `port` is the port the server is **actually bound to** — `local_addr`, falling back to
+    /// the requested `port` only when nothing has bound yet. Those two differ exactly when the
+    /// request was `port: 0`, and prefilling the literal `0` there is not cosmetic: an update
+    /// form is a snapshot the operator edits in place, so a form showing `0` invites
+    /// submitting `0`, which is a request to bind *a different* random port. The operator
+    /// changes one handler and the server moves out from under every client connected to it.
+    ///
+    /// Constructing this by hand is what let the three call sites drift: the dashboard tree
+    /// resolved the bound port, and the legacy TUI's edit form did not.
+    pub fn from_server(server: &crate::state::server::ServerInstance) -> Self {
+        Self {
+            instruction: server.instruction.clone(),
+            memory: server.memory.clone(),
+            port: server
+                .local_addr
+                .map(|a| a.port())
+                .filter(|p| *p != 0)
+                .unwrap_or(server.port),
+            startup_params: server.startup_params.clone(),
+            event_handlers: server.event_handler_config.as_ref().and_then(|c| {
+                serde_json::to_value(&c.handlers)
+                    .ok()
+                    .and_then(|v| v.as_array().cloned())
+            }),
+            feedback_instructions: server.feedback_instructions.clone(),
+        }
+    }
+}
+
 /// Current client config used to prefill an update form.
 #[derive(Debug, Clone, Default)]
 pub struct ClientPrefill {

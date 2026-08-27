@@ -2876,18 +2876,7 @@ async fn start_form(
         FormStart::Edit { id } => {
             if let Some(s) = state.get_server(ServerId::new(id)).await {
                 let schema = server_declared_params(&s.protocol_name).unwrap_or_default();
-                let prefill = ServerPrefill {
-                    instruction: s.instruction.clone(),
-                    memory: s.memory.clone(),
-                    port: s.port,
-                    startup_params: s.startup_params.clone(),
-                    event_handlers: s.event_handler_config.as_ref().and_then(|c| {
-                        serde_json::to_value(&c.handlers)
-                            .ok()
-                            .and_then(|v| v.as_array().cloned())
-                    }),
-                    feedback_instructions: s.feedback_instructions.clone(),
-                };
+                let prefill = ServerPrefill::from_server(&s);
                 let form = InteractiveForm::update_server(id, &s.protocol_name, &schema, &prefill);
                 begin_form(app, form, footer, palette)?;
                 return Ok(());

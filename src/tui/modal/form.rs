@@ -203,7 +203,22 @@ impl FormModel {
             "port",
             "Changing this RESTARTS the server: it gets a new id and drops connections.",
         );
-        port.value = row.port.to_string();
+        // The port it is actually bound to, not the one that was requested. They differ
+        // exactly when the request was `port: 0`, and this field sat next to a `host` field
+        // that already read `local_addr` — so the form showed the real host beside a literal
+        // `0`. An edit form is a snapshot the operator changes in place: showing `0` invites
+        // submitting `0`, which is a request for *a different* random port, and this field's
+        // own description says changing it drops every connection.
+        port.value = row
+            .local_addr
+            .as_ref()
+            .and_then(|a| a.rsplit_once(':'))
+            .and_then(|(_, p)| p.parse::<u16>().ok())
+            .filter(|p| *p != 0)
+            .unwrap_or(row.port)
+            .to_string();
+        // `original` matches, so an untouched field is still omitted from the update and
+        // still does not restart the server.
         port.original = port.value.clone();
         fields.push(port);
         let mut host = Field::simple(
