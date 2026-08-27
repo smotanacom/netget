@@ -31,15 +31,10 @@ mod mysql_client_tests {
                 ]))
                 .expect_calls(1)
                 .and()
-                // Mock 2: Client connection received
-                .on_event("mysql_connected")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "accept_connection"
-                    }
-                ]))
-                .expect_calls(1)
-                .and()
+                // No connection rule: the MySQL SERVER raises only `mysql_query`.
+                // It has no connection event, so a rule answering one can never fire --
+                // and `accept_connection` is not a verb it can execute either. The
+                // handshake is handled inside the server, not by the model.
                 // Mock 3: SELECT 1 query
                 .on_event("mysql_query")
                 .respond_with_actions(serde_json::json!([
@@ -146,10 +141,8 @@ mod mysql_client_tests {
                 ]))
                 .expect_calls(1)
                 .and()
-                .on_event("mysql_connected")
-                .respond_with_actions(serde_json::json!([{"type": "accept_connection"}]))
-                .expect_at_least(0)
-                .and()
+            // No connection rule: the MySQL server raises only `mysql_query`, and
+            // accept_connection is not a verb it can execute.
         });
 
         let mut server = start_netget_server(server_config).await?;
@@ -227,10 +220,8 @@ mod mysql_client_tests {
                         ]))
                         .expect_calls(1)
                         .and()
-                        .on_event("mysql_connected")
-                        .respond_with_actions(serde_json::json!([{"type": "accept_connection"}]))
-                        .expect_at_least(0)
-                        .and()
+                        // No connection rule: the MySQL server raises only `mysql_query`, and
+                        // accept_connection is not a verb it can execute.
                         .on_event("mysql_query")
                         .respond_with_actions(serde_json::json!([
                             {
