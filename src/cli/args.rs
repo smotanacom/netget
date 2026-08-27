@@ -212,27 +212,27 @@ pub struct Args {
     )]
     pub min_stability: Option<String>,
 
-    /// Accepted and ignored. See the help text — this has never done anything.
-    ///
-    /// The flag is parsed, stored on `AppState`, read back by `get_ollama_lock_enabled()` and
-    /// handed to `OllamaClient::new_with_options(url, lock_enabled)`, which discards it behind
-    /// a comment saying locking is "handled at a different layer". **Nothing in `src/` is that
-    /// layer**, and no `ollama.lock` is ever created.
-    ///
-    /// It is documented as a no-op rather than silently left alone because the old help text
-    /// made a specific, checkable, false promise — down to naming the lock file — and every
-    /// e2e invocation passes the flag, so the whole suite looked as though it serialised LLM
-    /// access across processes. Reasoning about concurrency from this flag is how that
-    /// misreading spreads.
-    ///
-    /// Deleting it outright is the better end state and is deliberately not done here: the
-    /// backing parameter threads through `AppState::new_with_options`, which has ~146 call
-    /// sites across `src/` and `tests/`, and the test harness passes `--ollama-lock` to every
-    /// spawned binary — a sweep of that size through shared files is a merge hazard while
-    /// other agents are working in this tree.
-    ///
-    /// What actually bounds LLM concurrency is `--llm-max-concurrent` plus the rate limiter
-    /// (`--llm-queue-timeout`, `--llm-max-queued`), which are real and tested.
+    // Developer note, deliberately a `//` comment and not a doc comment: clap derive turns
+    // doc comments into `--help` output, and none of this belongs in front of an operator.
+    //
+    // The flag is parsed, stored on `AppState`, read back by `get_ollama_lock_enabled()` and
+    // handed to `OllamaClient::new_with_options(url, lock_enabled)`, which discards it behind a
+    // comment saying locking is "handled at a different layer". Nothing in `src/` is that
+    // layer, and no `ollama.lock` is ever created.
+    //
+    // It is documented as a no-op rather than quietly left alone because the old help text made
+    // a specific, checkable, false promise — down to naming the lock file — and every e2e
+    // invocation passes the flag, so the whole suite looked as though it serialised LLM access
+    // across processes. `tests/ollama_lock_is_a_noop_test.rs` pins both halves.
+    //
+    // Deleting it outright is the better end state and is deliberately not done here: the
+    // backing parameter threads through `AppState::new_with_options`, which has ~146 call sites
+    // across `src/` and `tests/`, and the harness passes `--ollama-lock` to every spawned
+    // binary — a sweep that size through shared files is a merge hazard while other agents are
+    // working in this tree. Implementing it was also rejected: a real cross-process lock would
+    // serialise every e2e test, and `--llm-max-concurrent` (with `--llm-queue-timeout` and
+    // `--llm-max-queued`) already bounds LLM concurrency and is enforced.
+    /// DEPRECATED AND IGNORED. Accepted for compatibility only; it locks nothing.
     #[clap(
         long = "ollama-lock",
         help = "DEPRECATED AND IGNORED. Accepted for compatibility only: nothing is locked, nothing is written to disk, and NetGet instances are not serialized against each other. It has never done any of those things. To bound LLM concurrency use --llm-max-concurrent (with --llm-queue-timeout and --llm-max-queued), which are enforced."
