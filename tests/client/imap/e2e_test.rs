@@ -47,12 +47,29 @@ mod imap_client_tests {
                     // docs say so ("LOGIN is not delivered here - it raises imap_auth
                     // instead"), so a rule on imap_command could never match and the
                     // LOGIN fell through to the LLM, which refused it with NO [SERVERBUG].
-                    .respond_with_actions(serde_json::json!([
+                    // async-imap picks its own tags (a1, a2, ...). A hardcoded "A001"
+                    // tags the reply to a command the client never sent, so async-imap
+                    // discards it as unsolicited and stays parked on LOGIN until the
+                    // test gives up -- reported as "the client never connected".
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "tag": "A001",
+                            "tag": e["tag"].as_str().unwrap_or_default(),
                             "status": "OK",
                             "message": "LOGIN completed"
+                        }
+                    ]))
+                    .expect_calls(1)
+                    .and()
+                    // Mock 4: Server SELECT response. The client's connected-event answer is
+                    // `select_mailbox INBOX`, so without this the server has nothing to say
+                    // to the SELECT and the client never reaches imap_mailbox_selected.
+                    .on_event("imap_command")
+                    .and_event_data_contains("command", "SELECT")
+                    .respond_with_actions_from_event(|e| serde_json::json!([
+                        {
+                            "type": "send_imap_response",
+                            "response": format!("* 5 EXISTS\r\n* 0 RECENT\r\n{} OK [READ-WRITE] SELECT completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
@@ -119,7 +136,9 @@ mod imap_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
-        client.wait_for_any(&["connected", "authenticated"], 30).await;
+        client
+            .wait_for_any(&["connected", "authenticated"], 30)
+            .await;
         assert!(
             client.output_contains("connected").await
                 || client.output_contains("authenticated").await,
@@ -179,10 +198,14 @@ mod imap_client_tests {
                     // docs say so ("LOGIN is not delivered here - it raises imap_auth
                     // instead"), so a rule on imap_command could never match and the
                     // LOGIN fell through to the LLM, which refused it with NO [SERVERBUG].
-                    .respond_with_actions(serde_json::json!([
+                    // async-imap picks its own tags (a1, a2, ...). A hardcoded "A001"
+                    // tags the reply to a command the client never sent, so async-imap
+                    // discards it as unsolicited and stays parked on LOGIN until the
+                    // test gives up -- reported as "the client never connected".
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "tag": "A001",
+                            "tag": e["tag"].as_str().unwrap_or_default(),
                             "status": "OK",
                             "message": "LOGIN completed"
                         }
@@ -192,10 +215,10 @@ mod imap_client_tests {
                     // Mock 4: Server SELECT response
                     .on_event("imap_command")
                     .and_event_data_contains("command", "SELECT")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* 5 EXISTS\r\n* 0 RECENT\r\nA002 OK [READ-WRITE] SELECT completed"
+                            "response": format!("* 5 EXISTS\r\n* 0 RECENT\r\n{} OK [READ-WRITE] SELECT completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
@@ -314,10 +337,14 @@ mod imap_client_tests {
                     // docs say so ("LOGIN is not delivered here - it raises imap_auth
                     // instead"), so a rule on imap_command could never match and the
                     // LOGIN fell through to the LLM, which refused it with NO [SERVERBUG].
-                    .respond_with_actions(serde_json::json!([
+                    // async-imap picks its own tags (a1, a2, ...). A hardcoded "A001"
+                    // tags the reply to a command the client never sent, so async-imap
+                    // discards it as unsolicited and stays parked on LOGIN until the
+                    // test gives up -- reported as "the client never connected".
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "tag": "A001",
+                            "tag": e["tag"].as_str().unwrap_or_default(),
                             "status": "OK",
                             "message": "LOGIN completed"
                         }
@@ -327,10 +354,10 @@ mod imap_client_tests {
                     // Mock 4: Server SELECT response
                     .on_event("imap_command")
                     .and_event_data_contains("command", "SELECT")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* 5 EXISTS\r\n* 3 RECENT\r\nA002 OK [READ-WRITE] SELECT completed"
+                            "response": format!("* 5 EXISTS\r\n* 3 RECENT\r\n{} OK [READ-WRITE] SELECT completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
@@ -338,10 +365,10 @@ mod imap_client_tests {
                     // Mock 5: Server SEARCH response
                     .on_event("imap_command")
                     .and_event_data_contains("command", "SEARCH")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* SEARCH 1 2 3\r\nA003 OK SEARCH completed"
+                            "response": format!("* SEARCH 1 2 3\r\n{} OK SEARCH completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
@@ -470,10 +497,14 @@ mod imap_client_tests {
                     // docs say so ("LOGIN is not delivered here - it raises imap_auth
                     // instead"), so a rule on imap_command could never match and the
                     // LOGIN fell through to the LLM, which refused it with NO [SERVERBUG].
-                    .respond_with_actions(serde_json::json!([
+                    // async-imap picks its own tags (a1, a2, ...). A hardcoded "A001"
+                    // tags the reply to a command the client never sent, so async-imap
+                    // discards it as unsolicited and stays parked on LOGIN until the
+                    // test gives up -- reported as "the client never connected".
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "tag": "A001",
+                            "tag": e["tag"].as_str().unwrap_or_default(),
                             "status": "OK",
                             "message": "LOGIN completed"
                         }
@@ -483,10 +514,10 @@ mod imap_client_tests {
                     // Mock 4: Server SELECT response
                     .on_event("imap_command")
                     .and_event_data_contains("command", "SELECT")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* 1 EXISTS\r\n* 1 RECENT\r\nA002 OK [READ-WRITE] SELECT completed"
+                            "response": format!("* 1 EXISTS\r\n* 1 RECENT\r\n{} OK [READ-WRITE] SELECT completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
@@ -494,10 +525,10 @@ mod imap_client_tests {
                     // Mock 5: Server SEARCH response
                     .on_event("imap_command")
                     .and_event_data_contains("command", "SEARCH")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* SEARCH 1\r\nA003 OK SEARCH completed"
+                            "response": format!("* SEARCH 1\r\n{} OK SEARCH completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
@@ -505,10 +536,10 @@ mod imap_client_tests {
                     // Mock 6: Server FETCH response
                     .on_event("imap_command")
                     .and_event_data_contains("command", "FETCH")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* 1 FETCH (FLAGS (\\Seen) BODY[] {50}\r\nFrom: alice@example.com\r\nSubject: Test Message\r\n\r\nBody)\r\nA004 OK FETCH completed"
+                            "response": format!("* 1 FETCH (FLAGS (\\Seen) BODY[] {{54}}\r\nFrom: alice@example.com\r\nSubject: Test Message\r\n\r\nBody)\r\n{} OK FETCH completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)

@@ -37,6 +37,90 @@ pub static IMAP_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     ])
 });
 
+/// Raised once a mailbox is selected, so the model learns how many messages are there
+/// and can decide what to ask for next.
+pub static IMAP_MAILBOX_SELECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "imap_mailbox_selected",
+        "A mailbox was selected; reports its message counts",
+        json!({
+            "type": "search_messages",
+            "criteria": "ALL"
+        }),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "mailbox".to_string(),
+            type_hint: "string".to_string(),
+            description: "Name of the selected mailbox".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "exists".to_string(),
+            type_hint: "number".to_string(),
+            description: "Total messages in the mailbox".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "recent".to_string(),
+            type_hint: "number".to_string(),
+            description: "Messages flagged \\Recent".to_string(),
+            required: true,
+        },
+    ])
+});
+
+/// Raised with the ids a SEARCH matched.
+pub static IMAP_SEARCH_RESULTS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "imap_search_results",
+        "A SEARCH completed; reports the matching message ids",
+        json!({
+            "type": "fetch_message",
+            "message_id": "1"
+        }),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "criteria".to_string(),
+            type_hint: "string".to_string(),
+            description: "The search criteria that was issued".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "message_ids".to_string(),
+            type_hint: "array".to_string(),
+            description: "Sequence numbers of matching messages".to_string(),
+            required: true,
+        },
+    ])
+});
+
+/// Raised for each message a FETCH returned.
+pub static IMAP_MESSAGE_FETCHED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "imap_message_fetched",
+        "A message was fetched; reports its envelope and body",
+        json!({
+            "type": "wait_for_more"
+        }),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "message_id".to_string(),
+            type_hint: "string".to_string(),
+            description: "The message id or range that was fetched".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "messages".to_string(),
+            type_hint: "array".to_string(),
+            description: "One entry per message, each with subject, from and body".to_string(),
+            required: true,
+        },
+    ])
+});
+
 /// IMAP client protocol action handler
 pub struct ImapClientProtocol;
 
@@ -211,27 +295,15 @@ impl Protocol for ImapClientProtocol {
         "IMAP"
     }
     fn get_event_types(&self) -> Vec<EventType> {
+        // Clones of the statics the client actually emits, so a declaration cannot drift
+        // from what is raised. These four used to be hand-written duplicates carrying a
+        // `"placeholder"` example action, and three of them named events nothing ever
+        // raised -- the model got one turn on connect and then went deaf.
         vec![
-            EventType::new(
-                "imap_connected",
-                "Triggered when IMAP client connects and authenticates",
-                json!({"type": "placeholder", "event_id": "imap_connected"}),
-            ),
-            EventType::new(
-                "imap_mailbox_selected",
-                "Triggered when a mailbox is selected",
-                json!({"type": "placeholder", "event_id": "imap_mailbox_selected"}),
-            ),
-            EventType::new(
-                "imap_search_results",
-                "Triggered when search results are received",
-                json!({"type": "placeholder", "event_id": "imap_search_results"}),
-            ),
-            EventType::new(
-                "imap_message_fetched",
-                "Triggered when a message is fetched",
-                json!({"type": "placeholder", "event_id": "imap_message_fetched"}),
-            ),
+            IMAP_CLIENT_CONNECTED_EVENT.clone(),
+            IMAP_MAILBOX_SELECTED_EVENT.clone(),
+            IMAP_SEARCH_RESULTS_EVENT.clone(),
+            IMAP_MESSAGE_FETCHED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
