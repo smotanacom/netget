@@ -62,6 +62,17 @@ impl JsonRpcClient {
         // JSON-RPC is HTTP-based, so "connection" is logical
         // We'll create an HTTP client and store it in protocol_data
 
+        // Every other client protocol takes a bare `host:port`, and that is what a model
+        // asked to "connect to 127.0.0.1:8080" produces. reqwest requires an absolute URL,
+        // so a bare authority reached the wire as `builder error` (relative URL without a
+        // base) on every single request -- with nothing in the message naming the address.
+        // An explicit scheme is left exactly as given, including https.
+        let remote_addr = if remote_addr.contains("://") {
+            remote_addr
+        } else {
+            format!("http://{remote_addr}")
+        };
+
         info!(
             "JSON-RPC client {} initialized for {}",
             client_id, remote_addr
