@@ -448,26 +448,50 @@ impl DohClient {
             }
         }
 
-        let mut builder = reqwest::Client::builder()
-            .use_rustls_tls()
-            // There was no timeout at all, so a DoH server that accepted the connection
-            // and then said nothing hung the query forever with nothing in the log. The
-            // client's own docs claimed a 30s timeout; this is it.
-            .timeout(std::time::Duration::from_secs(30));
-        if let Some(pem) = ca_pem {
-            let cert = reqwest::Certificate::from_pem(pem.as_bytes())
-                .context("ca_cert_pem is not a valid PEM certificate")?;
-            builder = builder.add_root_certificate(cert);
-        }
         if insecure {
             warn!(
                 "DoH client {} is skipping certificate verification (insecure_skip_verify); \
                  this connection is not authenticated",
                 client_id
             );
-            builder = builder.danger_accept_invalid_certs(true);
         }
-        let client = builder.build().context("Failed to build DoH HTTP client")?;
+
+        // Built on a blocking thread, not here.
+        //
+        // `Client::builder().build()` sets up the rustls stack, which loads the platform
+        // root store -- on macOS that reads the keychain. That is a synchronous,
+        // syscall-heavy operation, and calling it from async context parks a tokio worker
+        // thread for as long as it takes. Under load it took long enough to stall this
+        // client's runtime entirely: the query logged "querying example.com" and then
+        // nothing, no response and no timeout, because the request future had not been
+        // created yet and there was no timeout to fire.
+        let pem_for_build = ca_pem.clone();
+        let client = tokio::task::spawn_blocking(move || {
+            let mut builder = reqwest::Client::builder()
+                .use_rustls_tls()
+                // There was no timeout at all, so a DoH server that accepted the
+                // connection and then said nothing hung the query forever with nothing in
+                // the log. A DNS query that takes longer than this is useless anyway.
+                .timeout(std::time::Duration::from_secs(10));
+            if let Some(pem) = pem_for_build {
+                let cert = reqwest::Certificate::from_pem(pem.as_bytes())
+                    .context("ca_cert_pem is not a valid PEM certificate")?;
+                builder = builder.add_root_certificate(cert);
+            }
+            if insecure {
+                builder = builder
+                    .danger_accept_invalid_certs(true)
+                    // Do not load the platform root store when no certificate is going to
+                    // be checked against it. On macOS that load reads the system keychain
+                    // through Security.framework, which serialises across processes: with
+                    // a hundred netget processes starting at once it dominates the time to
+                    // build the client, and it buys exactly nothing here.
+                    .tls_built_in_root_certs(false);
+            }
+            builder.build().context("Failed to build DoH HTTP client")
+        })
+        .await
+        .context("DoH HTTP client build task panicked")??;
         if let Ok(mut guard) = cache.lock() {
             guard.insert(key, client.clone());
         }

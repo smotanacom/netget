@@ -430,6 +430,30 @@ Related: query failures are logged with `{:#}`, not `{}`. `{}` prints only our o
 `"DoH POST request failed"` context and throws away reqwest's actual cause, which is the only
 part that says anything.
 
+### Building the HTTP client is a blocking operation — treat it as one
+
+`reqwest::Client::builder().build()` sets up the rustls stack, and that loads the platform
+root certificate store. On macOS this reads the system keychain through Security.framework,
+which is synchronous, syscall-heavy, and serialises across processes.
+
+Three things follow, all of which this client got wrong at some point:
+
+- **It must not run on the async runtime.** Called inline it parks a tokio worker for as long
+  as the load takes. Under a hundred concurrent netget processes it parked long enough to
+  stall the client's runtime entirely: the query logged `querying example.com` and then
+  nothing — no response, and no timeout either, because the request future had not been
+  created yet and so there was nothing for the timeout to apply to. It is on
+  `spawn_blocking` now.
+- **It must not run per query.** The client is cached by `(ca_cert_pem, insecure_skip_verify)`
+  for the life of the process, so queries after the first reuse the connection pool instead of
+  paying for a fresh TLS stack and a fresh handshake each time.
+- **It must not load the root store at all when nothing will be checked against it.** With
+  `insecure_skip_verify`, `tls_built_in_root_certs(false)` skips the keychain entirely. This
+  was the single largest cost, and it bought nothing.
+
+Together these are what took the four e2e tests from failing at `--test-threads=100` (while
+passing in isolation, which reads as flakiness and was not) to passing.
+
 `tests/client/doh/command_channel_test.rs` still uses a plain-HTTP `application/dns-message`
 stub as its peer — it is testing the command channel, not TLS, and a stub keeps that test
 free of certificate and ALPN concerns.
