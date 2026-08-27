@@ -124,7 +124,7 @@ async fn injected_bulk_out_reaches_a_real_device() {
     .await
     .expect("open the USB device named by NETGET_USB_TEST_DEVICE");
 
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if state.has_client_handle(client_id).await {
             break;
         }

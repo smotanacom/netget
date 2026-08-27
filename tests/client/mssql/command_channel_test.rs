@@ -13,6 +13,15 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features mssql --test client -- mssql::command_channel --test-threads=100
+//!
+//! Condition waits here poll for up to ~30s (1_000 x 30ms).
+//!
+//! That budget is deliberately generous, and it is not a latency assertion: the loop exits
+//! the moment the condition holds, so a healthy run costs milliseconds. It was 3s, which is
+//! ample when this test runs alone and far too little at `--test-threads=100`, where the
+//! handshake it waits on competes with a hundred other tests for the runtime. The test then
+//! reported the condition as never happening when it simply had not happened *yet* -- a
+//! failure that pointed at the protocol instead of at the deadline.
 
 #![cfg(feature = "mssql")]
 
@@ -35,7 +44,7 @@ async fn new_state() -> AppState {
 }
 
 async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if let Some(s) = state.get_server(id).await {
             if let Some(addr) = s.local_addr {
                 return addr.port();
@@ -47,7 +56,7 @@ async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -60,7 +69,7 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 }
 
 async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle: &str) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         for entry in state.list_access_logs_for(Some(owner), None).await {
             if serde_json::to_string(&entry)
                 .unwrap_or_default()
@@ -193,7 +202,7 @@ def handle(event_type, event, message):
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         let status = state.get_client(client_id).await.map(|c| c.status);
         if matches!(status, Some(ClientStatus::Disconnected))
             && !state.has_client_handle(client_id).await

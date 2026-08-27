@@ -47,7 +47,7 @@ async fn new_state() -> AppState {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -60,7 +60,7 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 }
 
 async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle: &str) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         for entry in state.list_access_logs_for(Some(owner), None).await {
             if serde_json::to_string(&entry)
                 .unwrap_or_default()
@@ -164,7 +164,7 @@ async fn injected_isis_actions_are_executed_and_reported_honestly() {
     // What actually matters, and what is asserted, is that the client reaches SOME
     // terminal state and that the command handle is gone -- a live handle on a dead client
     // is what leaves the dashboard offering [ send ] into nothing.
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         let status = state.get_client(client_id).await.map(|c| c.status);
         let terminal = matches!(
             status,

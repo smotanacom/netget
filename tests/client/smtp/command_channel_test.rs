@@ -43,7 +43,7 @@ async fn new_state() -> AppState {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -186,7 +186,7 @@ async fn injected_send_email_reaches_a_real_smtp_peer() {
     );
 
     // Recorded on the client like LLM-produced traffic.
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         let logs = state
             .list_access_logs_for(Some(AccessLogOwner::Client(client_id.as_u32())), None)
             .await;
@@ -227,7 +227,7 @@ async fn injected_send_email_reaches_a_real_smtp_peer() {
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         let status = state.get_client(client_id).await.map(|c| c.status);
         if matches!(status, Some(ClientStatus::Disconnected))
             && !state.has_client_handle(client_id).await

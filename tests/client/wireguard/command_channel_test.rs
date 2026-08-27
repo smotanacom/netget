@@ -131,7 +131,7 @@ async fn injected_status_query_reads_a_real_interface() {
     .await
     .expect("root and a WireGuard backend are required");
 
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if state.has_client_handle(client_id).await {
             break;
         }

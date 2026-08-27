@@ -71,7 +71,7 @@ async fn create_client(state: &AppState) -> anyhow::Result<ClientId> {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -206,7 +206,7 @@ async fn injected_hello_puts_a_packet_on_the_wire() {
         matches!(outcome, ClientSendOutcome::Disconnected),
         "expected Disconnected, got {outcome:?}"
     );
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if !state.has_client_handle(client_id).await {
             return;
         }

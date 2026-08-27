@@ -38,7 +38,7 @@ async fn new_state() -> AppState {
 }
 
 async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if let Some(s) = state.get_server(id).await {
             if let Some(addr) = s.local_addr {
                 return addr.port();
@@ -50,7 +50,7 @@ async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -63,7 +63,7 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 }
 
 async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle: &str) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         for entry in state.list_access_logs_for(Some(owner), None).await {
             if serde_json::to_string(&entry)
                 .unwrap_or_default()
@@ -184,7 +184,7 @@ async fn injected_grpc_call_reaches_our_own_server() {
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         let status = state.get_client(client_id).await.map(|c| c.status);
         if matches!(status, Some(ClientStatus::Disconnected))
             && !state.has_client_handle(client_id).await

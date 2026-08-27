@@ -34,7 +34,7 @@ async fn new_state() -> AppState {
 
 /// Regression guard for "register the channel before the connected-event LLM call".
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -47,7 +47,7 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 }
 
 async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle: &str) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         for entry in state.list_access_logs_for(Some(owner), None).await {
             if serde_json::to_string(&entry)
                 .unwrap_or_default()
@@ -163,7 +163,7 @@ async fn injected_dhcp_discover_reaches_the_wire() {
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if !state.has_client_handle(client_id).await {
             return;
         }

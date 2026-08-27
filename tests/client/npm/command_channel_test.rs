@@ -74,7 +74,7 @@ async fn new_state() -> AppState {
 
 /// The regression guard for "register the channel before anything that can block".
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -87,7 +87,7 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 }
 
 async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle: &str) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         for entry in state.list_access_logs_for(Some(owner), None).await {
             if serde_json::to_string(&entry)
                 .unwrap_or_default()
@@ -190,7 +190,7 @@ async fn injected_npm_action_reaches_the_registry() {
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         let status = state.get_client(client_id).await.map(|c| c.status);
         if matches!(status, Some(ClientStatus::Disconnected))
             && !state.has_client_handle(client_id).await
@@ -256,7 +256,7 @@ async fn a_parked_response_event_does_not_block_the_next_injected_command() {
 
     // The response event is now parked waiting for a human, exactly as the rail shows it.
     let mut parked = None;
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         parked = state
             .list_intercepts()
             .await

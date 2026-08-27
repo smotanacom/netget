@@ -35,7 +35,7 @@ async fn new_state() -> AppState {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -169,7 +169,7 @@ async fn injected_tls_data_reaches_the_server() {
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if !state.has_client_handle(client_id).await {
             return;
         }
