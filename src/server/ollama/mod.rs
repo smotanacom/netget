@@ -207,7 +207,18 @@ async fn handle_ollama_request(
             .await
         }
         (Method::POST, "/api/embeddings") => handle_embeddings(req, status_tx).await,
-        (Method::POST, "/api/show") => handle_show(req, status_tx).await,
+        (Method::POST, "/api/show") => {
+            handle_show(
+                req,
+                connection_id,
+                llm_client,
+                app_state,
+                status_tx,
+                protocol,
+                server_id,
+            )
+            .await
+        }
         // The four model-management endpoints are decisions, so they go through the model.
         // They used to answer {"status":"success"} unconditionally without an event.
         (Method::POST, "/api/pull") => {
@@ -810,55 +821,99 @@ async fn handle_embeddings(
         .unwrap())
 }
 
+/// Answer `/api/show` from the model, or refuse.
+///
+/// This used to reply with a fabricated Modelfile (`FROM {name}`), a hardcoded
+/// `temperature 0.7` and a `gguf`/`llama` details block — for any name at all, with no event
+/// and no `call_llm` in the path. A server told "this instance serves only llama2" happily
+/// described every model a client asked about, including ones it had just refused to pull.
+/// Nothing is invented now: no `ollama_show_response` means the request is refused.
+#[allow(clippy::too_many_arguments)]
 async fn handle_show(
     req: Request<Incoming>,
+    connection_id: ConnectionId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<OllamaProtocol>,
+    server_id: crate::state::ServerId,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    let log = Log::new(Some(&status_tx));
+
     let body_bytes = match req.collect().await {
         Ok(collected) => collected.to_bytes(),
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Failed to read body"}).to_string(),
-                )))
-                .unwrap());
-        }
+        Err(_) => return Ok(bad_request("Failed to read body")),
     };
-
-    let request_json: Value = match serde_json::from_slice(&body_bytes) {
-        Ok(json) => json,
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Invalid JSON"}).to_string(),
-                )))
-                .unwrap());
-        }
-    };
-
+    let request_json: Value = serde_json::from_slice(&body_bytes).unwrap_or(Value::Null);
     let model = request_json
         .get("name")
+        .or_else(|| request_json.get("model"))
         .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    Log::new(Some(&status_tx)).debug(format!("Show model: {}", model));
+        .unwrap_or("")
+        .to_string();
 
-    let response = json!({
-        "modelfile": format!("FROM {}", model),
-        "parameters": "temperature 0.7",
-        "template": "{{ .Prompt }}",
-        "details": {
-            "format": "gguf",
-            "family": "llama"
+    let event = Event::new(
+        &actions::OLLAMA_SHOW_REQUEST_EVENT,
+        json!({ "model": model }),
+    );
+
+    match call_llm(
+        &llm_client,
+        &app_state,
+        server_id,
+        Some(connection_id),
+        &event,
+        protocol.as_ref(),
+    )
+    .await
+    {
+        Ok(result) => {
+            for msg in result.messages {
+                let _ = status_tx.send(msg);
+            }
+            if let Some(response) = model_error_response(&result.raw_actions) {
+                log.info(format!(
+                    "Ollama show refused for '{}' (decision=model_reject)",
+                    model
+                ));
+                return Ok(response);
+            }
+            use crate::llm::actions::protocol_trait::ActionResult;
+            if let Some(data) = result.protocol_results.iter().find_map(|r| match r {
+                ActionResult::Custom { name, data } if name == "ollama_show_response" => Some(data),
+                _ => None,
+            }) {
+                log.debug(format!("Ollama show answered for '{}'", model));
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(Full::new(Bytes::from(data.to_string())))
+                    .unwrap());
+            }
+            log.warn(format!(
+                "Ollama show refused for '{}' (decision=fail_closed_no_action): the handler \
+                 produced no ollama_show_response",
+                model
+            ));
+            Ok(server_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::utils::WireFailure::Unavailable.text(),
+            ))
         }
-    });
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(response.to_string())))
-        .unwrap())
+        Err(e) => {
+            let failure = crate::utils::WireFailure::classify(&e);
+            error!(
+                "Ollama show for '{}' decision=fail_closed_llm_error category={:?}: {:#}",
+                model, failure, e
+            );
+            let status = if failure.is_overloaded() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Ok(server_error(status, failure.text()))
+        }
+    }
 }
 
 /// Ask the model whether to perform a model-management operation, and refuse unless it says so.

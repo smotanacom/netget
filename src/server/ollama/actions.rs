@@ -149,6 +149,86 @@ fn ollama_admin_ok_action() -> ActionDefinition {
     }
 }
 
+/// Answer `/api/show` with a model's details.
+fn ollama_show_response_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "ollama_show_response".to_string(),
+        description: "Return the details of the model /api/show asked about. Without this \
+                      action the request is refused - nothing is invented."
+            .to_string(),
+        parameters: vec![
+            Parameter {
+                name: "modelfile".to_string(),
+                type_hint: "string".to_string(),
+                description: "Modelfile contents, e.g. \"FROM llama2\"".to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "parameters".to_string(),
+                type_hint: "string".to_string(),
+                description: "Parameter block, e.g. \"temperature 0.7\"".to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "template".to_string(),
+                type_hint: "string".to_string(),
+                description: "Prompt template".to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "details".to_string(),
+                type_hint: "object".to_string(),
+                description: "Details object, e.g. {\"format\": \"gguf\", \"family\": \"llama\"}"
+                    .to_string(),
+                required: false,
+            },
+        ],
+        example: json!({
+            "type": "ollama_show_response",
+            "modelfile": "FROM llama2",
+            "details": {"format": "gguf", "family": "llama"}
+        }),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("-> Ollama show answered")
+                .with_debug("Ollama ollama_show_response: modelfile={modelfile}"),
+        ),
+    }
+}
+
+/// `/api/show`: a client asking what a model is.
+///
+/// This used to answer with a fabricated Modelfile (`FROM {name}`), a hardcoded
+/// `temperature 0.7` and a `gguf`/`llama` details block, for any name at all and without an
+/// event — so a server told "this instance serves only llama2" described every model a client
+/// asked about, including ones it had just refused to pull.
+pub static OLLAMA_SHOW_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "ollama_show_request",
+        "A client asked /api/show for a model's details. Answer with ollama_show_response, or \
+         refuse with ollama_error_response.",
+        json!({
+            "type": "ollama_show_response",
+            "modelfile": "FROM llama2"
+        }),
+    )
+    .with_parameters(vec![Parameter {
+        name: "model".to_string(),
+        type_hint: "string".to_string(),
+        description: "Model the client asked about".to_string(),
+        required: true,
+    }])
+    .with_actions(vec![
+        ollama_show_response_action(),
+        ollama_error_response_action(),
+    ])
+    .with_log_template(
+        LogTemplate::new()
+            .with_info("{client_ip} Ollama show {model}")
+            .with_debug("Ollama show request: model={model}"),
+    )
+});
+
 /// Model-management event: `/api/pull`, `/api/create`, `/api/copy`, `/api/delete`.
 ///
 /// These four endpoints used to answer `{"status":"success"}` unconditionally, without an
@@ -216,6 +296,7 @@ impl Protocol for OllamaProtocol {
             ollama_chat_response_action(),
             ollama_models_response_action(),
             ollama_admin_ok_action(),
+            ollama_show_response_action(),
             ollama_error_response_action(),
         ]
     }
@@ -346,6 +427,21 @@ impl Server for OllamaProtocol {
                 }
                 Ok(ActionResult::Custom {
                     name: "ollama_admin_ok".to_string(),
+                    data,
+                })
+            }
+            "ollama_show_response" => {
+                let mut data = json!({});
+                for field in ["modelfile", "parameters", "template"] {
+                    if let Some(v) = action.get(field).and_then(|v| v.as_str()) {
+                        data[field] = json!(v);
+                    }
+                }
+                if let Some(d) = action.get("details") {
+                    data["details"] = d.clone();
+                }
+                Ok(ActionResult::Custom {
+                    name: "ollama_show_response".to_string(),
                     data,
                 })
             }
@@ -501,5 +597,6 @@ fn get_ollama_event_types() -> Vec<EventType> {
         OLLAMA_CHAT_REQUEST_EVENT.clone(),
         OLLAMA_MODELS_REQUEST_EVENT.clone(),
         OLLAMA_ADMIN_REQUEST_EVENT.clone(),
+        OLLAMA_SHOW_REQUEST_EVENT.clone(),
     ]
 }

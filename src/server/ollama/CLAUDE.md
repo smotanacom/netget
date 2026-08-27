@@ -159,9 +159,19 @@ the last two carry only a `WireFailure` category, never the backend error.
 `ollama_admin_ok` may carry `digest` and `total`, which `/api/pull` echoes. Nothing is invented:
 omit them and the reply is just `{"status": "success"}`.
 
-Still hardcoded, and still worth fixing the same way: `/api/show` and `/api/embeddings` answer
-with canned data without consulting the model (`/api/embeddings` returns sequential floats, see
-below). They are read paths rather than state changes, which is the only reason they were left.
+`/api/show` is now the model's answer too, via **`ollama_show_request`** / **`ollama_show_response`**
+(modelfile, parameters, template, details — all optional; no action means the request is
+refused). It used to reply with a fabricated Modelfile (`FROM {name}`), a hardcoded
+`temperature 0.7` and a `gguf`/`llama` details block, for any name at all — so a server told
+"this instance serves only llama2" cheerfully described every model a client asked about,
+including ones it had just refused to pull.
+
+**`/api/embeddings` is deliberately still canned**, and that is a judgement rather than an
+oversight. An embedding is a few hundred to a few thousand floats; asking a language model to
+emit them would produce plausible-looking noise at best, and it is the numeric equivalent of
+the raw-bytes-in-actions problem the root `CLAUDE.md` forbids — models cannot reliably produce
+or parse that shape. The sequential floats are an honest stub. If an operator ever needs real
+control here the answer is a script handler, not an action.
 
 ### 3. Static Embeddings
 
