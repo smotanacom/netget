@@ -34,6 +34,55 @@ pub static DATALINK_CLIENT_FRAME_CAPTURED_EVENT: LazyLock<EventType> = LazyLock:
     ])
 });
 
+/// Raised once the capture handle is open, so the model can act on its instruction.
+///
+/// Without this the client opened the interface and asked the model nothing, so a client
+/// created with "inject an ARP request for 10.0.0.2" sat there having done nothing.
+pub static DATALINK_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "datalink_connected",
+        "Capture handle open on the interface; ready to inject and capture",
+        json!({"type": "inject_frame", "frame_hex": "ffffffffffff001122334455080600010800060400010011223344550a0000010000000000000a000002"}),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "interface".to_string(),
+            type_hint: "string".to_string(),
+            description: "The interface the capture was opened on".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "promiscuous".to_string(),
+            type_hint: "bool".to_string(),
+            description: "Whether the interface was opened in promiscuous mode".to_string(),
+            required: true,
+        },
+    ])
+});
+
+/// Raised after a frame really went out on the wire.
+pub static DATALINK_CLIENT_FRAME_INJECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "datalink_frame_injected",
+        "A raw frame was written to the interface",
+        json!({"type": "wait_for_more"}),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "frame_length".to_string(),
+            type_hint: "number".to_string(),
+            description: "Number of bytes written to the interface".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "frame_hex".to_string(),
+            type_hint: "string".to_string(),
+            description: "The frame that was written, as a hex string".to_string(),
+            required: true,
+        },
+    ])
+});
+
 /// DataLink client protocol action handler
 pub struct DataLinkClientProtocol;
 
@@ -129,17 +178,13 @@ impl Protocol for DataLinkClientProtocol {
         "DataLink"
     }
     fn get_event_types(&self) -> Vec<EventType> {
+        // Clones of the statics this client actually raises, so a declaration cannot
+        // drift from what is emitted. These were hand-written duplicates, and
+        // `datalink_frame_injected` named an event nothing raised at all.
         vec![
-            EventType::new(
-                "datalink_frame_injected",
-                "Triggered when frame is successfully injected",
-                json!({"type": "wait_for_more"}),
-            ),
-            EventType::new(
-                "datalink_frame_captured",
-                "Triggered when frame is captured in promiscuous mode",
-                json!({"type": "inject_frame", "frame_hex": "ffffffffffff001122334455080600010800060400010011223344550a0000010000000000000a000002"}),
-            ),
+            DATALINK_CLIENT_CONNECTED_EVENT.clone(),
+            DATALINK_CLIENT_FRAME_INJECTED_EVENT.clone(),
+            DATALINK_CLIENT_FRAME_CAPTURED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
