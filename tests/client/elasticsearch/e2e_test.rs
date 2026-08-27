@@ -157,6 +157,7 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify client output
+    client.wait_for_any(&["Elasticsearch"], 30).await;
     assert!(
         client.output_contains("Elasticsearch").await,
         "Client should show Elasticsearch connection"

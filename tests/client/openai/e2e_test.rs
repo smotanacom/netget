@@ -45,6 +45,7 @@ mod openai_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows OpenAI protocol
+        client.wait_for_any(&["OpenAI", "openai"], 30).await;
         assert!(
             client.output_contains("OpenAI").await || client.output_contains("openai").await,
             "Client should show OpenAI protocol. Output: {:?}",
@@ -146,6 +147,7 @@ mod openai_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client is running
+        client.wait_for_any(&["OpenAI"], 30).await;
         assert!(
             client.output_contains("OpenAI").await,
             "Client should show OpenAI connection. Output: {:?}",
@@ -196,6 +198,7 @@ mod openai_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client initialized
+        client.wait_for_any(&["OpenAI"], 30).await;
         assert!(
             client.output_contains("OpenAI").await,
             "Client should show OpenAI connection. Output: {:?}",

@@ -184,6 +184,7 @@ async fn test_etcd_client_basic_operations() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify client output shows connection and operations
+    client.wait_for_any(&["etcd"], 30).await;
     assert!(
         client.output_contains("etcd").await,
         "Client should show etcd protocol. Output: {:?}",

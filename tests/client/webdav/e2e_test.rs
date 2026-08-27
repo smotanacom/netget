@@ -103,6 +103,7 @@ mod webdav_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection/response
+        client.wait_for_any(&["WebDAV", "connected", "PROPFIND"], 30).await;
         assert!(
             client.output_contains("WebDAV").await
                 || client.output_contains("connected").await

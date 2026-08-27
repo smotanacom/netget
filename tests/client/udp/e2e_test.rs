@@ -73,6 +73,7 @@ mod udp_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows connection (socket bound)
+        client.wait_for_any(&["ready", "bound"], 30).await;
         assert!(
             client.output_contains("ready").await || client.output_contains("bound").await,
             "Client should show ready/bound message. Output: {:?}",

@@ -39,6 +39,7 @@ mod mcp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows MCP connection
+        client.wait_for_any(&["MCP", "initialized"], 30).await;
         assert!(
             client.output_contains("MCP").await || client.output_contains("initialized").await,
             "Client should show MCP protocol or initialization message. Output: {:?}",

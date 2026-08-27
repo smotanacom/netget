@@ -38,6 +38,7 @@ mod syslog_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected", "Syslog"], 30).await;
         assert!(
             client.output_contains("connected").await || client.output_contains("Syslog").await,
             "Client should show syslog message. Output: {:?}",
@@ -82,6 +83,7 @@ mod syslog_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected", "Syslog"], 30).await;
         assert!(
             client.output_contains("connected").await || client.output_contains("Syslog").await,
             "Client should show syslog connection. Output: {:?}",

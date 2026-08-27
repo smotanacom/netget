@@ -99,6 +99,7 @@ mod http3_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client output shows HTTP/3 or QUIC protocol
+        client.wait_for_any(&["HTTP/3", "HTTP3", "QUIC", "connected"], 30).await;
         assert!(
             client.output_contains("HTTP/3").await
                 || client.output_contains("HTTP3").await
@@ -318,6 +319,7 @@ mod http3_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client made HTTP/3 connection
+        client.wait_for_any(&["HTTP3", "QUIC"], 30).await;
         assert!(
             client.output_contains("HTTP3").await || client.output_contains("QUIC").await,
             "Client should use HTTP/3 or QUIC. Output: {:?}",

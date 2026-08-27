@@ -109,6 +109,7 @@ mod http_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection/response
+        client.wait_for_any(&["HTTP", "connected"], 30).await;
         assert!(
             client.output_contains("HTTP").await || client.output_contains("connected").await,
             "Client should show HTTP protocol or connection message. Output: {:?}",

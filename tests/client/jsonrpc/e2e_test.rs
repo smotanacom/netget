@@ -105,6 +105,7 @@ mod jsonrpc_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows connection/response
+        client.wait_for_any(&["JSON-RPC", "jsonrpc"], 30).await;
         assert!(
             client.output_contains("JSON-RPC").await || client.output_contains("jsonrpc").await,
             "Client should show JSON-RPC protocol message. Output: {:?}",
@@ -343,6 +344,7 @@ mod jsonrpc_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client is connected
+        client.wait_for_any(&["JSON-RPC", "connected"], 30).await;
         assert!(
             client.output_contains("JSON-RPC").await || client.output_contains("connected").await,
             "Client should show JSON-RPC connection. Output: {:?}",

@@ -119,6 +119,7 @@ mod imap_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected", "authenticated"], 30).await;
         assert!(
             client.output_contains("connected").await
                 || client.output_contains("authenticated").await,

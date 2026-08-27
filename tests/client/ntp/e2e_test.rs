@@ -48,6 +48,7 @@ mod ntp_client_tests {
         tokio::time::sleep(Duration::from_secs(6)).await;
 
         // Verify client output shows NTP response
+        client.wait_for_any(&["ntp", "time"], 30).await;
         assert!(
             client.output_contains("ntp").await || client.output_contains("time").await,
             "Client should show NTP response. Output: {:?}",

@@ -65,6 +65,7 @@ async fn test_git_clone() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Verify client output shows clone activity
+    client.wait_for_any(&["clone", "Git"], 30).await;
     assert!(
         client.output_contains("clone").await || client.output_contains("Git").await,
         "Client should show clone activity. Output: {:?}",

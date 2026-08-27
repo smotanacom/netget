@@ -52,6 +52,7 @@ mod datalink_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["DataLink", "datalink"], 30).await;
         assert!(
             client.output_contains("DataLink").await || client.output_contains("datalink").await,
             "Client should show DataLink protocol. Output: {:?}",

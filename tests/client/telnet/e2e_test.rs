@@ -87,6 +87,7 @@ mod telnet_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection message. Output: {:?}",
@@ -257,6 +258,7 @@ mod telnet_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client connected (negotiation happens automatically)
+        client.wait_for_any(&["connected", "Telnet"], 30).await;
         assert!(
             client.output_contains("connected").await || client.output_contains("Telnet").await,
             "Client should show connection or Telnet activity. Output: {:?}",

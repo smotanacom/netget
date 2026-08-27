@@ -38,6 +38,7 @@ mod nfs_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client output shows mount and read
+        client.wait_for_any(&["mounted", "NFS"], 30).await;
         assert!(
             client.output_contains("mounted").await || client.output_contains("NFS").await,
             "Client should show NFS mount message. Output: {:?}",
@@ -122,6 +123,7 @@ mod nfs_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client wrote the file
+        client.wait_for_any(&["NFS", "mounted"], 30).await;
         assert!(
             client.output_contains("NFS").await || client.output_contains("mounted").await,
             "Client should show NFS activity. Output: {:?}",

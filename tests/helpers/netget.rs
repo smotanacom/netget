@@ -986,6 +986,34 @@ impl NetGetInstance {
         Ok(())
     }
 
+    /// Wait until ANY of `needles` appears in the output, or the deadline passes.
+    ///
+    /// Returns quietly on timeout rather than erroring: callers use it immediately before
+    /// an `assert!` that already reports the condition and dumps the output, so failing
+    /// here would replace a good message with a worse one. Its job is to remove the race,
+    /// not to do the asserting.
+    ///
+    /// This exists because the e2e suites waited with a fixed `sleep` and then asserted --
+    /// 1 second was enough when a test ran alone and not when a hundred run together, so
+    /// they reported a client as never connecting when it simply had not connected yet.
+    #[allow(dead_code)]
+    pub async fn wait_for_any(&self, needles: &[&str], timeout_secs: u64) {
+        let start = std::time::Instant::now();
+        let deadline = Duration::from_secs(timeout_secs);
+        loop {
+            {
+                let lines = self.output_lines.lock().await;
+                if lines.iter().any(|l| needles.iter().any(|n| l.contains(n))) {
+                    return;
+                }
+            }
+            if start.elapsed() >= deadline {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Wait for a specific log pattern to appear in the output
     /// Returns when the pattern is found or times out
     #[allow(dead_code)]

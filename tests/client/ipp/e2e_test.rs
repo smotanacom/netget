@@ -101,6 +101,7 @@ mod ipp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected", "IPP"], 30).await;
         assert!(
             client.output_contains("connected").await || client.output_contains("IPP").await,
             "Client should show connection message. Output: {:?}",

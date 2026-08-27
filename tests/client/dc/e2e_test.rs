@@ -37,6 +37,7 @@ mod dc_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify TLS parameter was accepted (client should try to connect)
+        client.wait_for_any(&["Opening DC client", "DC"], 30).await;
         assert!(
             client.output_contains("Opening DC client").await || client.output_contains("DC").await,
             "Client should attempt DC connection. Output: {:?}",
@@ -150,6 +151,7 @@ mod dc_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client attempted DC connection with file user
+        client.wait_for_any(&["DC"], 30).await;
         assert!(
             client.output_contains("DC").await,
             "Client should attempt DC connection. Output: {:?}",

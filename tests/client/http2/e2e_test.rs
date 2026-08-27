@@ -98,6 +98,7 @@ mod http2_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection/response
+        client.wait_for_any(&["HTTP2", "http2", "HTTP/2", "connected"], 30).await;
         assert!(
             client.output_contains("HTTP2").await
                 || client.output_contains("http2").await
@@ -328,6 +329,7 @@ mod http2_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client shows HTTP/2 protocol
+        client.wait_for_any(&["HTTP2", "http2", "HTTP/2"], 30).await;
         assert!(
             client.output_contains("HTTP2").await
                 || client.output_contains("http2").await

@@ -64,12 +64,14 @@ async fn test_dot_client_basic_query() -> E2EResult<()> {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Verify client output shows connection
+    client.wait_for_any(&["connected"], 30).await;
     assert!(
         client.output_contains("connected").await,
         "Client should show connection message"
     );
 
     // Verify query was sent
+    client.wait_for_any(&["query", "Query"], 30).await;
     assert!(
         client.output_contains("query").await || client.output_contains("Query").await,
         "Client should show query message"

@@ -64,6 +64,7 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows Ollama protocol
+        client.wait_for_any(&["Ollama", "ollama"], 30).await;
         assert!(
             client.output_contains("Ollama").await || client.output_contains("ollama").await,
             "Client should show Ollama protocol. Output: {:?}",
@@ -102,6 +103,7 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client output shows Ollama protocol
+        client.wait_for_any(&["Ollama", "ollama"], 30).await;
         assert!(
             client.output_contains("Ollama").await || client.output_contains("ollama").await,
             "Client should show Ollama protocol. Output: {:?}",
@@ -109,6 +111,7 @@ mod ollama_client_tests {
         );
 
         // Verify we got models response
+        client.wait_for_any(&["models", "model", "found", "received"], 30).await;
         assert!(
             client.output_contains("models").await
                 || client.output_contains("model").await
@@ -163,6 +166,7 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client shows Ollama protocol
+        client.wait_for_any(&["Ollama"], 30).await;
         assert!(
             client.output_contains("Ollama").await,
             "Client should show Ollama protocol. Output: {:?}",
@@ -199,6 +203,7 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_secs(5)).await;
 
         // Verify client shows Ollama protocol
+        client.wait_for_any(&["Ollama"], 30).await;
         assert!(
             client.output_contains("Ollama").await,
             "Client should show Ollama protocol. Output: {:?}",
@@ -206,6 +211,7 @@ mod ollama_client_tests {
         );
 
         // Verify we got a response
+        client.wait_for_any(&["response", "generate", "received"], 30).await;
         assert!(
             client.output_contains("response").await
                 || client.output_contains("generate").await
@@ -300,6 +306,7 @@ mod ollama_client_tests {
         );
 
         // Verify we got a chat response
+        client.wait_for_any(&["chat", "message", "response"], 30).await;
         assert!(
             client.output_contains("chat").await
                 || client.output_contains("message").await
@@ -349,6 +356,7 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client initialized
+        client.wait_for_any(&["localhost:11434", "11434", "Ollama"], 30).await;
         assert!(
             client.output_contains("localhost:11434").await
                 || client.output_contains("11434").await
@@ -384,6 +392,7 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client connected
+        client.wait_for_any(&["localhost:11434", "11434", "Ollama"], 30).await;
         assert!(
             client.output_contains("localhost:11434").await
                 || client.output_contains("11434").await
@@ -459,6 +468,7 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client shows error or connection issue
+        client.wait_for_any(&["ERROR", "error", "failed", "connect"], 30).await;
         assert!(
             client.output_contains("ERROR").await
                 || client.output_contains("error").await

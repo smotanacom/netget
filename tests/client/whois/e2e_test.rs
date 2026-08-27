@@ -27,6 +27,7 @@ mod whois_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection message. Output: {:?}",

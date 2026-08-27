@@ -37,6 +37,7 @@ mod sqs_client_tests {
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection message. Output: {:?}",
@@ -120,6 +121,7 @@ mod sqs_client_tests {
         tokio::time::sleep(Duration::from_millis(2000)).await;
 
         // Verify client shows connection and operations
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection. Output: {:?}",

@@ -56,6 +56,7 @@ mod arp_client_tests {
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Verify client output shows ARP client started
+        client.wait_for_any(&["ARP"], 30).await;
         assert!(
             client.output_contains("ARP").await,
             "Client should show ARP protocol. Output: {:?}",
@@ -186,6 +187,7 @@ mod arp_client_tests {
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Verify client is monitoring
+        client.wait_for_any(&["ARP", "started"], 30).await;
         assert!(
             client.output_contains("ARP").await || client.output_contains("started").await,
             "Client should show ARP monitoring. Output: {:?}",

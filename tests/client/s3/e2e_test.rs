@@ -36,6 +36,7 @@ mod s3_client_tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["S3 client", "ready"], 30).await;
         assert!(
             client.output_contains("S3 client").await || client.output_contains("ready").await,
             "Client should show S3 initialization message. Output: {:?}",

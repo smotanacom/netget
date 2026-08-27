@@ -65,6 +65,7 @@ mod igmp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client shows it's ready
+        client.wait_for_any(&["IGMP"], 30).await;
         assert!(
             client.output_contains("IGMP").await,
             "Client should show IGMP initialization. Output: {:?}",

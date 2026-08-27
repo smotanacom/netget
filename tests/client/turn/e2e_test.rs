@@ -71,6 +71,7 @@ mod turn_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["TURN", "connected"], 30).await;
         assert!(
             client.output_contains("TURN").await || client.output_contains("connected").await,
             "Client should show TURN connection. Output: {:?}",

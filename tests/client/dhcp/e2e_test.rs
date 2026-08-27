@@ -110,6 +110,7 @@ mod dhcp_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client shows connection
+        client.wait_for_any(&["dhcp", "DHCP"], 30).await;
         assert!(
             client.output_contains("dhcp").await || client.output_contains("DHCP").await,
             "Client should show DHCP activity. Output: {:?}",
@@ -348,6 +349,7 @@ mod dhcp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client initiated DHCP activity
+        client.wait_for_any(&["DHCP", "dhcp"], 30).await;
         assert!(
             client.output_contains("DHCP").await || client.output_contains("dhcp").await,
             "Client should show DHCP activity"

@@ -65,6 +65,7 @@ mod smtp_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows SMTP protocol or connection
+        client.wait_for_any(&["SMTP", "connected"], 30).await;
         assert!(
             client.output_contains("SMTP").await || client.output_contains("connected").await,
             "Client should show SMTP protocol or connection message. Output: {:?}",
@@ -143,6 +144,7 @@ mod smtp_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify connection
+        client.wait_for_any(&["SMTP", "ready"], 30).await;
         assert!(
             client.output_contains("SMTP").await || client.output_contains("ready").await,
             "Client should show SMTP readiness. Output: {:?}",

@@ -29,6 +29,7 @@ mod stun_client_tests {
         // Verify client output shows STUN protocol or external address discovery
         let output = client.get_output().await;
 
+        client.wait_for_any(&["STUN", "external", "binding"], 30).await;
         assert!(
             client.output_contains("STUN").await
                 || client.output_contains("external").await

@@ -109,6 +109,7 @@ When receiving BOOTREQUEST:
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Verify client output shows connection
+    client.wait_for_any(&["connected"], 30).await;
     assert!(
         client.output_contains("connected").await,
         "Client should show connection message. Output: {:?}",
@@ -171,6 +172,7 @@ async fn test_bootp_broadcast_discovery() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Verify client started
+    client.wait_for_any(&["BOOTP", "connected"], 30).await;
     assert!(
         client.output_contains("BOOTP").await || client.output_contains("connected").await,
         "Client should show startup. Output: {:?}",
@@ -231,6 +233,7 @@ async fn test_bootp_no_server() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Verify client started
+    client.wait_for_any(&["BOOTP", "connected"], 30).await;
     assert!(
         client.output_contains("BOOTP").await || client.output_contains("connected").await,
         "BOOTP client should start even without server. Output: {:?}",
