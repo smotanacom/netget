@@ -66,6 +66,30 @@ enum Dispatch {
 pub struct OpenApiClient;
 
 impl OpenApiClient {
+    /// The process-wide HTTP client, built once.
+    ///
+    /// Same reasoning as the HTTP and DoH clients: `Client::builder().build()` sets up the
+    /// rustls stack and loads the platform root store, which on macOS reads the system
+    /// keychain synchronously and serialises across processes. It runs on `spawn_blocking`
+    /// so it cannot park a tokio worker, and it is kept so operations after the first
+    /// reuse the connection pool rather than rebuilding a TLS stack each time.
+    async fn http_client() -> Result<reqwest::Client> {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        if let Some(client) = CLIENT.get() {
+            return Ok(client.clone());
+        }
+        let built = tokio::task::spawn_blocking(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .use_rustls_tls()
+                .build()
+                .context("Failed to build HTTP client")
+        })
+        .await
+        .context("OpenAPI HTTP client build task panicked")??;
+        Ok(CLIENT.get_or_init(|| built).clone())
+    }
+
     /// Connect to an OpenAPI server with integrated LLM actions
     pub async fn connect_with_llm_actions(
         remote_addr: String,
@@ -123,12 +147,10 @@ impl OpenApiClient {
 
         info!("OpenAPI client {} using base URL: {}", client_id, base_url);
 
-        // Build reqwest client
-        let _http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .use_rustls_tls()
-            .build()
-            .context("Failed to build HTTP client")?;
+        // Warm the shared client rather than building one and dropping it. This used to
+        // bind to `_http_client`: a full rustls stack built at connect time and discarded,
+        // while every operation built another one.
+        Self::http_client().await?;
 
         // Store spec and base URL in protocol_data
         app_state
@@ -605,11 +627,7 @@ impl OpenApiClient {
             client_id, operation_id, method, url
         );
 
-        // Build HTTP client
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .use_rustls_tls()
-            .build()?;
+        let http_client = Self::http_client().await?;
 
         // Build request
         let mut request = match method.to_uppercase().as_str() {

@@ -67,6 +67,35 @@ enum Dispatch {
 pub struct HttpClient;
 
 impl HttpClient {
+    /// The process-wide HTTP client, built once.
+    ///
+    /// Two things this avoids, both of which cost real time on every request before:
+    /// `reqwest::Client::builder().build()` sets up the rustls stack and loads the
+    /// platform root store -- on macOS that reads the system keychain through
+    /// Security.framework, which is synchronous and serialises across processes -- so it
+    /// runs on `spawn_blocking` rather than parking a tokio worker. And it is kept, so
+    /// requests after the first reuse the connection pool instead of paying for a fresh
+    /// TLS stack and handshake each time.
+    ///
+    /// Protocol versions are negotiated via ALPN during the handshake, so one client
+    /// serves both HTTP/1.1 and HTTP/2.
+    async fn http_client() -> Result<reqwest::Client> {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        if let Some(client) = CLIENT.get() {
+            return Ok(client.clone());
+        }
+        let built = tokio::task::spawn_blocking(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .use_rustls_tls()
+                .build()
+                .context("Failed to build HTTP client")
+        })
+        .await
+        .context("HTTP client build task panicked")??;
+        Ok(CLIENT.get_or_init(|| built).clone())
+    }
+
     /// Connect to an HTTP server with integrated LLM actions
     pub async fn connect_with_llm_actions(
         remote_addr: String,
@@ -80,13 +109,10 @@ impl HttpClient {
 
         info!("HTTP client {} initialized for {}", client_id, remote_addr);
 
-        // Build reqwest client with HTTPS and HTTP/2 support
-        // Protocol versions are automatically negotiated via ALPN during TLS handshake
-        let _http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .use_rustls_tls() // Use rustls for HTTPS (HTTP/1.1 and HTTP/2)
-            .build()
-            .context("Failed to build HTTP client")?;
+        // Warm the shared client here rather than building one and dropping it. This
+        // used to bind to `_http_client`: a full rustls stack constructed at connect time
+        // and immediately discarded, while every request built another one.
+        Self::http_client().await?;
 
         // Store client in protocol_data
         // Ensure base_url has http:// scheme
@@ -497,11 +523,7 @@ impl HttpClient {
             client_id, method, url
         );
 
-        // Build request with HTTPS and HTTP/2 support
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .use_rustls_tls() // Use rustls for HTTPS (HTTP/1.1 and HTTP/2)
-            .build()?;
+        let http_client = Self::http_client().await?;
 
         let mut request = match method.to_uppercase().as_str() {
             "GET" => http_client.get(&url),
