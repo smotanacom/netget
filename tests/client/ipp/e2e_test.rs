@@ -111,6 +111,11 @@ mod ipp_client_tests {
         println!("✅ IPP client successfully queried printer attributes");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -219,6 +224,11 @@ mod ipp_client_tests {
         println!("✅ IPP client successfully submitted print job");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -322,6 +332,11 @@ mod ipp_client_tests {
         println!("✅ IPP client successfully queried job attributes");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

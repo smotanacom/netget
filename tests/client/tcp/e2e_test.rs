@@ -109,6 +109,11 @@ mod tcp_client_tests {
         // before the connection closes". Its client rule carries no `expect_calls`, so
         // verifying it asserts only that no harness diagnostic fired — which is exactly the
         // check that was missing, and costs nothing in flakiness.
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -207,6 +212,11 @@ mod tcp_client_tests {
         println!("✅ TCP client responded to LLM instruction");
 
         // Verify mocks
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

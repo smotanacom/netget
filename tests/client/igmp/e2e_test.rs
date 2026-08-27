@@ -86,6 +86,10 @@ mod igmp_client_tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -148,6 +152,10 @@ mod igmp_client_tests {
         println!("✅ IGMP client joined and left multicast group");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -207,6 +215,10 @@ mod igmp_client_tests {
         println!("✅ IGMP client sent multicast data");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
 
         // Cleanup

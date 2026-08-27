@@ -194,6 +194,11 @@ async fn test_etcd_client_basic_operations() -> E2EResult<()> {
     println!("✅ etcd client completed PUT, GET, DELETE sequence successfully");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(10).await;
+    client.wait_for_mocks(10).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 
@@ -331,6 +336,11 @@ async fn test_etcd_client_multiple_keys() -> E2EResult<()> {
     println!("✅ etcd client completed multiple key operations");
 
     // Verify mocks
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(10).await;
+    client.wait_for_mocks(10).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 
@@ -427,6 +437,11 @@ async fn test_etcd_client_nonexistent_key() -> E2EResult<()> {
     println!("✅ etcd client verified nonexistent key returns empty");
 
     // Verify mocks
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(10).await;
+    client.wait_for_mocks(10).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 

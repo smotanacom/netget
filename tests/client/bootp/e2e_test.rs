@@ -119,6 +119,11 @@ When receiving BOOTREQUEST:
     println!("✓ BOOTP client connected to server and received IP assignment");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(10).await;
+    client.wait_for_mocks(10).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 
@@ -182,6 +187,10 @@ async fn test_bootp_broadcast_discovery() -> E2EResult<()> {
     println!("✓ BOOTP client broadcast discovery test completed");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(10).await;
     client.verify_mocks().await?;
 
     // Cleanup
@@ -243,6 +252,10 @@ async fn test_bootp_no_server() -> E2EResult<()> {
     println!("✓ BOOTP no-server test completed (timeout expected)");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(10).await;
     client.verify_mocks().await?;
 
     // Cleanup

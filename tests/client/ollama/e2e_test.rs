@@ -79,6 +79,10 @@ mod ollama_client_tests {
         // initialized correctly.
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -111,7 +115,9 @@ mod ollama_client_tests {
         );
 
         // Verify we got models response
-        client.wait_for_any(&["models", "model", "found", "received"], 30).await;
+        client
+            .wait_for_any(&["models", "model", "found", "received"], 30)
+            .await;
         assert!(
             client.output_contains("models").await
                 || client.output_contains("model").await
@@ -124,6 +130,10 @@ mod ollama_client_tests {
         println!("✅ Ollama client listed models successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -178,6 +188,10 @@ mod ollama_client_tests {
         // Note: Mock verification not possible in subprocess tests
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -211,7 +225,9 @@ mod ollama_client_tests {
         );
 
         // Verify we got a response
-        client.wait_for_any(&["response", "generate", "received"], 30).await;
+        client
+            .wait_for_any(&["response", "generate", "received"], 30)
+            .await;
         assert!(
             client.output_contains("response").await
                 || client.output_contains("generate").await
@@ -223,6 +239,10 @@ mod ollama_client_tests {
         println!("✅ Ollama client generated text successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -275,6 +295,10 @@ mod ollama_client_tests {
         // Note: Mock verification not possible in subprocess tests
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -306,7 +330,9 @@ mod ollama_client_tests {
         );
 
         // Verify we got a chat response
-        client.wait_for_any(&["chat", "message", "response"], 30).await;
+        client
+            .wait_for_any(&["chat", "message", "response"], 30)
+            .await;
         assert!(
             client.output_contains("chat").await
                 || client.output_contains("message").await
@@ -318,6 +344,10 @@ mod ollama_client_tests {
         println!("✅ Ollama client chat completion worked");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -356,7 +386,9 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client initialized
-        client.wait_for_any(&["localhost:11434", "11434", "Ollama"], 30).await;
+        client
+            .wait_for_any(&["localhost:11434", "11434", "Ollama"], 30)
+            .await;
         assert!(
             client.output_contains("localhost:11434").await
                 || client.output_contains("11434").await
@@ -370,6 +402,10 @@ mod ollama_client_tests {
         // Note: Mock verification not possible in subprocess tests
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -392,7 +428,9 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client connected
-        client.wait_for_any(&["localhost:11434", "11434", "Ollama"], 30).await;
+        client
+            .wait_for_any(&["localhost:11434", "11434", "Ollama"], 30)
+            .await;
         assert!(
             client.output_contains("localhost:11434").await
                 || client.output_contains("11434").await
@@ -404,6 +442,10 @@ mod ollama_client_tests {
         println!("✅ Ollama client with custom endpoint worked");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -448,6 +490,10 @@ mod ollama_client_tests {
         // Note: Mock verification not possible in subprocess tests
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -468,7 +514,9 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client shows error or connection issue
-        client.wait_for_any(&["ERROR", "error", "failed", "connect"], 30).await;
+        client
+            .wait_for_any(&["ERROR", "error", "failed", "connect"], 30)
+            .await;
         assert!(
             client.output_contains("ERROR").await
                 || client.output_contains("error").await
@@ -481,6 +529,10 @@ mod ollama_client_tests {
         println!("✅ Ollama client error handling worked");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

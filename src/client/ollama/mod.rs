@@ -36,6 +36,16 @@ impl OllamaClientImpl {
         client_id: ClientId,
         _startup_params: Option<StartupParams>,
     ) -> Result<SocketAddr> {
+        // The endpoint is later interpolated into `{endpoint}/api/generate` and handed to
+        // reqwest, which requires an absolute URL. A bare `127.0.0.1:11434` -- the form
+        // every other client protocol accepts -- failed every request with "builder error"
+        // (relative URL without a base). An explicit scheme is left as given.
+        let remote_addr = if remote_addr.contains("://") {
+            remote_addr
+        } else {
+            format!("http://{remote_addr}")
+        };
+
         info!(
             "Ollama client {} initializing with API endpoint: {}",
             client_id, remote_addr

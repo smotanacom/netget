@@ -894,6 +894,21 @@ impl Drop for NetGetInstance {
 }
 
 impl NetGetInstance {
+    /// Wait until every mock expectation is satisfied, or `timeout_secs` elapses.
+    ///
+    /// See `NetGetClient::wait_for_mocks`. Returns quietly on timeout; `verify_mocks`
+    /// remains the thing that asserts.
+    #[allow(dead_code)]
+    pub async fn wait_for_mocks(&self, timeout_secs: u64) {
+        if let Some(ref server) = self.mock_ollama_server {
+            server.wait_for_expectations(timeout_secs).await;
+            return;
+        }
+        if let Some(ref mock_config) = self.mock_config {
+            super::mock_config::wait_for_mock_expectations(mock_config, timeout_secs).await;
+        }
+    }
+
     /// Verify all mock expectations were met
     #[allow(dead_code)]
     pub async fn verify_mocks(&self) -> E2EResult<()> {

@@ -103,7 +103,9 @@ mod webdav_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection/response
-        client.wait_for_any(&["WebDAV", "connected", "PROPFIND"], 30).await;
+        client
+            .wait_for_any(&["WebDAV", "connected", "PROPFIND"], 30)
+            .await;
         assert!(
             client.output_contains("WebDAV").await
                 || client.output_contains("connected").await
@@ -115,6 +117,11 @@ mod webdav_client_tests {
         println!("✅ WebDAV client made PROPFIND request successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -227,6 +234,11 @@ mod webdav_client_tests {
         println!("✅ WebDAV client responded to LLM instruction");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

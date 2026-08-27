@@ -113,6 +113,11 @@ mod nntp_client_tests {
         println!("✅ NNTP client connected and executed LIST command successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -233,6 +238,11 @@ mod nntp_client_tests {
         println!("✅ NNTP client selected newsgroup successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -345,6 +355,11 @@ mod nntp_client_tests {
         println!("✅ NNTP client retrieved article successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

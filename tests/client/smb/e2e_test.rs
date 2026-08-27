@@ -38,7 +38,9 @@ mod smb_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
-        client.wait_for_any(&["SMB client", "smb_connected"], 30).await;
+        client
+            .wait_for_any(&["SMB client", "smb_connected"], 30)
+            .await;
         assert!(
             client.output_contains("SMB client").await
                 || client.output_contains("smb_connected").await,
@@ -94,7 +96,9 @@ mod smb_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify the client performed write operation
-        client.wait_for_any(&["written", "smb_file_written"], 30).await;
+        client
+            .wait_for_any(&["written", "smb_file_written"], 30)
+            .await;
         assert!(
             client.output_contains("written").await
                 || client.output_contains("smb_file_written").await,

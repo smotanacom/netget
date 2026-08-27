@@ -75,6 +75,10 @@ mod smtp_client_tests {
         println!("✅ SMTP client connected successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
         smtp_server
@@ -113,6 +117,10 @@ mod smtp_client_tests {
         println!("✅ SMTP client prepared to send email based on LLM instruction");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
         smtp_server
@@ -154,6 +162,10 @@ mod smtp_client_tests {
         println!("✅ SMTP client connected without authentication");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
         client.stop().await?;
         smtp_server

@@ -55,6 +55,10 @@ mod mdns_client_tests {
         println!("✅ mDNS client initialized successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -125,6 +129,10 @@ mod mdns_client_tests {
         println!("Note: No services may be found if network has no active mDNS responders");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -188,6 +196,10 @@ mod mdns_client_tests {
         println!("✅ mDNS client attempted hostname resolution");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(10).await;
         client.verify_mocks().await?;
 
         // Cleanup

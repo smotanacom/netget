@@ -81,6 +81,11 @@ mod turn_client_tests {
         println!("✅ TURN client connected and allocated relay successfully");
 
         // Verify mocks
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -136,6 +141,11 @@ mod turn_client_tests {
         println!("✅ TURN client created permission successfully");
 
         // Verify mocks
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -199,6 +209,11 @@ mod turn_client_tests {
         println!("✅ TURN client refreshed allocation successfully");
 
         // Verify mocks
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(10).await;
+        client.wait_for_mocks(10).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

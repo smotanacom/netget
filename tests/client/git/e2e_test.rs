@@ -75,6 +75,10 @@ async fn test_git_clone() -> E2EResult<()> {
     println!("✅ Git client clone operation validated");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(10).await;
     client.verify_mocks().await?;
 
     // Cleanup
@@ -145,6 +149,10 @@ async fn test_git_log() -> E2EResult<()> {
     println!("✅ Git client log operation validated");
 
     // Verify mocks
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(10).await;
     client.verify_mocks().await?;
 
     // Cleanup
