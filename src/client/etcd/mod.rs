@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::client::etcd::actions::{
     ETCD_CLIENT_CONNECTED_EVENT, ETCD_CLIENT_RESPONSE_RECEIVED_EVENT,
@@ -182,6 +182,7 @@ impl EtcdClient {
                         &app_state,
                         &llm_client,
                         &status_tx,
+                        0,
                     )
                     .await
                     {
@@ -235,6 +236,7 @@ impl EtcdClient {
                     &app_state,
                     &llm_client,
                     &status_tx,
+                    0,
                 )
                 .await
                 {
@@ -295,15 +297,27 @@ impl EtcdClient {
     /// runs in its own registered task. That split matters: a client whose events are
     /// routed to a manual handler would otherwise park the command loop for the length
     /// of a human's think time.
-    async fn apply_action(
+    /// How many operations deep this client keeps following the model's answers. Each
+    /// operation reports its result, and that report can ask for another operation;
+    /// without a bound, a model that answers `etcd_get` with `etcd_get` never stops.
+    const MAX_FOLLOWUP_DEPTH: u8 = 4;
+
+    /// Boxed rather than a plain `async fn` because the recursion is real: an operation
+    /// reports its result, the model answers with another operation, and that comes back
+    /// here. A self-awaiting `async fn` has an infinitely-sized future, and the boxed type
+    /// has to name `+ Send` explicitly or `tokio::spawn` cannot take it.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_action<'a>(
         executed: ClientActionResult,
         client_id: ClientId,
-        etcd: &SharedEtcd,
-        app_state: &Arc<AppState>,
-        llm_client: &OllamaClient,
-        status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<Applied> {
-        let outcome = match executed {
+        etcd: &'a SharedEtcd,
+        app_state: &'a Arc<AppState>,
+        llm_client: &'a OllamaClient,
+        status_tx: &'a mpsc::UnboundedSender<String>,
+        depth: u8,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Applied>> + Send + 'a>> {
+        Box::pin(async move {
+            let outcome = match executed {
             ClientActionResult::Custom { name, data } if name == "etcd_get" => {
                 let key = data
                     .get("key")
@@ -361,25 +375,29 @@ impl EtcdClient {
             }
         };
 
-        let detail = outcome.detail.clone();
-        let state_clone = app_state.clone();
-        let llm_clone = llm_client.clone();
-        let status_clone = status_tx.clone();
-        let notify_handle = tokio::spawn(async move {
-            Self::notify_response(
-                client_id,
-                outcome.event_data,
-                state_clone,
-                llm_clone,
-                status_clone,
-            )
-            .await;
-        });
-        app_state
-            .register_client_task(client_id, notify_handle)
-            .await;
+            let detail = outcome.detail.clone();
+            let state_clone = app_state.clone();
+            let llm_clone = llm_client.clone();
+            let status_clone = status_tx.clone();
+            let etcd_clone = etcd.clone();
+            let notify_handle = tokio::spawn(async move {
+                Self::notify_response(
+                    client_id,
+                    outcome.event_data,
+                    etcd_clone,
+                    state_clone,
+                    llm_clone,
+                    status_clone,
+                    depth,
+                )
+                .await;
+            });
+            app_state
+                .register_client_task(client_id, notify_handle)
+                .await;
 
-        Ok(Applied::Ran(detail))
+            Ok(Applied::Ran(detail))
+        })
     }
 
     /// Execute a get operation on the live session.
@@ -499,12 +517,15 @@ impl EtcdClient {
     }
 
     /// Raise `etcd_response_received` for a completed operation.
+    #[allow(clippy::too_many_arguments)]
     async fn notify_response(
         client_id: ClientId,
         event_data: serde_json::Value,
+        etcd: SharedEtcd,
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
+        depth: u8,
     ) {
         let response_event = Event::new(&ETCD_CLIENT_RESPONSE_RECEIVED_EVENT, event_data);
 
@@ -549,6 +570,51 @@ impl EtcdClient {
                     client_id,
                     result.actions.len()
                 );
+
+                // Run them. They used to be counted and thrown away, so the chain was
+                // exactly one operation deep: the model was asked what to do after a put,
+                // answered "now get it", and nothing happened. Boxed because the cycle is
+                // real (operation -> report -> operation) and bounded so it terminates.
+                if depth + 1 >= Self::MAX_FOLLOWUP_DEPTH {
+                    if !result.actions.is_empty() {
+                        warn!(
+                            "etcd client {} reached the follow-up depth limit ({}); \
+                             dropping {} action(s)",
+                            client_id,
+                            Self::MAX_FOLLOWUP_DEPTH,
+                            result.actions.len()
+                        );
+                    }
+                    return;
+                }
+                for action in result.actions {
+                    let executed = match protocol.execute_action(action) {
+                        Ok(executed) => executed,
+                        Err(e) => {
+                            error!("etcd client {} rejected follow-up action: {}", client_id, e);
+                            continue;
+                        }
+                    };
+                    match Self::apply_action(
+                        executed,
+                        client_id,
+                        &etcd,
+                        &app_state,
+                        &llm_client,
+                        &status_tx,
+                        depth + 1,
+                    )
+                    .await
+                    {
+                        Ok(Applied::Ran(detail)) => {
+                            info!("etcd client {} follow-up: {}", client_id, detail)
+                        }
+                        Ok(Applied::Disconnect) => break,
+                        Err(e) => {
+                            error!("etcd client {} follow-up action failed: {}", client_id, e)
+                        }
+                    }
+                }
             }
             Err(e) => {
                 error!(

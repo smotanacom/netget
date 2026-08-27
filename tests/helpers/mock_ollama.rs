@@ -562,13 +562,20 @@ async fn handle_chat(
     let mock_response = match match_result {
         Some((idx, response, description)) => {
             eprintln!("✅ Using matched rule #{}", idx);
+            // Rendered ONCE and reused. `to_response_string` runs the rule's response
+            // generator, so rendering here for the diagnostics and again below for the
+            // reply invoked the closure twice per request. A generator carrying state
+            // between calls -- "the first GET finds the key, the one after the delete
+            // does not" -- advanced twice and answered the first request with the second
+            // answer.
+            let rendered = response.to_response_string(Some(&context.event_data));
             report_routing_inconsistencies(
                 &state,
                 &context,
                 idx,
                 &description,
                 matched_rule_event_type.as_deref(),
-                &response.to_response_string(Some(&context.event_data)),
+                &rendered,
             )
             .await;
             // Record call in separate lock acquisition
@@ -578,7 +585,7 @@ async fn handle_chat(
                 .await
                 .record_call(context.clone(), idx, description)
                 .await;
-            response
+            rendered
         }
         None => {
             eprintln!("❌ NO RULE MATCHED!");
@@ -613,7 +620,7 @@ async fn handle_chat(
         created_at: chrono::Utc::now().to_rfc3339(),
         message: OllamaResponseMessage {
             role: "assistant".to_string(),
-            content: mock_response.to_response_string(Some(&context.event_data)),
+            content: mock_response,
         },
         done: true,
     };
@@ -729,13 +736,20 @@ async fn handle_generate(
     let mock_response = match match_result {
         Some((idx, response, description)) => {
             eprintln!("✅ Using matched rule #{}", idx);
+            // Rendered ONCE and reused. `to_response_string` runs the rule's response
+            // generator, so rendering here for the diagnostics and again below for the
+            // reply invoked the closure twice per request. A generator carrying state
+            // between calls -- "the first GET finds the key, the one after the delete
+            // does not" -- advanced twice and answered the first request with the second
+            // answer.
+            let rendered = response.to_response_string(Some(&context.event_data));
             report_routing_inconsistencies(
                 &state,
                 &context,
                 idx,
                 &description,
                 matched_rule_event_type.as_deref(),
-                &response.to_response_string(Some(&context.event_data)),
+                &rendered,
             )
             .await;
             // Record call in separate lock acquisition
@@ -745,7 +759,7 @@ async fn handle_generate(
                 .await
                 .record_call(context.clone(), idx, description)
                 .await;
-            response
+            rendered
         }
         None => {
             eprintln!("❌ NO RULE MATCHED!");
@@ -778,7 +792,7 @@ async fn handle_generate(
     let response = OllamaGenerateResponse {
         model: request.model,
         created_at: chrono::Utc::now().to_rfc3339(),
-        response: mock_response.to_response_string(Some(&context.event_data)),
+        response: mock_response,
         done: true,
     };
 
