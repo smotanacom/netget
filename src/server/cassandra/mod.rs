@@ -480,14 +480,8 @@ impl CassandraServer {
         // `cassandra_authenticate` and by nothing else. Falling through to READY here handed
         // out an unauthenticated session on silence, so the model had no way to make a refusal
         // distinguishable from a backend outage.
-        self.send_no_answer_error(
-            frame.stream_id,
-            "STARTUP",
-            stream,
-            connection_id,
-            status_tx,
-        )
-        .await?;
+        self.send_no_answer_error(frame.stream_id, "STARTUP", stream, connection_id, status_tx)
+            .await?;
         Ok(false)
     }
 
