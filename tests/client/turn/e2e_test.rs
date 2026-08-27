@@ -25,7 +25,15 @@ mod turn_client_tests {
                 .expect_calls(1)
                 .and()
                 .on_event("turn_allocate_request")
-                .respond_with_actions(serde_json::json!([{"type": "turn_allocate_success", "relay_address": "127.0.0.1:50000", "lifetime": 600}]))
+                // The server's verb is send_turn_allocate_response; `turn_allocate_success`
+                // is not one it can execute. transaction_id must be echoed from the
+                // request or the client cannot correlate the reply.
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_allocate_response",
+                    "relay_address": "127.0.0.1:50000",
+                    "lifetime_seconds": 600,
+                    "transaction_id": e["transaction_id"]
+                }]))
                 .expect_calls(1)
                 .and()
         });
@@ -47,7 +55,12 @@ mod turn_client_tests {
                 .expect_calls(1)
                 .and()
                 .on_event("turn_connected")
-                .respond_with_actions(serde_json::json!([{"type": "turn_allocate", "lifetime": 600}]))
+                // The client's verb is allocate_turn_relay; `turn_allocate` is not one it
+                // can execute.
+                .respond_with_actions(serde_json::json!([{
+                    "type": "allocate_turn_relay",
+                    "lifetime_seconds": 600
+                }]))
                 .expect_calls(1)
                 .and()
         });
@@ -102,7 +115,12 @@ mod turn_client_tests {
                 .expect_calls(1)
                 .and()
                 .on_event("turn_connected")
-                .respond_with_actions(serde_json::json!([{"type": "turn_allocate", "lifetime": 600}]))
+                // The client's verb is allocate_turn_relay; `turn_allocate` is not one it
+                // can execute.
+                .respond_with_actions(serde_json::json!([{
+                    "type": "allocate_turn_relay",
+                    "lifetime_seconds": 600
+                }]))
                 .expect_calls(1)
                 .and()
         });
@@ -153,7 +171,12 @@ mod turn_client_tests {
                 .expect_calls(1)
                 .and()
                 .on_event("turn_connected")
-                .respond_with_actions(serde_json::json!([{"type": "turn_allocate", "lifetime": 600}]))
+                // The client's verb is allocate_turn_relay; `turn_allocate` is not one it
+                // can execute.
+                .respond_with_actions(serde_json::json!([{
+                    "type": "allocate_turn_relay",
+                    "lifetime_seconds": 600
+                }]))
                 .expect_calls(1)
                 .and()
         });

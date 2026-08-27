@@ -34,9 +34,14 @@ mod tor_client_tests {
                     .and()
                     // Mock 2: Circuit created event (Arti will create circuit for BEGIN_DIR)
                     .on_event("tor_relay_circuit_created")
+                    // tor_relay has no `wait_for_more`; its no-op verb is tor_relay_log.
+                    // The relay's vocabulary is circuit-shaped -- send_destroy,
+                    // detect_relay_cell, close_connection, tor_relay_log -- and a rule
+                    // naming an action it cannot execute proves nothing.
                     .respond_with_actions(json!([
                         {
-                            "type": "wait_for_more"
+                            "type": "tor_relay_log",
+                            "message": "circuit created"
                         }
                     ]))
                     .expect_at_least(0)  // May or may not fire depending on timing
