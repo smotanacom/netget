@@ -63,7 +63,10 @@ impl ZookeeperClient {
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
     ) -> Result<SocketAddr> {
-        info!("ZooKeeper client {} connecting to {}", client_id, remote_addr);
+        info!(
+            "ZooKeeper client {} connecting to {}",
+            client_id, remote_addr
+        );
 
         // `remote_addr` is a ZooKeeper *connect string*, not a single address: comma-separated
         // `host:port` pairs with an optional `/chroot` suffix. It is handed to the library
@@ -82,10 +85,8 @@ impl ZookeeperClient {
 
         app_state
             .with_client_mut(client_id, |client| {
-                client.set_protocol_field(
-                    "zookeeper_connected".to_string(),
-                    serde_json::json!(true),
-                );
+                client
+                    .set_protocol_field("zookeeper_connected".to_string(), serde_json::json!(true));
                 client.set_protocol_field(
                     "connect_string".to_string(),
                     serde_json::json!(remote_addr),
