@@ -36,6 +36,20 @@ mod datalink_client_tests {
                         .expect_calls(1)
                         .and()
                         // Mock 2: Frame injected event
+                        //
+                        // KNOWN FAILING, and the cause is in the client, not here. Two
+                        // things are missing:
+                        //   1. This client makes no connected-event LLM call at all --
+                        //      `src/client/datalink/mod.rs` says so in a comment. So a
+                        //      client opened with "Inject ARP request for 10.0.0.2"
+                        //      connects, opens the capture, and never asks the model
+                        //      anything. Nothing triggers an injection.
+                        //   2. `datalink_frame_injected` is declared in
+                        //      `actions.rs::get_event_types()` and emitted nowhere, so
+                        //      even a successful injection would not raise it.
+                        // Fixing it means adding the connected-event call and an emit
+                        // site on the injection path, which lives on the blocking pcap
+                        // thread and needs the runtime handle already captured there.
                         .on_event("datalink_frame_injected")
                         .respond_with_actions(serde_json::json!([
                             {
