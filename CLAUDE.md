@@ -476,6 +476,34 @@ and **always finish with `server.verify_mocks().await?`** — without it the tes
 nothing about LLM interaction. An unmatched request returns HTTP 500 with a clear error, and
 `verify_calls()` dumps full call history on mismatch.
 
+**Call `wait_for_mocks(30)` before `verify_mocks()`.** A protocol exchange finishes with the
+last LLM call it provokes, which is exactly what the expectations describe, so waiting on
+them waits on the exchange. Suites used to sleep a fixed 1–2s and then verify, which is
+enough alone and not when a hundred run together. It returns quietly on timeout —
+`verify_mocks` remains the thing that asserts, and it names the rule that fell short.
+`wait_for_any(&[needles], secs)` does the same job for output assertions.
+
+**Rules are first-match-wins, and two rules on the same event with no way to tell them apart
+is the most common mistake in this repo.** The first answers every occurrence and the second
+reports zero calls; if the first answers with an action that produces the same event again,
+it loops until something else stops it (99 calls, in one case). To express "then", use ONE
+rule with `respond_with_actions_from_event` that branches on the event — a GET after a delete
+returns count 0, a PUT response names the key it just wrote, an IMAP reply carries the tag.
+
+**A response generator may carry state between calls, but only because it is now rendered
+once per request.** `to_response_string` used to be called twice — once to build the routing
+diagnostics and once for the reply — so a stateful closure advanced two steps per request and
+answered the first request with the second answer. That cost real debugging time; it is fixed,
+and worth not reintroducing.
+
+**Check the event id and the action name against the protocol, not against the neighbouring
+suite.** Whole suites were mocked against events their server never raises (`http_request` for
+Elasticsearch, which raises `elasticsearch_request`), fields the event does not carry
+(`uri` where it is `path`, and vice versa for HTTP/2), and actions the protocol cannot execute
+(`send_http_response` to an OpenAPI server). None of these fail loudly: the rule simply never
+matches, the request falls through to a real LLM call, the server answers an error, and the
+failure surfaces two steps later on a different expectation.
+
 UDP-style protocols (DNS, STUN, NTP, DHCP, BOOTP, TFTP…) **must** use
 `.respond_with_actions_from_event()` to echo the client's random transaction/query ID back.
 Static mocks with hardcoded IDs cause client timeouts. See `tests/server/dns/CLAUDE.md`.
@@ -786,7 +814,12 @@ Assume other agents work in this repo concurrently.
   mid-edit and its failures belong to nobody. Check the committed state in a throwaway
   worktree: `git worktree add --detach <tmp> HEAD && cargo check --all-features` with its own
   `CARGO_TARGET_DIR`. Remove the worktree afterwards.
-- `--ollama-lock` serializes LLM API access (default in tests). Concurrent `git` work should
+- **`--ollama-lock` does nothing.** The flag is parsed, stored on `AppState`, read back by
+  `get_ollama_lock_enabled()` and passed to `OllamaClient::new_with_options(url, lock_enabled)`
+  — which ignores it, with a comment saying locking is "handled at a different layer". Nothing
+  in `src/` is that layer. Every test passes the flag, so it looks like LLM access is
+  serialised across processes and it is not. Don't reason about concurrency from it.
+  Concurrent `git` work should
   use worktrees.
 - Never `pkill cargo`; use `./cargo-isolated-kill.sh`.
 - The user runs `netget --mcp` interactively. **Never kill netget processes.**
@@ -794,6 +827,41 @@ Assume other agents work in this repo concurrently.
 ## Known systemic issues
 
 Read before assuming a subsystem is sound:
+
+- **Clients that ask the model what to do and then throw the answer away.** The single most
+  common client defect, found in six protocols in one pass and fixed in all of them. It has
+  three shapes, and none of them fails loudly — the client connects, reports success, and
+  does nothing:
+  - *Discarded outright.* `etcd` counted the actions and logged the count. `turn` logged
+    "initial LLM call returned 1 actions" and dropped them, so a client told to allocate a
+    relay never put a byte on the wire. `datalink` made no connected-event call at all.
+  - *Run through a deliberately non-notifying path.* `elasticsearch` and `http2` executed
+    follow-ups with a core that raises no event, so the chain was one step deep: a `search`
+    issued in reply to an index confirmation ran and its hits went nowhere.
+  - *Event declared and never emitted.* `imap` advertised `imap_mailbox_selected`,
+    `imap_search_results` and `imap_message_fetched`; nothing raised any of them, so the
+    model got one turn on connect and then went deaf.
+
+  The reason these persist is that the honest fix looks impossible at first: action → event
+  → action is genuinely self-referential, and an `async fn` that awaits itself has an
+  infinitely-sized future (E0391). **The answer is a depth bound, not silence.** Box the
+  recursive call — and name `+ Send` explicitly on the boxed type if it is awaited inside a
+  `tokio::spawn`, which inference will not give you — then cap it (`MAX_FOLLOWUP_DEPTH`,
+  4–8). Where the cycle already passes through a queue or a separate task, as in
+  `datalink`'s pcap loop, no boxing is needed at all: the chain continues by itself.
+
+  When you touch a client, check what it does with `result.actions`. `let _ =`, a bare
+  `debug!` of `.len()`, or a comment explaining why the model's answer is not needed are all
+  the same bug.
+
+- **Building a `reqwest::Client` is a blocking operation.** `Client::builder().build()` sets
+  up the rustls stack and loads the platform root store; on macOS that reads the keychain
+  through Security.framework, synchronously and serialised across processes. Called on the
+  async runtime it parks a tokio worker, and under load that stalled an entire client
+  runtime. Build it on `spawn_blocking`, build it **once** rather than per request (`doh`,
+  `http` and `openapi` all rebuilt it every time, and `http`/`openapi` additionally built one
+  at connect and dropped it), and pass `tls_built_in_root_certs(false)` when
+  `danger_accept_invalid_certs` is set, since nothing will be checked against those roots.
 
 - **Fail-open defaults are the most dangerous pattern in this codebase.** When the LLM returns
   nothing usable, a protocol must not fall through to a permissive default. OAuth2 did: no
@@ -935,17 +1003,32 @@ Read before assuming a subsystem is sound:
 - **Verify against a clean baseline, not against "does it pass".** The suite has pre-existing
   failures, so a red run proves nothing on its own. Run the same suite at unmodified `HEAD` in a
   throwaway worktree and **diff the two failure sets** — only the difference is yours. This is
-  what separates a real regression from the repo's existing red and from load-flaky tests.
+  what separates a real regression from the repo's existing red.
   **Cross-check any suspect failure by re-running it in isolation before calling it a
-  regression** — several here only fail under load:
+  regression.**
 
-  - `git::e2e_test::test_git_with_scripting` asserts a wall-clock "near-instant" bound and fails
-    at `--test-threads=100` while passing 3/3 in isolation.
-  - `doh::e2e_test::test_doh_server` sleeps 3s for startup and uses 10s timeouts; same story.
-  - `db2::peer_inject_test::injected_close_connection_sends_eof_and_counters_move` waits on an
-    injected close reaching a socket; passes in isolation, fails intermittently at 100 threads.
-  - The fourteen real-client suites promoted to Beta in August 2026 (amqp, cassandra, …) had ten
-    of 96 fail at `--test-threads=30` and all 96 pass at 10 and in isolation.
+  **But do not stop there, because "load-flaky" is where real bugs hide.** Both suites are
+  now green at `--test-threads=100` — client 299/0, server 799/0, several consecutive runs
+  each — and every test that used to be on a list here of things that "only fail under load"
+  is on it because of a defect that was found and fixed, not because the list was wrong to
+  notice them. Passing in isolation told us the *deadline* was wrong; it did not tell us the
+  code was fine, and three times it was not:
 
-  A protocol whose e2e test binds sockets and waits on a mocked model is timing-sensitive by
-  construction, so treat a lone failure in a 100-thread run as unproven until re-run.
+  - The four `doh` **client** tests failed every run at 100 threads and passed at 30. Not
+    timing: raising the wait from 10s to 30s changed nothing. `Client::builder().build()`
+    loads the platform root store, which on macOS reads the keychain through
+    Security.framework — synchronously, serialised across processes. On the async runtime it
+    parked a tokio worker long enough to stall the client's whole runtime. The tell was a
+    configured 10s request timeout that never fired: a timeout that *cannot* fire means the
+    future was never created.
+  - `ServerForm::create` failing with "Address already in use" for `port: 0` — in zookeeper
+    one run, cassandra the next. Different protocol each time, which is what gave it away:
+    the shared startup path resolved port 0 by binding a probe listener and dropping it
+    before the protocol bound for real.
+  - Whole e2e suites waited with a fixed `sleep` and then verified. One second is enough
+    alone and not when a hundred run together. `wait_for_any` and `wait_for_mocks` on the
+    harnesses wait for the condition instead; every e2e suite now calls one before asserting.
+
+  A protocol whose e2e test binds sockets and waits on a mocked model *is* timing-sensitive by
+  construction, so a lone failure in a 100-thread run is still unproven until re-run. Re-run
+  it — and if it reproduces at all, find the defect rather than labelling it.
