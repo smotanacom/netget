@@ -65,7 +65,13 @@ mod doh_client_tests {
                         "type": "open_client",
                         "remote_addr": format!("https://127.0.0.1:{}/dns-query", server.port),
                         "protocol": "DoH",
-                        "instruction": "Query example.com A record"
+                        "instruction": "Query example.com A record",
+                        // NetGet's DoH server is TLS-only and serves a self-signed
+                        // certificate, so a client using the system roots cannot reach it
+                        // -- the two halves of this codebase could not talk to each other.
+                        // Opted into explicitly here rather than the client quietly
+                        // accepting any certificate.
+                        "startup_params": { "insecure_skip_verify": true }
                     }
                 ]))
                 .expect_calls(1)
@@ -176,7 +182,13 @@ mod doh_client_tests {
                         "type": "open_client",
                         "remote_addr": format!("https://127.0.0.1:{}/dns-query", server.port),
                         "protocol": "DoH",
-                        "instruction": "Query example.com AAAA record"
+                        "instruction": "Query example.com AAAA record",
+                        // NetGet's DoH server is TLS-only and serves a self-signed
+                        // certificate, so a client using the system roots cannot reach it
+                        // -- the two halves of this codebase could not talk to each other.
+                        // Opted into explicitly here rather than the client quietly
+                        // accepting any certificate.
+                        "startup_params": { "insecure_skip_verify": true }
                     }
                 ]))
                 .expect_calls(1)
@@ -298,7 +310,13 @@ mod doh_client_tests {
                         "type": "open_client",
                         "remote_addr": format!("https://127.0.0.1:{}/dns-query", server.port),
                         "protocol": "DoH",
-                        "instruction": "Query example.com then example.org"
+                        "instruction": "Query example.com then example.org",
+                        // NetGet's DoH server is TLS-only and serves a self-signed
+                        // certificate, so a client using the system roots cannot reach it
+                        // -- the two halves of this codebase could not talk to each other.
+                        // Opted into explicitly here rather than the client quietly
+                        // accepting any certificate.
+                        "startup_params": { "insecure_skip_verify": true }
                     }
                 ]))
                 .expect_calls(1)
@@ -421,7 +439,13 @@ mod doh_client_tests {
                         "type": "open_client",
                         "remote_addr": format!("https://127.0.0.1:{}/dns-query", server.port),
                         "protocol": "DoH",
-                        "instruction": "Query example.com MX records"
+                        "instruction": "Query example.com MX records",
+                        // NetGet's DoH server is TLS-only and serves a self-signed
+                        // certificate, so a client using the system roots cannot reach it
+                        // -- the two halves of this codebase could not talk to each other.
+                        // Opted into explicitly here rather than the client quietly
+                        // accepting any certificate.
+                        "startup_params": { "insecure_skip_verify": true }
                     }
                 ]))
                 .expect_calls(1)

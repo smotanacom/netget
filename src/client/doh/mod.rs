@@ -57,8 +57,18 @@ impl DohClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         info!("DoH client {} initializing for {}", client_id, server_url);
+
+        // Trust settings, read once and stored for the per-query HTTP client.
+        let ca_cert_pem = startup_params
+            .as_ref()
+            .and_then(|p| p.get_optional_string("ca_cert_pem").ok().flatten());
+        let insecure_skip_verify = startup_params
+            .as_ref()
+            .and_then(|p| p.get_optional_bool("insecure_skip_verify").ok().flatten())
+            .unwrap_or(false);
 
         // Store server URL in client state
         app_state
@@ -66,6 +76,16 @@ impl DohClient {
                 client.set_protocol_field(
                     "server_url".to_string(),
                     serde_json::json!(server_url.clone()),
+                );
+                if let Some(pem) = &ca_cert_pem {
+                    client.set_protocol_field(
+                        "ca_cert_pem".to_string(),
+                        serde_json::json!(pem.clone()),
+                    );
+                }
+                client.set_protocol_field(
+                    "insecure_skip_verify".to_string(),
+                    serde_json::json!(insecure_skip_verify),
                 );
             })
             .await;
@@ -240,7 +260,7 @@ impl DohClient {
                 error: e.to_string(),
             }),
             Ok(action_result) => {
-                match Self::apply_action(action_result, client_id, server_url).await {
+                match Self::apply_action(action_result, client_id, server_url, &app_state).await {
                     // Never `Sent`: reqwest owns the socket and reports no wire byte count
                     // for the query, so a number here would be invented. `Executed`
                     // carries the answer count and DNS rcode instead.
@@ -322,7 +342,9 @@ impl DohClient {
         for action_value in llm_result.actions {
             match protocol.as_ref().execute_action(action_value.clone()) {
                 Ok(action_result) => {
-                    match Self::apply_action(action_result, client_id, &server_url).await {
+                    match Self::apply_action(action_result, client_id, &server_url, &app_state)
+                        .await
+                    {
                         Ok(Applied::Queried { detail, event_data }) => {
                             debug!("DoH client {}: {}", client_id, detail);
                             // Inline, not spawned: this is the model's own chain and
@@ -373,10 +395,53 @@ impl DohClient {
     ///
     /// Shared by the LLM action path and the injected-command loop so the query
     /// encoding and the DoH HTTP call exist exactly once.
+    /// Build an HTTPS client honouring this client's declared trust settings.
+    ///
+    /// `ca_cert_pem` adds one certificate to the system roots -- the right answer for a
+    /// private CA or a known self-signed server. `insecure_skip_verify` accepts any
+    /// certificate at all and is off unless explicitly asked for; it is named for what it
+    /// does because a DoH connection made with it is unauthenticated, which defeats most
+    /// of the point of doing DNS over HTTPS.
+    async fn build_http_client(
+        client_id: ClientId,
+        app_state: &Arc<AppState>,
+    ) -> Result<reqwest::Client> {
+        let (ca_pem, insecure) = app_state
+            .with_client_mut(client_id, |c| {
+                (
+                    c.get_protocol_field("ca_cert_pem")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    c.get_protocol_field("insecure_skip_verify")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                )
+            })
+            .await
+            .unwrap_or((None, false));
+
+        let mut builder = reqwest::Client::builder();
+        if let Some(pem) = ca_pem {
+            let cert = reqwest::Certificate::from_pem(pem.as_bytes())
+                .context("ca_cert_pem is not a valid PEM certificate")?;
+            builder = builder.add_root_certificate(cert);
+        }
+        if insecure {
+            warn!(
+                "DoH client {} is skipping certificate verification (insecure_skip_verify); \
+                 this connection is not authenticated",
+                client_id
+            );
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+        builder.build().context("Failed to build DoH HTTP client")
+    }
+
     async fn apply_action(
         action_result: ClientActionResult,
         client_id: ClientId,
         server_url: &str,
+        app_state: &Arc<AppState>,
     ) -> Result<Applied> {
         match action_result {
             ClientActionResult::Custom { name, data } if name == "dns_query" => {
@@ -389,8 +454,15 @@ impl DohClient {
                     client_id, domain, record_type
                 );
 
-                let event_data =
-                    Self::perform_query(server_url, &domain, &record_type, use_get).await?;
+                let event_data = Self::perform_query(
+                    server_url,
+                    &domain,
+                    &record_type,
+                    use_get,
+                    client_id,
+                    app_state,
+                )
+                .await?;
 
                 let answer_count = event_data
                     .get("answers")
@@ -436,6 +508,8 @@ impl DohClient {
         domain: &str,
         record_type: &str,
         use_get: bool,
+        client_id: ClientId,
+        app_state: &Arc<AppState>,
     ) -> Result<serde_json::Value> {
         // Parse domain name
         let name =
@@ -463,8 +537,14 @@ impl DohClient {
         // Encode query to DNS wire format
         let query_bytes = query_msg.to_vec().context("Failed to encode DNS query")?;
 
-        // Make HTTPS request to DoH server
-        let http_client = reqwest::Client::new();
+        // Make HTTPS request to DoH server.
+        //
+        // Built per query from the client's stored trust settings rather than with
+        // `Client::new()`. With the default system roots a DoH client cannot reach a
+        // server presenting a private-CA or self-signed certificate -- including NetGet's
+        // own DoH server, which is TLS-only and serves a self-signed cert, so the two
+        // halves of this codebase could not talk to each other at all.
+        let http_client = Self::build_http_client(client_id, app_state).await?;
         let response = if use_get {
             // GET method with base64url-encoded query
             use base64::Engine as _;
