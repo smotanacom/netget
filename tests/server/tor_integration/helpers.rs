@@ -116,13 +116,19 @@ impl TorTestNetwork {
                     ]))
                     .expect_calls(1)
                     .and()
-                    // Mock 2: Consensus request
-                    .on_event("http_request_received")
+                    // Mock 2: Consensus request.
+                    //
+                    // This server is opened with base_stack HTTP, and HTTP raises `http_request`
+                    // and answers with `send_http_response` whose status field is `status`.
+                    // The rule named `http_request_received` / `http_response` / `status_code`,
+                    // none of which exists, so it never matched and none of it was validated —
+                    // `assert_actions_valid_for_event` skips an event id it cannot resolve.
+                    .on_event("http_request")
                     .and_event_data_contains("path", "/tor/status-vote/current/consensus")
                     .respond_with_actions(json!([
                         {
-                            "type": "http_response",
-                            "status_code": 200,
+                            "type": "send_http_response",
+                            "status": 200,
                             "headers": {
                                 "Content-Type": "text/plain"
                             },
