@@ -25,7 +25,11 @@ mod grpc_client_tests {
     // message AddResponse {
     //   int32 result = 1;
     // }
-    const CALCULATOR_SCHEMA: &str = "CpUCCg9jYWxjdWxhdG9yLnByb3RvEgpjYWxjdWxhdG9yIikKCkFkZFJlcXVlc3QSCwoDYRgBIAEoBVIBYRILCgNiGAIgASgFUgFiIiIKC0FkZFJlc3BvbnNlEhMKBnJlc3VsdBgBIAEoBVIGcmVzdWx0MkIKCkNhbGN1bGF0b3ISNAoDQWRkEhYuY2FsY3VsYXRvci5BZGRSZXF1ZXN0GhcuY2FsY3VsYXRvci5BZGRSZXNwb25zZSIAYgZwcm90bzM=";
+    /// A base64 `FileDescriptorSet` for the calculator service, produced by
+    /// `protoc --descriptor_set_out`. The previous value decoded cleanly as base64 but
+    /// declared a 277-byte file message inside 194 bytes of payload, so prost rejected it
+    /// and the server refused to start with "Failed to compile protobuf schema".
+    const CALCULATOR_SCHEMA: &str = "Cr8BChBjYWxjdWxhdG9yLnByb3RvEgpjYWxjdWxhdG9yIigKCkFkZFJlcXVlc3QSDAoBYRgBIAEoBVIBYRIMCgFiGAIgASgFUgFiIiUKC0FkZFJlc3BvbnNlEhYKBnJlc3VsdBgBIAEoBVIGcmVzdWx0MkYKCkNhbGN1bGF0b3ISOAoDQWRkEhYuY2FsY3VsYXRvci5BZGRSZXF1ZXN0GhcuY2FsY3VsYXRvci5BZGRSZXNwb25zZSIAYgZwcm90bzM=";
 
     /// Test gRPC client connecting to server and making RPC call
     /// LLM calls: 4 with mocks (server startup, server handles request, client startup, client makes call)
@@ -47,7 +51,10 @@ mod grpc_client_tests {
                         "port": 0,
                         "base_stack": "gRPC",
                         "instruction": "Return sum of a and b in result field for Add requests",
-                        "proto_schema": CALCULATOR_SCHEMA
+                        // `open_server` takes protocol parameters inside `startup_params`,
+                        // not at the top level. Loose, this was ignored and the server
+                        // refused to start: "Missing 'proto_schema' in startup_params".
+                        "startup_params": { "proto_schema": CALCULATOR_SCHEMA }
                     }
                 ]))
                 .expect_calls(1)
@@ -87,7 +94,9 @@ mod grpc_client_tests {
                         "remote_addr": format!("127.0.0.1:{}", server.port),
                         "protocol": "gRPC",
                         "instruction": "Call calculator.Calculator/Add with a=5, b=3",
-                        "proto_schema": CALCULATOR_SCHEMA
+                        // Same as the server above: protocol parameters go inside
+                        // `startup_params`, not at the action's top level.
+                        "startup_params": { "proto_schema": CALCULATOR_SCHEMA }
                     }
                 ]))
                 .expect_calls(1)
@@ -172,7 +181,9 @@ mod grpc_client_tests {
                         "remote_addr": "127.0.0.1:54321",
                         "protocol": "gRPC",
                         "instruction": "Call calculator.Calculator/Add with a=1, b=2",
-                        "proto_schema": CALCULATOR_SCHEMA
+                        // Same as the server above: protocol parameters go inside
+                        // `startup_params`, not at the action's top level.
+                        "startup_params": { "proto_schema": CALCULATOR_SCHEMA }
                     }
                 ]))
                 .expect_calls(1)
