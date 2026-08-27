@@ -252,9 +252,6 @@ const ANSWER_DROPPED_BASELINE: &[&str] = &[
     // `nfc_ndef_read` and `nfc_apdu_response` — the model is told what the card answered and
     // its reply is dropped — plus the card-presence event.
     "nfc",
-    // The connected event. OSPF has an `apply_action` that can build and send a Hello; the
-    // model's answer to "you are on the wire now" never reaches it.
-    "ospf",
     // `tftp_client_transfer_complete`.
     "tftp",
     // `websocket_client_closed`, destructured `{ memory_updates, .. }`.
