@@ -558,6 +558,10 @@ impl Client for ElasticsearchClientProtocol {
                 })
             }
             "disconnect" => Ok(ClientActionResult::Disconnect),
+            // Declared in get_sync_actions, so it has to be executable here too --
+            // advertising a name the executor rejects shows the model a tool it is
+            // then punished for using.
+            "wait_for_more" => Ok(ClientActionResult::WaitForMore),
             _ => Err(anyhow::anyhow!(
                 "Unknown Elasticsearch client action: {}",
                 action_type
