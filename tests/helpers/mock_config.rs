@@ -667,7 +667,20 @@ pub fn report_unverified_on_drop(kind: &str, mock_config: &MockLlmConfig) {
         message.push_str(&unmet.join("\n"));
     }
 
-    if has_expectations && !std::thread::panicking() {
+    // Panic only when something is actually unmet.
+    //
+    // A test that returns `Err` early -- typically because an EARLIER
+    // `verify_mocks()?` on the other end failed -- drops this config without
+    // reaching its own `verify_mocks`. That is not a panic, so the guard below
+    // does not see it, and panicking here replaces the real error with "you
+    // forgot to call verify_mocks". That is exactly backwards: the test did
+    // call it, on the half that failed. A cassandra client test lost its
+    // server-side failure message this way and read as a harness complaint.
+    //
+    // When every expectation is met, the mocks did assert what they were there
+    // to assert, so a missing `verify_mocks()` is worth a warning and nothing
+    // more. When something is unmet the panic still fires, carrying the list.
+    if has_expectations && !unmet.is_empty() && !std::thread::panicking() {
         panic!("{message}");
     }
 

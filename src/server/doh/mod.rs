@@ -118,7 +118,10 @@ impl DohServer {
                         )
                         .await
                         {
-                            error!("DoH connection error from {}: {}", peer_addr, e);
+                            // `{:#}`: the cause chain is where rustls says what actually
+                            // went wrong. `{}` prints only "TLS handshake failed", which
+                            // names the step and not the reason.
+                            error!("DoH connection error from {}: {:#}", peer_addr, e);
                         }
                     });
                 }
