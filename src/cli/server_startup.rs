@@ -455,6 +455,21 @@ pub async fn start_server_from_action(
                 defaults.apply(mac_address.clone(), interface.clone(), host.clone(), port);
 
             // For port-based protocols with port 0, find available port
+            //
+            // KNOWN RACE, and the same one exists in the unmigrated path below. This binds
+            // a probe listener, reads the port it was given, drops it, and lets the
+            // protocol bind that port a moment later. Between the drop and the real bind
+            // the port belongs to nobody, so a concurrent starter can take it: under a
+            // hundred parallel tests, `ServerForm::create` fails roughly once every few
+            // runs with "Address already in use (os error 48)" for a request that asked
+            // for port 0, which is the one request that should never be able to collide.
+            //
+            // The fix is to stop resolving it here and pass 0 through to the protocol's
+            // own bind, so the OS assigns it atomically -- `spawn()` already returns the
+            // bound address, and the reconciliation further down already records a port
+            // that differs from what was asked for. It is left alone here only because it
+            // is on the startup path of all 116 protocols and the server suite cannot be
+            // run to completion in this environment to prove the change out.
             let final_port_num = if let Some(p) = port_num {
                 if p == 0 {
                     // Find available port
