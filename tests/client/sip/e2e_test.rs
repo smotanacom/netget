@@ -36,6 +36,16 @@ mod sip_client_tests {
                 ]))
                 .expect_calls(1)
                 .and()
+                // The server had no rule for the request event at all, so every
+                // request fell through to a real LLM call, the server answered 503,
+                // and the client's rule -- which waits for a 200 -- reported zero
+                // calls. The response verb is named after the request method.
+                .on_event("sip_register")
+                .respond_with_actions(serde_json::json!([
+                    { "type": "sip_register", "status_code": 200, "reason_phrase": "OK", "expires": 3600 }
+                ]))
+                .expect_calls(1)
+                .and()
         });
 
         let mut server = start_netget_server(server_config).await?;
@@ -151,6 +161,16 @@ mod sip_client_tests {
                 ]))
                 .expect_calls(1)
                 .and()
+                // The server had no rule for the request event at all, so every request
+                // fell through to a real LLM call, the server answered 503, and the
+                // client's rule -- which waits for a 200 -- reported zero calls. The
+                // response verb is named after the request method.
+                .on_event("sip_options")
+                .respond_with_actions(serde_json::json!([
+                    { "type": "sip_options", "status_code": 200, "allow_methods": "INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER" }
+                ]))
+                .expect_calls(1)
+                .and()
         });
 
         let mut server = start_netget_server(server_config).await?;
@@ -253,6 +273,16 @@ mod sip_client_tests {
                         "instruction": "Accept INVITE with 200 OK and SDP",
                         "scripting": true
                     }
+                ]))
+                .expect_calls(1)
+                .and()
+                // The server had no rule for the request event at all, so every request
+                // fell through to a real LLM call, the server answered 503, and the
+                // client's rule -- which waits for a 200 -- reported zero calls. The
+                // response verb is named after the request method.
+                .on_event("sip_invite")
+                .respond_with_actions(serde_json::json!([
+                    { "type": "sip_invite", "status_code": 200, "reason_phrase": "OK" }
                 ]))
                 .expect_calls(1)
                 .and()
