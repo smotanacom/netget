@@ -42,7 +42,7 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
                 .and_event_data_contains("method", "PUT")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_http_response",
                         "status_code": 200,
                         "headers": {
                             "Content-Type": "application/json"
@@ -63,7 +63,7 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
                 .and_event_data_contains("path", "/_search")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_http_response",
                         "status_code": 200,
                         "headers": {
                             "Content-Type": "application/json"
@@ -205,7 +205,7 @@ async fn test_elasticsearch_client_bulk_operations() -> E2EResult<()> {
                 .and_event_data_contains("path", "/_bulk")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_http_response",
                         "status_code": 200,
                         "headers": {
                             "Content-Type": "application/json"
@@ -327,7 +327,7 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .and_event_data_contains("method", "PUT")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_http_response",
                         "status_code": 200,
                         "headers": {"Content-Type": "application/json"},
                         "body": json!({"_index": "test-index", "_id": "test-doc-1", "result": "created"}).to_string()
@@ -340,7 +340,7 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .and_event_data_contains("method", "GET")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_http_response",
                         "status_code": 200,
                         "headers": {"Content-Type": "application/json"},
                         "body": json!({"_index": "test-index", "_id": "test-doc-1", "found": true, "_source": {"test": "data"}}).to_string()
@@ -353,7 +353,7 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .and_event_data_contains("method", "DELETE")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_http_response",
                         "status_code": 200,
                         "headers": {"Content-Type": "application/json"},
                         "body": json!({"_index": "test-index", "_id": "test-doc-1", "result": "deleted"}).to_string()

@@ -147,43 +147,55 @@ impl Protocol for Http2ClientProtocol {
         ]
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        vec![ActionDefinition {
-            name: "send_http2_request".to_string(),
-            description: "Send another HTTP/2 request in response to received data".to_string(),
-            parameters: vec![
-                Parameter {
-                    name: "method".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "HTTP method".to_string(),
-                    required: true,
-                },
-                Parameter {
-                    name: "path".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "Request path".to_string(),
-                    required: true,
-                },
-                Parameter {
-                    name: "headers".to_string(),
-                    type_hint: "object".to_string(),
-                    description: "Request headers".to_string(),
-                    required: false,
-                },
-                Parameter {
-                    name: "body".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "Request body".to_string(),
-                    required: false,
-                },
-            ],
-            example: json!({
-                "type": "send_http2_request",
-                "method": "POST",
-                "path": "/api/data",
-                "body": "{\"key\": \"value\"}"
-            }),
-            log_template: None,
-        }]
+        vec![
+            ActionDefinition {
+                name: "wait_for_more".to_string(),
+                description: "Do nothing and wait for the next HTTP/2 response. The correct \
+                    answer when what arrived needs no follow-up -- without it the model has \
+                    to invent an action it does not want."
+                    .to_string(),
+                parameters: vec![],
+                example: json!({ "type": "wait_for_more" }),
+                log_template: None,
+            },
+            ActionDefinition {
+                name: "send_http2_request".to_string(),
+                description: "Send another HTTP/2 request in response to received data".to_string(),
+                parameters: vec![
+                    Parameter {
+                        name: "method".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "HTTP method".to_string(),
+                        required: true,
+                    },
+                    Parameter {
+                        name: "path".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Request path".to_string(),
+                        required: true,
+                    },
+                    Parameter {
+                        name: "headers".to_string(),
+                        type_hint: "object".to_string(),
+                        description: "Request headers".to_string(),
+                        required: false,
+                    },
+                    Parameter {
+                        name: "body".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Request body".to_string(),
+                        required: false,
+                    },
+                ],
+                example: json!({
+                    "type": "send_http2_request",
+                    "method": "POST",
+                    "path": "/api/data",
+                    "body": "{\"key\": \"value\"}"
+                }),
+                log_template: None,
+            },
+        ]
     }
     fn protocol_name(&self) -> &'static str {
         "HTTP2"
@@ -341,6 +353,8 @@ impl Client for Http2ClientProtocol {
                 })
             }
             "disconnect" => Ok(ClientActionResult::Disconnect),
+            // Declared above, so it must be executable here too.
+            "wait_for_more" => Ok(ClientActionResult::WaitForMore),
             _ => Err(anyhow::anyhow!(
                 "Unknown HTTP/2 client action: {}",
                 action_type
