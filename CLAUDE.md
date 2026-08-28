@@ -566,6 +566,27 @@ after a long period when no CI job ran `cargo test` at all:
 | `single-feature` | yes | `cargo check --tests` on 14 protocol features **one at a time** — catches a feature whose deps are under-declared, which no multi-feature build can |
 | `orphaned-tests` | yes | Fails if a test dir on disk is undeclared in `mod.rs` (see the footgun above) |
 
+### Whole-tree source ratchets
+
+Four tests scan **all** 136 server and 91 client protocols by reading source, so they hold at
+any feature set — including the 6-protocol CI gate, where a registry-walking test only ever
+sees what that build compiled. Each carries a baseline that **may only shrink**:
+
+| Test | Catches | Baseline |
+|---|---|---|
+| `client_event_wiring_test` | a client that asks the model and cannot act on the answer — including `if let Err(..)` with no success arm, `Ok(ClientLlmResult { .., .. })` dropping actions, `Ok(_) =>`, and count-and-log | 6 clients |
+| `event_emit_sites_test` | an `EventType` declared and never raised (the USB/BLE/imap defect) | empty, both trees |
+| `startup_param_drift_test` | a startup parameter declared and read by nothing — an advertised knob that does nothing when turned | 20 params |
+| `event_action_declarations_test` | actions the model can never see, and advertised names the executor cannot run | — |
+
+Two lessons from building them, both about false positives rather than misses. **Detect at the
+right nesting depth**: an `Ok(_) => {}` catch-all on an inner `match protocol.execute_action(..)`
+is correct and everywhere, and a substring version of that check flagged `ntp` and `tor` while
+they executed the model's actions perfectly well. And **for a build-failing check, prefer the
+conservative rule**: the strict version of the startup-param scan flagged 57 client parameters,
+of which many were read through `get_protocol_field` or a helper — a false positive trains
+people to edit the baseline instead of the code.
+
 The gate is deliberately not `--all-features`: that needs system libraries the runner does not
 install (`protoc`, `libpcap`, `dbus`, `libusb`, `pcsclite`). So **the CI feature set covers 6 of
 116 protocols** — a green PR says nothing about the other 110. Run the relevant tests yourself
