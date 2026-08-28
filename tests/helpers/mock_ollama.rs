@@ -355,7 +355,7 @@ impl MockOllamaServer {
     /// "was the model consulted at all?", which is what a test of deterministic routing needs.
     /// A handler that is supposed to answer without a round-trip is proven only by a zero here
     /// — and only alongside a control that shows a non-zero, or the zero proves nothing.
-    pub async fn recorded_calls(&self) -> Vec<crate::helpers::mock_config::MockCallRecord> {
+    pub async fn recorded_calls(&self) -> Vec<super::mock_config::MockCallRecord> {
         let config = self.config.lock().await;
         let history = config.call_history.lock().await;
         history.clone()
