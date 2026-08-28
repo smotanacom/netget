@@ -93,8 +93,19 @@ fn create_insecure_client() -> E2EResult<Client> {
     // `danger_accept_invalid_certs` reqwest builds its own rustls ClientConfig that does not
     // offer `h2`, so dropping prior knowledge here just makes it send HTTP/1.1 to an
     // HTTP/2-only server.
+    // `tls_built_in_root_certs(false)`: nothing here is verified against the platform roots —
+    // `danger_accept_invalid_certs` is set on the line above — so loading them is pure cost.
+    // On macOS that load reads the keychain through Security.framework, synchronously and
+    // serialised across processes, which the root CLAUDE.md documents as having stalled the
+    // doh *client* tests badly enough that a configured request timeout fired against a
+    // healthy server.
+    //
+    // Included because it is right regardless, **not** as a proven fix for anything: this
+    // test does still time out occasionally under heavy external machine load, and disabling
+    // the root store measurably did not stop that. See src/server/doh/CLAUDE.md.
     let client = Client::builder()
         .danger_accept_invalid_certs(true)
+        .tls_built_in_root_certs(false)
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()?;

@@ -384,3 +384,37 @@ Excellent scripting candidate:
 - [hyper Documentation](https://docs.rs/hyper/latest/hyper/)
 - [tokio-rustls Documentation](https://docs.rs/tokio-rustls/latest/tokio_rustls/)
 - [Mozilla DoH Documentation](https://wiki.mozilla.org/Trusted_Recursive_Resolver)
+
+---
+
+## `test_doh_server` and machine load — an open item, deliberately not "fixed" (August 2026)
+
+`test_doh_server` times out intermittently in a full `--test-threads=100` run. The failure is
+always the same: `reqwest ... source: TimedOut` on the first GET, against a server that logged
+`DoH server listening on 127.0.0.1:<port>` and never received a request — the mock reports zero
+`doh_query` calls.
+
+**What was ruled out, so it is not re-investigated from scratch:**
+
+- *A port mismatch.* The harness resolves the real bound port correctly (the mock answers the
+  startup call with `port: 0`); the failing run queried the port the server was listening on.
+- *The `has_packet_capture_access` probe change.* The failure reproduces with both the old
+  `/dev/bpf0..3` scan and the current one.
+- *`reqwest`'s platform root store.* `tls_built_in_root_certs(false)` was added — it is correct
+  regardless, since `danger_accept_invalid_certs` means nothing is checked against those roots —
+  and it measurably did **not** change the failure rate.
+- *A single-threaded test runtime starving the TLS/HTTP-2 client.* Switching to
+  `flavor = "multi_thread"` did not change the failure rate either, and was reverted rather than
+  left in as an unproven fix.
+
+**What the evidence actually points at:** external machine load. Three consecutive clean
+full-suite runs were recorded on a quiet machine; the failures appeared at a **load average of
+93 on 12 cores** with a video call, a VM and WindowServer occupying the box. The three
+`bluetooth_ble::read_default_value_test` cases — also wall-clock-deadline tests — start failing
+in the same runs, which is the tell: it is not DoH-specific.
+
+The honest reading is that this test asserts a **10-second wall-clock budget** for a loopback
+HTTP/2-over-TLS round trip, and that budget is not met when the machine is 8x oversubscribed.
+Raising the timeout would only move the threshold, so it was not done. **Do not label this
+flaky and move on, and do not "fix" it with a bigger number**: if it reproduces on an idle
+machine, there is a real defect here and the ruled-out list above is where to start.

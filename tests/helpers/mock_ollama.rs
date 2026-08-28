@@ -349,6 +349,23 @@ impl MockOllamaServer {
         format!("http://127.0.0.1:{}", self.port)
     }
 
+    /// Every call the model actually received, in order.
+    ///
+    /// `verify_calls` asserts against *rule expectations*; this answers the blunter question
+    /// "was the model consulted at all?", which is what a test of deterministic routing needs.
+    /// A handler that is supposed to answer without a round-trip is proven only by a zero here
+    /// — and only alongside a control that shows a non-zero, or the zero proves nothing.
+    pub async fn recorded_calls(&self) -> Vec<crate::helpers::mock_config::MockCallRecord> {
+        let config = self.config.lock().await;
+        let history = config.call_history.lock().await;
+        history.clone()
+    }
+
+    /// How many LLM calls reached the model.
+    pub async fn call_count(&self) -> usize {
+        self.recorded_calls().await.len()
+    }
+
     /// Verify that all mock expectations were met
     pub async fn verify_calls(&self) -> E2EResult<()> {
         // Add timeout to prevent deadlock on lock acquisition
