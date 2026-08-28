@@ -106,14 +106,29 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   `ldap` (ldap3), `mongodb` (official driver), `mssql` (tiberius), `mysql` (mysql_async),
   `postgresql` (tokio-postgres), `redis` (redis-rs), `ssh` (russh), `sqs` (aws-sdk-sqs), `webdav`
   (reqwest_dav), `zookeeper` (zookeeper-async). Each protocol's `metadata()` names its client.
+  **August 28 2026 added two more**: `npm` (the real npm CLI — `npm view` resolves the packument
+  and `npm install` unpacks the served tarball into `node_modules/`) and `mqtt` (rumqttc, taken
+  through CONNECT → SUBSCRIBE → SUBACK → PUBLISH and back to the broker's own PUBLISH).
 
   Deliberately **not** promoted despite an audit suggesting them: anything whose only evidence is
   a generic HTTP client (`reqwest` proves an HTTP server answers, not that the protocol on top is
   right — `couchdb`, `etcd`, `oci_registry`, `kubernetes`, `openapi`, `spark`, `xmlrpc`, `yarn`,
   `git`, `jsonrpc`, `oauth2`, `saml_sp`, `proxy`, `http2`); anything with no independent peer at
   all (`memcached`, `modbus`, `named_pipe`, `openvpn`, `pty`, `radius`, `socket_file`, `stdio`,
-  `websocket`); `mqtt`, whose rumqttc tests are all `#[ignore]`d; and `rss`, whose test currently
-  fails. `dhcp` and `wireguard` were removed for the same reason — neither has a third-party
+  `websocket`); and `rss` — whose test does **not** currently fail, but whose evidence would be
+  circular: the server builds its XML with the `rss` crate's `ChannelBuilder`, so parsing the
+  result with the same crate validates nothing. Clearing the bar there needs a *different*
+  parser (`feed-rs`) or a real feed reader.
+
+  **`mqtt` was on this list for a reason that was wrong twice over** and is now Beta. The claim
+  was "whose rumqttc tests are all `#[ignore]`d": in fact the four pub/sub tests were inside a
+  `/* … */` block, so nothing compiled them and `--include-ignored` could never have run them,
+  and the rumqttc test that *does* run was never ignored. Their "MQTT broker not yet
+  implemented" markers were left over from a placeholder the broker had long replaced. **Check
+  whether an `#[ignore]` is even reachable before believing what it says** — a stale marker
+  inside dead code held a working protocol at Experimental for months.
+
+  `dhcp` and `wireguard` were removed for the same reason — neither has a third-party
   peer. dhcp's own metadata says no real DHCP client can be pointed at it (dhclient/ipconfig bind
   UDP/68, need root, and cannot target an ephemeral loopback port), so its peer is an in-test RFC
   2131 decoder: an independent reading of the spec, but not an independent implementation.
