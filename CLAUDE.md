@@ -927,25 +927,34 @@ Read before assuming a subsystem is sound:
   would write a fabricated MAC into the requester's neighbour cache; OSPF/IGMP/RIP/BOOTP/DHCP
   have no error frame at all. Where the wire cannot carry the distinction, the **log** must:
   tag `decision=model_reject` / `model_silent` / `fail_closed_llm_error` as `radius` does.
-- **A static handler with an empty `actions` array appears NOT to suppress the LLM call —
-  mechanism unexplained, treat with suspicion.** Observed in `tests/server/xmpp/peer_inject_test.rs`
-  under full-suite load: with `{"type":"static","actions":[]}` on a `*` pattern, a probe on the
-  `call_llm` error branch fired with a real backend error, proving the model was consulted;
-  changing only that JSON to `[{"type":"wait_for_more"}]` made the probe stop firing. The two
-  runs differed in nothing else, so the attribution is sound, but **the mechanism was not found**.
-  Ruled out by inspection: `parse_event_handlers` accepts an empty array, `EventHandlerType::validate`
-  passes it, `find_handler`'s `*` matches, `execute_static_handler` returns `Handled` regardless
-  of length, `action_helper` propagates a handler `Err` rather than falling back, and
-  `start_server_from_action` applies `event_handler_config` (~line 608) *before* `spawn` (~line
-  727), so there is no config-not-yet-applied race. Something else is going on. Until it is
-  understood:
-  - prefer a real no-op verb the protocol declares (`wait_for_more`) over an empty list;
-  - **`src/tui/modal/form.rs:607` uses exactly the empty-list form** for every dashboard-created
-    client's `<proto>_connected` rule, whose entire purpose is to stop the connect event parking
-    or reaching the model. If the observation generalises, that rule does nothing and connect
-    events go to the LLM anyway. **Unverified — worth an experiment before trusting it.**
-  - the `wait_for_more` replacement has **one** full-suite confirmation, so it may itself be a
-    lucky run rather than a fix. Re-run under load before relying on it.
+- **Resolved: a static handler with an empty `actions` array DOES suppress the LLM call.**
+  This file used to carry it as an unexplained observation — seen in
+  `tests/server/xmpp/peer_inject_test.rs` under full-suite load, where a probe on the `call_llm`
+  error branch fired with `{"type":"static","actions":[]}` on a `*` pattern and stopped firing
+  when only that JSON became `[{"type":"wait_for_more"}]`. Every candidate mechanism had been
+  ruled out by inspection, correctly: there was no mechanism, because there was no defect.
+
+  `tests/empty_static_handler_test.rs` measures it directly instead of through a probe on an
+  error branch — point NetGet at a mock model that **records every call it receives**, and
+  count. Three cases differing only in the routing table:
+
+  | routing | LLM calls |
+  |---|---|
+  | no handler at all (control) | non-zero |
+  | `{"type":"static","actions":[]}` | **0** |
+  | `{"type":"static","actions":[{"type":"wait_for_more"}]}` | **0** |
+
+  The control is the part that makes the zeros mean anything; without it they are
+  indistinguishable from a mock the server never tried to reach. Holds under a full
+  `--all-features --test-threads=100` run, which is the condition the original was seen in.
+
+  So **`src/tui/modal/form.rs`'s zero-action `<proto>_connected` rule works**, and the earlier
+  advice to prefer `wait_for_more` over an empty list is unnecessary — though harmless, and
+  `wait_for_more` still reads more clearly where the protocol declares it. The lesson worth
+  keeping is about the evidence, not the handler: an indirect probe on an error branch, under
+  load, in a suite doing many other things, produced a confident and wrong attribution that
+  stood in this file for months. Measure the thing itself.
+
 - **`ServerForm::create` substitutes a default instruction** (`"You are a {protocol} server.
   Handle requests appropriately."`) whenever `instruction` is `None` — see
   `src/cli/management.rs`. Any non-empty instruction makes `operator_wants_dynamic` true, so a
