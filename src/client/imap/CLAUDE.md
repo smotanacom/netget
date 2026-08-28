@@ -30,7 +30,9 @@ native-tls = "0.2"
 ### Connection Flow
 
 1. **Connect:** Establish TCP connection to IMAP server
-2. **TLS Upgrade:** Upgrade to TLS if port 993 or `use_tls=true`
+2. **TLS: NOT IMPLEMENTED.** This client speaks IMAP over a plain `TcpStream`; there is no
+   TLS path at all. `use_tls: true` is **refused** at connect with a reason rather than
+   silently downgraded — see below.
 3. **Authenticate:** Login with username/password
 4. **LLM Integration:** Call LLM with `imap_connected` event
 5. **Action Loop:** Execute LLM-generated actions (select, search, fetch, etc.)
@@ -127,7 +129,11 @@ IMAP client requires authentication credentials:
 
 - `username` (required) - IMAP username
 - `password` (required) - IMAP password
-- `use_tls` (optional) - Enable TLS (default: true for port 993, false otherwise)
+- `use_tls` (optional) - **Only `false` is accepted.** `true` is refused: this client has no
+  TLS support, and connecting anyway would put the password on the wire in cleartext while
+  reporting an encrypted session. This parameter was declared and read by nothing for a long
+  time, and these docs claimed it worked; `tests/client/imap/use_tls_refusal_test.rs` pins the
+  refusal so the claim cannot come back without the mechanism.
 
 ## Example Prompts
 

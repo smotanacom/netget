@@ -45,6 +45,26 @@ impl ImapClient {
         let (username, password) = if let Some(params) = startup_params {
             let username = params.get_string("username")?;
             let password = params.get_string("password")?;
+
+            // `use_tls` is declared, and this protocol's CLAUDE.md described it as working
+            // ("Upgrade to TLS if port 993 or use_tls=true"). Nothing read it, and this client
+            // has no TLS support at all — `async_imap` is driven over a plain `TcpStream`. So
+            // asking for TLS produced a cleartext session carrying the password above, with
+            // both the parameter list and the documentation saying otherwise.
+            //
+            // Refusing is the fix, not silence. The project's rule is that hiding a capability
+            // is worse than declining it out loud: the caller gets a reason they can act on,
+            // and nobody hands credentials to a plaintext socket believing it is encrypted.
+            // `use_tls: false` remains valid and means what it says.
+            if params.get_optional_bool("use_tls")?.unwrap_or(false) {
+                return Err(anyhow::anyhow!(
+                    "IMAP client: `use_tls: true` was requested, but this client does not \
+                     implement TLS — it speaks IMAP over a plain TCP socket. Connecting anyway \
+                     would send the password for `{username}` in cleartext while reporting an \
+                     encrypted session. Pass `use_tls: false` to accept a plaintext connection \
+                     deliberately, or terminate TLS in front of the server."
+                ));
+            }
             (username, password)
         } else {
             return Err(anyhow::anyhow!(
