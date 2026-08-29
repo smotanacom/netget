@@ -65,26 +65,40 @@ fn development_state_parses_case_insensitively() {
 
 /// `--min-stability beta` must refuse an Experimental protocol with a clear
 /// error and still start a Beta one.
-#[cfg(all(feature = "tcp", feature = "redis"))]
+#[cfg(feature = "tcp")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn min_stability_beta_refuses_experimental_and_allows_beta() {
     use netget::state::app_state::AppState;
     use std::sync::Arc;
 
-    // Sanity: confirm the registry actually declares the states this test
-    // depends on, so a future metadata change fails loudly here rather than
-    // silently making the assertions vacuous.
+    // The Beta side is pinned to TCP, which is a fixed point of this suite.
     let registry = netget::protocol::server_registry::registry();
     assert_eq!(
         registry.metadata("TCP").map(|m| m.state),
         Some(DevelopmentState::Beta),
         "expected TCP to be Beta"
     );
-    assert_eq!(
-        registry.metadata("Redis").map(|m| m.state),
-        Some(DevelopmentState::Experimental),
-        "expected Redis to be Experimental"
-    );
+
+    // The Experimental side is *derived*, not named.
+    //
+    // This used to hardcode Redis. Redis was promoted to Beta on 2026-08-25 and this
+    // assertion has failed ever since — loudly, as its comment intended, but in a test binary
+    // the full-suite runs did not cover. Coupling a gate test to one protocol's maturity
+    // rating guarantees it rots the first time that rating is the thing being improved, and
+    // the rot looks like a regression in the gate rather than in the fixture.
+    //
+    // Any Experimental protocol proves the same property, so ask the registry for one.
+    let experimental = registry
+        .all_protocols()
+        .into_iter()
+        .find_map(|(name, _)| {
+            let m = registry.metadata(&name)?;
+            (m.state == DevelopmentState::Experimental).then_some(name)
+        })
+        .expect(
+            "no Experimental protocol is compiled in, so the refusal half of this test cannot \
+             run. If every protocol has reached Beta, delete this half rather than weakening it.",
+        );
 
     let state = Arc::new(AppState::new());
     // Unreachable on purpose: any LLM call fails on connect instead of reaching
@@ -100,14 +114,14 @@ async fn min_stability_beta_refuses_experimental_and_allows_beta() {
         while rx.recv().await.is_some() {}
     });
 
-    // --- Experimental (redis): must be refused before any spawn ---
-    let redis_result = netget::cli::server_startup::start_server_from_action(
+    // --- Experimental: must be refused before any spawn ---
+    let refused = netget::cli::server_startup::start_server_from_action(
         &state,
         None,
         None,
         None,
         Some(0),
-        "redis",
+        &experimental,
         false,
         None,
         "min-stability test: should be refused".to_string(),
@@ -119,11 +133,12 @@ async fn min_stability_beta_refuses_experimental_and_allows_beta() {
     )
     .await;
 
-    let err =
-        redis_result.expect_err("redis (Experimental) must be refused under --min-stability beta");
+    let err = refused.expect_err(&format!(
+        "{experimental} (Experimental) must be refused under --min-stability beta"
+    ));
     let msg = err.to_string();
     assert!(
-        msg.contains("redis") && msg.contains("Experimental") && msg.contains("Beta"),
+        msg.contains("Experimental") && msg.contains("Beta"),
         "refusal must name the protocol, its actual state and the required minimum; got: {msg}"
     );
     // Nothing should have been registered for the refused protocol.
