@@ -250,7 +250,20 @@ impl DcClient {
                             .get_memory_for_client(client_id)
                             .await
                             .unwrap_or_default();
-                        if let Err(le) = call_llm_for_client(
+                        // Actions are deliberately not executed here: there is no open
+                        // connection to send on, which is the whole meaning of this event.
+                        // What the model *can* do is record what it learned, and that is
+                        // carried by the memory update.
+                        //
+                        // This used to be an `if let Err(..)` with no success arm, which
+                        // dropped the memory update too — so the comment above claimed a
+                        // mechanism the code did not have, and a model asked "you just lost
+                        // the hub, what should I remember?" was answered into a void.
+                        //
+                        // Actions are reported rather than silently discarded, so an operator
+                        // watching a reconnect can see that the model tried to act and why it
+                        // could not.
+                        match call_llm_for_client(
                             &llm_client,
                             &app_state,
                             client_id.to_string(),
@@ -262,14 +275,24 @@ impl DcClient {
                         )
                         .await
                         {
-                            error!(
+                            Ok(result) => {
+                                if let Some(mem) = result.memory_updates {
+                                    app_state.set_memory_for_client(client_id, mem).await;
+                                }
+                                if !result.actions.is_empty() {
+                                    let _ = status_tx.send(format!(
+                                        "[CLIENT] DC client {} is disconnected; {} action(s) \
+                                         from dc_client_disconnected were not sent",
+                                        client_id,
+                                        result.actions.len()
+                                    ));
+                                }
+                            }
+                            Err(le) => error!(
                                 "DC client {} LLM error on dc_client_disconnected: {}",
                                 client_id, le
-                            );
+                            ),
                         }
-                        // No actions are executed here on purpose: there is no open
-                        // connection to send on, which is the whole meaning of this event.
-                        // The model's instruction is carried by the memory it may set.
                     }
                     let delay_secs =
                         initial_reconnect_delay_secs * (2u64.pow(reconnect_attempt - 1));

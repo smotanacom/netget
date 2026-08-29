@@ -244,12 +244,6 @@ const ANSWER_DROPPED_BASELINE: &[&str] = &[
     // the answer to an unbounded chain is a depth bound, not silence. Left as-is here only
     // because the two events it raises are not emitted by anything yet (see amqp/CLAUDE.md).
     "amqp",
-    // `dc_client_disconnected`, raised while reconnecting.
-    "dc",
-    // `tftp_client_transfer_complete`.
-    "tftp",
-    // `websocket_client_closed`, destructured `{ memory_updates, .. }`.
-    "websocket",
 ];
 
 /// Blank the body of `// ...` comments, keeping line structure.

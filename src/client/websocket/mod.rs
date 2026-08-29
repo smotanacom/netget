@@ -687,7 +687,23 @@ impl WebSocketClient {
         )
         .await
         {
-            Ok(ClientLlmResult { memory_updates, .. }) => {
+            Ok(ClientLlmResult {
+                actions,
+                memory_updates,
+            }) => {
+                // The socket is closed, so a `send_message` here has nowhere to go — but the
+                // pattern used to be `{ memory_updates, .. }`, which dropped the actions
+                // without saying so. Reporting them means an operator can see the model tried
+                // to answer a close with a send, which is a prompt worth fixing rather than a
+                // silence.
+                if !actions.is_empty() {
+                    let _ = status_tx.send(format!(
+                        "[CLIENT] WebSocket client {} is closed; {} action(s) from \
+                         websocket_client_closed were not sent",
+                        client_id,
+                        actions.len()
+                    ));
+                }
                 if let Some(mem) = memory_updates {
                     data.lock().await.memory = mem;
                 }
