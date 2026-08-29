@@ -246,9 +246,6 @@ const ANSWER_DROPPED_BASELINE: &[&str] = &[
     "amqp",
     // `dc_client_disconnected`, raised while reconnecting.
     "dc",
-    // `nfc_ndef_read` and `nfc_apdu_response` — the model is told what the card answered and
-    // its reply is dropped — plus the card-presence event.
-    "nfc",
     // `tftp_client_transfer_complete`.
     "tftp",
     // `websocket_client_closed`, destructured `{ memory_updates, .. }`.

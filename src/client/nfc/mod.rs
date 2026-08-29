@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 // Re-export protocol
 pub use actions::NfcClientProtocol;
@@ -30,6 +30,14 @@ pub use actions::NfcClientProtocol;
 /// `Sent` is reported only when an APDU was really handed to a card that
 /// answered — those bytes crossed the contactless interface. Everything else
 /// says specifically why nothing did.
+/// How many LLM turns one card exchange may take before the chain is cut.
+///
+/// Executing an event's answer makes the cycle real: an APDU produces
+/// `nfc_apdu_response`, whose answer may be another APDU — which is exactly the
+/// select-then-read conversation a smartcard requires, so it must be possible, and
+/// bounded rather than forbidden.
+const MAX_FOLLOWUP_DEPTH: u8 = 6;
+
 pub enum NfcApplied {
     /// This many APDU bytes reached the card; the response APDU is attached so
     /// the caller can log it.
@@ -166,6 +174,9 @@ impl NfcClient {
                         Self::raise_card_event(
                             &NFC_CARD_DETECTED_EVENT,
                             serde_json::json!({ "atr": atr }),
+                            &watch_ctx,
+                            &watch_reader,
+                            0,
                             client_id,
                             &watch_state,
                             &watch_llm,
@@ -179,6 +190,9 @@ impl NfcClient {
                         Self::raise_card_event(
                             &NFC_CARD_DISCONNECTED_EVENT,
                             serde_json::json!({}),
+                            &watch_ctx,
+                            &watch_reader,
+                            0,
                             client_id,
                             &watch_state,
                             &watch_llm,
@@ -229,6 +243,7 @@ impl NfcClient {
                             &ctx,
                             &selected_reader,
                             action.clone(),
+                            0,
                             client_id,
                             &app_state,
                             &llm_client,
@@ -285,6 +300,7 @@ impl NfcClient {
                 &ctx,
                 &reader,
                 action.clone(),
+                0,
                 client_id,
                 &app_state,
                 &llm_client,
@@ -346,9 +362,13 @@ impl NfcClient {
     ///
     /// Executes nothing it answers with: the command loop owns the card path, and a
     /// presence-driven action chain would re-fire every time a card is tapped.
+    #[allow(clippy::too_many_arguments)]
     async fn raise_card_event(
         event_type: &'static std::sync::LazyLock<crate::protocol::EventType>,
         data: serde_json::Value,
+        ctx: &pcsc::Context,
+        reader: &std::ffi::CStr,
+        depth: u8,
         client_id: ClientId,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
@@ -362,7 +382,7 @@ impl NfcClient {
             .await
             .unwrap_or_default();
         let event = Event::new(event_type, data);
-        if let Err(e) = call_llm_for_client(
+        match call_llm_for_client(
             llm_client,
             app_state,
             client_id.to_string(),
@@ -374,7 +394,25 @@ impl NfcClient {
         )
         .await
         {
-            error!("NFC client {} LLM error on card event: {}", client_id, e);
+            Ok(result) => {
+                if let Some(mem) = result.memory_updates {
+                    app_state.set_memory_for_client(client_id, mem).await;
+                }
+                Self::run_followups(
+                    result.actions,
+                    ctx,
+                    reader,
+                    depth,
+                    client_id,
+                    app_state,
+                    llm_client,
+                    status_tx,
+                )
+                .await;
+            }
+            Err(e) => {
+                error!("NFC client {} LLM error on card event: {}", client_id, e);
+            }
         }
     }
 
@@ -551,170 +589,244 @@ impl NfcClient {
         Ok(())
     }
 
-    async fn apply_nfc_action(
+    /// Carry out what the model answered an NFC event with, bounded by [`MAX_FOLLOWUP_DEPTH`].
+    ///
+    /// The three notify paths used to be `if let Err(..)` with no success arm, so every answer
+    /// was dropped. `nfc_apdu_response` is the one that mattered most: a smartcard exchange is
+    /// inherently a conversation (SELECT, then READ BINARY against what SELECT returned), and
+    /// the model was told what the card said and then never asked again.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_followups(
+        actions: Vec<serde_json::Value>,
         ctx: &pcsc::Context,
         reader: &std::ffi::CStr,
-        action: Value,
+        depth: u8,
         client_id: ClientId,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<NfcApplied> {
-        use crate::llm::actions::client_trait::{Client, ClientActionResult};
-
-        match NfcClientProtocol.execute_action(action)? {
-            ClientActionResult::Custom { name, data } if name == "send_apdu" => {
-                let apdu_hex = data
-                    .get("apdu_hex")
-                    .and_then(|v| v.as_str())
-                    .context("Missing apdu_hex in action data")?
-                    .to_string();
-                let apdu =
-                    hex::decode(apdu_hex.trim()).context("apdu_hex is not valid hexadecimal")?;
-                let sent = apdu.len();
-
-                // PC/SC is a blocking C API: connect to whatever card is on the
-                // reader, transmit, and drop the card handle, all on a blocking
-                // thread. The handle is not kept between commands, so a card that
-                // was removed and re-presented still works.
-                let ctx = ctx.clone();
-                let reader = reader.to_owned();
-                let transmit = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
-                    let card = ctx
-                        .connect(&reader, pcsc::ShareMode::Shared, pcsc::Protocols::ANY)
-                        .context("PC/SC connect failed (is a card on the reader?)")?;
-                    let mut rx = vec![0u8; pcsc::MAX_BUFFER_SIZE];
-                    let response = card
-                        .transmit(&apdu, &mut rx)
-                        .context("PC/SC transmit failed")?;
-                    Ok(response.to_vec())
-                })
-                .await
-                .context("PC/SC blocking task panicked")?;
-
-                match transmit {
-                    Ok(response) => {
-                        let response_hex = hex::encode_upper(&response);
-                        info!(
-                            "NFC client {} APDU {} bytes -> response {}",
-                            client_id, sent, response_hex
-                        );
-                        let _ = status_tx.send(format!(
-                            "[CLIENT] NFC client {} APDU response: {}",
-                            client_id, response_hex
-                        ));
-
-                        // `nfc_apdu_response` was declared and never emitted; an
-                        // injected APDU is the first thing that actually raises it.
-                        Self::notify_apdu_response(
-                            &response, client_id, app_state, llm_client, status_tx,
-                        )
-                        .await;
-
-                        Ok(NfcApplied::Sent {
-                            bytes_sent: sent,
-                            response_hex,
-                        })
-                    }
-                    Err(e) => {
-                        warn!("NFC client {} APDU failed: {:#}", client_id, e);
-                        Ok(NfcApplied::Executed(format!(
-                            "send_apdu did not reach a card: {e:#}"
-                        )))
-                    }
+    ) {
+        if actions.is_empty() {
+            return;
+        }
+        if depth >= MAX_FOLLOWUP_DEPTH {
+            warn!(
+                "NFC client {} stopped a follow-up chain at depth {}: {} action(s) not executed",
+                client_id,
+                depth,
+                actions.len()
+            );
+            let _ = status_tx.send(format!(
+                "[CLIENT] ⚠ nfc client {} hit the follow-up depth limit ({}); {} action(s) were \
+                 not executed",
+                client_id,
+                MAX_FOLLOWUP_DEPTH,
+                actions.len()
+            ));
+            return;
+        }
+        for action in actions {
+            match Self::apply_nfc_action(
+                ctx,
+                reader,
+                action,
+                depth + 1,
+                client_id,
+                app_state,
+                llm_client,
+                status_tx,
+            )
+            .await
+            {
+                Ok(NfcApplied::Disconnected) => return,
+                Ok(_) => trace!("NFC client {} follow-up action completed", client_id),
+                Err(e) => {
+                    error!("NFC client {} follow-up action failed: {:#}", client_id, e);
+                    let _ = status_tx.send(format!(
+                        "[CLIENT] nfc client {client_id} follow-up failed: {e}"
+                    ));
                 }
             }
-            ClientActionResult::Custom { name, data } if name == "read_ndef" => {
-                let file_id = Self::ndef_file_id(&data);
-                match Self::read_ndef(ctx, reader, file_id).await {
-                    Ok(message) => {
-                        let hex_msg = hex::encode_upper(&message);
-                        info!(
-                            "NFC client {} read {} byte NDEF message",
-                            client_id,
-                            message.len()
-                        );
-                        // NFC_NDEF_READ_EVENT was declared and never emitted; nothing
-                        // could read an NDEF message at all until now.
-                        Self::notify_ndef_read(
-                            &message, client_id, app_state, llm_client, status_tx,
-                        )
-                        .await;
-                        Ok(NfcApplied::Executed(format!(
-                            "read_ndef: {} bytes ({})",
-                            message.len(),
-                            if hex_msg.is_empty() {
-                                "empty"
-                            } else {
-                                &hex_msg
-                            }
-                        )))
-                    }
-                    Err(e) => Ok(NfcApplied::Executed(format!("read_ndef failed: {e:#}"))),
-                }
-            }
-            ClientActionResult::Custom { name, data } if name == "write_ndef" => {
-                let file_id = Self::ndef_file_id(&data);
-                // Accept either a hex payload or plain text, and say which was used --
-                // never guess, since "48656C6C6F" is both valid hex and valid text.
-                let (bytes, how) = match data.get("message_hex").and_then(|v| v.as_str()) {
-                    Some(h) => match hex::decode(h.trim()) {
-                        Ok(b) => (b, "message_hex"),
+        }
+    }
+
+    /// Returns an explicitly boxed future rather than being an `async fn`: the chain
+    /// `apply_nfc_action` -> `notify_apdu_response` -> `run_followups` -> `apply_nfc_action`
+    /// is a cycle of `async fn`s whose opaque return types cannot be inferred (E0391).
+    #[allow(clippy::too_many_arguments)]
+    fn apply_nfc_action<'a>(
+        ctx: &'a pcsc::Context,
+        reader: &'a std::ffi::CStr,
+        action: Value,
+        depth: u8,
+        client_id: ClientId,
+        app_state: &'a Arc<AppState>,
+        llm_client: &'a OllamaClient,
+        status_tx: &'a mpsc::UnboundedSender<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<NfcApplied>> + Send + 'a>> {
+        Box::pin(async move {
+            use crate::llm::actions::client_trait::{Client, ClientActionResult};
+
+            match NfcClientProtocol.execute_action(action)? {
+                ClientActionResult::Custom { name, data } if name == "send_apdu" => {
+                    let apdu_hex = data
+                        .get("apdu_hex")
+                        .and_then(|v| v.as_str())
+                        .context("Missing apdu_hex in action data")?
+                        .to_string();
+                    let apdu = hex::decode(apdu_hex.trim())
+                        .context("apdu_hex is not valid hexadecimal")?;
+                    let sent = apdu.len();
+
+                    // PC/SC is a blocking C API: connect to whatever card is on the
+                    // reader, transmit, and drop the card handle, all on a blocking
+                    // thread. The handle is not kept between commands, so a card that
+                    // was removed and re-presented still works.
+                    let card_ctx = ctx.clone();
+                    let card_reader = reader.to_owned();
+                    let transmit = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+                        let card = card_ctx
+                            .connect(&card_reader, pcsc::ShareMode::Shared, pcsc::Protocols::ANY)
+                            .context("PC/SC connect failed (is a card on the reader?)")?;
+                        let mut rx = vec![0u8; pcsc::MAX_BUFFER_SIZE];
+                        let response = card
+                            .transmit(&apdu, &mut rx)
+                            .context("PC/SC transmit failed")?;
+                        Ok(response.to_vec())
+                    })
+                    .await
+                    .context("PC/SC blocking task panicked")?;
+
+                    match transmit {
+                        Ok(response) => {
+                            let response_hex = hex::encode_upper(&response);
+                            info!(
+                                "NFC client {} APDU {} bytes -> response {}",
+                                client_id, sent, response_hex
+                            );
+                            let _ = status_tx.send(format!(
+                                "[CLIENT] NFC client {} APDU response: {}",
+                                client_id, response_hex
+                            ));
+
+                            // `nfc_apdu_response` was declared and never emitted; an
+                            // injected APDU is the first thing that actually raises it.
+                            Self::notify_apdu_response(
+                                &response, &ctx, &reader, depth, client_id, app_state, llm_client,
+                                status_tx,
+                            )
+                            .await;
+
+                            Ok(NfcApplied::Sent {
+                                bytes_sent: sent,
+                                response_hex,
+                            })
+                        }
                         Err(e) => {
-                            return Ok(NfcApplied::Executed(format!(
-                                "write_ndef: message_hex is not valid hexadecimal: {e}"
+                            warn!("NFC client {} APDU failed: {:#}", client_id, e);
+                            Ok(NfcApplied::Executed(format!(
+                                "send_apdu did not reach a card: {e:#}"
                             )))
                         }
-                    },
-                    None => match data.get("message").and_then(|v| v.as_str()) {
-                        Some(t) => (t.as_bytes().to_vec(), "message"),
-                        None => {
-                            return Ok(NfcApplied::Executed(
-                                "write_ndef needs message_hex or message".to_string(),
-                            ))
-                        }
-                    },
-                };
-                match Self::write_ndef(ctx, reader, file_id, &bytes).await {
-                    Ok(()) => Ok(NfcApplied::Sent {
-                        bytes_sent: bytes.len(),
-                        response_hex: format!("write_ndef ok ({} from {})", bytes.len(), how),
-                    }),
-                    Err(e) => Ok(NfcApplied::Executed(format!("write_ndef failed: {e:#}"))),
+                    }
                 }
-            }
-            ClientActionResult::Custom { name, .. } => Ok(NfcApplied::Executed(format!(
-                "'{name}' is declared but not implemented by the NFC client; \
+                ClientActionResult::Custom { name, data } if name == "read_ndef" => {
+                    let file_id = Self::ndef_file_id(&data);
+                    match Self::read_ndef(ctx, reader, file_id).await {
+                        Ok(message) => {
+                            let hex_msg = hex::encode_upper(&message);
+                            info!(
+                                "NFC client {} read {} byte NDEF message",
+                                client_id,
+                                message.len()
+                            );
+                            // NFC_NDEF_READ_EVENT was declared and never emitted; nothing
+                            // could read an NDEF message at all until now.
+                            Self::notify_ndef_read(
+                                &message, &ctx, &reader, depth, client_id, app_state, llm_client,
+                                status_tx,
+                            )
+                            .await;
+                            Ok(NfcApplied::Executed(format!(
+                                "read_ndef: {} bytes ({})",
+                                message.len(),
+                                if hex_msg.is_empty() {
+                                    "empty"
+                                } else {
+                                    &hex_msg
+                                }
+                            )))
+                        }
+                        Err(e) => Ok(NfcApplied::Executed(format!("read_ndef failed: {e:#}"))),
+                    }
+                }
+                ClientActionResult::Custom { name, data } if name == "write_ndef" => {
+                    let file_id = Self::ndef_file_id(&data);
+                    // Accept either a hex payload or plain text, and say which was used --
+                    // never guess, since "48656C6C6F" is both valid hex and valid text.
+                    let (bytes, how) = match data.get("message_hex").and_then(|v| v.as_str()) {
+                        Some(h) => match hex::decode(h.trim()) {
+                            Ok(b) => (b, "message_hex"),
+                            Err(e) => {
+                                return Ok(NfcApplied::Executed(format!(
+                                    "write_ndef: message_hex is not valid hexadecimal: {e}"
+                                )))
+                            }
+                        },
+                        None => match data.get("message").and_then(|v| v.as_str()) {
+                            Some(t) => (t.as_bytes().to_vec(), "message"),
+                            None => {
+                                return Ok(NfcApplied::Executed(
+                                    "write_ndef needs message_hex or message".to_string(),
+                                ))
+                            }
+                        },
+                    };
+                    match Self::write_ndef(ctx, reader, file_id, &bytes).await {
+                        Ok(()) => Ok(NfcApplied::Sent {
+                            bytes_sent: bytes.len(),
+                            response_hex: format!("write_ndef ok ({} from {})", bytes.len(), how),
+                        }),
+                        Err(e) => Ok(NfcApplied::Executed(format!("write_ndef failed: {e:#}"))),
+                    }
+                }
+                ClientActionResult::Custom { name, .. } => Ok(NfcApplied::Executed(format!(
+                    "'{name}' is declared but not implemented by the NFC client; \
                  send_apdu / send_apdu_raw / read_ndef / write_ndef reach the card \
                  (see src/client/nfc/CLAUDE.md)"
-            ))),
-            ClientActionResult::Disconnect => {
-                info!("NFC client {} disconnecting card session", client_id);
-                app_state
-                    .update_client_status(client_id, crate::state::ClientStatus::Disconnected)
-                    .await;
-                // Drop the command handle here rather than only in the command loop:
-                // the LLM can disconnect too, and a handle left behind would offer
-                // [ send ] into a client that is gone.
-                app_state.remove_client_handle(client_id).await;
-                let _ = status_tx.send("__UPDATE_UI__".to_string());
-                Ok(NfcApplied::Disconnected)
+                ))),
+                ClientActionResult::Disconnect => {
+                    info!("NFC client {} disconnecting card session", client_id);
+                    app_state
+                        .update_client_status(client_id, crate::state::ClientStatus::Disconnected)
+                        .await;
+                    // Drop the command handle here rather than only in the command loop:
+                    // the LLM can disconnect too, and a handle left behind would offer
+                    // [ send ] into a client that is gone.
+                    app_state.remove_client_handle(client_id).await;
+                    let _ = status_tx.send("__UPDATE_UI__".to_string());
+                    Ok(NfcApplied::Disconnected)
+                }
+                ClientActionResult::WaitForMore => {
+                    Ok(NfcApplied::Executed("wait_for_more".to_string()))
+                }
+                other => Ok(NfcApplied::Executed(format!(
+                    "unhandled action result {other:?}"
+                ))),
             }
-            ClientActionResult::WaitForMore => {
-                Ok(NfcApplied::Executed("wait_for_more".to_string()))
-            }
-            other => Ok(NfcApplied::Executed(format!(
-                "unhandled action result {other:?}"
-            ))),
-        }
+        })
     }
 
     /// Raise `nfc_ndef_read` so the model can act on the message that was read.
     ///
     /// The event was declared and never emitted, because nothing could read an NDEF
     /// message at all.
+    #[allow(clippy::too_many_arguments)]
     async fn notify_ndef_read(
         message: &[u8],
+        ctx: &pcsc::Context,
+        reader: &std::ffi::CStr,
+        depth: u8,
         client_id: ClientId,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
@@ -737,7 +849,7 @@ impl NfcClient {
             .get_memory_for_client(client_id)
             .await
             .unwrap_or_default();
-        if let Err(e) = call_llm_for_client(
+        match call_llm_for_client(
             llm_client,
             app_state,
             client_id.to_string(),
@@ -749,13 +861,35 @@ impl NfcClient {
         )
         .await
         {
-            error!("NFC client {} LLM error on nfc_ndef_read: {}", client_id, e);
+            Ok(result) => {
+                if let Some(mem) = result.memory_updates {
+                    app_state.set_memory_for_client(client_id, mem).await;
+                }
+                Self::run_followups(
+                    result.actions,
+                    ctx,
+                    reader,
+                    depth,
+                    client_id,
+                    app_state,
+                    llm_client,
+                    status_tx,
+                )
+                .await;
+            }
+            Err(e) => {
+                error!("NFC client {} LLM error on nfc_ndef_read: {}", client_id, e);
+            }
         }
     }
 
     /// Raise `nfc_apdu_response` so the model can act on what the card answered.
+    #[allow(clippy::too_many_arguments)]
     async fn notify_apdu_response(
         response: &[u8],
+        ctx: &pcsc::Context,
+        reader: &std::ffi::CStr,
+        depth: u8,
         client_id: ClientId,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
@@ -782,7 +916,7 @@ impl NfcClient {
             .get_memory_for_client(client_id)
             .await
             .unwrap_or_default();
-        if let Err(e) = call_llm_for_client(
+        match call_llm_for_client(
             llm_client,
             app_state,
             client_id.to_string(),
@@ -794,7 +928,25 @@ impl NfcClient {
         )
         .await
         {
-            error!("LLM error on nfc_apdu_response for {}: {}", client_id, e);
+            Ok(result) => {
+                if let Some(mem) = result.memory_updates {
+                    app_state.set_memory_for_client(client_id, mem).await;
+                }
+                Self::run_followups(
+                    result.actions,
+                    ctx,
+                    reader,
+                    depth,
+                    client_id,
+                    app_state,
+                    llm_client,
+                    status_tx,
+                )
+                .await;
+            }
+            Err(e) => {
+                error!("LLM error on nfc_apdu_response for {}: {}", client_id, e);
+            }
         }
     }
 }

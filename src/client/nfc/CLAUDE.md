@@ -393,3 +393,37 @@ Outcomes:
 **Known gap:** `read_ndef` and `write_ndef` are advertised by `actions.rs` and have no
 implementation. The command channel says so explicitly rather than silently doing nothing —
 but they are still advertised to the model, which is the real bug to fix.
+
+---
+
+## The model's answer to a card event is executed (August 2026)
+
+All three NFC events were raised with `if let Err(e) = call_llm_for_client(..)` — no success
+arm — so every action the model chose in reply was dropped: `nfc_card_detected` /
+`nfc_card_disconnected`, `nfc_ndef_read`, and `nfc_apdu_response`.
+
+**`nfc_apdu_response` is the one that mattered.** A smartcard exchange is inherently a
+conversation: SELECT an application, then READ BINARY against what SELECT returned. The model
+was told what the card answered and then never asked again, so nothing beyond a single
+injected APDU was reachable.
+
+The stated reason for the card-presence one was *"the command loop owns the card path, and a
+presence-driven action chain would re-fire every time a card is tapped."* The re-fire concern
+is real; silence is the wrong remedy for it. A tap is a discrete event, so one **bounded**
+chain per tap is the right shape — `MAX_FOLLOWUP_DEPTH = 6`, with the limit reported on the
+status stream. `apply_nfc_action` takes `&pcsc::Context` and `&CStr`, both shareable, so no
+path here ever needed exclusive ownership of the reader.
+
+`apply_nfc_action` returns an explicitly boxed `Pin<Box<dyn Future + Send>>` rather than being
+an `async fn`, because `apply_nfc_action` → `notify_apdu_response` → `run_followups` →
+`apply_nfc_action` is a cycle of `async fn`s whose opaque return types cannot be inferred
+(E0391).
+
+**Not proven at runtime.** Both tests that would exercise this are `#[ignore]`d for want of a
+PC/SC reader with a card presented, so there is no test in which a real card completes the
+exchange. Treat the wire behaviour as unverified — as this protocol's `metadata()` already says.
+
+One process note worth keeping: this file compiles under the **`nfc-client`** feature, not
+`nfc` (which is the *server*). Several `cargo check --features nfc` runs reported success
+without ever compiling it, and the first version of this change had three compile errors that
+those checks did not see.
