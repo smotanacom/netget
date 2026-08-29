@@ -577,7 +577,15 @@ sees what that build compiled. Each carries a baseline that **may only shrink**:
 | `client_event_wiring_test` | a client that asks the model and cannot act on the answer — including `if let Err(..)` with no success arm, `Ok(ClientLlmResult { .., .. })` dropping actions, `Ok(_) =>`, and count-and-log | 6 clients |
 | `event_emit_sites_test` | an `EventType` declared and never raised (the USB/BLE/imap defect) | empty, both trees |
 | `startup_param_drift_test` | a startup parameter declared and read by nothing — an advertised knob that does nothing when turned | 20 params |
+| `executable_examples_test` | an action whose own `example` its own `execute_action` refuses — the shape the model copies | 18 examples |
 | `event_action_declarations_test` | actions the model can never see, and advertised names the executor cannot run | — |
+
+A third check worth understanding: `event_action_declarations_test` probes each advertised
+name with a bare `{"type": name}`, which finds *unknown action* but can never find a wrong
+**field**, because it never sends one. `executable_examples_test` sends the declared example
+itself, and that is what caught `ospf` advertising `list_neighbors`/`list_lsdb` with no
+executor arm, and `tor_relay_log` advertised under a comment claiming the executor "has always
+handled it" when there was no arm at all.
 
 Two lessons from building them, both about false positives rather than misses. **Detect at the
 right nesting depth**: an `Ok(_) => {}` catch-all on an inner `match protocol.execute_action(..)`
