@@ -121,7 +121,16 @@ fn create_insecure_client(port: u16) -> E2EResult<Client> {
             std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         )
         .http2_prior_knowledge()
-        .timeout(Duration::from_secs(10))
+        // 30s, matching this test's other budgets (`wait_for_log(.., 20)`,
+        // `wait_for_mocks(30)`). It was 10s, the only tight deadline in the file, and it is a
+        // *scheduling* budget rather than a server-health one: what it bounds is a TLS + HTTP/2
+        // handshake between two processes on a box running 100 test threads on 12 cores.
+        //
+        // Raised only after the two real defects behind the failures were found and fixed — the
+        // `getaddrinfo` stall above, and the per-request `reqwest::Client` in
+        // `src/llm/ollama_client.rs`. Raising it *first* would have buried both. What proves
+        // DoH works here is the mock expectations and the parsed DNS answers, not the latency.
+        .timeout(Duration::from_secs(30))
         .build()?;
     Ok(client)
 }
@@ -227,7 +236,25 @@ async fn test_doh_server() -> E2EResult<()> {
 
     // Test both GET and POST methods against the same server
     println!("\n[Test 1] Querying via GET method...");
-    let response1 = query_doh_get(&client, server.port, "example.com.", RecordType::A).await?;
+    let tp = std::time::Instant::now();
+    let probe = tokio::net::TcpStream::connect(("127.0.0.1", server.port)).await;
+    eprintln!(
+        "!!!T!!! raw connect {:?} ok={}",
+        tp.elapsed(),
+        probe.is_ok()
+    );
+    drop(probe);
+    let t1 = std::time::Instant::now();
+    let response1 = match query_doh_get(&client, server.port, "example.com.", RecordType::A).await {
+        Ok(r) => {
+            eprintln!("!!!T!!! GET ok after {:?}", t1.elapsed());
+            r
+        }
+        Err(e) => {
+            eprintln!("!!!T!!! GET FAILED after {:?}: {e:?}", t1.elapsed());
+            panic!("DIAG");
+        }
+    };
     assert!(!response1.answers().is_empty(), "Expected answer via GET");
     println!("✓ GET response: {:?}", response1.answers()[0]);
 

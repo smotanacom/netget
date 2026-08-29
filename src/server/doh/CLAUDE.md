@@ -431,7 +431,33 @@ server, prove which step is stuck before blaming the environment.** One raw `Tcp
 next to the failing request separated "the machine cannot connect" from "this library will not
 connect", and that single line is what turned an unexplained flake into a one-line fix.
 
-**Every other e2e test that points `reqwest` at `127.0.0.1` has the same latent defect** — 17
-files build a client without a resolver override. They have looser deadlines, so they have not
-failed yet.
+**Every other e2e test that points `reqwest` at `127.0.0.1` had the same latent defect** — all
+18 now carry the override. So does NetGet itself, for any endpoint configured with an IP
+(`src/llm/ollama_client.rs::without_dns_for_literal_ip`); that second fix is what stopped the
+`bluetooth_ble` read tests failing, whose `/api/tags` probe was spending its entire 5-second
+budget in the resolver.
+
+### The residual, and what was measured
+
+After both fixes, `test_doh_server` still timed out about 2 runs in 6 at load ~150. reqwest now
+connects in ~30ms and it is the **TLS handshake** that does not complete inside the remaining
+budget. Two candidate remedies were tested rather than assumed, and the result is worth
+recording because one of them is the opposite of the intuition:
+
+| change | failures |
+|---|---|
+| baseline (before either DNS fix) | 4 / 6 |
+| DNS fixes only | 2 / 6 |
+| **+ `multi_thread` test runtime and batched harness output** | **7 / 8 — much worse** |
+| + request budget raised 10s → 30s | **0 / 8** at load 161 |
+
+Giving the test its own 4 worker threads makes it *worse*, because `--test-threads=100` already
+oversubscribes a 12-core box and four workers per test multiplies the contention. That is the
+reverse of what "starved runtime → add threads" suggests, and it is why the earlier pass was
+right to drop it — though for the wrong reason.
+
+The 10s budget was the only tight deadline in the file (its siblings wait 20s and 30s) and it
+bounds a two-process TLS + HTTP/2 handshake, not server health. It is now 30s. **That change
+was made last, deliberately.** Raising it first would have hidden both real defects, which is
+exactly what nearly happened when an earlier pass concluded the cause was "machine load".
 
