@@ -170,9 +170,12 @@ impl HybridLLMManager {
     /// Check Ollama health (GET /api/tags)
     async fn check_ollama_health(base_url: &str) -> Result<()> {
         let url = format!("{}/api/tags", base_url);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()?;
+        // Same 5-second budget, same reason for not using a bare client: a literal-IP host
+        // must not spend it in the system resolver.
+        let client = crate::llm::ollama_client::client_for_endpoint_with_timeout(
+            base_url,
+            std::time::Duration::from_secs(5),
+        );
 
         client
             .get(&url)
