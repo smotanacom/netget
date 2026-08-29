@@ -396,3 +396,38 @@ unknown verb is reported rather than silently ignored.
 
 **`Sent { bytes_sent }` is never reported**: `couch_rs` owns the HTTP connection, so a byte
 count would be invented.
+
+---
+
+## The deferred paths execute the model's answer too (August 2026)
+
+Three sites asked the model what to do and could not act on the reply. All three are fixed.
+
+| site | was | why it mattered |
+|---|---|---|
+| `send_response_event`, `Dispatch::Deferred` | counted the actions into an `info!` and dropped them | this is the path **every dashboard-injected command** takes |
+| `send_conflict_event`, `Dispatch::Deferred` | `if let Err(..)` — no success arm at all | a 409 is exactly the event whose answer must run: the model has just been told a write lost a revision race and asked what to do |
+| `watch_changes_feed` | `if let Err(..)` — no success arm | a client told to watch a database and react watched, and did nothing |
+
+**The stated reason for the first one was false**, and worth recording because it reads
+plausibly: *"only the client's own loop owns the CouchDB handle, and this task runs beside
+it."* The handle is an `Arc<tokio::sync::Mutex<couch_rs::Client>>` — shared by construction —
+and `execute_couchdb_action` already took it by reference. The inline sibling of that branch
+returned its actions and they ran; the deferred path was simply the odd one out. Likewise
+`watch_changes_feed` claimed "the event's answer is handled by the normal event path", and
+nothing handled it.
+
+Executing makes the cycle real (`create_database` → `couchdb_response_received` →
+`create_database`), so it is **bounded, not cut**: `MAX_FOLLOWUP_DEPTH = 6`, with the limit
+reported on the status stream rather than hit silently. `run_followups` is the one place the
+queue is drained.
+
+`execute_couchdb_action` returns an explicitly boxed `Pin<Box<dyn Future + Send>>` instead of
+being an `async fn`. That is required, not stylistic: the chain `execute_couchdb_action` →
+`send_response_event` → `run_followups` → `execute_couchdb_action` is a cycle of `async fn`s
+whose opaque return types cannot be inferred (E0391), and boxing at a *call* site does not help
+because the coercion still needs the callee's opaque type.
+
+One consequence to be aware of: the deferred command loop's "N follow-up action(s) from the
+response event" message could previously only ever say 0, because `Dispatch::Deferred` returned
+an empty vector by construction. It now reports real numbers.

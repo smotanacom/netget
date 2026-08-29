@@ -244,9 +244,6 @@ const ANSWER_DROPPED_BASELINE: &[&str] = &[
     // the answer to an unbounded chain is a depth bound, not silence. Left as-is here only
     // because the two events it raises are not emitted by anything yet (see amqp/CLAUDE.md).
     "amqp",
-    // The *deferred* conflict handler and the changes-feed handler. Their inline siblings
-    // return `result.actions` correctly, so this is a genuine asymmetry, not a design choice.
-    "couchdb",
     // `dc_client_disconnected`, raised while reconnecting.
     "dc",
     // `nfc_ndef_read` and `nfc_apdu_response` — the model is told what the card answered and
