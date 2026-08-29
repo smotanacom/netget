@@ -198,3 +198,21 @@ the most recently opened one. Publisher confirms are not enabled, so the returne
 
 Consuming (`basic_consume`), queue/exchange declaration and binding, and acks — so
 `amqp_message_received` and `amqp_channel_opened` are declared events that nothing ever emits.
+
+## The model's answer is executed, bounded (August 2026)
+
+`raise_amqp_event` executed nothing, with this reason: *"the connect path and the command loop
+own the session, and a delivery-driven action chain would be unbounded on a busy queue."*
+
+The first half is false — the session is an `Arc<AmqpSession>` and `apply_action` already took
+it by reference. The second half is true, and the remedy for an unbounded chain is a bound, not
+silence: `MAX_FOLLOWUP_DEPTH = 4`, one chain per event, with the limit reported on the status
+stream. As written, a model told to consume a queue and republish what it saw was asked on
+every delivery and ignored every time.
+
+`apply_action` returns an explicitly boxed `Pin<Box<dyn Future + Send>>`, because
+`apply_action` → `raise_amqp_event` → `apply_action` is a cycle of `async fn`s whose opaque
+return types cannot be inferred (E0391).
+
+Note the depth is 4 rather than the 6 used elsewhere in the tree: this is the one client where
+the event source is a *stream* the broker controls, so the cheaper bound is the safer default.

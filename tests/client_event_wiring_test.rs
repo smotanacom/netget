@@ -233,18 +233,24 @@ fn no_new_client_discards_the_models_answer() {
 // Validated against the pre-fix sources of `tor` and `torrent_tracker`: it reports exactly
 // the three real sites and nothing else across all 91 clients.
 
-/// Clients with a `call_llm_for_client` whose success arm does not exist, drops `actions`
-/// with `..`, or binds `Ok(_)`.
+/// Clients that ask the model what to do and cannot act on the answer.
 ///
-/// Each entry is a client whose model is asked a question and ignored. Fix it and delete the
-/// line. See the per-entry notes in `answer_dropping_sites` for what is known about each.
-const ANSWER_DROPPED_BASELINE: &[&str] = &[
-    // `raise_amqp_event` — documented as deliberate ("a delivery-driven action chain would be
-    // unbounded on a busy queue"), which is the wrong remedy: the project's own lesson is that
-    // the answer to an unbounded chain is a depth bound, not silence. Left as-is here only
-    // because the two events it raises are not emitted by anything yet (see amqp/CLAUDE.md).
-    "amqp",
-];
+/// **Empty, and it took eleven protocols to get here.** Every entry that was on this list was
+/// removed by fixing the client, not by relaxing the rule. What the sweep produced is one
+/// judgement worth keeping: the fix is not always "execute the actions".
+///
+/// * Where the handle is **shareable** — couchdb's `Arc<Mutex<couch_rs::Client>>`, nfc's
+///   `pcsc::Context`, amqp's `Arc<AmqpSession>`, torrent_tracker's HTTP client — the answer is
+///   to execute, bounded by a depth limit. Three of those carried a comment asserting the
+///   handle was *not* shareable. All three were wrong, and the comment is why nobody checked.
+/// * Where the connection is **genuinely gone** — `dc_client_disconnected`,
+///   `websocket_client_closed` — the answer is to apply the memory update and *report* the
+///   actions that could not be sent. A `..` that silently swallows them is what hid the fact
+///   that `dc` was dropping the memory update its own comment promised to keep.
+///
+/// "An unbounded chain would be bad" is never a reason to discard the answer; it is a reason
+/// to bound the chain. `amqp` sat here for exactly that reason.
+const ANSWER_DROPPED_BASELINE: &[&str] = &[];
 
 /// Blank the body of `// ...` comments, keeping line structure.
 fn without_comments(src: &str) -> String {

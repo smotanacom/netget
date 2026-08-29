@@ -18,13 +18,20 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// The live broker connection plus every channel opened on it.
 ///
 /// The channels are held here rather than dropped because a `lapin::Channel` closes when it
 /// goes out of scope — an `open_channel` whose handle was dropped would have opened and shut
 /// the channel in one breath, and the next `publish` would have had nothing to publish on.
+/// How many LLM turns one AMQP event may drive before the chain is cut.
+///
+/// The concern that kept these answers unexecuted was real — every delivery raises
+/// `amqp_message_received`, so a busy queue could drive a chain per message — but the remedy
+/// for an unbounded chain is a bound, not silence. Each event starts its own bounded chain.
+const MAX_FOLLOWUP_DEPTH: u8 = 4;
+
 struct AmqpSession {
     conn: lapin::Connection,
     channels: Mutex<Vec<lapin::Channel>>,
@@ -171,6 +178,7 @@ impl AmqpClient {
                             Ok(result) => match apply_action(
                                 result,
                                 &session,
+                                0,
                                 client_id,
                                 &state,
                                 &llm_client,
@@ -247,119 +255,131 @@ impl AmqpClient {
 ///
 /// Shared by the connected-event path and by injected commands, so the mapping from the
 /// client's vocabulary onto lapin exists exactly once.
-async fn apply_action(
+/// Returns an explicitly boxed future rather than being an `async fn`: the chain
+/// `apply_action` -> `raise_amqp_event` -> `apply_action` is a cycle whose opaque return types
+/// cannot be inferred (E0391).
+#[allow(clippy::too_many_arguments)]
+fn apply_action<'a>(
     action_result: ClientActionResult,
-    session: &Arc<AmqpSession>,
+    session: &'a Arc<AmqpSession>,
+    depth: u8,
     client_id: ClientId,
-    state: &Arc<AppState>,
-    llm_client: &OllamaClient,
-    status_tx: &mpsc::UnboundedSender<String>,
-) -> Result<AmqpApplied> {
-    match action_result {
-        ClientActionResult::Custom { name, data } => match name.as_str() {
-            "open_channel" => {
-                let channel = session
-                    .conn
-                    .create_channel()
-                    .await
-                    .context("Channel.Open failed")?;
-                let id = channel.id();
-                session.channels.lock().await.push(channel);
-                info!("AMQP client {} opened channel {}", client_id, id);
+    state: &'a Arc<AppState>,
+    llm_client: &'a OllamaClient,
+    status_tx: &'a mpsc::UnboundedSender<String>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<AmqpApplied>> + Send + 'a>> {
+    Box::pin(async move {
+        match action_result {
+            ClientActionResult::Custom { name, data } => {
+                match name.as_str() {
+                    "open_channel" => {
+                        let channel = session
+                            .conn
+                            .create_channel()
+                            .await
+                            .context("Channel.Open failed")?;
+                        let id = channel.id();
+                        session.channels.lock().await.push(channel);
+                        info!("AMQP client {} opened channel {}", client_id, id);
 
-                // amqp_channel_opened is advertised in get_event_types(), so the model can
-                // be told it exists and write a handler for it -- and nothing raised it.
-                raise_amqp_event(
-                    &crate::client::amqp::actions::AMQP_CLIENT_CHANNEL_OPENED_EVENT,
-                    serde_json::json!({ "channel_id": id }),
-                    client_id,
-                    state,
-                    llm_client,
-                    status_tx,
-                )
-                .await;
-
-                Ok(AmqpApplied::Executed(format!(
-                    "Channel.Open/Open-Ok completed; channel {id} is open"
-                )))
-            }
-            "consume" => {
-                let queue = data
-                    .get("queue_name")
-                    .and_then(|v| v.as_str())
-                    .context("Missing queue_name for consume")?
-                    .to_string();
-                let (channel, _) = session.channel_for_publish().await?;
-                let consumer = channel
-                    .basic_consume(
-                        queue.as_str().into(),
-                        format!("netget-{client_id}").as_str().into(),
-                        lapin::options::BasicConsumeOptions::default(),
-                        lapin::types::FieldTable::default(),
-                    )
-                    .await
-                    .context("Basic.Consume failed")?;
-
-                // Each delivery raises amqp_message_received. Without a consumer that
-                // event was unreachable: it is advertised in get_event_types(), so the
-                // model could be told messages would arrive and then never hear one.
-                let consume_state = state.clone();
-                let consume_llm = llm_client.clone();
-                let consume_tx = status_tx.clone();
-                let consume_queue = queue.clone();
-                let handle = tokio::spawn(async move {
-                    use futures::StreamExt;
-                    let mut consumer = consumer;
-                    while let Some(delivery) = consumer.next().await {
-                        let Ok(delivery) = delivery else { continue };
-                        let body = String::from_utf8_lossy(&delivery.data).to_string();
-                        let _ = delivery
-                            .ack(lapin::options::BasicAckOptions::default())
-                            .await;
+                        // amqp_channel_opened is advertised in get_event_types(), so the model can
+                        // be told it exists and write a handler for it -- and nothing raised it.
                         raise_amqp_event(
+                            &crate::client::amqp::actions::AMQP_CLIENT_CHANNEL_OPENED_EVENT,
+                            serde_json::json!({ "channel_id": id }),
+                            session,
+                            depth,
+                            client_id,
+                            state,
+                            llm_client,
+                            status_tx,
+                        )
+                        .await;
+
+                        Ok(AmqpApplied::Executed(format!(
+                            "Channel.Open/Open-Ok completed; channel {id} is open"
+                        )))
+                    }
+                    "consume" => {
+                        let queue = data
+                            .get("queue_name")
+                            .and_then(|v| v.as_str())
+                            .context("Missing queue_name for consume")?
+                            .to_string();
+                        let (channel, _) = session.channel_for_publish().await?;
+                        let consumer = channel
+                            .basic_consume(
+                                queue.as_str().into(),
+                                format!("netget-{client_id}").as_str().into(),
+                                lapin::options::BasicConsumeOptions::default(),
+                                lapin::types::FieldTable::default(),
+                            )
+                            .await
+                            .context("Basic.Consume failed")?;
+
+                        // Each delivery raises amqp_message_received. Without a consumer that
+                        // event was unreachable: it is advertised in get_event_types(), so the
+                        // model could be told messages would arrive and then never hear one.
+                        let consume_session = session.clone();
+                        let consume_state = state.clone();
+                        let consume_llm = llm_client.clone();
+                        let consume_tx = status_tx.clone();
+                        let consume_queue = queue.clone();
+                        let handle = tokio::spawn(async move {
+                            use futures::StreamExt;
+                            let mut consumer = consumer;
+                            while let Some(delivery) = consumer.next().await {
+                                let Ok(delivery) = delivery else { continue };
+                                let body = String::from_utf8_lossy(&delivery.data).to_string();
+                                let _ = delivery
+                                    .ack(lapin::options::BasicAckOptions::default())
+                                    .await;
+                                raise_amqp_event(
                             &crate::client::amqp::actions::AMQP_CLIENT_MESSAGE_RECEIVED_EVENT,
                             serde_json::json!({
                                 "queue_name": consume_queue,
                                 "message_body": body,
                             }),
+                            &consume_session,
+                            0,
                             client_id,
                             &consume_state,
                             &consume_llm,
                             &consume_tx,
                         )
                         .await;
-                    }
-                });
-                state.register_client_task(client_id, handle).await;
+                            }
+                        });
+                        state.register_client_task(client_id, handle).await;
 
-                Ok(AmqpApplied::Executed(format!(
-                    "Basic.Consume on '{queue}' accepted; deliveries raise \
+                        Ok(AmqpApplied::Executed(format!(
+                            "Basic.Consume on '{queue}' accepted; deliveries raise \
                      amqp_message_received"
-                )))
-            }
-            "publish" => {
-                let exchange = data
-                    .get("exchange")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let routing_key = data
-                    .get("routing_key")
-                    .and_then(|v| v.as_str())
-                    .context("publish result has no 'routing_key'")?
-                    .to_string();
-                let payload = data
-                    .get("payload")
-                    .and_then(|v| v.as_str())
-                    .context("publish result has no 'payload'")?
-                    .to_string();
+                        )))
+                    }
+                    "publish" => {
+                        let exchange = data
+                            .get("exchange")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let routing_key = data
+                            .get("routing_key")
+                            .and_then(|v| v.as_str())
+                            .context("publish result has no 'routing_key'")?
+                            .to_string();
+                        let payload = data
+                            .get("payload")
+                            .and_then(|v| v.as_str())
+                            .context("publish result has no 'payload'")?
+                            .to_string();
 
-                let (channel, opened_now) = session.channel_for_publish().await?;
-                let channel_id = channel.id();
-                // The returned PublisherConfirm is dropped: confirm mode is not enabled, so
-                // there is no ack to wait for. The await above is what puts Basic.Publish and
-                // its content frames on the socket.
-                channel
+                        let (channel, opened_now) = session.channel_for_publish().await?;
+                        let channel_id = channel.id();
+                        // The returned PublisherConfirm is dropped: confirm mode is not enabled, so
+                        // there is no ack to wait for. The await above is what puts Basic.Publish and
+                        // its content frames on the socket.
+                        channel
                     .basic_publish(
                         exchange.as_str().into(),
                         routing_key.as_str().into(),
@@ -371,7 +391,7 @@ async fn apply_action(
                     .with_context(|| {
                         format!("Basic.Publish to exchange {exchange:?} key {routing_key:?} failed")
                     })?;
-                info!(
+                        info!(
                     "AMQP client {} published {} bytes to exchange {:?} key {:?} on channel {}",
                     client_id,
                     payload.len(),
@@ -379,7 +399,7 @@ async fn apply_action(
                     routing_key,
                     channel_id
                 );
-                Ok(AmqpApplied::Executed(format!(
+                        Ok(AmqpApplied::Executed(format!(
                     "Basic.Publish of {} bytes to exchange {:?} routing key {:?} on channel {}{}",
                     payload.len(),
                     exchange,
@@ -391,33 +411,35 @@ async fn apply_action(
                         ""
                     }
                 )))
+                    }
+                    other => Err(anyhow::anyhow!(
+                        "AMQP client cannot apply custom result '{}'",
+                        other
+                    )),
+                }
             }
-            other => Err(anyhow::anyhow!(
-                "AMQP client cannot apply custom result '{}'",
-                other
+            ClientActionResult::Disconnect => {
+                session
+                    .conn
+                    .close(200, "Goodbye".into())
+                    .await
+                    .context("Connection.Close failed")?;
+                Ok(AmqpApplied::Disconnect)
+            }
+            ClientActionResult::WaitForMore => Ok(AmqpApplied::Executed(
+                "waiting for the next AMQP frame; nothing sent".to_string(),
             )),
-        },
-        ClientActionResult::Disconnect => {
-            session
-                .conn
-                .close(200, "Goodbye".into())
-                .await
-                .context("Connection.Close failed")?;
-            Ok(AmqpApplied::Disconnect)
+            ClientActionResult::NoAction => {
+                Ok(AmqpApplied::Executed("no_action: nothing sent".to_string()))
+            }
+            ClientActionResult::SendData(_) => Err(anyhow::anyhow!(
+                "AMQP frames are built by lapin; there is no raw-byte channel"
+            )),
+            ClientActionResult::Multiple(_) => Err(anyhow::anyhow!(
+                "AMQP client does not support Multiple action results"
+            )),
         }
-        ClientActionResult::WaitForMore => Ok(AmqpApplied::Executed(
-            "waiting for the next AMQP frame; nothing sent".to_string(),
-        )),
-        ClientActionResult::NoAction => {
-            Ok(AmqpApplied::Executed("no_action: nothing sent".to_string()))
-        }
-        ClientActionResult::SendData(_) => Err(anyhow::anyhow!(
-            "AMQP frames are built by lapin; there is no raw-byte channel"
-        )),
-        ClientActionResult::Multiple(_) => Err(anyhow::anyhow!(
-            "AMQP client does not support Multiple action results"
-        )),
-    }
+    })
 }
 
 /// Drain injected commands (the dashboard's \[ send \]) until the channel closes — the client
@@ -448,8 +470,16 @@ async fn command_loop(
                 error: e.to_string(),
             }),
             Ok(result) => {
-                match apply_action(result, &session, client_id, &state, &llm_client, &status_tx)
-                    .await
+                match apply_action(
+                    result,
+                    &session,
+                    0,
+                    client_id,
+                    &state,
+                    &llm_client,
+                    &status_tx,
+                )
+                .await
                 {
                     // Never `Sent`: the AMQP method really did complete on the wire, but lapin
                     // frames and writes it internally and reports no byte count, so there is no
@@ -496,12 +526,21 @@ async fn command_loop(
     }
 }
 
-/// Raise one AMQP event at the model. Executes nothing it answers with: the connect path
-/// and the command loop own the session, and a delivery-driven action chain would be
-/// unbounded on a busy queue.
+/// Raise one AMQP event at the model and carry out what it answers with, bounded by
+/// [`MAX_FOLLOWUP_DEPTH`].
+///
+/// This used to execute nothing, on the grounds that "the connect path and the command loop
+/// own the session, and a delivery-driven action chain would be unbounded on a busy queue".
+/// The ownership half was not true — the session is an `Arc<AmqpSession>` and `apply_action`
+/// already took it by reference — and the unboundedness half is answered by a depth limit.
+/// As written, a model told to consume a queue and republish what it saw was asked on every
+/// delivery and ignored every time.
+#[allow(clippy::too_many_arguments)]
 async fn raise_amqp_event(
     event_type: &'static std::sync::LazyLock<crate::protocol::EventType>,
     data: serde_json::Value,
+    session: &Arc<AmqpSession>,
+    depth: u8,
     client_id: ClientId,
     state: &Arc<AppState>,
     llm_client: &OllamaClient,
@@ -515,7 +554,7 @@ async fn raise_amqp_event(
         .await
         .unwrap_or_default();
     let event = Event::new(event_type, data);
-    if let Err(e) = call_llm_for_client(
+    match call_llm_for_client(
         llm_client,
         state,
         client_id.to_string(),
@@ -527,6 +566,52 @@ async fn raise_amqp_event(
     )
     .await
     {
-        error!("AMQP client {} LLM error on event: {}", client_id, e);
+        Ok(result) => {
+            if let Some(mem) = result.memory_updates {
+                state.set_memory_for_client(client_id, mem).await;
+            }
+            if result.actions.is_empty() {
+                return;
+            }
+            if depth >= MAX_FOLLOWUP_DEPTH {
+                warn!(
+                    "AMQP client {} stopped a follow-up chain at depth {}: {} action(s) not \
+                     executed",
+                    client_id,
+                    depth,
+                    result.actions.len()
+                );
+                let _ = status_tx.send(format!(
+                    "[CLIENT] ⚠ amqp client {} hit the follow-up depth limit ({}); {} action(s) \
+                     were not executed",
+                    client_id,
+                    MAX_FOLLOWUP_DEPTH,
+                    result.actions.len()
+                ));
+                return;
+            }
+            let protocol = AmqpClientProtocol::new();
+            for action in result.actions {
+                match protocol.execute_action(action) {
+                    Ok(action_result) => {
+                        if let Err(e) = apply_action(
+                            action_result,
+                            session,
+                            depth + 1,
+                            client_id,
+                            state,
+                            llm_client,
+                            status_tx,
+                        )
+                        .await
+                        {
+                            error!("AMQP client {} follow-up action failed: {:#}", client_id, e);
+                        }
+                    }
+                    Err(e) => warn!("AMQP client {} rejected follow-up action: {}", client_id, e),
+                }
+            }
+        }
+        Err(e) => error!("AMQP client {} LLM error on event: {}", client_id, e),
     }
 }
