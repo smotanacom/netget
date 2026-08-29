@@ -100,7 +100,7 @@ impl Protocol for ModbusProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             // 502 is below 1024 so this requirement genuinely fires; server_startup only
             // enforces it when the port actually requested is privileged, so running on a
             // high port as an unprivileged user still works.
@@ -114,7 +114,7 @@ impl Protocol for ModbusProtocol {
                  exception to raise. Framing (transaction id, unit id, byte counts, write \
                  echo) is server-side",
             )
-            .e2e_testing("tokio-modbus 0.17 client (independent implementation)")
+            .e2e_testing("tokio-modbus 0.17, an independent implementation, in test_modbus_reads_writes_and_exceptions_against_tokio_modbus and not #[ignore]d: connect_slave, read_holding_registers, write_single_register and a spec exception path, all asserted on decoded values.")
             .notes(
                 "Validated against the tokio-modbus 0.17 client, which is a separate \
                  implementation from this server's hand-rolled codec: read_coils, \

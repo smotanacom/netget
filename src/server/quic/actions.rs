@@ -119,7 +119,7 @@ impl Protocol for QuicProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             // QUIC's default port is UDP 443; the preflight check only fires
             // when the requested port is actually < 1024.
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(443))

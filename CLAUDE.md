@@ -109,12 +109,26 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   **August 28 2026 added two more**: `npm` (the real npm CLI — `npm view` resolves the packument
   and `npm install` unpacks the served tarball into `node_modules/`) and `mqtt` (rumqttc, taken
   through CONNECT → SUBSCRIBE → SUBACK → PUBLISH and back to the broker's own PUBLISH).
+  **August 29 2026 added five more, all of which already had the evidence** and were sitting at
+  Experimental only because nobody had re-read it: `etcd` (etcd-client), `modbus`
+  (tokio-modbus), `quic` (quinn), `mdns` (mdns-sd) and `dynamo` (aws-sdk-dynamodb). Two of
+  those were on the "not promoted" list below for reasons that had gone stale — `etcd` was
+  listed as having only generic-HTTP evidence when its test drives the official `etcd_client`,
+  and `modbus` as having "no independent peer at all" when its test is literally named
+  `test_modbus_reads_writes_and_exceptions_against_tokio_modbus`. **Re-derive this list before
+  trusting it in either direction**: it under-rates as readily as it over-rates.
+
+  Checked and *not* promoted in the same pass, with the reason: `xmpp` (its own test says
+  `tokio_xmpp::Client` cannot complete its connect), `bitcoin` (the `bitcoin` crate is used as a
+  codec, not as a peer completing a session — the `dhcp` situation), `vnc` (no third-party
+  client; the apparent import was netget's own path), `bgp` and `grpc` and `torrent_dht` and
+  `xmlrpc` (codecs and parsers rather than clients).
 
   Deliberately **not** promoted despite an audit suggesting them: anything whose only evidence is
   a generic HTTP client (`reqwest` proves an HTTP server answers, not that the protocol on top is
-  right — `couchdb`, `etcd`, `oci_registry`, `kubernetes`, `openapi`, `spark`, `xmlrpc`, `yarn`,
+  right — `couchdb`, `oci_registry`, `kubernetes`, `openapi`, `spark`, `xmlrpc`, `yarn`,
   `git`, `jsonrpc`, `oauth2`, `saml_sp`, `proxy`, `http2`); anything with no independent peer at
-  all (`memcached`, `modbus`, `named_pipe`, `openvpn`, `pty`, `radius`, `socket_file`, `stdio`,
+  all (`memcached`, `named_pipe`, `openvpn`, `pty`, `radius`, `socket_file`, `stdio`,
   `websocket`); and `rss` — whose test does **not** currently fail, but whose evidence would be
   circular: the server builds its XML with the `rss` crate's `ChannelBuilder`, so parsing the
   result with the same crate validates nothing. Clearing the bar there needs a *different*
