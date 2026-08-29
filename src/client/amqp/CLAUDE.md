@@ -196,8 +196,11 @@ the most recently opened one. Publisher confirms are not enabled, so the returne
 
 ## Still missing
 
-Consuming (`basic_consume`), queue/exchange declaration and binding, and acks — so
-`amqp_message_received` and `amqp_channel_opened` are declared events that nothing ever emits.
+Queue/exchange declaration and binding. **Consuming is implemented** — `consume` calls
+`basic_consume` and acks each delivery — so `amqp_message_received` and `amqp_channel_opened`
+are both emitted; the sentence that used to stand here saying nothing ever emits them was
+stale, and `tests/event_emit_sites_test.rs` now fails the build if that ever becomes true
+again.
 
 ## The model's answer is executed, bounded (August 2026)
 
