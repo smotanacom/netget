@@ -56,6 +56,7 @@ async fn test_openapi_route_matching_comprehensive() -> E2EResult<()> {
 
     // Create HTTP client
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .timeout(Duration::from_secs(10))
         .build()?;
 
@@ -239,6 +240,7 @@ async fn test_openapi_llm_on_invalid_override() -> E2EResult<()> {
     // REMOVED: assert_stack_name call
 
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .timeout(Duration::from_secs(10))
         .build()?;
 

@@ -115,7 +115,10 @@ Set Content-Type header appropriately (text/plain for /, application/json for /a
     sleep(Duration::from_secs(2)).await;
 
     // Create HTTP/2 client (with prior knowledge - no TLS, direct HTTP/2)
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
 
     // Test 1: GET /
     println!("Test 1: GET /");
@@ -274,7 +277,10 @@ Set Content-Type: application/json for all responses."#;
     sleep(Duration::from_secs(2)).await;
 
     // Create HTTP/2 client
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
 
     // Test 1: POST /echo with text body
     println!("Test 1: POST /echo with text body");
@@ -393,7 +399,10 @@ Set Content-Type: application/json."#;
     sleep(Duration::from_secs(2)).await;
 
     // Create HTTP/2 client (reuses connection for multiplexing)
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
 
     // Send 3 concurrent requests over the same connection
     println!("Sending 3 concurrent requests...");

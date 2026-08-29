@@ -15,6 +15,7 @@ impl HttpValidator {
     /// Create a new HTTP validator for the given port
     pub fn new(port: u16) -> Self {
         let client = Client::builder()
+            .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
             .timeout(Duration::from_secs(10))
             .build()
             .expect("Failed to build HTTP client");

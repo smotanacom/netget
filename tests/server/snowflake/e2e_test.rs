@@ -23,6 +23,7 @@ use std::time::Duration;
 
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .timeout(Duration::from_secs(15))
         .build()
         .expect("build reqwest client")

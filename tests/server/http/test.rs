@@ -497,6 +497,7 @@ async fn test_http_error_responses() -> E2EResult<()> {
 
     // Don't follow redirects for this test
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 

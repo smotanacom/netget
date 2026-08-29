@@ -178,6 +178,7 @@ async fn test_oauth2_authorize_reports_a_server_error() -> E2EResult<()> {
         server.port
     );
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let response = tokio::time::timeout(Duration::from_secs(25), client.get(&url).send())

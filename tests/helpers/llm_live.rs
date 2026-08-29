@@ -491,6 +491,7 @@ impl LiveServer {
         body: Option<(&str, String)>,
     ) -> E2EResult<(u16, String)> {
         let client = reqwest::Client::builder()
+            .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
             .timeout(FIRST_BYTE_TIMEOUT)
             .build()?;
         let url = format!("http://{}{}", self.addr(), path);

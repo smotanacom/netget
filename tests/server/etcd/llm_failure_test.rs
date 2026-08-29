@@ -67,7 +67,10 @@ async fn test_etcd_answers_internal_when_llm_fails() -> E2EResult<()> {
     let server = start_netget_server(config).await?;
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
     let url = format!("http://127.0.0.1:{}/etcdserverpb.KV/Range", server.port);
 
     let response = tokio::time::timeout(

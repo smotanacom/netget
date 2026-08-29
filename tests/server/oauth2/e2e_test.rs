@@ -68,6 +68,7 @@ async fn test_oauth2_authorization_code_flow() -> E2EResult<()> {
 
     // Create client that doesn't follow redirects (so we can inspect the 302 response)
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 

@@ -546,6 +546,7 @@ async fn test_discovery_over_tls_and_error_paths() -> E2EResult<()> {
 
     let base = format!("https://127.0.0.1:{}", server.port);
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .danger_accept_invalid_certs(true)
         .timeout(Duration::from_secs(15))
         .build()?;
@@ -794,6 +795,7 @@ async fn test_custom_resource_discovery_and_explicit_table() -> E2EResult<()> {
 
     let base = format!("http://127.0.0.1:{}", server.port);
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .timeout(Duration::from_secs(15))
         .build()?;
 

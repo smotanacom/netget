@@ -109,7 +109,10 @@ async fn test_grpc_answers_internal_when_llm_fails() -> E2EResult<()> {
     let server = start_netget_server(config).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
     let url = format!("http://127.0.0.1:{}/failtest.EchoService/Echo", server.port);
 
     let response = tokio::time::timeout(
@@ -237,7 +240,10 @@ async fn test_grpc_answers_internal_when_handler_returns_no_usable_action() -> E
     let server = start_netget_server(config).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
     let url = format!("http://127.0.0.1:{}/failtest.EchoService/Echo", server.port);
 
     let response = tokio::time::timeout(

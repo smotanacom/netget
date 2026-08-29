@@ -79,6 +79,7 @@ async fn test_proxy_blocks_rather_than_forwards_when_llm_fails() -> E2EResult<()
 
     let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{}", server.port))?;
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .proxy(proxy)
         .timeout(Duration::from_secs(25))
         .build()?;

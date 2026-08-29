@@ -143,6 +143,7 @@ Answer each openid_request according to its endpoint_type:
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 

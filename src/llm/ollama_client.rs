@@ -834,13 +834,44 @@ impl std::str::FromStr for CommandInterpretation {
 /// back is equally dead at 120s or 300s. Override with `--llm-request-timeout`.
 pub const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Add a resolver override when `host` is a **literal IP address**, so the request never
+/// consults the system name resolver.
+///
+/// Asking the resolver about `127.0.0.1` is never meaningful — a dotted quad already *is* the
+/// answer — but `reqwest` hands the URL host to its resolver unconditionally, and
+/// `hyper-util`'s `GaiResolver` does not special-case one. That becomes a real
+/// `getaddrinfo()` call, which on macOS goes through libinfo to mDNSResponder: a single
+/// system-wide daemon, and a serialisation point under concurrency. It was measured blocking
+/// for **8.25 seconds** with ~100 processes asking at once (see `src/server/doh/CLAUDE.md`),
+/// which is long enough to expire a request timeout against a server that is up and idle.
+///
+/// A hostname is left alone: resolving `localhost` or a real name is the resolver's job, and
+/// `/etc/hosts` or split-horizon DNS may legitimately point it somewhere unexpected. Only the
+/// case where resolution has exactly one correct answer is short-circuited.
+fn without_dns_for_literal_ip(
+    builder: reqwest::ClientBuilder,
+    host: &str,
+) -> reqwest::ClientBuilder {
+    // `host` may carry a scheme; strip it before parsing, and strip brackets around IPv6.
+    let bare = host
+        .rsplit_once("//")
+        .map(|(_, h)| h)
+        .unwrap_or(host)
+        .trim_matches(|c| c == '[' || c == ']');
+    match bare.parse::<std::net::IpAddr>() {
+        // The port is irrelevant: hyper overwrites it with the one from the URL, so a single
+        // override serves every port this client is later pointed at.
+        Ok(ip) => builder.resolve(bare, std::net::SocketAddr::new(ip, 0)),
+        Err(_) => builder,
+    }
+}
+
 /// The HTTP client used for OpenAI-compatible backends, bounded by `timeout`.
 ///
 /// One constructor so the reqwest-level bound and [`OllamaClient::request_timeout`] cannot
 /// disagree; see [`OllamaClient::with_request_timeout`] for what that disagreement cost.
-fn openai_http_client(timeout: std::time::Duration) -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(timeout)
+fn openai_http_client(timeout: std::time::Duration, base_url: &str) -> reqwest::Client {
+    without_dns_for_literal_ip(reqwest::Client::builder().timeout(timeout), base_url)
         .build()
         .expect("Failed to build HTTP client")
 }
@@ -903,7 +934,12 @@ impl OllamaClient {
             (url_str.as_str(), 11434)
         };
 
-        let ollama = Ollama::new(host, port);
+        // Built here rather than left to `Ollama::new`, which makes its own default client,
+        // so a literal-IP host skips the system resolver. See `without_dns_for_literal_ip`.
+        let http = without_dns_for_literal_ip(reqwest::Client::builder(), host)
+            .build()
+            .expect("Failed to build Ollama HTTP client");
+        let ollama = Ollama::new_with_client(host, port, http);
         Self {
             backend: LlmBackend::Ollama(ollama),
             status_tx: None,
@@ -938,11 +974,12 @@ impl OllamaClient {
 
     /// Create a new client for an OpenAI-compatible API endpoint
     pub fn new_openai(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
-        let client = openai_http_client(DEFAULT_REQUEST_TIMEOUT);
+        let base_url = base_url.into().trim_end_matches('/').to_string();
+        let client = openai_http_client(DEFAULT_REQUEST_TIMEOUT, &base_url);
         Self {
             backend: LlmBackend::OpenAI {
                 client,
-                base_url: base_url.into().trim_end_matches('/').to_string(),
+                base_url,
                 api_key: api_key.into(),
             },
             status_tx: None,
@@ -1187,8 +1224,11 @@ impl OllamaClient {
     /// timeout the user had asked for.
     pub fn with_request_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.request_timeout = timeout;
-        if let LlmBackend::OpenAI { client, .. } = &mut self.backend {
-            *client = openai_http_client(timeout);
+        if let LlmBackend::OpenAI {
+            client, base_url, ..
+        } = &mut self.backend
+        {
+            *client = openai_http_client(timeout, base_url);
         }
         self
     }
