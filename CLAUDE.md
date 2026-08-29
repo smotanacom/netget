@@ -903,6 +903,32 @@ Read before assuming a subsystem is sound:
   `debug!` of `.len()`, or a comment explaining why the model's answer is not needed are all
   the same bug.
 
+- **A literal IP still goes through the system resolver, and it can block for seconds.**
+  `reqwest` hands the URL host to its DNS resolver unconditionally, and `hyper-util`'s
+  `GaiResolver` does not special-case a dotted quad — so `http://127.0.0.1:11434` performs a
+  real `getaddrinfo("127.0.0.1")`. On macOS that goes through libinfo to mDNSResponder, one
+  system-wide daemon, which serialises under concurrency: **measured at 8.25 seconds** with
+  ~100 processes asking at once. Use
+  `crate::llm::ollama_client::client_for_endpoint{,_with_timeout}`, which applies the override
+  when — and only when — the host parses as an `IpAddr`. A hostname is left alone; resolving it
+  is the resolver's job.
+
+  Two traps this produced, both worth knowing:
+  - **The override is gated on that parse, so extracting the host must be right.** A first
+    version stripped only the scheme, leaving `127.0.0.1:54321`, which does not parse — so the
+    bypass silently did not engage and the symptom was unchanged. `host_of` and
+    `tests/literal_ip_dns_bypass_test.rs` exist for exactly that.
+  - **It presents as "the machine is loaded".** The failing test showed a healthy server that
+    had never been spoken to. What settled it was one raw `TcpStream::connect` next to the
+    failing request: 464µs and the server logged the accept, while reqwest's own connect had
+    not arrived 8 seconds later. **When a client times out against a healthy server, prove
+    which step is stuck before blaming the environment** — an earlier pass concluded "external
+    machine load" and closed the investigation with the bug still there.
+
+- **More test threads is not the fix for a starved runtime here.** `--test-threads=100` already
+  oversubscribes a 12-core box; giving one test `flavor = "multi_thread", worker_threads = 4`
+  made the same failure go from 2/6 to **7/8**. Measure before adding workers.
+
 - **Building a `reqwest::Client` is a blocking operation.** `Client::builder().build()` sets
   up the rustls stack and loads the platform root store; on macOS that reads the keychain
   through Security.framework, synchronously and serialised across processes. Called on the
