@@ -81,7 +81,7 @@ async fn query_doh_post(
 }
 
 /// Create an HTTP client that accepts self-signed certificates (for testing)
-fn create_insecure_client() -> E2EResult<Client> {
+fn create_insecure_client(port: u16) -> E2EResult<Client> {
     // Initialize rustls crypto provider (required for rustls 0.23+)
     use rustls::crypto::CryptoProvider;
     let _ = CryptoProvider::install_default(rustls::crypto::ring::default_provider());
@@ -95,17 +95,31 @@ fn create_insecure_client() -> E2EResult<Client> {
     // HTTP/2-only server.
     // `tls_built_in_root_certs(false)`: nothing here is verified against the platform roots —
     // `danger_accept_invalid_certs` is set on the line above — so loading them is pure cost.
-    // On macOS that load reads the keychain through Security.framework, synchronously and
-    // serialised across processes, which the root CLAUDE.md documents as having stalled the
-    // doh *client* tests badly enough that a configured request timeout fired against a
-    // healthy server.
+    // On macOS that load reads the keychain through Security.framework, synchronously.
     //
-    // Included because it is right regardless, **not** as a proven fix for anything: this
-    // test does still time out occasionally under heavy external machine load, and disabling
-    // the root store measurably did not stop that. See src/server/doh/CLAUDE.md.
+    // `.resolve(..)` is the one that made this test stop failing, and it is worth explaining
+    // because it is not obvious that a *literal IP* needs a resolver override at all.
+    //
+    // reqwest hands the URL's host to its DNS resolver unconditionally. `hyper-util`'s default
+    // `GaiResolver` does not special-case a dotted quad, so `https://127.0.0.1:PORT/` still
+    // becomes a `getaddrinfo("127.0.0.1")` call. On macOS that goes through libinfo to
+    // mDNSResponder, a single system-wide daemon — and at `--test-threads=100` roughly a
+    // hundred test processes ask it at once. It blocked for **8.25 seconds** in a measured
+    // failing run, out of this request's 10-second budget.
+    //
+    // The measurement that pinned it: a raw `TcpStream::connect` to the same port, issued from
+    // this same test on the same runtime immediately beforehand, completed in **464µs** and the
+    // server logged the accept — while reqwest's own connect had still not reached the server
+    // 8 seconds later. So the machine, the runtime and the server were all healthy; only the
+    // name lookup was stuck. Overriding it took this test from 4 failures in 6 full-suite runs
+    // to 0 in 8, at the same machine load.
     let client = Client::builder()
         .danger_accept_invalid_certs(true)
         .tls_built_in_root_certs(false)
+        .resolve(
+            "127.0.0.1",
+            std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        )
         .http2_prior_knowledge()
         .timeout(Duration::from_secs(10))
         .build()?;
@@ -209,7 +223,7 @@ async fn test_doh_server() -> E2EResult<()> {
         .map_err(|e| format!("DoH server never reported a listening socket: {e}"))?;
 
     // Create HTTP client
-    let client = create_insecure_client()?;
+    let client = create_insecure_client(server.port)?;
 
     // Test both GET and POST methods against the same server
     println!("\n[Test 1] Querying via GET method...");

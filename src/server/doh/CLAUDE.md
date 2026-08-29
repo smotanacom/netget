@@ -387,34 +387,51 @@ Excellent scripting candidate:
 
 ---
 
-## `test_doh_server` and machine load — an open item, deliberately not "fixed" (August 2026)
+## `test_doh_server`: a literal IP still goes through the system resolver (August 2026)
 
-`test_doh_server` times out intermittently in a full `--test-threads=100` run. The failure is
-always the same: `reqwest ... source: TimedOut` on the first GET, against a server that logged
-`DoH server listening on 127.0.0.1:<port>` and never received a request — the mock reports zero
-`doh_query` calls.
+`test_doh_server` failed roughly **4 runs in 6** of the full suite at `--test-threads=100`,
+always the same way: `reqwest ... source: TimedOut` on the first GET, against a DoH server that
+had logged `DoH server listening on 127.0.0.1:<port>` and had never been asked anything — the
+mock reported zero `doh_query` calls.
 
-**What was ruled out, so it is not re-investigated from scratch:**
+**Cause: `reqwest` resolves the URL host unconditionally, even when it is a dotted quad.**
+`hyper-util`'s default `GaiResolver` does not special-case `127.0.0.1`, so every request made a
+`getaddrinfo("127.0.0.1")` call. On macOS that goes through libinfo to mDNSResponder — one
+system-wide daemon — and at 100 test threads about a hundred processes ask it simultaneously.
 
-- *A port mismatch.* The harness resolves the real bound port correctly (the mock answers the
-  startup call with `port: 0`); the failing run queried the port the server was listening on.
-- *The `has_packet_capture_access` probe change.* The failure reproduces with both the old
-  `/dev/bpf0..3` scan and the current one.
-- *`reqwest`'s platform root store.* `tls_built_in_root_certs(false)` was added — it is correct
-  regardless, since `danger_accept_invalid_certs` means nothing is checked against those roots —
-  and it measurably did **not** change the failure rate.
-- *A single-threaded test runtime starving the TLS/HTTP-2 client.* Switching to
-  `flavor = "multi_thread"` did not change the failure rate either, and was reverted rather than
-  left in as an unproven fix.
+The measurement that pinned it, after the timing was instrumented directly:
 
-**What the evidence actually points at:** external machine load. Three consecutive clean
-full-suite runs were recorded on a quiet machine; the failures appeared at a **load average of
-93 on 12 cores** with a video call, a VM and WindowServer occupying the box. The three
-`bluetooth_ble::read_default_value_test` cases — also wall-clock-deadline tests — start failing
-in the same runs, which is the tell: it is not DoH-specific.
+```
+!!!T!!! client built after 1.047375ms
+!!!T!!! raw TCP connect took 464µs ok=true          <- same runtime, same port, immediately before
+!!!T!!! GET FAILED after 10.001948584s: ... TimedOut
+[STDERR] ... DoH TCP connection from 127.0.0.1:59561   <- the raw probe
+[STDERR] ... DoH TCP connection from 127.0.0.1:62223   <- reqwest, 8.25s later
+```
 
-The honest reading is that this test asserts a **10-second wall-clock budget** for a loopback
-HTTP/2-over-TLS round trip, and that budget is not met when the machine is 8x oversubscribed.
-Raising the timeout would only move the threshold, so it was not done. **Do not label this
-flaky and move on, and do not "fix" it with a bigger number**: if it reproduces on an idle
-machine, there is a real defect here and the ruled-out list above is where to start.
+A raw `TcpStream::connect` from the same test, on the same runtime, in the same moment, reached
+the server in 464µs. reqwest's connect had not reached it 8 seconds later. The machine, the
+runtime, the accept loop and the TLS stack were all healthy; only the name lookup was stuck.
+
+**Fix:** `.resolve("127.0.0.1", <addr>)` on the client builder, which bypasses the system
+resolver. That took the test from 4/6 failures to **0/8** at the same machine load
+(load average ~120 on 12 cores).
+
+### What this replaces, and why the earlier reading was wrong
+
+An earlier pass concluded the evidence "points at external machine load" and listed four ruled-out
+hypotheses. Load was real and was what made the bug *visible*, but it was not the cause, and
+treating it as one nearly cost the fix. Two of the earlier candidates were also tested properly
+here and are genuinely not needed: a multi-threaded test runtime and building the client on
+`spawn_blocking` each changed nothing once the resolver was overridden (the client builds in
+~1ms), so neither was kept.
+
+The lesson is the method rather than the finding: **when a client times out against a healthy
+server, prove which step is stuck before blaming the environment.** One raw `TcpStream::connect`
+next to the failing request separated "the machine cannot connect" from "this library will not
+connect", and that single line is what turned an unexplained flake into a one-line fix.
+
+**Every other e2e test that points `reqwest` at `127.0.0.1` has the same latent defect** — 17
+files build a client without a resolver override. They have looser deadlines, so they have not
+failed yet.
+
