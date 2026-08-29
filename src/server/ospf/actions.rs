@@ -1026,35 +1026,16 @@ pub static OSPF_LINK_STATE_ACK_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for OspfProtocol {
+    /// Deliberately empty.
+    ///
+    /// This used to advertise `list_neighbors` and `list_lsdb`, and `execute_action` had no arm
+    /// for either — so the model was offered two verbs and rejected with "Unknown OSPF action
+    /// type" whenever it chose one. They are removed rather than implemented because neither
+    /// can be answered honestly: NetGet keeps no neighbour table and no link-state database,
+    /// and the project rule is that protocols do not implement storage — the model tracks that
+    /// state in its own memory, where it already has everything these would report.
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
-        vec![
-            ActionDefinition {
-                name: "list_neighbors".to_string(),
-                description: "List all OSPF neighbors and their states".to_string(),
-                parameters: vec![],
-                example: json!({
-                    "type": "list_neighbors"
-                }),
-                log_template: Some(
-                    LogTemplate::new()
-                        .with_info("-> OSPF list neighbors")
-                        .with_debug("OSPF list_neighbors"),
-                ),
-            },
-            ActionDefinition {
-                name: "list_lsdb".to_string(),
-                description: "List Link State Database entries".to_string(),
-                parameters: vec![],
-                example: json!({
-                    "type": "list_lsdb"
-                }),
-                log_template: Some(
-                    LogTemplate::new()
-                        .with_info("-> OSPF list LSDB")
-                        .with_debug("OSPF list_lsdb"),
-                ),
-            },
-        ]
+        vec![]
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![

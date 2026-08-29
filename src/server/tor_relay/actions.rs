@@ -214,6 +214,12 @@ impl Server for TorRelayProtocol {
             "detect_relay_cell" => self.execute_detect_relay_cell(action),
             "send_destroy" => self.execute_send_destroy(action),
             "close_connection" => Ok(ActionResult::CloseConnection),
+            // Writes nothing to the wire — that is the point of it. The doc comment on
+            // `tor_relay_log_action` claimed "`execute_action` has always handled it"; it did
+            // not, so advertising the verb handed the model a name it was then rejected for
+            // using. `NoAction` is the honest result: the observation is already in the access
+            // log by the time this runs.
+            "tor_relay_log" => Ok(ActionResult::NoAction),
             _ => Err(anyhow::anyhow!("Unknown Tor Relay action: {}", action_type)),
         }
     }
@@ -321,9 +327,13 @@ fn tor_relay_response_actions() -> Vec<ActionDefinition> {
     ]
 }
 
-/// `tor_relay_log` was executable but never advertised.
+/// `tor_relay_log`: the only verb this relay has that writes nothing to the wire.
 ///
-/// `execute_action` has always handled it, and it is the only verb this relay has that
+/// The comment here used to say "`execute_action` has always handled it". It did not — there
+/// was no match arm — so advertising the verb was the *advertised-but-unexecutable* bug rather
+/// than the fix for its mirror. The arm exists now, returning `NoAction`.
+///
+/// It is the only verb this relay has that
 /// writes nothing to the wire -- so it is the answer for a circuit event that needs
 /// observing rather than acting on. Leaving it undeclared meant the model could not ask
 /// for it and had to choose between send_destroy, detect_relay_cell and inventing
