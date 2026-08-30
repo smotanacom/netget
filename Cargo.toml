@@ -1055,6 +1055,12 @@ coap = "0.27"
 # BitTorrent client for e2e integration tests
 # Using cratetorrent library for programmatic testing, also supports transmission-cli/aria2
 sha1 = "0.10"  # For info_hash calculation
+# Independent feed parser for the rss server e2e test, for the same reason as tokio-modbus and
+# coap-lite above. `src/server/rss` builds its XML with the `rss` crate's ChannelBuilder, so
+# parsing the result back with the `rss` crate would only prove that one crate round-trips
+# through itself. feed-rs is a separate implementation with its own model, so it is the thing
+# that makes the test evidence.
+feed-rs = "2"
 
 [build-dependencies]
 # Protocol buffer compiler for etcd gRPC service

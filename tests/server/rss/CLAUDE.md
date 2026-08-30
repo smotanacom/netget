@@ -7,7 +7,7 @@ E2E tests for RSS feed server that verify LLM-driven dynamic feed generation, ca
 ## Test Approach
 
 **Strategy**: Single comprehensive test with multiple feed fetches
-**Client**: reqwest HTTP client + rss crate for parsing
+**Client**: reqwest HTTP client + **feed-rs** for parsing
 **LLM Calls**: ~6 total (within budget)
 **Runtime**: ~10-15 seconds
 
@@ -35,10 +35,18 @@ E2E tests for RSS feed server that verify LLM-driven dynamic feed generation, ca
     - Tests non-existent feed path
     - Verifies proper error response
 
-5. **RSS Parsing** (validation)
-    - Parses generated XML with rss crate
-    - Validates RSS 2.0 compliance
-    - Verifies all fields are accessible
+5. **Independent parsing** (the load-bearing one)
+    - Parses the served XML with **feed-rs**, not with the `rss` crate
+    - `src/server/rss` *generates* its XML with the `rss` crate's `ChannelBuilder`. Parsing it
+      back with the same crate proved only that one crate round-trips through itself, which is
+      the circular-evidence trap the root CLAUDE.md warns about, and is why RSS sat at
+      Experimental with a passing test.
+    - feed-rs is a separate implementation with its own normalised model, so what it accepts is
+      evidence about the bytes on the wire.
+    - Asserts: `FeedType::RSS2`, channel title/description/language, three entries, the first
+      entry's title and link, that its RFC 2822 `pub_date` parsed into a real timestamp (feed-rs
+      silently drops dates it cannot read, so `published.is_some()` is a real check), and its
+      categories.
 
 ## LLM Call Budget
 
@@ -63,7 +71,7 @@ Breakdown:
 ✅ **Optional fields** - Author, GUID, language, TTL, pub_date
 ✅ **HTTP headers** - Proper Content-Type (application/rss+xml)
 ✅ **Error handling** - 404 for non-existent feeds
-✅ **Parsing validation** - Generated XML parses with rss crate
+✅ **Parsing validation** - Generated XML parses with feed-rs, an independent implementation
 
 ## Runtime Characteristics
 
@@ -102,8 +110,8 @@ Breakdown:
 
 ### Parsing Validation
 
-- rss crate can parse generated XML
-- All fields accessible via API
+- feed-rs can parse the generated XML and classifies it as RSS 2.0
+- Channel metadata, entry links, dates and categories are all readable through its model
 - No parsing errors
 
 ## Known Issues
@@ -147,10 +155,11 @@ RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features rss --t
 ## Dependencies
 
 - **reqwest**: HTTP client for fetching feeds
-- **rss**: RSS parsing and validation
+- **feed-rs** (dev-dependency): independent RSS/Atom parser — the evidence
 - **tokio**: Async runtime
 
-All dependencies already present in main crate.
+Do **not** switch the parsing assertions back to the `rss` crate: it is what the server
+serialises with, and the whole point of feed-rs here is that it is not.
 
 ## Notes
 

@@ -99,7 +99,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (34 protocols as of August 30 2026;
+- **Beta** — human-reviewed, works against real clients (35 protocols as of August 30 2026;
   re-derive, the count drifts every pass). The original ten are
   `dns`, `doh`, `dot`, `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`; August 2026 added
   fourteen that are each driven by the protocol's own third-party client in a test that is **not**
@@ -118,7 +118,8 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   and `modbus` as having "no independent peer at all" when its test is literally named
   `test_modbus_reads_writes_and_exceptions_against_tokio_modbus`. **Re-derive this list before
   trusting it in either direction**: it under-rates as readily as it over-rates.
-  **August 30 2026 added three more** from a sweep of the remaining ~104 Experimental servers:
+  **August 30 2026 added four more** (`rss` is the fourth — see below) from a sweep of the
+  remaining ~104 Experimental servers:
   `git` (the real `git` binary clones over Smart HTTP, then `git fsck --full` validates the pack
   and `git show HEAD:README.md` asserts exact blob bytes), `s3` (rust-s3 0.37 `Bucket`, path-style
   — ListObjects/GetObject/PutObject/HeadObject/DeleteObject, each pinned to `expect_calls(1)`
@@ -174,11 +175,17 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   a generic HTTP client (`reqwest` proves an HTTP server answers, not that the protocol on top is
   right — `couchdb`, `openapi`, `spark`, `xmlrpc`, `yarn`,
   `jsonrpc`, `oauth2`, `saml_sp`, `proxy`, `http2`); anything with no independent peer at
-  all (`memcached`, `named_pipe`, `pty`, `radius`, `socket_file`, `stdio`); and `rss` — whose
-  test does **not** currently fail, but whose evidence would be
-  circular: the server builds its XML with the `rss` crate's `ChannelBuilder`, so parsing the
-  result with the same crate validates nothing. Clearing the bar there needs a *different*
-  parser (`feed-rs`) or a real feed reader.
+  all (`memcached`, `named_pipe`, `pty`, `radius`, `socket_file`, `stdio`).
+
+  **`rss` was on that list for circular evidence and is now Beta**, by the fix the list itself
+  prescribed. The server builds its XML with the `rss` crate's `ChannelBuilder` and the test
+  parsed the result back with the `rss` crate, so it asserted only that one crate round-trips
+  through itself. `feed-rs` 2 is now a dev-dependency and does the parsing: it recognises the
+  feed as `FeedType::RSS2` and the test asserts channel title/description/language, three
+  entries, the first entry's title and link, that its RFC 2822 `pub_date` became a real
+  timestamp, and its categories. RSS has no session — fetch-and-parse *is* the protocol — so an
+  independent reader is the strongest evidence the protocol admits. (The same note claimed the
+  `rss` test "currently fails"; it passes.)
 
   **`mqtt` was on this list for a reason that was wrong twice over** and is now Beta. The claim
   was "whose rumqttc tests are all `#[ignore]`d": in fact the four pub/sub tests were inside a
