@@ -697,7 +697,17 @@ impl Protocol for WebSocketProtocol {
                  subprotocol, every text and binary frame sent, ping payloads, close code and \
                  reason, plus unprompted pushes to any named open connection or a broadcast",
             )
-            .e2e_testing("websocat 1.14.1 and curl 8.20.0 (ws:// scheme), plus tokio-tungstenite as an in-process client")
+            .e2e_testing(
+                "A raw RFC 6455 client hand-written in tests/server/websocket/e2e_test.rs is the \
+                 primary peer — it recomputes Sec-WebSocket-Accept from §4.2.2, masks its own \
+                 frames per §5.3 and parses ours byte by byte. tokio-tungstenite is deliberately \
+                 NOT used as the peer: this server frames with tokio-tungstenite, so the same \
+                 crate on both ends would only prove it agrees with itself. websocat 1.14.1 \
+                 drives the same server end to end, but that test returns Ok(()) when websocat \
+                 is absent — a skip-as-pass, which is why this is still Experimental rather than \
+                 Beta. Making the websocat test hard-fail when the binary is missing (as \
+                 tests/server/npm does) is what would clear the bar.",
+            )
             .notes(
                 "Validated against websocat 1.14.1 and curl 8.20.0 as real independent \
                  clients: handshake, subprotocol negotiation, text frames, a binary frame \

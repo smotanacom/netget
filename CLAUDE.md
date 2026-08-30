@@ -99,7 +99,8 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (24 protocols). The original ten are
+- **Beta** — human-reviewed, works against real clients (34 protocols as of August 30 2026;
+  re-derive, the count drifts every pass). The original ten are
   `dns`, `doh`, `dot`, `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`; August 2026 added
   fourteen that are each driven by the protocol's own third-party client in a test that is **not**
   `#[ignore]`d — `amqp` (lapin), `cassandra` (scylla), `coap` (coap-lite), `imap` (async-imap),
@@ -117,6 +118,14 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   and `modbus` as having "no independent peer at all" when its test is literally named
   `test_modbus_reads_writes_and_exceptions_against_tokio_modbus`. **Re-derive this list before
   trusting it in either direction**: it under-rates as readily as it over-rates.
+  **August 30 2026 added three more** from a sweep of the remaining ~104 Experimental servers:
+  `git` (the real `git` binary clones over Smart HTTP, then `git fsck --full` validates the pack
+  and `git show HEAD:README.md` asserts exact blob bytes), `s3` (rust-s3 0.37 `Bucket`, path-style
+  — ListObjects/GetObject/PutObject/HeadObject/DeleteObject, each pinned to `expect_calls(1)`
+  through a retry helper, so a response rust-s3 rejected would retry and fail the count), and
+  `webrtc` (a webrtc-rs 0.11 `RTCPeerConnection` completes ICE + DTLS + SCTP and a message is
+  asserted to have crossed the data channel in both directions). `git` was on the
+  generic-HTTP-client list below and had stopped being true.
 
   Checked and *not* promoted in the same pass, with the reason: `xmpp` (its own test says
   `tokio_xmpp::Client` cannot complete its connect), `bitcoin` (the `bitcoin` crate is used as a
@@ -124,12 +133,49 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   client; the apparent import was netget's own path), `bgp` and `grpc` and `torrent_dht` and
   `xmlrpc` (codecs and parsers rather than clients).
 
+  The August 30 sweep of the rest turned up four more near-misses, and the reasons are worth
+  keeping because each looks like evidence until you read it:
+
+  - **A real client behind a skip-when-missing gate is not evidence** — `kubernetes` (kubectl),
+    `oci_registry` (crane), `maven` (mvn, and additionally `#[ignore]`d), `websocket`
+    (websocat). Each prints `SKIP: … is not installed` and returns `Ok(())`, so on a runner
+    without the binary it is a silent pass. `npm`'s real-CLI test is the shape to copy: it
+    **fails** when npm is absent, saying in as many words that skipping "would leave NPM's
+    maturity rating resting on nothing". Converting these four to hard-fail is the cheap path
+    to promoting them, but it means the binary has to exist wherever the suite runs.
+  - **`#[ignore]`d, however good the reason** — `bluetooth_ble` (btleplug is a real BLE central
+    and the suite is verified passing by hand, but all three tests claim the machine's single
+    adapter and are ignored so a 100-thread run does not deadlock on it) and `tor_relay`
+    (`tests/server/tor_integration` drives the official `tor` binary and is `#[ignore]`d).
+  - **Circular: the "peer" is the same crate the server frames with** — `webrtc_signaling` and
+    `websocket` are both driven by `tokio-tungstenite`, which is what their servers use.
+    `tests/server/websocket/e2e_test.rs` states the rule in its own header and hand-writes a raw
+    RFC 6455 client instead. For `webrtc_signaling` there is no way out: the layer NetGet
+    actually authors is an ad-hoc JSON relay schema, so no third-party implementation of it
+    exists or could. (`webrtc` itself is *not* this case in the way that matters — the peer is
+    webrtc-rs in the opposite role completing a real ICE/DTLS/SCTP handshake, which is the
+    already-accepted `quic`/quinn precedent, and what it validates is NetGet's own signalling,
+    admission and data-channel plumbing. Browser interop remains unproven and is what a human
+    should check before it goes past Beta.)
+  - **A client hand-written inside the test is not a third-party client** — `usb/serial` and
+    `usb/smartcard` are driven by `tests/helpers/usbip_client.rs`, which speaks USB/IP from the
+    wire format deliberately (no macOS USB/IP client exists). Same class as `dhcp`'s in-test RFC
+    2131 decoder: an independent reading of the spec, not an independent implementation.
+    `torrent_tracker` is the same shape via `serde_bencode`.
+
+  `openvpn` is a fifth case and a different one: its real-client test is **not** ignored and
+  **does** hard-fail when the binary is missing, the system `openvpn` 2.x accepts our
+  `P_CONTROL_HARD_RESET_SERVER_V2` and goes on to send a TLS ClientHello, and the test asserts
+  both. It stays Experimental anyway, on its own metadata's reasoning: the server implements
+  only the front of the protocol, so no client can use it as a VPN, and "works against real
+  clients" would be a false claim whatever the test shows. Do not promote it on the test alone.
+
   Deliberately **not** promoted despite an audit suggesting them: anything whose only evidence is
   a generic HTTP client (`reqwest` proves an HTTP server answers, not that the protocol on top is
-  right — `couchdb`, `oci_registry`, `kubernetes`, `openapi`, `spark`, `xmlrpc`, `yarn`,
-  `git`, `jsonrpc`, `oauth2`, `saml_sp`, `proxy`, `http2`); anything with no independent peer at
-  all (`memcached`, `named_pipe`, `openvpn`, `pty`, `radius`, `socket_file`, `stdio`,
-  `websocket`); and `rss` — whose test does **not** currently fail, but whose evidence would be
+  right — `couchdb`, `openapi`, `spark`, `xmlrpc`, `yarn`,
+  `jsonrpc`, `oauth2`, `saml_sp`, `proxy`, `http2`); anything with no independent peer at
+  all (`memcached`, `named_pipe`, `pty`, `radius`, `socket_file`, `stdio`); and `rss` — whose
+  test does **not** currently fail, but whose evidence would be
   circular: the server builds its XML with the `rss` crate's `ChannelBuilder`, so parsing the
   result with the same crate validates nothing. Clearing the bar there needs a *different*
   parser (`feed-rs`) or a real feed reader.

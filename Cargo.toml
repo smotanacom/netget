@@ -207,7 +207,11 @@ smb = ["smb-msg"]
 stun = ["dep:webrtc-stun", "dep:stunclient"]
 smb-client = ["smb", "pavao"]  # SMB client requires native libsmbclient library
 turn = ["dep:webrtc-turn"]
-webrtc = ["dep:webrtc", "dep:tokio-tungstenite"]  # WebRTC client + server for peer-to-peer data channels
+# `dep:rustls` is not decoration: webrtc-dtls builds its DTLS config through rustls 0.23, which
+# panics unless a process-level CryptoProvider is installed. Naming rustls here is what makes
+# `src/bin/netget.rs` install one for a webrtc-only build (and what makes
+# `tests/rustls_provider_gate_test.rs` enforce it).
+webrtc = ["dep:webrtc", "dep:tokio-tungstenite", "dep:rustls"]  # WebRTC client + server for peer-to-peer data channels
 # Generic WebSocket (RFC 6455) server + client. Reuses the tokio-tungstenite 0.21 already in
 # the tree for `webrtc`: framing, masking, fragmentation, ping/pong and the close handshake.
 # Bumping that crate is a webrtc-wide decision, so this feature deliberately does not force one.

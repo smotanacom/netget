@@ -412,10 +412,17 @@ impl crate::llm::actions::protocol_trait::Protocol for S3Protocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("hyper v1.5 HTTP with manual S3 REST API")
             .llm_control("All S3 operations (GetObject, PutObject, ListBuckets)")
-            .e2e_testing("aws-sdk-s3 / rust-s3 client")
+            .e2e_testing(
+                "rust-s3 0.37 (`Bucket` with path-style addressing) is the client: it completes \
+                 ListObjects, GetObject, PutObject, HeadObject and DeleteObject against the \
+                 server. Each retry-wrapped operation is pinned to `expect_calls(1)`, so the \
+                 test only passes if rust-s3 accepted the first response — including parsing our \
+                 ListObjects XML into `contents` (tests/server/s3/e2e_test.rs, not #[ignore]d). \
+                 Not proven: SigV4, multipart upload, versioning",
+            )
             .notes("Virtual objects (no persistence); no SigV4 auth; binary bodies via encoding=base64")
             .build()
     }

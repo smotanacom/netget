@@ -48,6 +48,14 @@ mod webrtc_server_tests {
         /// the moment the channel is genuinely usable, so it doubles as proof the transport
         /// came up.
         async fn new(channel_label: &str, greeting: Option<String>) -> E2EResult<Self> {
+            // webrtc-dtls builds its DTLS config through rustls 0.23, which panics unless a
+            // process-level CryptoProvider is installed. The test binary is not `main`, so
+            // nothing installs one for us — and when this was missing, the test passed only
+            // when some *other* suite in the same binary (tls, dot, quic) happened to run
+            // first and install it. Under a filtered run it panicked every time. Install it
+            // here so the test stands on its own.
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
             let mut media_engine = MediaEngine::default();
             let registry = register_default_interceptors(Registry::new(), &mut media_engine)?;
             let api = APIBuilder::new()
