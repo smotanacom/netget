@@ -23,6 +23,12 @@ use crate::state::app_state::AppState;
 use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 
+/// How long to wait for the initial session before refusing to start.
+///
+/// Distinct from [`SESSION_TIMEOUT`], which governs an *established* session. See the note at
+/// the call site for why an explicit bound is required here.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Session timeout requested at handshake. ZooKeeper clamps it into `2 * tickTime ..=
 /// 20 * tickTime` and tells us what it settled on; NetGet's own server clamps to
 /// `4000..=40000` ms, so 10s is inside the negotiable range of both.
@@ -72,10 +78,32 @@ impl ZookeeperClient {
         // `host:port` pairs with an optional `/chroot` suffix. It is handed to the library
         // as-is rather than parsed as one `SocketAddr` - the old code did that and rejected
         // every legitimate ensemble or chrooted address before even trying to connect.
+        // Bounded, because `ZooKeeper::connect` is not.
+        //
+        // A ZooKeeper client is *designed* to retry its connect string forever — that is
+        // correct for a long-lived session against a real ensemble, and wrong for the one call
+        // that decides whether this client starts at all. Against a closed port it never
+        // returns, so `connect_with_llm_actions` never returns, and whatever asked for the
+        // client (the dashboard's create form, `open_client`, an MCP caller) waits with it.
+        // `SESSION_TIMEOUT` does not help: that is the *session* timeout negotiated after a
+        // connection exists.
+        //
+        // Caught by `every_registered_client_protocol_refuses_a_closed_port_promptly`, where
+        // ZooKeeper was the only protocol of 91 to hang rather than refuse.
         let zk: SharedZk = Arc::new(
-            ZooKeeper::connect(&remote_addr, SESSION_TIMEOUT, |_ev: WatchedEvent| {})
-                .await
-                .with_context(|| format!("Failed to connect to ZooKeeper at {remote_addr}"))?,
+            tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                ZooKeeper::connect(&remote_addr, SESSION_TIMEOUT, |_ev: WatchedEvent| {}),
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "Timed out after {CONNECT_TIMEOUT:?} connecting to ZooKeeper at \
+                     {remote_addr}. The client library retries a connect string indefinitely, \
+                     so this bound is what turns an unreachable ensemble into a refusal."
+                )
+            })?
+            .with_context(|| format!("Failed to connect to ZooKeeper at {remote_addr}"))?,
         );
 
         info!(
