@@ -58,6 +58,7 @@ impl JsonRpcClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         // JSON-RPC is HTTP-based, so "connection" is logical
         // We'll create an HTTP client and store it in protocol_data
@@ -84,6 +85,15 @@ impl JsonRpcClient {
             .build()
             .context("Failed to build HTTP client for JSON-RPC")?;
 
+        // `default_headers` is declared as "headers included in all requests" - the one
+        // place this protocol's own docs point at for API keys and bearer tokens - and
+        // nothing read it, so an authenticated endpoint refused every call. Stored here and
+        // applied by `perform_request` / `perform_batch_request`.
+        let default_headers = match &startup_params {
+            Some(params) => params.get_optional_object("default_headers")?.cloned(),
+            None => None,
+        };
+
         // Store client in protocol_data
         app_state
             .with_client_mut(client_id, |client| {
@@ -96,6 +106,12 @@ impl JsonRpcClient {
                     serde_json::json!(remote_addr.clone()),
                 );
                 client.set_protocol_field("next_id".to_string(), serde_json::json!(1));
+                if let Some(headers) = &default_headers {
+                    client.set_protocol_field(
+                        "default_headers".to_string(),
+                        serde_json::Value::Object(headers.clone()),
+                    );
+                }
             })
             .await;
 
@@ -450,6 +466,44 @@ impl JsonRpcClient {
     /// [`Self::make_request`] so the injected-command loop can await the round-trip - and
     /// report what really happened - without also awaiting the LLM call the response event
     /// triggers, which a manual routing rule can park for minutes.
+    /// Endpoint plus the request headers to send: the `default_headers` startup parameter
+    /// with JSON-RPC's mandatory `content-type` on top of it, so a default can carry an API
+    /// key or bearer token but cannot make the body unparseable to the server.
+    ///
+    /// Keys are lowercased before merging because HTTP header names are case-insensitive,
+    /// and applied from one map because `RequestBuilder::header` appends rather than
+    /// replaces.
+    async fn endpoint_and_headers(
+        client_id: ClientId,
+        app_state: &Arc<AppState>,
+    ) -> Result<(String, serde_json::Map<String, serde_json::Value>)> {
+        let (endpoint, defaults) = app_state
+            .with_client_mut(client_id, |client| {
+                (
+                    client
+                        .get_protocol_field("endpoint")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    client
+                        .get_protocol_field("default_headers")
+                        .and_then(|v| v.as_object().cloned()),
+                )
+            })
+            .await
+            .unwrap_or((None, None));
+        let endpoint = endpoint.context("No endpoint found")?;
+
+        let mut headers = serde_json::Map::new();
+        for (key, value) in defaults.unwrap_or_default() {
+            headers.insert(key.to_ascii_lowercase(), value);
+        }
+        headers.insert(
+            "content-type".to_string(),
+            serde_json::json!("application/json"),
+        );
+        Ok((endpoint, headers))
+    }
+
     async fn perform_request(
         client_id: ClientId,
         method: &str,
@@ -457,17 +511,7 @@ impl JsonRpcClient {
         id: Option<serde_json::Value>,
         app_state: &Arc<AppState>,
     ) -> Result<(u16, Option<serde_json::Value>)> {
-        // Get endpoint from client
-        let endpoint = app_state
-            .with_client_mut(client_id, |client| {
-                client
-                    .get_protocol_field("endpoint")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            })
-            .await
-            .flatten()
-            .context("No endpoint found")?;
+        let (endpoint, headers) = Self::endpoint_and_headers(client_id, app_state).await?;
 
         info!("JSON-RPC client {} calling method: {}", client_id, method);
 
@@ -490,12 +534,13 @@ impl JsonRpcClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
 
-        let response = http_client
-            .post(&endpoint)
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
+        let mut http_request = http_client.post(&endpoint);
+        for (key, value) in &headers {
+            if let Some(val_str) = value.as_str() {
+                http_request = http_request.header(key, val_str);
+            }
+        }
+        let response = http_request.json(&request).send().await?;
 
         let status_code = response.status().as_u16();
         let body_text = response.text().await.unwrap_or_default();
@@ -641,17 +686,7 @@ impl JsonRpcClient {
         requests: Vec<serde_json::Value>,
         app_state: &Arc<AppState>,
     ) -> Result<(u16, Option<serde_json::Value>)> {
-        // Get endpoint from client
-        let endpoint = app_state
-            .with_client_mut(client_id, |client| {
-                client
-                    .get_protocol_field("endpoint")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            })
-            .await
-            .flatten()
-            .context("No endpoint found")?;
+        let (endpoint, headers) = Self::endpoint_and_headers(client_id, app_state).await?;
 
         info!(
             "JSON-RPC client {} sending batch with {} requests",
@@ -685,12 +720,13 @@ impl JsonRpcClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
 
-        let response = http_client
-            .post(&endpoint)
-            .header("Content-Type", "application/json")
-            .json(&batch)
-            .send()
-            .await?;
+        let mut http_request = http_client.post(&endpoint);
+        for (key, value) in &headers {
+            if let Some(val_str) = value.as_str() {
+                http_request = http_request.header(key, val_str);
+            }
+        }
+        let response = http_request.json(&batch).send().await?;
 
         let status_code = response.status().as_u16();
         let body_text = response.text().await.unwrap_or_default();

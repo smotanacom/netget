@@ -69,7 +69,7 @@ impl Protocol for Pop3ClientProtocol {
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
         vec![ParameterDefinition {
             name: "use_tls".to_string(),
-            description: "NOT IMPLEMENTED — accepted and ignored. This client speaks POP3 over a plain TCP socket only (see the TODO in mod.rs); `connect_with_llm_actions` does not even receive startup parameters, so nothing can read this. Setting it true does not encrypt anything. Terminate TLS in front of the server instead."
+            description: "Must be false. This client speaks POP3 over a plain TCP socket and implements no TLS, so `use_tls: true` is REFUSED at connect with an error rather than silently producing a cleartext session carrying the USER/PASS exchange. Terminate TLS in front of the server instead."
                 .to_string(),
             type_hint: "boolean".to_string(),
             required: false,
@@ -257,6 +257,7 @@ impl Client for Pop3ClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                ctx.startup_params,
             )
             .await
         })

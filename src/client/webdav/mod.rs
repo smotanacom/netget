@@ -32,6 +32,7 @@ impl WebdavClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         // For WebDAV, "connection" is logical, not a persistent TCP connection
         // We'll create an HTTP client and store it in protocol_data
@@ -47,6 +48,37 @@ impl WebdavClient {
             .build()
             .context("Failed to build HTTP client")?;
 
+        // `default_headers` and `auth` were both declared and both unread: headers promised
+        // on every request never reached the wire, and a `username:password` handed to
+        // `auth` was simply dropped, so an authenticated share answered 401 with no hint
+        // why. Both are resolved once here into the header set `perform_request` sends.
+        //
+        // `auth` becomes an `Authorization: Basic <base64(user:pass)>` header, which is
+        // what its `username:password` shape describes. It is stored resolved rather than
+        // as the raw credential so the password is not re-encoded per request; it is still
+        // in this client's `protocol_data` either way, exactly like every other client's
+        // credentials.
+        let (default_headers, auth) = match &startup_params {
+            Some(params) => (
+                params.get_optional_object("default_headers")?.cloned(),
+                params.get_optional_string("auth")?,
+            ),
+            None => (None, None),
+        };
+
+        let mut startup_headers = serde_json::Map::new();
+        for (key, value) in default_headers.unwrap_or_default() {
+            startup_headers.insert(key.to_ascii_lowercase(), value);
+        }
+        if let Some(credentials) = auth {
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
+            startup_headers.insert(
+                "authorization".to_string(),
+                serde_json::json!(format!("Basic {encoded}")),
+            );
+        }
+
         // Store client in protocol_data
         app_state
             .with_client_mut(client_id, |client| {
@@ -55,6 +87,12 @@ impl WebdavClient {
                     serde_json::json!("initialized"),
                 );
                 client.set_protocol_field("base_url".to_string(), serde_json::json!(remote_addr));
+                if !startup_headers.is_empty() {
+                    client.set_protocol_field(
+                        "startup_headers".to_string(),
+                        serde_json::Value::Object(startup_headers.clone()),
+                    );
+                }
             })
             .await;
 
@@ -564,17 +602,23 @@ impl WebdavClient {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<WebdavExchange> {
-        // Get base URL from client
-        let base_url = app_state
+        // Base URL and the startup headers (`default_headers` plus the `auth` credential,
+        // already resolved to an `authorization` value), read together under one guard.
+        let (base_url, startup_headers) = app_state
             .with_client_mut(client_id, |client| {
-                client
-                    .get_protocol_field("base_url")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                (
+                    client
+                        .get_protocol_field("base_url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    client
+                        .get_protocol_field("startup_headers")
+                        .and_then(|v| v.as_object().cloned()),
+                )
             })
             .await
-            .flatten()
-            .context("No base URL found")?;
+            .unwrap_or((None, None));
+        let base_url = base_url.context("No base URL found")?;
 
         let url = if path.starts_with("http://") || path.starts_with("https://") {
             path.clone()
@@ -612,10 +656,22 @@ impl WebdavClient {
 
         let mut request = http_client.request(request_method, &url);
 
-        // Add headers
+        // Startup headers merged *underneath* the per-request ones (Depth, Destination,
+        // Content-Type, ...), keyed by the lowercased name. Merged into one map before
+        // anything is applied, because `RequestBuilder::header` appends: a per-request
+        // `Content-Type` alongside a default one would send both.
+        let mut merged = serde_json::Map::new();
+        for (key, value) in startup_headers.unwrap_or_default() {
+            merged.insert(key.to_ascii_lowercase(), value);
+        }
         if let Some(hdrs) = headers {
             for (key, value) in hdrs {
-                request = request.header(&key, value);
+                merged.insert(key.to_ascii_lowercase(), serde_json::json!(value));
+            }
+        }
+        for (key, value) in merged {
+            if let Some(val_str) = value.as_str() {
+                request = request.header(&key, val_str);
             }
         }
 

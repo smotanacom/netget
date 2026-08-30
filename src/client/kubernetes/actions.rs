@@ -435,6 +435,7 @@ impl Client for KubernetesClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                ctx.startup_params,
             )
             .await
         })

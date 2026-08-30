@@ -134,13 +134,25 @@ After tunnel establishment, we switch to raw byte reading.
 
 ### Proxy Authentication
 
-Basic authentication can be added via `Proxy-Authorization` header:
+The `proxy_auth` startup parameter takes `username:password` and is resolved once at connect
+into a `Proxy-Authorization: Basic <base64(username:password)>` header:
 
 ```
 Proxy-Authorization: Basic base64(username:password)
 ```
 
-This is not yet implemented but can be added as a startup parameter.
+`connect_request()` is the single encoder, so the header rides on **every** CONNECT — the
+LLM's, the default-target one, and a dashboard-injected `establish_tunnel` alike. It belongs
+on the CONNECT specifically: that is the only request the proxy ever parses, everything after
+it is opaque tunnel bytes. Only Basic is supported; there is no 407-challenge/Digest handling.
+
+### Default target
+
+`default_target` (`host:port`) is the tunnel to open when nothing else selects one. It is
+used in three places, all of them the same rule — a target nobody named falls back to it:
+an `establish_tunnel` action missing `target_host`/`target_port`, an injected
+`establish_tunnel` missing the same, and the connect path itself, which opens the tunnel
+after the connected-event LLM call if no action set a target.
 
 ## Dashboard command channel
 
@@ -160,31 +172,28 @@ loop has already left the header-reading phase. The handle is removed on every l
 ## Limitations
 
 1. **HTTP CONNECT only**: Only supports CONNECT method, not GET/POST proxying
-2. **No authentication**: Proxy authentication not yet implemented
+2. **Basic proxy auth only**: `proxy_auth` produces a `Proxy-Authorization: Basic ...`
+   header; there is no Digest support and no handling of a 407 challenge
 3. **No HTTPS MITM**: Cannot inspect/modify HTTPS traffic (tunnel is opaque)
 4. **No proxy chaining**: Cannot chain multiple proxies
 5. **No SOCKS**: Only HTTP proxy, not SOCKS4/SOCKS5
 
 ## Future Enhancements
 
-1. **Proxy Authentication**
-    - Add `proxy_auth` startup parameter
-    - Send Proxy-Authorization header in CONNECT
-
-2. **Proxy Response Parsing**
+1. **Proxy Response Parsing**
     - Parse Proxy-Agent header
     - Handle 407 Proxy Authentication Required
     - Handle other error codes (502 Bad Gateway, etc.)
 
-3. **Connection Pooling**
+2. **Connection Pooling**
     - Reuse proxy connections for multiple tunnels
     - HTTP/1.1 persistent connections
 
-4. **Proxy PAC Files**
+3. **Proxy PAC Files**
     - Parse PAC (Proxy Auto-Configuration) files
     - LLM decides which proxy to use based on destination
 
-5. **Transparent Proxying**
+4. **Transparent Proxying**
     - Allow other client protocols to use proxy transparently
     - Proxy-as-middleware pattern
 

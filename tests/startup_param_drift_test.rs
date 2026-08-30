@@ -40,38 +40,31 @@ use std::path::{Path, PathBuf};
 ///
 /// * `nntp:send_first` — the central `send_first` defect the root CLAUDE.md records:
 ///   `start_server_from_action` takes it as `_send_first` and ignores it on every path, so
-///   declaring it per-protocol cannot work until that is fixed.
-/// * `client:pop3:use_tls` — **security relevant**, and still here because it cannot be fixed
-///   locally: `Pop3Client::connect_with_llm_actions` does not receive startup parameters at
-///   all, so nothing *can* read it. Its description now says plainly that it is ignored.
-///   `imap` had the identical defect and was fixed: it refuses `use_tls: true` rather than
-///   handing the password to a cleartext socket while reporting an encrypted session.
-/// * the `default_headers` family (`http`, `http2`, `http3`, `jsonrpc`, `webdav`) — every one
-///   of these clients advertises per-request headers it never applies.
-/// * credentials (`elasticsearch:username`/`password`, `http_proxy:proxy_auth`) — declared,
-///   never sent, so an authenticated endpoint refuses the connection with no hint why.
-const DEAD_PARAM_BASELINE: &[&str] = &[
-    "server:dc:hub_topic",
-    "server:nntp:send_first",
-    "client:elasticsearch:default_index",
-    "client:elasticsearch:password",
-    "client:elasticsearch:username",
-    "client:http:default_headers",
-    "client:http2:default_headers",
-    "client:http3:default_headers",
-    "client:http3:enable_0rtt",
-    "client:http_proxy:default_target",
-    "client:http_proxy:proxy_auth",
-    "client:jsonrpc:default_headers",
-    "client:kubernetes:kubeconfig",
-    "client:mcp:client_name",
-    "client:mcp:client_version",
-    "client:openidconnect:flow",
-    "client:pop3:use_tls",
-    "client:webdav:auth",
-    "client:webdav:default_headers",
-    "client:xmlrpc:timeout_secs",
-];
+///   declaring it per-protocol cannot work until that is fixed. Nothing a protocol can do
+///   locally reaches it, which is why this is the one entry left.
+///
+/// Everything else this list used to carry was fixed rather than tolerated, and the three
+/// shapes the fixes took are worth knowing, because a future entry will be one of them:
+///
+/// * **Wired up** — the parameter now does what it says. `default_headers` (`http`, `http2`,
+///   `http3`, `jsonrpc`, `webdav`) is merged into every request *underneath* the headers the
+///   model sets; credentials (`elasticsearch:username`/`password`, `webdav:auth`,
+///   `http_proxy:proxy_auth`) become the `Authorization` / `Proxy-Authorization` header they
+///   describe; `elasticsearch:default_index`, `http_proxy:default_target`,
+///   `kubernetes:kubeconfig`, `mcp:client_name`/`client_version`, `xmlrpc:timeout_secs`,
+///   `dc:hub_topic` and `openidconnect:flow` are each read at the one place that can honour
+///   them.
+/// * **Deleted** — `http3:enable_0rtt`. The client builds a fresh QUIC endpoint per request
+///   and keeps no session-ticket cache, so there is never a session to resume; 0-RTT could
+///   not have happened whatever the flag said. Deleting the declaration and the docs that
+///   described it is the honest fix, not leaving it declared with a TODO.
+/// * **Refused** — `client:pop3:use_tls`. This client has no TLS at all and a POP3 session's
+///   next move is `USER`/`PASS`, so `use_tls: true` returns an `Err` naming the reason rather
+///   than producing a cleartext session that reports itself as encrypted. `imap` set that
+///   precedent; the note that pop3 "cannot be fixed locally because `connect` does not
+///   receive startup parameters" was wrong — the parameter list is per-protocol, so adding
+///   `ctx.startup_params` to the call was the whole fix.
+const DEAD_PARAM_BASELINE: &[&str] = &["server:nntp:send_first"];
 
 fn strip_comments(src: &str) -> String {
     src.lines()

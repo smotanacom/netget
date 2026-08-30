@@ -53,7 +53,14 @@ Client state stored in `protocol_data`:
 
 - `es_client`: Initialization marker
 - `cluster_url`: Base URL for Elasticsearch cluster
-- Optional: `username`, `password` for authentication
+- `authorization`: `Basic <base64(username:password)>`, resolved once at connect from the
+  `username` / `password` startup parameters. Every request goes through
+  `cluster_endpoint` + `authorize`, so authentication cannot be applied to some operations
+  and forgotten on others. A username with no password is a valid Basic credential
+  (`user:`), so the username alone switches authentication on.
+- `default_index`: the `default_index` startup parameter. `resolve_index` uses it whenever an
+  operation names no index; `bulk_operation` is exempt, because `/_bulk` is cluster-wide and
+  each entry names its own index.
 
 ### Request Construction
 
@@ -195,11 +202,11 @@ Each operation creates a new `reqwest::Client`. For production use, connection p
 
 **Workaround**: Client lifecycle is short-lived, so this has minimal impact.
 
-### 2. No Authentication Implemented
+### 2. Basic Auth Only
 
-Current implementation doesn't include authentication (Basic Auth, API Keys, etc.).
-
-**Workaround**: Add `username` and `password` to startup parameters and use Basic Auth in requests.
+`username` / `password` produce an `Authorization: Basic ...` header on every request. API
+keys and bearer tokens have no parameter; there is no place to put one short of a new
+startup parameter that is actually read.
 
 ### 3. Query DSL Complexity
 
@@ -264,7 +271,7 @@ See `tests/client/elasticsearch/CLAUDE.md` for E2E test strategy.
 
 ## Future Enhancements
 
-1. **Authentication**: Basic Auth, API Keys
+1. **Authentication**: API keys and bearer tokens (Basic Auth already works)
 2. **Index Management**: Create/delete indices, mappings
 3. **Aggregations**: More complex analytics
 4. **Scroll API**: For large result sets

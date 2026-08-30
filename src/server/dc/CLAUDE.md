@@ -367,8 +367,32 @@ See `actions.rs` for complete action list.
 3. **Split**: Stream split into ReadHalf and WriteHalf
 4. **Track**: WriteHalf stored in `Arc<Mutex<WriteHalf>>` for sending
 5. **Send Lock**: Hub immediately sends $Lock challenge
-6. **Read Loop**: Continuous pipe-delimited reading until disconnect
-7. **Close**: Connection removed when client closes or LLM kicks
+6. **Send HubName**: only when `hub_name` / `hub_topic` was configured — see below
+7. **Read Loop**: Continuous pipe-delimited reading until disconnect
+8. **Close**: Connection removed when client closes or LLM kicks
+
+### Startup parameters: `hub_name` and `hub_topic`
+
+Both are declared, and both were read by nothing — the only identity a client ever saw was
+the hardcoded `Pk=NetGetHub` inside `$Lock`, so setting either changed nothing observable.
+They are now resolved once at spawn by `hub_name_command()` into the `$HubName` the hub sends
+straight after `$Lock`, which is the first thing a DC++ client displays:
+
+| configured | on the wire |
+|---|---|
+| neither | nothing — byte-for-byte the old behaviour |
+| `hub_name` only | `$HubName <name>\|` |
+| `hub_topic` only | `$HubName NetGetHub - <topic>\|` |
+| both | `$HubName <name> - <topic>\|` |
+
+`<name> - <topic>` is how NMDC carries a topic: the base protocol has no separate topic
+command, and DC++ splits the name at the first ` - `. (`$HubTopic` exists as an extension and
+the model can still send it with `send_dc_raw`.) A topic with no name uses `NetGetHub` — the
+same `Pk=` value already in `$Lock` — rather than presenting the topic as the hub's name.
+
+Both values are sanitised for `|`, `\r` and `\n` before use. NMDC frames commands by `|`, so
+an unescaped pipe in either would terminate the command early and leave the remainder to be
+parsed as a second one.
 
 ### State Management
 

@@ -115,17 +115,28 @@ LLM decides next action (another call, disconnect, etc.)
 
 ## Implementation Details
 
-### Blocking API Wrapper
+### Blocking API Wrapper, and where `timeout_secs` bites
 
 xmlrpc crate is synchronous, so we use:
 
 ```rust
-tokio::task::spawn_blocking(move || {
+tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || {
     request.call_url(&server_url)
-}).await
+})).await
 ```
 
 This runs the blocking HTTP call on a dedicated thread pool without blocking the async runtime.
+
+The `timeout_secs` startup parameter (default 30) is applied **around the whole call**, not on
+the HTTP client, and the reason is a version wall: `xmlrpc::Request::call_url` builds its own
+`reqwest::blocking::Client` internally with no way to configure it, and the only alternative —
+`Request::call` with a custom `Transport` — takes a `reqwest` **0.11** `RequestBuilder`, a
+different major version from the 0.12 this crate depends on.
+
+What that bounds and what it does not: the caller stops waiting after `timeout_secs` and gets
+an error, which is what the parameter promises. The blocking thread is **not** cancelled —
+`spawn_blocking` cannot be — so an unresponsive server still holds one blocking-pool thread
+until its own TCP timeout expires.
 
 ### Error Handling
 
@@ -239,7 +250,7 @@ LLM receives fault as:
 
 1. **Custom Transport**: Add HTTP Basic Auth support
 2. **TLS Configuration**: Certificate validation control
-3. **Timeout Control**: Per-call timeout configuration
+3. **Timeout Control**: Per-call timeout (the `timeout_secs` startup parameter is per-client)
 4. **Connection Pooling**: Reuse HTTP connections (reqwest::Client stored in protocol_data)
 5. **Multicall Extension**: Batch multiple calls in one request (system.multicall)
 

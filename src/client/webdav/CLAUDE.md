@@ -38,6 +38,11 @@ State stored in `AppState::protocol_data`:
 
 - `base_url`: Base URL for all WebDAV requests
 - `http_client`: Reqwest client instance marker
+- `startup_headers`: the `default_headers` startup parameter, plus the `authorization`
+  header resolved from `auth`. Applied to every request **underneath** the per-request
+  headers (Depth, Destination, Overwrite, Content-Type), merged on the lowercased name
+  before anything is applied — `reqwest::RequestBuilder::header` appends, so applying both
+  sets in turn would send a header twice.
 
 ### WebDAV Methods Supported
 
@@ -134,12 +139,12 @@ This keeps the implementation simple and lets the LLM handle XML understanding.
 
 ### Authentication
 
-WebDAV typically uses HTTP Basic Auth or Digest Auth:
+WebDAV typically uses HTTP Basic Auth or Digest Auth. This client implements **Basic** only.
 
-- **Basic Auth**: Send `Authorization: Basic <base64(username:password)>` header
-- **Digest Auth**: reqwest handles automatically if credentials provided
-
-Future enhancement: Add auth parameter to startup config.
+The `auth` startup parameter takes `username:password` and is resolved once at connect into
+an `Authorization: Basic <base64(username:password)>` header, stored in `protocol_data` as
+`startup_headers` and applied to every request by `perform_request`. Digest is **not**
+supported — nothing challenges/responds, so a Digest-only server will keep answering 401.
 
 ## Limitations
 
@@ -148,7 +153,7 @@ Future enhancement: Add auth parameter to startup config.
 3. **No Versioning**: WebDAV versioning extensions (DeltaV) not supported
 4. **No Access Control**: ACL methods not implemented
 5. **No Quota Support**: QUOTA extension not implemented
-6. **Authentication**: Currently no built-in auth (add headers manually)
+6. **Digest auth**: Only Basic is implemented, via the `auth` startup parameter
 
 ## Example Prompts
 
@@ -237,7 +242,7 @@ Target: **< 10 LLM calls** per test suite.
 
 ## Future Enhancements
 
-- Add authentication support (Basic/Digest) via startup parameters
+- Add Digest authentication (Basic already works via the `auth` startup parameter)
 - Parse common XML responses (multistatus) to provide structured data
 - Support WebDAV extensions (CalDAV, CardDAV)
 - Implement chunked uploads for large files

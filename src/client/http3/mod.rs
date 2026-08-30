@@ -59,6 +59,7 @@ impl Http3Client {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         info!(
             "HTTP/3 client {} initializing for {}",
@@ -73,12 +74,25 @@ impl Http3Client {
         // Store base URL and connection info in protocol_data
         let base_url = format!("https://{}", remote_addr);
 
+        // `default_headers` is declared as "headers included in all requests" and nothing
+        // read it, so setting it changed nothing. Stored here, merged in `perform_request`.
+        let default_headers = match &startup_params {
+            Some(params) => params.get_optional_object("default_headers")?.cloned(),
+            None => None,
+        };
+
         app_state
             .with_client_mut(client_id, |client| {
                 client.set_protocol_field("base_url".to_string(), serde_json::json!(base_url));
                 client
                     .set_protocol_field("remote_addr".to_string(), serde_json::json!(remote_addr));
                 client.set_protocol_field("quic_initialized".to_string(), serde_json::json!(true));
+                if let Some(headers) = &default_headers {
+                    client.set_protocol_field(
+                        "default_headers".to_string(),
+                        serde_json::Value::Object(headers.clone()),
+                    );
+                }
             })
             .await;
 
@@ -411,7 +425,7 @@ impl Http3Client {
         app_state: &AppState,
     ) -> Result<Http3Exchange> {
         // Get connection info from client
-        let (base_url, remote_addr) = app_state
+        let (base_url, remote_addr, default_headers) = app_state
             .with_client_mut(client_id, |client| {
                 let base_url = client
                     .get_protocol_field("base_url")
@@ -421,7 +435,10 @@ impl Http3Client {
                     .get_protocol_field("remote_addr")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                (base_url, remote_addr)
+                let default_headers = client
+                    .get_protocol_field("default_headers")
+                    .and_then(|v| v.as_object().cloned());
+                (base_url, remote_addr, default_headers)
             })
             .await
             .context("Client not found")?;
@@ -495,12 +512,22 @@ impl Http3Client {
         // Build HTTP request
         let mut req_builder = Request::builder().uri(&url).method(method.as_str());
 
-        // Add headers
+        // Startup defaults merged *underneath* the request's own headers, keyed by the
+        // lowercased name (HTTP/3 puts header names on the wire lowercased anyway). Merged
+        // before anything is applied because `http::request::Builder::header` appends -
+        // applying both sets in turn would send the same header twice.
+        let mut merged = serde_json::Map::new();
+        for (key, value) in default_headers.unwrap_or_default() {
+            merged.insert(key.to_ascii_lowercase(), value);
+        }
         if let Some(hdrs) = headers {
             for (key, value) in hdrs {
-                if let Some(val_str) = value.as_str() {
-                    req_builder = req_builder.header(&key, val_str);
-                }
+                merged.insert(key.to_ascii_lowercase(), value);
+            }
+        }
+        for (key, value) in merged {
+            if let Some(val_str) = value.as_str() {
+                req_builder = req_builder.header(&key, val_str);
             }
         }
 

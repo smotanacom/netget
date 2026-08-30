@@ -2,7 +2,8 @@
 
 ## Overview
 
-The POP3 client allows LLM-controlled email retrieval from POP3 servers. It supports both plain POP3 (port 110) and secure POP3S with TLS (port 995).
+The POP3 client allows LLM-controlled email retrieval from POP3 servers. It speaks **plain
+POP3 only** (port 110). There is no TLS: `use_tls: true` is refused at connect, see below.
 
 ## Library Choice
 
@@ -34,12 +35,18 @@ Client state tracked in `ClientInstance`:
 - `remote_addr`: Full server address with port
 - Connection state machine: Idle → Processing → Idle
 
-### TLS Support
+### TLS Support — there is none, and `use_tls: true` is refused
 
-- **Plain POP3**: Port 110, no encryption
-- **POP3S**: Port 995, implicit TLS (connection starts with TLS handshake)
-- **Configurable**: Set `use_tls: true` in startup params for POP3S
-- **Certificate validation**: Uses webpki-roots for trusted CA certificates
+- **Plain POP3**: Port 110, no encryption. This is the only mode that exists.
+- **POP3S**: **Not implemented.** Nothing in `src/client/pop3/` performs a TLS handshake;
+  the session runs on a bare `tokio::net::TcpStream`.
+- **`use_tls`**: declared, and `connect_with_llm_actions` returns an `Err` naming the reason
+  when it is `true`. It is refused rather than ignored because a POP3 session's next move is
+  `USER`/`PASS`: silently continuing would put the password on the wire in cleartext while
+  the parameter list claimed the session was encrypted. `imap` has the identical defect and
+  takes the identical exit. `use_tls: false` is valid and means what it says.
+- To reach a POP3S server, terminate TLS in front of it (stunnel, a sidecar) and point the
+  client at the plaintext side.
 
 ### LLM Integration
 
@@ -136,24 +143,20 @@ Pop3Client::connect_with_llm_actions(
 )
 ```
 
-- Checks `use_tls` startup parameter
-- Connects to server (plain or TLS)
+- Checks `use_tls`; `true` returns an `Err` and no connection is made
+- Connects to the server in plaintext
 - Reads greeting from server
 - Calls LLM with `pop3_connected` event
 - Spawns read loop for responses
 
 ### Connection Types
 
-**Plain POP3** (`use_tls: false`):
+**Plain POP3** (`use_tls: false`, or unset) — the only one:
 - Direct TCP connection
 - No encryption
 - Port 110 (default)
 
-**POP3S** (`use_tls: true`):
-- TLS connection using tokio-rustls
-- Encrypted communication
-- Port 995 (default)
-- Certificate validation enabled
+**POP3S** (`use_tls: true`) — refused at connect with an error; see TLS Support above.
 
 ### Dashboard injection (`[ send_pop3_command ]`, `[ disconnect ]`)
 
@@ -179,20 +182,19 @@ a `select!` arm. `send_pop3_command` yields `ClientActionResult::Custom`, which 
 ## Limitations
 
 1. **No APOP**: Challenge-response authentication not supported
-2. **No STLS**: STARTTLS upgrade not implemented (use implicit TLS instead)
+2. **No TLS of any kind**: neither implicit POP3S nor STARTTLS/STLS
 3. **Basic multiline detection**: Simple dot-termination parsing
 4. **No pipelining**: Commands sent one at a time
-5. **Certificate validation**: Cannot disable for self-signed certs
-6. **No SASL**: Extended authentication not supported
+5. **No SASL**: Extended authentication not supported
 
 ## Example Prompts
 
 ```
-"Connect to pop.gmail.com:995 with TLS and retrieve all emails"
-
 "Connect to localhost:110 and authenticate as user 'alice' password 'secret', then list all messages"
 
-"Connect to mail.example.com:995 with TLS, login, retrieve message 1, then delete it"
+"Connect to localhost:110, login, retrieve message 1, then delete it"
+
+(A `:995` POP3S endpoint cannot be reached directly — see TLS Support.)
 ```
 
 ## Testing Strategy
@@ -207,7 +209,7 @@ See `tests/client/pop3/CLAUDE.md` for:
 ## Future Enhancements
 
 1. **APOP support**: MD5 challenge-response authentication
-2. **STLS support**: Upgrade plain connection to TLS
+2. **TLS**: implicit POP3S and/or STLS upgrade — neither exists today
 3. **Better multiline parsing**: Handle edge cases
 4. **Certificate validation control**: Option to accept self-signed certs
 5. **Connection pooling**: Reuse connections for multiple sessions

@@ -127,7 +127,8 @@ LLM receives the full response object and can:
 protocol_data: {
   "jsonrpc_client": "initialized",
   "endpoint": "http://localhost:8080",
-  "next_id": 1  // Auto-incrementing request ID (if needed)
+  "next_id": 1,  // Auto-incrementing request ID (if needed)
+  "default_headers": {}  // the `default_headers` startup parameter, when supplied
 }
 ```
 
@@ -173,7 +174,12 @@ protocol_data: {
 ### Not Implemented
 
 - **Transport negotiation** - Only HTTP POST supported (no WebSocket, TCP, etc.)
-- **Authentication** - No built-in API key or token handling (use default_headers)
+- **Authentication** - No built-in API key or token handling; the `default_headers` startup
+  parameter is the mechanism. It is applied to every single and batch POST by
+  `endpoint_and_headers`, under JSON-RPC's mandatory `content-type: application/json` — a
+  default can carry `Authorization`, but cannot make the body unparseable to the server.
+  Names are lowercased before merging (HTTP header names are case-insensitive) and applied
+  from one map, because `reqwest::RequestBuilder::header` appends rather than replaces.
 - **Automatic request ID** - LLM must provide IDs (could auto-generate in future)
 - **Connection pooling** - Each request creates new HTTP connection
 - **Retry logic** - No automatic retries on failure

@@ -22,6 +22,21 @@ use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 use crate::utils::truncate::truncate_for_log;
 
+/// Expand a leading `~/` in a kubeconfig path.
+///
+/// The parameter's own example is `~/.kube/config`, and `std::fs` does no tilde expansion —
+/// a path taken literally would fail with "No such file or directory" on the one value the
+/// documentation suggests.
+fn expand_home(path: &str) -> std::path::PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => std::path::PathBuf::from(home).join(rest),
+            None => std::path::PathBuf::from(path),
+        },
+        None => std::path::PathBuf::from(path),
+    }
+}
+
 /// Kubernetes client that interacts with Kubernetes API server
 pub struct KubernetesClient;
 
@@ -33,6 +48,7 @@ impl KubernetesClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         // For Kubernetes, "connection" means establishing API client configuration
         // The kube client is stateless and makes requests on-demand
@@ -42,35 +58,87 @@ impl KubernetesClient {
             client_id, remote_addr
         );
 
-        // Try to create a Kubernetes client using default kubeconfig
-        let k8s_client = if remote_addr == "default" || remote_addr == "~/.kube/config" {
-            // Use default kubeconfig
-            match kube::Client::try_default().await {
-                Ok(client) => {
-                    info!(
-                        "Kubernetes client {} connected using default kubeconfig",
-                        client_id
-                    );
-                    client
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to connect to Kubernetes using default kubeconfig: {}",
-                        e
-                    );
-                    return Err(anyhow::anyhow!(
-                        "Failed to connect to Kubernetes: {}. Make sure kubeconfig is configured.",
-                        e
-                    ));
-                }
-            }
-        } else {
-            // Custom kubeconfig path or cluster URL
-            return Err(anyhow::anyhow!("Custom Kubernetes configurations not yet supported. Use 'default' to use ~/.kube/config"));
+        // `kubeconfig` and `namespace` were both declared and neither was read. `kubeconfig`
+        // named a file this client then ignored - it always ran `try_default()`, which reads
+        // `$KUBECONFIG` or `~/.kube/config` - and `namespace` was overwritten by a hardcoded
+        // "default" one line later, so every operation that did not name a namespace itself
+        // went to `default` whatever the operator asked for.
+        let (kubeconfig_path, namespace) = match &startup_params {
+            Some(params) => (
+                params.get_optional_string("kubeconfig")?,
+                params.get_optional_string("namespace")?,
+            ),
+            None => (None, None),
         };
 
-        // Store namespace (default to "default")
-        let namespace = "default".to_string();
+        let k8s_client = match &kubeconfig_path {
+            // An explicit kubeconfig file, read from where the operator said it is.
+            Some(path) => {
+                let path = expand_home(path);
+                let kubeconfig = kube::config::Kubeconfig::read_from(&path).map_err(|e| {
+                    anyhow::anyhow!("Failed to read kubeconfig at {}: {}", path.display(), e)
+                })?;
+                let config = kube::Config::from_custom_kubeconfig(
+                    kubeconfig,
+                    &kube::config::KubeConfigOptions::default(),
+                )
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to build Kubernetes configuration from {}: {}",
+                        path.display(),
+                        e
+                    )
+                })?;
+                let client = kube::Client::try_from(config).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to connect to Kubernetes using kubeconfig {}: {}",
+                        path.display(),
+                        e
+                    )
+                })?;
+                info!(
+                    "Kubernetes client {} connected using kubeconfig {}",
+                    client_id,
+                    path.display()
+                );
+                client
+            }
+            None if remote_addr == "default" || remote_addr == "~/.kube/config" => {
+                // Use default kubeconfig ($KUBECONFIG, else ~/.kube/config)
+                match kube::Client::try_default().await {
+                    Ok(client) => {
+                        info!(
+                            "Kubernetes client {} connected using default kubeconfig",
+                            client_id
+                        );
+                        client
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to connect to Kubernetes using default kubeconfig: {}",
+                            e
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Failed to connect to Kubernetes: {}. Make sure kubeconfig is configured.",
+                            e
+                        ));
+                    }
+                }
+            }
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Kubernetes address '{}' is not understood. Use 'default' to read \
+                     $KUBECONFIG (else ~/.kube/config), or pass the `kubeconfig` startup \
+                     parameter naming a kubeconfig file.",
+                    remote_addr
+                ));
+            }
+        };
+
+        // The `namespace` startup parameter is the default for every operation that does
+        // not name one itself.
+        let namespace = namespace.unwrap_or_else(|| "default".to_string());
 
         // Store client configuration in protocol_data
         app_state

@@ -145,8 +145,16 @@ LLMs can construct Kubernetes resource manifests and interpret cluster state.
 
 ### Startup Parameters
 
-- `namespace` (optional) - Default namespace for operations (default: "default")
-- `kubeconfig` (optional) - Path to kubeconfig file (default: ~/.kube/config)
+- `namespace` (optional) - Default namespace for operations (default: "default"). Stored in
+  `protocol_data` and used by every operation that does not name a namespace itself. It was
+  declared and then overwritten by a hardcoded `"default"` one line later, so setting it did
+  nothing until this was wired.
+- `kubeconfig` (optional) - Path to a kubeconfig file. A leading `~/` is expanded (the
+  parameter's own example is `~/.kube/config`, and `std::fs` does no tilde expansion). When
+  it is set, the file is read with `Kubeconfig::read_from` and the client is built from it
+  via `Config::from_custom_kubeconfig`; when it is not, the remote address must be `default`
+  and `kube::Client::try_default()` reads `$KUBECONFIG`, else `~/.kube/config`. Anything
+  else is refused with a message naming both ways in.
 
 ### Dual Logging
 
@@ -191,7 +199,7 @@ status_tx.send("[CLIENT] Kubernetes operation successful");                     
 
 ### Authentication
 
-- Uses kubeconfig file (~/.kube/config by default)
+- Uses the `kubeconfig` startup parameter, else `$KUBECONFIG`, else ~/.kube/config
 - Supports all kubeconfig auth methods:
     - Client certificates
     - Bearer tokens
@@ -208,7 +216,9 @@ status_tx.send("[CLIENT] Kubernetes operation successful");                     
 - **No Patch** - Cannot patch resources (only create/delete)
 - **No Scale** - Cannot scale deployments yet
 - **No Custom Resources** - Only core Kubernetes resources
-- **Fixed Kubeconfig** - Must use default kubeconfig location
+- **One context per client** - `KubeConfigOptions::default()` uses the file's
+  `current-context`; there is no parameter for selecting a different context, cluster or user
+  within a kubeconfig
 
 ## Usage Examples
 

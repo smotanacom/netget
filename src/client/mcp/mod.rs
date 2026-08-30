@@ -63,6 +63,12 @@ struct JsonRpcError {
     data: Option<Value>,
 }
 
+/// `clientInfo.name` when the `client_name` startup parameter is not set.
+const DEFAULT_CLIENT_NAME: &str = "netget-mcp-client";
+
+/// `clientInfo.version` when the `client_version` startup parameter is not set.
+const DEFAULT_CLIENT_VERSION: &str = "0.1.0";
+
 /// MCP client that connects to MCP servers
 pub struct McpClient;
 
@@ -74,8 +80,23 @@ impl McpClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         info!("MCP client {} connecting to {}", client_id, remote_addr);
+
+        // `client_name` / `client_version` are declared as the identity of this MCP client
+        // and were never read: the `clientInfo` of the initialize request was the hardcoded
+        // `netget-mcp-client` / `0.1.0` whatever the operator set, so an MCP server logging
+        // or gating on who connected saw the wrong name.
+        let (client_name, client_version) = match &startup_params {
+            Some(params) => (
+                params.get_optional_string("client_name")?,
+                params.get_optional_string("client_version")?,
+            ),
+            None => (None, None),
+        };
+        let client_name = client_name.unwrap_or_else(|| DEFAULT_CLIENT_NAME.to_string());
+        let client_version = client_version.unwrap_or_else(|| DEFAULT_CLIENT_VERSION.to_string());
 
         // Build HTTP client
         let http_client = reqwest::Client::builder()
@@ -106,6 +127,8 @@ impl McpClient {
             client_id,
             &app_state,
             &status_tx,
+            &client_name,
+            &client_version,
         )
         .await?;
 
@@ -255,12 +278,18 @@ impl McpClient {
     }
 
     /// Send initialize request to MCP server
+    ///
+    /// `client_name` / `client_version` come from the startup parameters of the same name
+    /// and become the `clientInfo` this client presents; they fall back to
+    /// [`DEFAULT_CLIENT_NAME`] / [`DEFAULT_CLIENT_VERSION`].
     async fn send_initialize_request(
         http_client: &reqwest::Client,
         base_url: &str,
         client_id: ClientId,
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
+        client_name: &str,
+        client_version: &str,
     ) -> Result<Value> {
         let request_id: i64 = app_state
             .with_client_mut(client_id, |client| {
@@ -285,8 +314,8 @@ impl McpClient {
                     }
                 },
                 "clientInfo": {
-                    "name": "netget-mcp-client",
-                    "version": "0.1.0"
+                    "name": client_name,
+                    "version": client_version
                 }
             })),
             id: request_id,

@@ -92,26 +92,22 @@ impl Http3ClientProtocol {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for Http3ClientProtocol {
+    /// `enable_0rtt` used to be declared here and was removed rather than wired up: this
+    /// client builds a fresh `quinn::Endpoint` per request and closes it before returning,
+    /// and keeps no session-ticket cache, so there is never a previous session to resume
+    /// from. 0-RTT is *only* resumption, so the knob could not have done anything on any
+    /// request no matter what it was set to.
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![
-            ParameterDefinition {
-                name: "default_headers".to_string(),
-                description: "Default headers to include in all requests".to_string(),
-                type_hint: "object".to_string(),
-                required: false,
-                example: json!({
-                    "User-Agent": "NetGet-HTTP3/1.0",
-                    "Accept": "application/json"
-                }),
-            },
-            ParameterDefinition {
-                name: "enable_0rtt".to_string(),
-                description: "Enable 0-RTT for faster connection resumption".to_string(),
-                type_hint: "boolean".to_string(),
-                required: false,
-                example: json!(true),
-            },
-        ]
+        vec![ParameterDefinition {
+            name: "default_headers".to_string(),
+            description: "Default headers to include in all requests".to_string(),
+            type_hint: "object".to_string(),
+            required: false,
+            example: json!({
+                "User-Agent": "NetGet-HTTP3/1.0",
+                "Accept": "application/json"
+            }),
+        }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         vec![
@@ -325,6 +321,7 @@ impl Client for Http3ClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                ctx.startup_params,
             )
             .await
         })

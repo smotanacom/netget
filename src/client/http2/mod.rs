@@ -59,6 +59,7 @@ impl Http2Client {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         // For HTTP/2, "connection" is logical, with persistent multiplexed streams
         // We'll create an HTTP/2 client and store it in protocol_data
@@ -75,6 +76,13 @@ impl Http2Client {
             .build()
             .context("Failed to build HTTP/2 client")?;
 
+        // `default_headers` is declared as "headers included in all requests" and nothing
+        // read it, so setting it changed nothing. Stored here, merged in `perform_request`.
+        let default_headers = match &startup_params {
+            Some(params) => params.get_optional_object("default_headers")?.cloned(),
+            None => None,
+        };
+
         // Store client in protocol_data
         app_state
             .with_client_mut(client_id, |client| {
@@ -83,6 +91,12 @@ impl Http2Client {
                     serde_json::json!("initialized"),
                 );
                 client.set_protocol_field("base_url".to_string(), serde_json::json!(remote_addr));
+                if let Some(headers) = &default_headers {
+                    client.set_protocol_field(
+                        "default_headers".to_string(),
+                        serde_json::Value::Object(headers.clone()),
+                    );
+                }
             })
             .await;
 
@@ -424,17 +438,22 @@ impl Http2Client {
         app_state: &AppState,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<Http2Exchange> {
-        // Get base URL from client
-        let base_url = app_state
+        // Base URL and the startup `default_headers`, read together under one guard.
+        let (base_url, default_headers) = app_state
             .with_client_mut(client_id, |client| {
-                client
-                    .get_protocol_field("base_url")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                (
+                    client
+                        .get_protocol_field("base_url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    client
+                        .get_protocol_field("default_headers")
+                        .and_then(|v| v.as_object().cloned()),
+                )
             })
             .await
-            .flatten()
-            .context("No base URL found")?;
+            .unwrap_or((None, None));
+        let base_url = base_url.context("No base URL found")?;
 
         let url = if path.starts_with("http://") || path.starts_with("https://") {
             path.clone()
@@ -468,12 +487,22 @@ impl Http2Client {
             _ => return Err(anyhow::anyhow!("Unsupported HTTP method: {}", method)),
         };
 
-        // Add headers
+        // Startup defaults merged *underneath* the request's own headers, keyed by the
+        // lowercased name. Merged before anything is applied because
+        // `RequestBuilder::header` appends - applying both sets in turn would put two
+        // values of the same header on the wire instead of overriding.
+        let mut merged = serde_json::Map::new();
+        for (key, value) in default_headers.unwrap_or_default() {
+            merged.insert(key.to_ascii_lowercase(), value);
+        }
         if let Some(hdrs) = headers {
             for (key, value) in hdrs {
-                if let Some(val_str) = value.as_str() {
-                    request = request.header(&key, val_str);
-                }
+                merged.insert(key.to_ascii_lowercase(), value);
+            }
+        }
+        for (key, value) in merged {
+            if let Some(val_str) = value.as_str() {
+                request = request.header(&key, val_str);
             }
         }
 

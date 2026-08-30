@@ -264,12 +264,14 @@ impl Server for DcProtocol {
         Box::pin(async move {
             use crate::server::dc::DcServer;
 
+            let listen_addr = ctx.legacy_listen_addr();
             DcServer::spawn_with_llm_actions(
-                ctx.legacy_listen_addr(),
+                listen_addr,
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
                 ctx.server_id,
+                ctx.startup_params,
             )
             .await
         })

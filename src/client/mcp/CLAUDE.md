@@ -36,6 +36,12 @@ capabilities (resources, tools, prompts). Built on JSON-RPC 2.0 over HTTP with t
 **MCP Handshake**:
 
 1. **Client → initialize request** (with clientInfo, capabilities)
+
+`clientInfo` is the `client_name` / `client_version` startup parameters, falling back to
+`netget-mcp-client` / `0.1.0` (`DEFAULT_CLIENT_NAME` / `DEFAULT_CLIENT_VERSION`). This is the
+only place the pair is used, and it is the only thing the server learns about who connected —
+a server that logs or gates on `clientInfo.name` sees exactly what the operator set.
+
 2. **Server → initialize response** (with serverInfo, capabilities)
 3. **Client → initialized notification** (confirms connection)
 

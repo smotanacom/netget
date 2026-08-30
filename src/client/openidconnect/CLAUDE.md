@@ -445,3 +445,25 @@ params on the client and leaves `protocol_data` `Null`, so a client created that
 with "Missing client configuration" on the LLM path just as much as the injected one.
 `connect` now seeds `protocol_data` from `startup_params` once, without overwriting anything
 already set.
+
+### The `flow` startup parameter starts a flow
+
+`flow` names which OAuth2/OIDC flow to run and was read by nothing, so the flow was whichever
+action the model happened to choose — an operator asking for `client_credentials` could get a
+device-code prompt instead. `connect` now maps it to the matching action and runs it through
+`execute_llm_action`, the same entry point the model's own flow actions use, from a
+registered task (the device flow's polling and the authorization-code flow's callback server
+both outlive `connect()`). The `scopes` startup parameter rides along on that action.
+
+| `flow` | action started |
+|---|---|
+| `device_code` | `start_device_flow` |
+| `authorization_code` | `start_authorization_code_flow` |
+| `client_credentials` | `exchange_client_credentials` |
+| `password` | **refused at connect** |
+| anything else | **refused at connect** |
+
+`password` is refused rather than ignored: the resource-owner password flow needs a username
+and a password, which are parameters of the `exchange_password` *action* and are deliberately
+not startup parameters. No value of `flow` alone could start it, so the client says so
+instead of coming up and doing nothing.

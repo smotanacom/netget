@@ -63,6 +63,16 @@ HTTP/2 client stores minimal state in `protocol_data`:
 
 - `http2_client`: Initialization status
 - `base_url`: Base URL for relative requests
+- `default_headers`: the `default_headers` startup parameter, when one was supplied
+
+### Startup Parameters
+
+- `default_headers` (optional) — headers included in every request.
+  `perform_request` merges them **underneath** the headers the model puts on the request
+  itself, keyed by the lowercased header name (HTTP header names are case-insensitive), so
+  `Accept` on the request replaces `accept` from the defaults. The merge happens before any
+  header is applied because `reqwest::RequestBuilder::header` *appends* — applying both sets
+  in turn would put two values of the same header on the wire.
 
 Memory updates from LLM are stored per-client via `AppState::set_memory_for_client()`.
 

@@ -16,6 +16,44 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
+/// The `Pk=` value inside the `$Lock` challenge, and the hub name used when only
+/// `hub_topic` was given — so a topic-only configuration still names the hub it belongs to
+/// rather than presenting the topic as the name.
+const DEFAULT_HUB_NAME: &str = "NetGetHub";
+
+/// Build the `$HubName` command from the `hub_name` / `hub_topic` startup parameters, or
+/// `None` when neither was supplied.
+///
+/// `$HubName <name> - <topic>` is how NMDC carries a topic: there is no separate topic
+/// command in the base protocol, and DC++ splits the name at the first ` - `.
+///
+/// Both values are sanitised. NMDC frames commands by `|`, so an unescaped pipe in either
+/// would end the command early and leave the remainder to be parsed as a second one; `\r`
+/// and `\n` are stripped for the same reason. Everything else is left alone — this is the
+/// operator's text, not ours to rewrite.
+fn hub_name_command(hub_name: Option<&str>, hub_topic: Option<&str>) -> Option<String> {
+    fn clean(value: &str) -> String {
+        value
+            .chars()
+            .filter(|c| *c != '|' && *c != '\r' && *c != '\n')
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    let name = hub_name.map(clean).filter(|s| !s.is_empty());
+    let topic = hub_topic.map(clean).filter(|s| !s.is_empty());
+
+    match (name, topic) {
+        (None, None) => None,
+        (Some(name), None) => Some(format!("$HubName {name}|")),
+        (name, Some(topic)) => {
+            let name = name.unwrap_or_else(|| DEFAULT_HUB_NAME.to_string());
+            Some(format!("$HubName {name} - {topic}|"))
+        }
+    }
+}
+
 /// DC server that forwards commands to LLM
 pub struct DcServer;
 
@@ -27,7 +65,20 @@ impl DcServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
+        // `hub_name` and `hub_topic` are declared as what this hub calls itself, and both
+        // were read by nothing: the only identity a client ever saw was the hardcoded
+        // `Pk=NetGetHub` inside the `$Lock` challenge, so setting either changed nothing an
+        // NMDC client could observe.
+        let hub_announcement = match &startup_params {
+            Some(params) => hub_name_command(
+                params.get_optional_string("hub_name")?.as_deref(),
+                params.get_optional_string("hub_topic")?.as_deref(),
+            ),
+            None => None,
+        };
+
         let listener =
             crate::server::socket_helpers::create_reusable_tcp_listener(listen_addr).await?;
         let local_addr = listener.local_addr()?;
@@ -50,6 +101,7 @@ impl DcServer {
                         let state_clone = app_state.clone();
                         let status_clone = status_tx.clone();
                         let protocol_clone = protocol.clone();
+                        let hub_announcement = hub_announcement.clone();
 
                         tokio::spawn(async move {
                             let (read_half, write_half) = tokio::io::split(stream);
@@ -117,6 +169,7 @@ impl DcServer {
                                 &state_clone,
                                 &status_clone,
                                 &protocol_clone,
+                                hub_announcement.as_deref(),
                             )
                             .await;
 
@@ -161,12 +214,16 @@ impl DcServer {
         state_clone: &Arc<AppState>,
         status_clone: &mpsc::UnboundedSender<String>,
         protocol_clone: &Arc<DcProtocol>,
+        hub_announcement: Option<&str>,
     ) where
         R: tokio::io::AsyncRead + Unpin,
         W: tokio::io::AsyncWrite + Unpin,
     {
-        // Send initial $Lock challenge
-        let lock_command = "$Lock EXTENDEDPROTOCOLABCABCABCABCABCABC Pk=NetGetHub|";
+        // Send initial $Lock challenge, followed by the hub's own name/topic when the
+        // operator configured one. NMDC hubs announce `$HubName` right after `$Lock`, and
+        // it is the first thing a client displays.
+        let lock_command =
+            format!("$Lock EXTENDEDPROTOCOLABCABCABCABCABCABC Pk={DEFAULT_HUB_NAME}|");
         {
             let mut writer = write_half_arc.lock().await;
             if let Err(e) = writer.write_all(lock_command.as_bytes()).await {
@@ -183,6 +240,29 @@ impl DcServer {
                     connection_id,
                     Some(0),
                     Some(lock_command.len() as u64),
+                    Some(0),
+                    Some(1),
+                )
+                .await;
+        }
+
+        // `$HubName` from the `hub_name` / `hub_topic` startup parameters. Sent only when
+        // one of them was set, so a hub configured with neither puts exactly the bytes on
+        // the wire it always did.
+        if let Some(announcement) = hub_announcement {
+            let mut writer = write_half_arc.lock().await;
+            if let Err(e) = writer.write_all(announcement.as_bytes()).await {
+                Log::new(Some(status_clone))
+                    .error(format!("Failed to send initial HubName: {}", e));
+                return;
+            }
+            Log::new(Some(status_clone)).debug(format!("DC sent HubName: {}", announcement));
+            state_clone
+                .update_connection_stats(
+                    server_id,
+                    connection_id,
+                    Some(0),
+                    Some(announcement.len() as u64),
                     Some(0),
                     Some(1),
                 )
