@@ -292,20 +292,42 @@ fn test_event_types_have_response_examples() {
                 ));
             }
 
-            // The response_example should be an object with a "type" field
+            // The response_example must name executable actions: either one action object
+            // with a "type", or an **array** of them.
+            //
+            // The array case is deliberate rather than a loosening. The model answers with
+            // `{"actions": [...]}`, so a sequence is a legitimate answer, and one event in the
+            // tree genuinely needs to show one: IMAP's `imap_command` says in its own
+            // description that untagged responses come first and then exactly one tagged
+            // `send_imap_response` completes the command. Demanding a single object there
+            // would force the example to under-describe the answer. Every element is still
+            // checked for a `type`, so the property the rule exists for — the example names
+            // actions the model can actually send — is unchanged.
             if !event_type.response_example.is_null() {
-                if let Some(obj) = event_type.response_example.as_object() {
-                    if obj.get("type").is_none() {
-                        errors.push(format!(
-                            "{}: Event type '{}' response_example missing 'type' field",
-                            protocol_name, event_type.id
-                        ));
-                    }
-                } else {
-                    errors.push(format!(
-                        "{}: Event type '{}' response_example is not an object",
+                let mut check_one =
+                    |value: &serde_json::Value, where_: &str| match value.as_object() {
+                        Some(obj) if obj.get("type").is_some() => {}
+                        Some(_) => errors.push(format!(
+                            "{}: Event type '{}' response_example{} missing 'type' field",
+                            protocol_name, event_type.id, where_
+                        )),
+                        None => errors.push(format!(
+                            "{}: Event type '{}' response_example{} is not an action object",
+                            protocol_name, event_type.id, where_
+                        )),
+                    };
+                match event_type.response_example.as_array() {
+                    Some(actions) if actions.is_empty() => errors.push(format!(
+                        "{}: Event type '{}' response_example is an empty array, which shows \
+                         the model nothing",
                         protocol_name, event_type.id
-                    ));
+                    )),
+                    Some(actions) => {
+                        for (i, action) in actions.iter().enumerate() {
+                            check_one(action, &format!(" element {i}"));
+                        }
+                    }
+                    None => check_one(&event_type.response_example, ""),
                 }
             }
         }
