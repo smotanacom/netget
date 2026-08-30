@@ -330,3 +330,300 @@ fn no_byte_string_can_panic_either_parser() {
         let _ = parse_opcode_byte(&bytes);
     }
 }
+
+// ---------------------------------------------------------------------------
+// The reliability layer
+// ---------------------------------------------------------------------------
+//
+// The control channel is a reliable layer over UDP. These tests drive
+// `ReliableSender`/`ReliableReceiver` directly, because the properties that
+// matter -- in-order delivery, duplicate suppression, retransmission with
+// backoff -- are hard to provoke over a loopback socket that never loses
+// anything, and a TLS handshake silently fails to complete if any of them is
+// wrong.
+
+use netget::server::openvpn::reliable::{fragment, ReliableReceiver, ReliableSender};
+use std::time::{Duration, Instant};
+
+#[test]
+fn receiver_delivers_in_order_and_buffers_what_arrives_early() {
+    let mut recv = ReliableReceiver::new(0);
+
+    // Packet 2 before packet 0 and 1: nothing may be delivered yet, because a
+    // TLS record stream reassembled out of order is garbage.
+    assert!(recv.accept(2, b"third".to_vec()).is_empty());
+    assert!(recv.accept(1, b"second".to_vec()).is_empty());
+
+    let delivered = recv.accept(0, b"first".to_vec());
+    assert_eq!(
+        delivered,
+        vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
+        "the gap closing must release everything that was waiting behind it, in order"
+    );
+    assert_eq!(recv.next_expected(), 3);
+}
+
+#[test]
+fn receiver_drops_duplicates_but_still_acknowledges_them() {
+    let mut recv = ReliableReceiver::new(0);
+    assert_eq!(recv.accept(0, b"hello".to_vec()), vec![b"hello".to_vec()]);
+    let _ = recv.take_acks();
+
+    // The peer retransmits only because it missed the first acknowledgement, so
+    // the duplicate must produce a new ACK and no second delivery.
+    assert!(
+        recv.accept(0, b"hello".to_vec()).is_empty(),
+        "a duplicate must not be delivered twice"
+    );
+    assert_eq!(
+        recv.take_acks(),
+        vec![0],
+        "a duplicate must still be acknowledged, or the peer retransmits forever"
+    );
+}
+
+#[test]
+fn receiver_ignores_packets_outside_the_window() {
+    let mut recv = ReliableReceiver::new(0);
+    assert!(recv.accept(10_000, b"far future".to_vec()).is_empty());
+    assert!(
+        !recv.has_pending_acks(),
+        "a packet outside the window must NOT be acknowledged: the peer has to keep it and \
+         send it again once the window has moved"
+    );
+}
+
+#[test]
+fn sender_retransmits_until_acknowledged_then_stops() {
+    let mut send = ReliableSender::new();
+    let id = send.queue(Opcode::ControlV1, vec![], b"tls records".to_vec());
+    assert_eq!(id, 0, "the first control packet a side sends is numbered 0");
+
+    let t0 = Instant::now();
+    assert_eq!(
+        send.take_due(t0).len(),
+        1,
+        "a fresh packet goes out at once"
+    );
+    assert!(
+        send.take_due(t0).is_empty(),
+        "it must not be sent twice in the same instant"
+    );
+    assert!(
+        send.take_due(t0 + Duration::from_millis(500)).is_empty(),
+        "the retransmission delay must actually be waited out"
+    );
+
+    let again = send.take_due(t0 + Duration::from_millis(1_100));
+    assert_eq!(again.len(), 1, "an unacknowledged packet must go out again");
+    assert_eq!(
+        again[0].packet_id, 0,
+        "a retransmission keeps the packet id"
+    );
+    assert_eq!(
+        again[0].payload,
+        b"tls records".to_vec(),
+        "a retransmission must be byte-identical"
+    );
+
+    send.on_ack(&[0]);
+    assert_eq!(send.in_flight(), 0);
+    assert!(
+        send.take_due(t0 + Duration::from_secs(60)).is_empty(),
+        "an acknowledged packet must never be sent again"
+    );
+}
+
+#[test]
+fn sender_gives_up_on_a_peer_that_never_acknowledges() {
+    let mut send = ReliableSender::new();
+    send.queue(Opcode::ControlV1, vec![], b"x".to_vec());
+
+    let mut now = Instant::now();
+    for _ in 0..12 {
+        let _ = send.take_due(now);
+        now += Duration::from_secs(30);
+    }
+    assert!(
+        send.is_exhausted(),
+        "a session whose packets are never acknowledged must be declared dead rather than \
+         retransmitted forever"
+    );
+}
+
+#[test]
+fn sender_holds_back_anything_past_the_window() {
+    let mut send = ReliableSender::new();
+    for i in 0..10 {
+        send.queue(Opcode::ControlV1, vec![], vec![i as u8]);
+    }
+    let due = send.take_due(Instant::now());
+    assert_eq!(
+        due.len(),
+        4,
+        "only the send window may be in flight; the peer's reliability buffer is finite and \
+         anything beyond it is dropped silently"
+    );
+    assert_eq!(
+        due.iter().map(|d| d.packet_id).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3]
+    );
+}
+
+#[test]
+fn fragmenting_splits_a_tls_flight_and_loses_nothing() {
+    let flight: Vec<u8> = (0..5_000u32).map(|i| (i % 251) as u8).collect();
+    let chunks = fragment(&flight);
+    assert!(chunks.len() > 1, "a multi-kilobyte flight must be split");
+    for chunk in &chunks {
+        assert!(
+            chunk.len() <= 1100,
+            "a fragment larger than the peer's control-channel buffer is dropped silently"
+        );
+    }
+    assert_eq!(
+        chunks.concat(),
+        flight,
+        "reassembling the fragments must reproduce the flight exactly"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Key method 2
+// ---------------------------------------------------------------------------
+//
+// The expected byte layout below is written from `ssl.c`'s
+// `key_method_2_write` / `key_method_2_read`, by hand, in this file -- it is
+// never produced by the code under test. A `u16`-prefixed string counts its own
+// NUL terminator, and `write_empty_string` emits a length of zero with no bytes
+// at all, which is a different encoding from a string containing only a NUL.
+
+use netget::server::openvpn::keymethod::{
+    build_server_key_method_2, parse_client_key_method_2, peer_info_map, server_options_from_client,
+};
+
+/// Encode a `u16`-prefixed, NUL-terminated string the way OpenVPN does.
+fn ovpn_string(out: &mut Vec<u8>, s: &str) {
+    out.extend_from_slice(&((s.len() + 1) as u16).to_be_bytes());
+    out.extend_from_slice(s.as_bytes());
+    out.push(0);
+}
+
+/// A client key-method-2 message, built by offset.
+fn client_key_method_2(options: &str, user: &str, pass: &str, peer_info: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.push(2);
+    out.extend(std::iter::repeat(0xA1).take(48)); // pre-master
+    out.extend(std::iter::repeat(0xB2).take(32)); // random1
+    out.extend(std::iter::repeat(0xC3).take(32)); // random2
+    ovpn_string(&mut out, options);
+    ovpn_string(&mut out, user);
+    ovpn_string(&mut out, pass);
+    ovpn_string(&mut out, peer_info);
+    out
+}
+
+#[test]
+fn parses_a_client_key_method_2_message() {
+    let options = "V4,dev-type tun,link-mtu 1541,tun-mtu 1500,proto UDPv4,key-method 2,tls-client";
+    let bytes = client_key_method_2(options, "alice", "s3cret", "IV_VER=2.7.6\nIV_PLAT=mac\n");
+
+    let (msg, consumed) = parse_client_key_method_2(&bytes)
+        .expect("a well-formed message must parse")
+        .expect("and must not be reported as incomplete");
+
+    assert_eq!(consumed, bytes.len(), "the whole message must be consumed");
+    assert_eq!(msg.pre_master.len(), 48);
+    assert_eq!(msg.random1, vec![0xB2; 32]);
+    assert_eq!(msg.random2, vec![0xC3; 32]);
+    assert_eq!(msg.options, options);
+    assert_eq!(msg.username, "alice");
+    assert_eq!(msg.password, "s3cret");
+    assert_eq!(msg.peer_info, "IV_VER=2.7.6\nIV_PLAT=mac\n");
+
+    let info = peer_info_map(&msg.peer_info);
+    assert_eq!(info.get("IV_VER").and_then(|v| v.as_str()), Some("2.7.6"));
+    assert_eq!(info.get("IV_PLAT").and_then(|v| v.as_str()), Some("mac"));
+}
+
+#[test]
+fn a_partial_key_method_2_message_is_incomplete_not_invalid() {
+    // The control channel is a byte stream over several P_CONTROL_V1 packets,
+    // so a prefix means "wait", not "reject". Treating it as an error would
+    // kill every session whose key exchange spans two packets.
+    let bytes = client_key_method_2("V4,tls-client", "u", "p", "IV_VER=2.7.6");
+    for cut in [0, 1, 4, 5, 60, 116, 117, bytes.len() - 1] {
+        let outcome = parse_client_key_method_2(&bytes[..cut]);
+        assert!(
+            matches!(outcome, Ok(None)),
+            "a {}-byte prefix must be reported as incomplete, got {:?}",
+            cut,
+            outcome.map(|o| o.is_some())
+        );
+    }
+}
+
+#[test]
+fn a_message_that_is_not_key_method_2_is_rejected() {
+    let mut wrong_leading = client_key_method_2("V4", "u", "p", "");
+    wrong_leading[0] = 0xFF;
+    assert!(
+        parse_client_key_method_2(&wrong_leading).is_err(),
+        "the leading u32 is a literal zero in every version that speaks key method 2"
+    );
+
+    let mut wrong_method = client_key_method_2("V4", "u", "p", "");
+    wrong_method[4] = 1;
+    assert!(
+        parse_client_key_method_2(&wrong_method).is_err(),
+        "key method 1 was removed from OpenVPN long ago and is not implemented here"
+    );
+}
+
+#[test]
+fn server_key_method_2_matches_the_layout_a_client_reads() {
+    let random1 = [0x11u8; 32];
+    let random2 = [0x22u8; 32];
+    let options = "V4,dev-type tun,key-method 2,tls-server";
+    let built = build_server_key_method_2(&random1, &random2, options);
+
+    // Written by hand from key_method_2_write with server=true: no pre-master,
+    // then three *empty* strings (u16 0, no bytes) for username, password and
+    // peer info -- exactly what a server with no --auth-user-pass-verify emits.
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&0u32.to_be_bytes());
+    expected.push(2);
+    expected.extend_from_slice(&random1);
+    expected.extend_from_slice(&random2);
+    ovpn_string(&mut expected, options);
+    expected.extend_from_slice(&0u16.to_be_bytes());
+    expected.extend_from_slice(&0u16.to_be_bytes());
+    expected.extend_from_slice(&0u16.to_be_bytes());
+
+    assert_eq!(
+        to_hex(&built),
+        to_hex(&expected),
+        "the server's key method 2 message must match the layout the client reads; a client \
+         that cannot parse it reports a TLS error rather than a mismatch"
+    );
+    assert_eq!(
+        built.len(),
+        4 + 1 + 64 + 2 + options.len() + 1 + 6,
+        "no pre-master secret may be sent by the server"
+    );
+}
+
+#[test]
+fn the_answering_options_string_flips_only_the_role() {
+    assert_eq!(
+        server_options_from_client("V4,dev-type tun,key-method 2,tls-client"),
+        "V4,dev-type tun,key-method 2,tls-server",
+        "mirroring the client's own string and flipping the role is what stops the client \
+         warning about every field it compares"
+    );
+    assert!(
+        server_options_from_client("").contains("tls-server"),
+        "an empty options string is a protocol error at the peer, not 'no opinion'"
+    );
+}
