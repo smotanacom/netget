@@ -1,7 +1,40 @@
 //! Terminal snapshot tests for NetGet TUI
 //!
-//! These tests spawn the actual NetGet binary in a virtual PTY,
-//! send keystrokes, and capture terminal snapshots for verification.
+//! These tests spawn the actual NetGet binary in a virtual PTY, send keystrokes, and capture
+//! terminal snapshots for verification.
+//!
+//! # The snapshots in `snapshots/` are STALE and must be regenerated
+//!
+//! They were captured from the **rolling TUI** (`src/cli/rolling_tui.rs`, now behind
+//! `--legacy-tui`) — the NETGET block-letter banner and a `Model:… | Log:… |` footer. The
+//! default TUI is the ratatui dashboard (`src/tui/`), which renders a chat pane, an INSTANCES
+//! rail and a different footer. Every test here therefore fails on content, and will until the
+//! snapshots are regenerated against the dashboard:
+//!
+//! ```bash
+//! rm -f tests/terminal_snapshot/snapshots/*.actual.snap.md
+//! ./cargo-isolated.sh test --no-default-features --features tcp,terminal-snapshot \
+//!     --test terminal_snapshot -- --test-threads=4
+//! # review each .actual.snap.md, then:
+//! for f in tests/terminal_snapshot/snapshots/*.actual.snap.md; do
+//!     mv "$f" "${f%.actual.snap.md}.snap.md"
+//! done
+//! ```
+//!
+//! **Review the diffs before promoting them** — that is the whole point of a snapshot, and
+//! these went a full UI generation without anyone looking.
+//!
+//! # Three things were wrong with the harness itself, and are fixed
+//!
+//! 1. **The PTY had no window size**, so the slave reported 0x0 and the dashboard rendered a
+//!    0x0 frame: the child entered the alternate screen, cleared, and painted nothing at all.
+//!    Every capture was blank, which made the content staleness above invisible behind a more
+//!    confusing symptom. `spawn_netget_with_args` now sets the size before spawning.
+//! 2. **The capture read on a fixed timer** and stopped as soon as it had any bytes, so it
+//!    routinely fired before the first frame under load. It now waits for the output to go
+//!    quiet, bounded.
+//! 3. **The snapshots contained the configured model name**, so they could never match on a
+//!    machine whose `~/.netget` names a different one. `normalize_screen` replaces it.
 
 use nix::libc;
 use std::io::{Read, Write};
@@ -62,9 +95,17 @@ fn spawn_netget_with_args(args: &[&str]) -> (pty_process::blocking::Pty, NetGetC
     let pty = unsafe { pty_process::blocking::Pty::from_fd(master_owned) };
     let pts = unsafe { pty_process::blocking::Pts::from_fd(slave_owned) };
 
-    // Spawn NetGet with the PTY
-    // Note: The PTY size detection may fail in test environments, but NetGet
-    // now handles this gracefully by defaulting to 80x24 in rolling_tui.rs
+    // Give the PTY a window size before spawning.
+    //
+    // Without this the slave reports 0x0, and the ratatui dashboard renders a 0x0 frame: the
+    // child enters the alternate screen, clears, and then paints nothing at all, forever. Every
+    // test here captured a blank screen for that reason. The note that used to sit here said
+    // NetGet "handles this gracefully by defaulting to 80x24 in rolling_tui.rs" — that is the
+    // *legacy* TUI, kept behind `--legacy-tui`; the default is `src/tui/`, which had no such
+    // fallback.
+    pty.resize(pty_process::Size::new(TERMINAL_HEIGHT, TERMINAL_WIDTH))
+        .expect("set PTY window size");
+
     let mut cmd = pty_process::blocking::Command::new(binary_path);
     for arg in args {
         cmd = cmd.arg(arg);
@@ -72,6 +113,33 @@ fn spawn_netget_with_args(args: &[&str]) -> (pty_process::blocking::Pty, NetGetC
     let child = cmd.spawn(pts).expect("Failed to spawn netget in PTY");
 
     (pty, NetGetChild(Some(child)))
+}
+
+/// Replace anything in a captured screen that differs between machines.
+///
+/// The footer renders the *configured* model, so these snapshots baked in
+/// `Model:qwen3-coder:30b` and could never match on a developer whose `~/.netget` names a
+/// different one. That is not a rendering property, and nothing here is testing it.
+fn normalize_screen(screen: &str) -> String {
+    screen
+        .lines()
+        .map(|line| {
+            // The dashboard footer is `<model> | log:INFO ^L | web:ON ^W | ...`, so the model
+            // is everything before the first ` | log:`. The legacy TUI wrote `Model:<name> |`.
+            if let Some(i) = line.find(" \u{2502} log:").or_else(|| line.find(" | log:")) {
+                return format!("<MODEL>{}", &line[i..]);
+            }
+            if let Some(start) = line.find("Model:") {
+                let after = start + "Model:".len();
+                return match line[after..].find(" |") {
+                    Some(i) => format!("{}Model:<MODEL>{}", &line[..start], &line[after + i..]),
+                    None => format!("{}Model:<MODEL>", &line[..start]),
+                };
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Capture terminal output and parse it with vt100
@@ -93,24 +161,41 @@ fn capture_screen(pty: &mut pty_process::blocking::Pty) -> String {
     let mut all_bytes = Vec::new();
     let mut buf = vec![0u8; 4096];
 
-    // Try to read multiple times to get all output
-    for attempt in 0..10 {
-        std::thread::sleep(Duration::from_millis(100));
+    // Read until the screen stops changing, rather than for a fixed number of ticks.
+    //
+    // This used to read 10 x 100ms and stop as soon as it had *any* bytes after the fourth
+    // tick - about a second, and less if the first frame arrived early. NetGet's startup does
+    // scripting-environment detection, privilege probing and registry construction before the
+    // TUI paints, so under `--test-threads=100` the capture regularly happened before the
+    // first frame and every one of these tests compared a blank screen against a full one.
+    // Waiting for quiescence makes the capture describe what the terminal settled on, at
+    // whatever speed the machine manages.
+    // Bounded at 2.5s. The dashboard repaints on a timer, so "no new bytes" is not guaranteed
+    // to arrive at all — a long deadline then costs the full wait on every single capture, and
+    // several tests capture three or four times. 2.5s is comfortably more than the ~300ms a
+    // frame takes here while keeping the whole suite in the tens of seconds.
+    let deadline = std::time::Instant::now() + Duration::from_millis(2500);
+    let mut quiet_since = std::time::Instant::now();
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
 
+        let mut read_any = false;
         loop {
             match pty.read(&mut buf) {
                 Ok(n) if n > 0 => {
                     all_bytes.extend_from_slice(&buf[..n]);
                     parser.process(&buf[..n]);
+                    read_any = true;
                 }
-                Ok(_) => break, // No more data
+                Ok(_) => break,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(_) => break,
             }
         }
 
-        // If we got some data, give it a bit more time then stop
-        if !all_bytes.is_empty() && attempt > 3 {
+        if read_any {
+            quiet_since = std::time::Instant::now();
+        } else if !all_bytes.is_empty() && quiet_since.elapsed() >= Duration::from_millis(400) {
             break;
         }
     }
@@ -133,7 +218,7 @@ fn capture_screen(pty: &mut pty_process::blocking::Pty) -> String {
         lines.push(line.trim_end().to_string());
     }
 
-    lines.join("\n")
+    normalize_screen(&lines.join("\n"))
 }
 
 /// Capture terminal output with custom height
@@ -195,7 +280,7 @@ fn capture_screen_with_height(pty: &mut pty_process::blocking::Pty, height: u16)
         lines.push(line.trim_end().to_string());
     }
 
-    lines.join("\n")
+    normalize_screen(&lines.join("\n"))
 }
 
 /// Send input to the PTY
