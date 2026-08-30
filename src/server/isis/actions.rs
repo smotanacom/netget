@@ -336,7 +336,7 @@ impl IsisProtocol {
     }
 
     /// Build IS-IS Hello PDU
-    fn build_isis_hello(
+    pub fn build_isis_hello(
         pdu_type: u8,
         system_id: &str,
         area_id: &str,
@@ -393,14 +393,27 @@ impl IsisProtocol {
         };
         packet[1] = header_len;
 
-        // Update PDU Length
+        // Update PDU Length.
+        //
+        // Offset 17 for every Hello type, and this used to be 15 (LAN) / 11 (P2P). Count the
+        // fields this function actually pushes, per ISO/IEC 10589 §9.5-9.7:
+        //
+        //   0..8   common header
+        //   8      circuit type
+        //   9..15  source ID (6)
+        //   15..17 holding time (2)
+        //   17..19 PDU length (2)      <- here
+        //   19     priority        (LAN only)
+        //   20..27 LAN ID (7)      (LAN only)
+        //
+        // Writing at 15 overwrote the **holding time** with the PDU length and left the real
+        // PDU-length field as the zeros pushed above — so every Hello this server emitted
+        // carried a corrupt holding time and a length of 0. A receiver reads holding time as
+        // the adjacency hold timer, so the value it got was whatever the packet happened to
+        // be long.
+        const PDU_LEN_OFFSET: usize = 17;
         let pdu_len = packet.len() as u16;
-        let pdu_len_offset = if pdu_type == 15 || pdu_type == 16 {
-            15 // LAN Hello PDU length offset
-        } else {
-            11 // P2P Hello PDU length offset
-        };
-        packet[pdu_len_offset..pdu_len_offset + 2].copy_from_slice(&pdu_len.to_be_bytes());
+        packet[PDU_LEN_OFFSET..PDU_LEN_OFFSET + 2].copy_from_slice(&pdu_len.to_be_bytes());
 
         Ok(packet)
     }
