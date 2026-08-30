@@ -81,7 +81,40 @@ Example:
 {"type":"read_file","path":"schema.json","mode":"full"}
 ```
 
-## 2. web_search
+## 2. list_tasks
+
+List all currently scheduled tasks. Returns information about all one-shot and recurring tasks, including their status, next execution time, and configuration.
+
+
+Example:
+```json
+{"type":"list_tasks"}
+```
+
+## 3. execute_sql
+
+Execute a SQL query on a database. Supports DDL (CREATE/ALTER/DROP), DML (INSERT/UPDATE/DELETE), and DQL (SELECT). Returns results as JSON with columns and rows for SELECT queries, or affected row count for modifications.
+
+Parameters:
+- `database_id` (number, required): Database ID (from create_database response or list_databases). Format: db-N → use N.
+- `query` (string, required): SQL query to execute. Use standard SQLite syntax. Be careful with semicolons (only one statement per execute_sql).
+
+Example:
+```json
+{"type":"execute_sql","database_id":1,"query":"SELECT * FROM files WHERE path LIKE '/home/%'"}
+```
+
+## 4. list_databases
+
+List all active SQLite databases with their schemas, table information, and row counts. Use this to discover available databases and understand their structure before querying.
+
+
+Example:
+```json
+{"type":"list_databases"}
+```
+
+## 5. web_search
 
 Fetch web pages or search the web. If query starts with http:// or https://, fetches that URL directly and returns the page content as text. Otherwise, searches DuckDuckGo and returns top 5 results. Use this to read RFCs, protocol specifications, or documentation. Note: This makes external network requests.
 
@@ -253,39 +286,6 @@ Parameters:
 Example:
 ```json
 {"type":"handle_https_connection_block","reason":"Destination blocked by security policy"}
-```
-
-## 12. list_tasks
-
-List all currently scheduled tasks. Returns information about all one-shot and recurring tasks, including their status, next execution time, and configuration.
-
-
-Example:
-```json
-{"type":"list_tasks"}
-```
-
-## 13. execute_sql
-
-Execute a SQL query on a database. Supports DDL (CREATE/ALTER/DROP), DML (INSERT/UPDATE/DELETE), and DQL (SELECT). Returns results as JSON with columns and rows for SELECT queries, or affected row count for modifications.
-
-Parameters:
-- `database_id` (number, required): Database ID (from create_database response or list_databases). Format: db-N → use N.
-- `query` (string, required): SQL query to execute. Use standard SQLite syntax. Be careful with semicolons (only one statement per execute_sql).
-
-Example:
-```json
-{"type":"execute_sql","database_id":1,"query":"SELECT * FROM files WHERE path LIKE '/home/%'"}
-```
-
-## 14. list_databases
-
-List all active SQLite databases with their schemas, table information, and row counts. Use this to discover available databases and understand their structure before querying.
-
-
-Example:
-```json
-{"type":"list_databases"}
 ```
 
 

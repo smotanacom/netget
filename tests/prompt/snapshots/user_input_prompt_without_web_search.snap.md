@@ -103,6 +103,57 @@ Example:
 {"type":"read_file","path":"schema.json","mode":"full"}
 ```
 
+## 2. read_documentation
+
+Get detailed protocol documentation. After you fetch documentation, you will be able to open a server or a client.
+
+## Available Protocols
+
+**Server protocols**: HTTP, Proxy, SSH, TCP
+
+**Client protocols**: HTTP, SSH, TCP
+
+Parameters:
+- `protocols` (array, required): Array of protocol names to get documentation for. Maximum 5 protocols per call. Returns both server and client docs if available for each protocol.
+
+Example:
+```json
+{"type":"read_documentation","protocols":["HTTP","Proxy","SSH","TCP"]}
+```
+
+## 3. list_tasks
+
+List all currently scheduled tasks. Returns information about all one-shot and recurring tasks, including their status, next execution time, and configuration.
+
+
+Example:
+```json
+{"type":"list_tasks"}
+```
+
+## 4. execute_sql
+
+Execute a SQL query on a database. Supports DDL (CREATE/ALTER/DROP), DML (INSERT/UPDATE/DELETE), and DQL (SELECT). Returns results as JSON with columns and rows for SELECT queries, or affected row count for modifications.
+
+Parameters:
+- `database_id` (number, required): Database ID (from create_database response or list_databases). Format: db-N → use N.
+- `query` (string, required): SQL query to execute. Use standard SQLite syntax. Be careful with semicolons (only one statement per execute_sql).
+
+Example:
+```json
+{"type":"execute_sql","database_id":1,"query":"SELECT * FROM files WHERE path LIKE '/home/%'"}
+```
+
+## 5. list_databases
+
+List all active SQLite databases with their schemas, table information, and row counts. Use this to discover available databases and understand their structure before querying.
+
+
+Example:
+```json
+{"type":"list_databases"}
+```
+
 
 # Available Actions
 
@@ -196,7 +247,38 @@ Example:
 {"type":"update_client_instruction","client_id":1,"instruction":"Switch to POST requests with JSON payload"}
 ```
 
-## 7. update_instruction
+## 7. update_client
+
+Update a RUNNING client in place, by its id, instead of opening a second one. Supply only the fields you want to change. Changing the instruction, memory, event_handlers, feedback_instructions or scheduled_tasks is applied in place. Changing the remote_addr or startup_params reconnects (new id).
+
+Parameters:
+- `client_id` (number, required): Id of the client to update.
+- `instruction` (string): New LLM instruction (hot-applied).
+- `event_handlers` (array): Replacement deterministic event handlers (hot-applied).
+- `remote_addr` (string): New remote address 'host:port'. Triggers a reconnect.
+
+Example:
+```json
+{"type":"update_client","client_id":1,"instruction":"Log every response you receive."}
+```
+
+## 8. update_server
+
+Update a RUNNING server in place, by its id, instead of opening a second one. Supply only the fields you want to change. Changing the instruction, memory, event_handlers, feedback_instructions or scheduled_tasks is applied WITHOUT dropping connections. Changing the port, host, interface, mac_address or startup_params requires a clean stop+start (connections are dropped and the server gets a new id). Prefer this over open_server when a server for the protocol already exists.
+
+Parameters:
+- `server_id` (number, required): Id of the server to update (from the running servers list).
+- `instruction` (string): New LLM instruction (hot-applied).
+- `event_handlers` (array): Replacement deterministic event handlers (hot-applied). Same shape as open_server's.
+- `startup_params` (object): Startup parameters to merge in. Validated against the protocol schema; triggers a restart.
+- `port` (number): New port to bind. Triggers a restart.
+
+Example:
+```json
+{"type":"update_server","server_id":1,"instruction":"Return 503 for every request now."}
+```
+
+## 9. update_instruction
 
 Update the current server instruction (combines with existing instruction)
 
@@ -208,7 +290,7 @@ Example:
 {"type":"update_instruction","instruction":"For all HTTP requests, return status 404 with 'Not Found' message."}
 ```
 
-## 8. set_memory
+## 10. set_memory
 
 Replace the entire global memory with new content. Any existing memory is discarded. Use this to reset or completely rewrite memory state.
 
@@ -220,7 +302,7 @@ Example:
 {"type":"set_memory","value":"session_id: abc123\nuser_preferences: dark_mode=true\nlast_command: LIST"}
 ```
 
-## 9. append_memory
+## 11. append_memory
 
 Add new content to the end of global memory. Existing memory is preserved and a newline is automatically added before the new content. Use this to incrementally build up memory state.
 
@@ -232,7 +314,7 @@ Example:
 {"type":"append_memory","value":"connection_count: 5\nlast_file_requested: readme.md"}
 ```
 
-## 10. schedule_task
+## 12. schedule_task
 
 Schedule a task (one-shot or recurring). The task will call the LLM or execute a script with the provided instruction. One-shot tasks execute once after a delay and are automatically removed. Recurring tasks execute at intervals until cancelled or max_executions is reached. Useful for delayed operations, timeouts, periodic health checks, heartbeats, SSE messages, metrics collection, etc.
 
@@ -256,7 +338,7 @@ Example:
 {"type":"schedule_task","task_id":"sse_heartbeat","recurring":true,"interval_secs":30,"server_id":1,"instruction":"Send SSE heartbeat to all active connections"}
 ```
 
-## 11. cancel_task
+## 13. cancel_task
 
 Cancel a scheduled task by its task_id. Works for both one-shot and recurring tasks. The task is immediately removed and will not execute again.
 
@@ -268,7 +350,7 @@ Example:
 {"type":"cancel_task","task_id":"cleanup_logs"}
 ```
 
-## 12. show_message
+## 14. show_message
 
 Display a message to the user controlling NetGet
 
@@ -280,7 +362,7 @@ Example:
 {"type":"show_message","message":"Server started successfully on port 8080"}
 ```
 
-## 13. append_to_log
+## 15. append_to_log
 
 If you are asked to log information for the user, use this to append logs to a file. Use this to create access logs, audit trails, or any persistent logging.
 
@@ -293,7 +375,7 @@ Example:
 {"type":"append_to_log","output_name":"access_logs","content":"127.0.0.1 - - [29/Oct/2025:12:34:56 +0000] \"GET /index.html HTTP/1.1\" 200 1234"}
 ```
 
-## 14. create_database
+## 16. create_database
 
 Create a new SQLite database (in-memory or file-based). Use this to store protocol state (e.g., NFS file system, DNS cache, user sessions). The database persists for the lifetime of the owning server/client, or forever if global. You can execute DDL to create tables during creation.
 
@@ -308,7 +390,7 @@ Example:
 {"type":"create_database","name":"nfs_storage","is_memory":true,"owner":"server-1","schema_ddl":"CREATE TABLE files (path TEXT PRIMARY KEY, content BLOB, size INTEGER, modified INTEGER);"}
 ```
 
-## 15. delete_database
+## 17. delete_database
 
 Delete a database and remove its file (if file-based). This is permanent and cannot be undone. Server/client-owned databases are automatically deleted when the owner closes.
 
@@ -318,57 +400,6 @@ Parameters:
 Example:
 ```json
 {"type":"delete_database","database_id":1}
-```
-
-## 16. read_documentation
-
-Get detailed protocol documentation. After you fetch documentation, you will be able to open a server or a client.
-
-## Available Protocols
-
-**Server protocols**: HTTP, Proxy, SSH, TCP
-
-**Client protocols**: HTTP, SSH, TCP
-
-Parameters:
-- `protocols` (array, required): Array of protocol names to get documentation for. Maximum 5 protocols per call. Returns both server and client docs if available for each protocol.
-
-Example:
-```json
-{"type":"read_documentation","protocols":["HTTP","Proxy","SSH","TCP"]}
-```
-
-## 17. list_tasks
-
-List all currently scheduled tasks. Returns information about all one-shot and recurring tasks, including their status, next execution time, and configuration.
-
-
-Example:
-```json
-{"type":"list_tasks"}
-```
-
-## 18. execute_sql
-
-Execute a SQL query on a database. Supports DDL (CREATE/ALTER/DROP), DML (INSERT/UPDATE/DELETE), and DQL (SELECT). Returns results as JSON with columns and rows for SELECT queries, or affected row count for modifications.
-
-Parameters:
-- `database_id` (number, required): Database ID (from create_database response or list_databases). Format: db-N → use N.
-- `query` (string, required): SQL query to execute. Use standard SQLite syntax. Be careful with semicolons (only one statement per execute_sql).
-
-Example:
-```json
-{"type":"execute_sql","database_id":1,"query":"SELECT * FROM files WHERE path LIKE '/home/%'"}
-```
-
-## 19. list_databases
-
-List all active SQLite databases with their schemas, table information, and row counts. Use this to discover available databases and understand their structure before querying.
-
-
-Example:
-```json
-{"type":"list_databases"}
 ```
 
 
@@ -465,6 +496,29 @@ Use scripts when responses are **deterministic and rule-based**. Scripts receive
 ```
 
 **CRITICAL**: Use the **protocol-specific action types** from your protocol's documentation. **DO NOT** use generic actions like "send_data" - instead use the actual action types available for your protocol. Check the protocol documentation (via `read_documentation`) to see the exact action types and their parameters for your protocol.
+
+**ALWAYS branch on `event_type_id` with a switch/case (or if/elif) — even for a single event.**
+One handler routed with `event_pattern: "*"` receives every event type the protocol
+emits, so the first thing your code should do is switch on `event["event_type_id"]` (or,
+in resident mode, the `event_type` argument) and handle each case explicitly. This keeps
+the handler correct when new event types arrive and makes the intended behavior obvious:
+
+```python
+import json, sys
+data = json.load(sys.stdin)
+event_type = data["event_type_id"]
+event = data["event"]
+
+if event_type == "http_request":
+    actions = [{"type": "send_http_response", "status": 200, "body": "ok"}]
+elif event_type == "connection_opened":
+    actions = []
+else:
+    # Unknown event: do nothing (or return {"fallback_to_llm": true} to defer)
+    actions = []
+
+print(json.dumps({"actions": actions}))
+```
 
 ---
 
@@ -567,9 +621,78 @@ print(json.dumps({"actions": [{"type": "<protocol_action>", ...}]}))
 ```
 
 **Script constraints:**
-- Must complete within 5 seconds or terminated
+- Must complete within 30 seconds per event or it is terminated
 - Can return `{"fallback_to_llm": true}` to delegate complex cases back to LLM
 - Supported languages: python, javascript, go, perl
+
+---
+
+## Handler Type: Script (Resident / Persistent Mode)
+
+By default a script handler spawns a **fresh interpreter for every event**, so it keeps
+**no state between events** and pays start-up each time. Set **`"resident": true`** to keep
+one interpreter process **alive across events**: it is started once and then receives each
+event on stdin, so module-level variables persist — a running counter, a parsed config, a
+per-connection map — with no re-reading.
+
+**Use resident mode when the handler needs memory across events:** counting requests,
+accumulating a session, maintaining a small state machine, caching a parsed structure.
+Use the default per-event mode for stateless logic (routing, fixed transforms).
+
+**Contract — you define a `handle` function, do NOT read stdin yourself.** The runtime
+feeds events to your `handle` and serializes its return value as the actions. **Always
+switch/case on `event_type`.**
+
+```json
+{
+  "event_pattern": "*",
+  "handler": {
+    "type": "script",
+    "language": "python",
+    "resident": true,
+    "scope": "server",
+    "code": "<resident>"
+  }
+}
+
+<resident>
+# Module-level state persists across every event (this is the whole point):
+request_count = 0
+seen = {}
+
+def handle(event_type, event, message):
+    global request_count
+    # ALWAYS switch on the event type:
+    if event_type == "http_request":
+        request_count += 1
+        return [{"type": "send_http_response", "status": 200,
+                 "body": "request #%d" % request_count}]
+    elif event_type == "connection_opened":
+        return []
+    else:
+        return []   # unknown event: no action
+</resident>
+```
+
+JavaScript uses the same shape (`function handle(event_type, event, message) { ... }`
+with module-level `let` for state and a `switch (event_type)`); Perl uses
+`sub handle { my ($event_type, $event, $message) = @_; ... }` returning an array-ref.
+
+**`handle` return values:** an array of actions, or `{"actions": [...]}`, or an empty
+array / `None` for "do nothing". Raising an exception defers this one event to the LLM
+(the process stays alive for the next event).
+
+**`scope`** decides which events share one process and therefore share state:
+- `"server"` (default) — one process for the whole server; every connection's events share
+  the same state (e.g. a server-wide counter).
+- `"connection"` — one process **per connection**; each connection has independent state.
+
+**Notes:**
+- Resident languages: `python`, `javascript`, `perl`. `go` has no persistent form and
+  transparently falls back to per-event execution.
+- Each event still has the 30-second budget; a resident that hangs on one event is killed
+  and the event is deferred to the LLM. Resident processes are shut down when the server
+  closes.
 
 ---
 

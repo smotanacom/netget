@@ -103,7 +103,58 @@ Example:
 {"type":"read_file","path":"schema.json","mode":"full"}
 ```
 
-## 2. web_search
+## 2. read_documentation
+
+Get detailed protocol documentation. After you fetch documentation, you will be able to open a server or a client.
+
+## Available Protocols
+
+**Server protocols**: HTTP, Proxy, SSH, TCP
+
+**Client protocols**: HTTP, SSH, TCP
+
+Parameters:
+- `protocols` (array, required): Array of protocol names to get documentation for. Maximum 5 protocols per call. Returns both server and client docs if available for each protocol.
+
+Example:
+```json
+{"type":"read_documentation","protocols":["HTTP","Proxy","SSH","TCP"]}
+```
+
+## 3. list_tasks
+
+List all currently scheduled tasks. Returns information about all one-shot and recurring tasks, including their status, next execution time, and configuration.
+
+
+Example:
+```json
+{"type":"list_tasks"}
+```
+
+## 4. execute_sql
+
+Execute a SQL query on a database. Supports DDL (CREATE/ALTER/DROP), DML (INSERT/UPDATE/DELETE), and DQL (SELECT). Returns results as JSON with columns and rows for SELECT queries, or affected row count for modifications.
+
+Parameters:
+- `database_id` (number, required): Database ID (from create_database response or list_databases). Format: db-N → use N.
+- `query` (string, required): SQL query to execute. Use standard SQLite syntax. Be careful with semicolons (only one statement per execute_sql).
+
+Example:
+```json
+{"type":"execute_sql","database_id":1,"query":"SELECT * FROM files WHERE path LIKE '/home/%'"}
+```
+
+## 5. list_databases
+
+List all active SQLite databases with their schemas, table information, and row counts. Use this to discover available databases and understand their structure before querying.
+
+
+Example:
+```json
+{"type":"list_databases"}
+```
+
+## 6. web_search
 
 Fetch web pages or search the web. If query starts with http:// or https://, fetches that URL directly and returns the page content as text. Otherwise, searches DuckDuckGo and returns top 5 results. Use this to read RFCs, protocol specifications, or documentation. Note: This makes external network requests.
 
@@ -208,7 +259,38 @@ Example:
 {"type":"update_client_instruction","client_id":1,"instruction":"Switch to POST requests with JSON payload"}
 ```
 
-## 7. update_instruction
+## 7. update_client
+
+Update a RUNNING client in place, by its id, instead of opening a second one. Supply only the fields you want to change. Changing the instruction, memory, event_handlers, feedback_instructions or scheduled_tasks is applied in place. Changing the remote_addr or startup_params reconnects (new id).
+
+Parameters:
+- `client_id` (number, required): Id of the client to update.
+- `instruction` (string): New LLM instruction (hot-applied).
+- `event_handlers` (array): Replacement deterministic event handlers (hot-applied).
+- `remote_addr` (string): New remote address 'host:port'. Triggers a reconnect.
+
+Example:
+```json
+{"type":"update_client","client_id":1,"instruction":"Log every response you receive."}
+```
+
+## 8. update_server
+
+Update a RUNNING server in place, by its id, instead of opening a second one. Supply only the fields you want to change. Changing the instruction, memory, event_handlers, feedback_instructions or scheduled_tasks is applied WITHOUT dropping connections. Changing the port, host, interface, mac_address or startup_params requires a clean stop+start (connections are dropped and the server gets a new id). Prefer this over open_server when a server for the protocol already exists.
+
+Parameters:
+- `server_id` (number, required): Id of the server to update (from the running servers list).
+- `instruction` (string): New LLM instruction (hot-applied).
+- `event_handlers` (array): Replacement deterministic event handlers (hot-applied). Same shape as open_server's.
+- `startup_params` (object): Startup parameters to merge in. Validated against the protocol schema; triggers a restart.
+- `port` (number): New port to bind. Triggers a restart.
+
+Example:
+```json
+{"type":"update_server","server_id":1,"instruction":"Return 503 for every request now."}
+```
+
+## 9. update_instruction
 
 Update the current server instruction (combines with existing instruction)
 
@@ -220,7 +302,7 @@ Example:
 {"type":"update_instruction","instruction":"For all HTTP requests, return status 404 with 'Not Found' message."}
 ```
 
-## 8. set_memory
+## 10. set_memory
 
 Replace the entire global memory with new content. Any existing memory is discarded. Use this to reset or completely rewrite memory state.
 
@@ -232,7 +314,7 @@ Example:
 {"type":"set_memory","value":"session_id: abc123\nuser_preferences: dark_mode=true\nlast_command: LIST"}
 ```
 
-## 9. append_memory
+## 11. append_memory
 
 Add new content to the end of global memory. Existing memory is preserved and a newline is automatically added before the new content. Use this to incrementally build up memory state.
 
@@ -244,7 +326,7 @@ Example:
 {"type":"append_memory","value":"connection_count: 5\nlast_file_requested: readme.md"}
 ```
 
-## 10. schedule_task
+## 12. schedule_task
 
 Schedule a task (one-shot or recurring). The task will call the LLM or execute a script with the provided instruction. One-shot tasks execute once after a delay and are automatically removed. Recurring tasks execute at intervals until cancelled or max_executions is reached. Useful for delayed operations, timeouts, periodic health checks, heartbeats, SSE messages, metrics collection, etc.
 
@@ -265,7 +347,7 @@ Example:
 {"type":"schedule_task","task_id":"sse_heartbeat","recurring":true,"interval_secs":30,"server_id":1,"instruction":"Send SSE heartbeat to all active connections"}
 ```
 
-## 11. cancel_task
+## 13. cancel_task
 
 Cancel a scheduled task by its task_id. Works for both one-shot and recurring tasks. The task is immediately removed and will not execute again.
 
@@ -277,7 +359,7 @@ Example:
 {"type":"cancel_task","task_id":"cleanup_logs"}
 ```
 
-## 12. show_message
+## 14. show_message
 
 Display a message to the user controlling NetGet
 
@@ -289,7 +371,7 @@ Example:
 {"type":"show_message","message":"Server started successfully on port 8080"}
 ```
 
-## 13. append_to_log
+## 15. append_to_log
 
 If you are asked to log information for the user, use this to append logs to a file. Use this to create access logs, audit trails, or any persistent logging.
 
@@ -302,7 +384,7 @@ Example:
 {"type":"append_to_log","output_name":"access_logs","content":"127.0.0.1 - - [29/Oct/2025:12:34:56 +0000] \"GET /index.html HTTP/1.1\" 200 1234"}
 ```
 
-## 14. create_database
+## 16. create_database
 
 Create a new SQLite database (in-memory or file-based). Use this to store protocol state (e.g., NFS file system, DNS cache, user sessions). The database persists for the lifetime of the owning server/client, or forever if global. You can execute DDL to create tables during creation.
 
@@ -317,7 +399,7 @@ Example:
 {"type":"create_database","name":"nfs_storage","is_memory":true,"owner":"server-1","schema_ddl":"CREATE TABLE files (path TEXT PRIMARY KEY, content BLOB, size INTEGER, modified INTEGER);"}
 ```
 
-## 15. delete_database
+## 17. delete_database
 
 Delete a database and remove its file (if file-based). This is permanent and cannot be undone. Server/client-owned databases are automatically deleted when the owner closes.
 
@@ -329,141 +411,13 @@ Example:
 {"type":"delete_database","database_id":1}
 ```
 
-## 16. read_documentation
-
-Get detailed protocol documentation. After you fetch documentation, you will be able to open a server or a client.
-
-## Available Protocols
-
-**Server protocols**: HTTP, Proxy, SSH, TCP
-
-**Client protocols**: HTTP, SSH, TCP
-
-Parameters:
-- `protocols` (array, required): Array of protocol names to get documentation for. Maximum 5 protocols per call. Returns both server and client docs if available for each protocol.
-
-Example:
-```json
-{"type":"read_documentation","protocols":["HTTP","Proxy","SSH","TCP"]}
-```
-
-## 17. list_tasks
-
-List all currently scheduled tasks. Returns information about all one-shot and recurring tasks, including their status, next execution time, and configuration.
-
-
-Example:
-```json
-{"type":"list_tasks"}
-```
-
-## 18. execute_sql
-
-Execute a SQL query on a database. Supports DDL (CREATE/ALTER/DROP), DML (INSERT/UPDATE/DELETE), and DQL (SELECT). Returns results as JSON with columns and rows for SELECT queries, or affected row count for modifications.
-
-Parameters:
-- `database_id` (number, required): Database ID (from create_database response or list_databases). Format: db-N → use N.
-- `query` (string, required): SQL query to execute. Use standard SQLite syntax. Be careful with semicolons (only one statement per execute_sql).
-
-Example:
-```json
-{"type":"execute_sql","database_id":1,"query":"SELECT * FROM files WHERE path LIKE '/home/%'"}
-```
-
-## 19. list_databases
-
-List all active SQLite databases with their schemas, table information, and row counts. Use this to discover available databases and understand their structure before querying.
-
-
-Example:
-```json
-{"type":"list_databases"}
-```
-
-## 20. configure_certificate
-
-Configure certificate mode for proxy (generate, load from file, or none for pass-through)
-
-Parameters:
-- `mode` (string, required): Certificate mode: 'generate', 'load_from_file', or 'none'
-- `cert_path` (string): Path to certificate file (required if mode is 'load_from_file')
-- `key_path` (string): Path to private key file (required if mode is 'load_from_file')
-
-Example:
-```json
-{"type":"configure_certificate","mode":"generate"}
-```
-
-## 21. configure_request_filters
-
-Set up filters to determine which requests to intercept and send to LLM
-
-Parameters:
-- `filters` (array, required): Array of request filter objects with optional regex patterns for host, path, method, headers, body
-
-Example:
-```json
-{"type":"configure_request_filters","filters":[{"host_regex":"^api\\.example\\.com$","path_regex":"^/api/.*","method_regex":"^(POST|PUT)$"}]}
-```
-
-## 22. configure_response_filters
-
-Set up filters to determine which responses to intercept and send to LLM
-
-Parameters:
-- `filters` (array, required): Array of response filter objects with optional regex patterns for status, headers, body, request_host, request_path
-
-Example:
-```json
-{"type":"configure_response_filters","filters":[{"status_regex":"^(4|5)\\d{2}$","request_host_regex":"^api\\.example\\.com$"}]}
-```
-
-## 23. configure_https_connection_filters
-
-Set up filters to determine which HTTPS connections (pass-through mode) to intercept and send to LLM. Filters can match on destination host, port, SNI, and client address.
-
-Parameters:
-- `filters` (array, required): Array of HTTPS connection filter objects with optional regex patterns for host, port, sni, client_addr
-
-Example:
-```json
-{"type":"configure_https_connection_filters","filters":[{"host_regex":"^.*\\.example\\.com$","port_regex":"^443$","sni_regex":"^secure\\.example\\.com$"}]}
-```
-
-## 24. set_filter_mode
-
-Set filter mode: 'all' (intercept everything), 'match_only' (only if filters match), 'none' (pass everything through)
-
-Parameters:
-- `request_filter_mode` (string): Mode for request filtering: 'all', 'match_only', or 'none'
-- `response_filter_mode` (string): Mode for response filtering: 'all', 'match_only', or 'none'
-- `https_connection_filter_mode` (string): Mode for HTTPS connection filtering (pass-through mode): 'all', 'match_only', or 'none'
-
-Example:
-```json
-{"type":"set_filter_mode","request_filter_mode":"match_only","response_filter_mode":"all","https_connection_filter_mode":"match_only"}
-```
-
-## 25. export_ca_certificate
-
-Export the CA certificate to a file for user installation (MITM mode only). Users must install this certificate in their system/browser trust store to avoid security warnings.
-
-Parameters:
-- `output_path` (string): Path where the CA certificate should be saved (default: netget-ca.crt)
-- `format` (string): Certificate format: 'pem' or 'der' (default: pem)
-
-Example:
-```json
-{"type":"export_ca_certificate","output_path":"./netget-ca.crt","format":"pem"}
-```
-
 
 ## Available Base Stacks
 
 ### Core
 HTTP (http, http server, http stack, via http, hyper)
 SSH (ssh)
-TCP (tcp, raw, ftp, custom)
+TCP (tcp, raw, custom)
 
 ### Proxy & Network
 Proxy (proxy, mitm)

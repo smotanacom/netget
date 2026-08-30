@@ -191,10 +191,33 @@ async fn test_user_input_prompt_proxy_server() {
     );
     // Note: script_inline and script_handles appear in scheduled_tasks param docs, which is OK
 
+    // The proxy's six configuration actions must NOT be offered.
+    //
+    // This used to assert the opposite. `configure_certificate` and its five siblings were
+    // removed from `get_async_actions` deliberately: each only serialised its arguments into
+    // `ActionResult::Output`, which nothing read back, so they reported success while changing
+    // nothing — and an `Output` emitted during a request event was mis-parsed as a
+    // `RequestAction` and aborted the decision for that request. Certificate mode and the
+    // filter modes are startup parameters now, which do take effect.
+    //
+    // Asserting their absence keeps the deletion from silently coming back, which asserting
+    // their presence obviously could not.
     #[cfg(feature = "proxy")]
     {
-        assert!(prompt.contains("configure_certificate"));
-        assert!(prompt.contains("configure_request_filters"));
+        for gone in [
+            "configure_certificate",
+            "configure_request_filters",
+            "configure_response_filters",
+            "configure_https_connection_filters",
+            "set_filter_mode",
+            "export_ca_certificate",
+        ] {
+            assert!(
+                !prompt.contains(gone),
+                "the proxy action '{gone}' was removed because it reported success while \
+                 changing nothing; it must not be advertised to the model again"
+            );
+        }
     }
 }
 
