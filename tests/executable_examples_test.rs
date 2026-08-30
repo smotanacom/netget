@@ -41,38 +41,16 @@ use std::collections::BTreeSet;
 /// `protocol::action` whose declared example its own executor refuses for a reason that is
 /// about the example itself.
 ///
-/// These are all **malformed literals in the documented example** — bad hex, an odd digit
-/// count, or JSON where a hex string is required. Each one is a shape the model will copy and
-/// be rejected for. They are listed rather than fixed here because correcting them means
-/// hand-building valid wire bytes per protocol, which is per-protocol work; the ratchet stops
-/// the set from growing meanwhile.
+/// **Empty, and it may only stay that way.** It once held eighteen entries, all malformed
+/// literals in the documented example — a `...` ellipsis inside a hex string, an odd digit
+/// count, or a `{{event.field}}` template where the executor decodes hex. The template case is
+/// worth remembering: `{{event.…}}` is substituted only for **static event handlers**
+/// (`llm/event_handler_executor.rs`), so an example written that way is executable for a
+/// handler and garbage for the model, which is the one audience `example` is rendered to.
+/// Each was replaced with wire bytes assembled from the protocol's own spec.
 ///
 /// **This list may only shrink.**
-const BAD_EXAMPLE_BASELINE: &[&str] = &[
-    // `data` example is a truncated packet ending in a literal `...` ellipsis, so the
-    // documented string cannot be decoded by anything at all
-    "BOOTP::send_bootp_response",
-    "DHCP::send_dhcp_response",
-    // odd digit count in the documented hex
-    "DNS::send_dns_response",
-    "DoH::send_dns_response",
-    "DoT::send_dns_response",
-    // invalid hex in the documented value
-    "ICMP::send_destination_unreachable",
-    "ICMP::send_time_exceeded",
-    "ISIS::send_isis_pdu",
-    "TURN::send_turn_allocate_response",
-    "TURN::send_turn_channel_bind_response",
-    "TURN::send_turn_create_permission_response",
-    "TURN::send_turn_error_response",
-    // a JSON object where the action decodes a hex string
-    "Torrent-DHT::send_announce_peer_response",
-    "Torrent-DHT::send_dht_error_response",
-    "Torrent-DHT::send_find_node_response",
-    "Torrent-DHT::send_get_peers_response",
-    "Torrent-DHT::send_ping_response",
-    "Torrent-Peer::send_handshake",
-];
+const BAD_EXAMPLE_BASELINE: &[&str] = &[];
 
 /// A rejection that is about missing *runtime context* rather than about the example.
 ///

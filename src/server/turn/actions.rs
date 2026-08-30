@@ -615,18 +615,24 @@ fn send_turn_allocate_response_action() -> ActionDefinition {
             Parameter {
                 name: "relay_address".to_string(),
                 type_hint: "string".to_string(),
-                description: "MUST be exactly the event's relay_address, i.e. \
-                              \"{{event.relay_address}}\". NetGet has already bound this UDP \
-                              socket; it is the only address peer traffic can arrive on. Any \
-                              other value is refused with a 508 error, because a relay address \
-                              nobody listens on silently breaks the client."
+                description: "MUST be exactly the event's relay_address (a static handler writes \
+                              \"{{event.relay_address}}\"; the value in the example below is only \
+                              a placeholder showing the host:port shape). NetGet has already \
+                              bound this UDP socket; it is the only address peer traffic can \
+                              arrive on. Any other value is refused with a 508 error, because a \
+                              relay address nobody listens on silently breaks the client."
                     .to_string(),
                 required: true,
             },
             Parameter {
                 name: "transaction_id".to_string(),
                 type_hint: "string".to_string(),
-                description: "Transaction ID from request (hex string)".to_string(),
+                description: "Transaction ID from the request: exactly 24 hex characters \
+                              (12 bytes, RFC 8489). A static handler writes \
+                              \"{{event.transaction_id}}\"; an LLM answer must carry the \
+                              event's actual value, because the client discards a response \
+                              whose transaction ID does not match."
+                    .to_string(),
                 required: true,
             },
             Parameter {
@@ -652,11 +658,15 @@ fn send_turn_allocate_response_action() -> ActionDefinition {
                 required: false,
             },
         ],
+        // Concrete values, not "{{event.…}}" placeholders: that substitution only
+        // happens for static event handlers, so a model that copies the template
+        // literally puts the braces on the wire and the executor refuses them.
+        // Both addresses must come from the event; the transaction ID is 12 bytes.
         example: json!({
             "type": "send_turn_allocate_response",
-            "relay_address": "{{event.relay_address}}",
-            "client_address": "{{event.peer_addr}}",
-            "transaction_id": "{{event.transaction_id}}",
+            "relay_address": "192.0.2.10:49160",
+            "client_address": "198.51.100.20:54321",
+            "transaction_id": "0123456789abcdef01234567",
             "lifetime_seconds": 600
         }),
         log_template: Some(
@@ -677,7 +687,12 @@ fn send_turn_refresh_response_action() -> ActionDefinition {
             Parameter {
                 name: "transaction_id".to_string(),
                 type_hint: "string".to_string(),
-                description: "Transaction ID from request (hex string)".to_string(),
+                description: "Transaction ID from the request: exactly 24 hex characters \
+                              (12 bytes, RFC 8489). A static handler writes \
+                              \"{{event.transaction_id}}\"; an LLM answer must carry the \
+                              event's actual value, because the client discards a response \
+                              whose transaction ID does not match."
+                    .to_string(),
                 required: true,
             },
             Parameter {
@@ -710,7 +725,12 @@ fn send_turn_create_permission_response_action() -> ActionDefinition {
             Parameter {
                 name: "transaction_id".to_string(),
                 type_hint: "string".to_string(),
-                description: "Transaction ID from request (hex string)".to_string(),
+                description: "Transaction ID from the request: exactly 24 hex characters \
+                              (12 bytes, RFC 8489). A static handler writes \
+                              \"{{event.transaction_id}}\"; an LLM answer must carry the \
+                              event's actual value, because the client discards a response \
+                              whose transaction ID does not match."
+                    .to_string(),
                 required: true,
             },
             Parameter {
@@ -726,7 +746,7 @@ fn send_turn_create_permission_response_action() -> ActionDefinition {
         ],
         example: json!({
             "type": "send_turn_create_permission_response",
-            "transaction_id": "{{event.transaction_id}}"
+            "transaction_id": "0123456789abcdef01234567"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -746,12 +766,17 @@ fn send_turn_channel_bind_response_action() -> ActionDefinition {
         parameters: vec![Parameter {
             name: "transaction_id".to_string(),
             type_hint: "string".to_string(),
-            description: "Transaction ID from request (hex string)".to_string(),
+            description: "Transaction ID from the request: exactly 24 hex characters \
+                          (12 bytes, RFC 8489). A static handler writes \
+                          \"{{event.transaction_id}}\"; an LLM answer must carry the event's \
+                          actual value, because the client discards a response whose \
+                          transaction ID does not match."
+                .to_string(),
             required: true,
         }],
         example: json!({
             "type": "send_turn_channel_bind_response",
-            "transaction_id": "{{event.transaction_id}}"
+            "transaction_id": "0123456789abcdef01234567"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -795,7 +820,7 @@ fn send_turn_error_response_action() -> ActionDefinition {
             "type": "send_turn_error_response",
             "error_code": 508,
             "reason": "Insufficient Capacity",
-            "transaction_id": "{{event.transaction_id}}",
+            "transaction_id": "0123456789abcdef01234567",
             "method": "allocate"
         }),
         log_template: Some(

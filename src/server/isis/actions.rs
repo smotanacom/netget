@@ -625,9 +625,16 @@ fn send_isis_pdu_action() -> ActionDefinition {
             description: "Hex-encoded IS-IS PDU".to_string(),
             required: true,
         }],
+        // A complete ISO/IEC 10589 LAN Level-2 Hello: common header (0x83, header
+        // length 27, version/ext 1, ID length 0, PDU type 16, version 1, reserved,
+        // max area addresses 0), circuit type 2 (L2 only), source ID
+        // 0000.0000.0001, holding time 30s, PDU length 36, priority 64, LAN ID
+        // 0000.0000.0001-00, then TLV 1 (area 49.0001) and TLV 129 (NLPID 0xCC,
+        // IPv4). The previous value ended in an ellipsis and did not decode.
         example: json!({
             "type": "send_isis_pdu",
-            "data": "831b01001001060000..."
+            "data": "831b01001001000002000000000001001e00244000000000000100\
+                     0104034900018101cc"
         }),
         log_template: Some(
             LogTemplate::new()

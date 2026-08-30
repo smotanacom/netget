@@ -404,7 +404,7 @@ pub static DHT_PING_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "DHT node is checking whether we are alive",
         json!({
             "type": "send_ping_response",
-            "transaction_id": "{{event.transaction_id}}",
+            "transaction_id": "6161",
             "node_id": "0123456789abcdef0123456789abcdef01234567"
         }),
     )
@@ -435,7 +435,7 @@ pub static DHT_FIND_NODE_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "DHT node is asking for the nodes closest to a target ID",
         json!({
             "type": "send_find_node_response",
-            "transaction_id": "{{event.transaction_id}}",
+            "transaction_id": "6161",
             "node_id": "0123456789abcdef0123456789abcdef01234567",
             "nodes": []
         }),
@@ -467,7 +467,7 @@ pub static DHT_GET_PEERS_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "DHT node is asking which peers are downloading a torrent",
         json!({
             "type": "send_get_peers_response",
-            "transaction_id": "{{event.transaction_id}}",
+            "transaction_id": "6161",
             "node_id": "0123456789abcdef0123456789abcdef01234567",
             "token": "aoeusnth",
             "peers": [{"ip": "127.0.0.1", "port": 51413}]
@@ -517,7 +517,7 @@ pub static DHT_ANNOUNCE_PEER_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(||
         "DHT node is announcing that it is downloading a torrent",
         json!({
             "type": "send_announce_peer_response",
-            "transaction_id": "{{event.transaction_id}}",
+            "transaction_id": "6161",
             "node_id": "0123456789abcdef0123456789abcdef01234567"
         }),
     )
@@ -540,9 +540,11 @@ fn reply_parameters() -> Vec<Parameter> {
         Parameter {
             name: "transaction_id".to_string(),
             type_hint: "string".to_string(),
-            description: "Hex-encoded transaction id from the query. Use \
-                          \"{{event.transaction_id}}\" — a reply carrying any other value \
-                          is discarded by the querying node."
+            description: "Hex-encoded transaction id from the query — echo the event's \
+                          `transaction_id` verbatim, because a reply carrying any other \
+                          value is discarded by the querying node. A static handler writes \
+                          the literal \"{{event.transaction_id}}\", which is substituted \
+                          before the action runs; an LLM answer must carry the real hex."
                 .to_string(),
             required: true,
         },
@@ -563,7 +565,7 @@ pub static SEND_PING_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock::new
         name: "send_ping_response".to_string(),
         description: "Send DHT ping response".to_string(),
         parameters: reply_parameters(),
-        example: json!({"type": "send_ping_response", "transaction_id": "{{event.transaction_id}}", "node_id": "0123456789abcdef0123456789abcdef01234567"}),
+        example: json!({"type": "send_ping_response", "transaction_id": "6161", "node_id": "0123456789abcdef0123456789abcdef01234567"}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> DHT ping response")
@@ -590,7 +592,7 @@ pub static SEND_FIND_NODE_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock
             });
             p
         },
-        example: json!({"type": "send_find_node_response", "transaction_id": "{{event.transaction_id}}", "node_id": "0123456789abcdef0123456789abcdef01234567", "nodes": [{"id": "0123456789abcdef0123456789abcdef01234567", "ip": "192.168.1.100", "port": 6881}]}),
+        example: json!({"type": "send_find_node_response", "transaction_id": "6161", "node_id": "0123456789abcdef0123456789abcdef01234567", "nodes": [{"id": "0123456789abcdef0123456789abcdef01234567", "ip": "192.168.1.100", "port": 6881}]}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> DHT find_node: {nodes_len} nodes")
@@ -628,7 +630,7 @@ pub static SEND_GET_PEERS_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock
             ]);
             p
         },
-        example: json!({"type": "send_get_peers_response", "transaction_id": "{{event.transaction_id}}", "node_id": "0123456789abcdef0123456789abcdef01234567", "token": "aoeusnth", "peers": [{"ip": "192.168.1.100", "port": 51413}]}),
+        example: json!({"type": "send_get_peers_response", "transaction_id": "6161", "node_id": "0123456789abcdef0123456789abcdef01234567", "token": "aoeusnth", "peers": [{"ip": "192.168.1.100", "port": 51413}]}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> DHT get_peers: {peers_len} peers")
@@ -644,7 +646,7 @@ pub static SEND_ANNOUNCE_PEER_RESPONSE_ACTION: LazyLock<ActionDefinition> = Lazy
                       node's ID (BEP 5); nothing about the announcement is stored."
             .to_string(),
         parameters: reply_parameters(),
-        example: json!({"type": "send_announce_peer_response", "transaction_id": "{{event.transaction_id}}", "node_id": "0123456789abcdef0123456789abcdef01234567"}),
+        example: json!({"type": "send_announce_peer_response", "transaction_id": "6161", "node_id": "0123456789abcdef0123456789abcdef01234567"}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> DHT announce_peer ack")
@@ -681,7 +683,7 @@ pub static SEND_DHT_ERROR_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock
                 required: false,
             },
         ],
-        example: json!({"type": "send_dht_error_response", "transaction_id": "{{event.transaction_id}}", "code": 204, "message": "Method Unknown"}),
+        example: json!({"type": "send_dht_error_response", "transaction_id": "6161", "code": 204, "message": "Method Unknown"}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> DHT error {code}: {message}")

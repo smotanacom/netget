@@ -460,9 +460,20 @@ fn send_bootp_response_action() -> ActionDefinition {
             description: "The whole packet as hex, two digits per byte (spaces and ':' are allowed and ignored). Decoded strictly as hex - it is never sent as text - and must be at least 236 bytes".to_string(),
             required: true,
         }],
+        // A complete, decodable 236-byte BOOTREPLY: op=2 htype=1 hlen=6 hops=0,
+        // xid=0x3903f326, yiaddr=192.168.1.100, siaddr=192.168.1.1,
+        // chaddr=00:11:22:33:44:55, empty sname and file. Written out in full on
+        // purpose - the shortest packet this action accepts is 236 bytes, so an
+        // abbreviated example is one the executor rejects.
         example: json!({
             "type": "send_bootp_response",
-            "data": "020106006395a3e300000000000000000c0a80164..."
+            "data": "020106003903f3260000000000000000c0a80164c0a80101000000000011223344550000000000\
+                     000000000000000000000000000000000000000000000000000000000000000000000000000000\
+                     000000000000000000000000000000000000000000000000000000000000000000000000000000\
+                     000000000000000000000000000000000000000000000000000000000000000000000000000000\
+                     000000000000000000000000000000000000000000000000000000000000000000000000000000\
+                     000000000000000000000000000000000000000000000000000000000000000000000000000000\
+                     0000"
         }),
         log_template: Some(
             LogTemplate::new()
