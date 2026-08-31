@@ -41,3 +41,6 @@ netget_db_*.db
 
 # Generated npm packages
 /dist/
+
+# Snapshot test output written only on mismatch; never committed.
+*.actual.snap.md
