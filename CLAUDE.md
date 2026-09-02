@@ -633,6 +633,29 @@ after a long period when no CI job ran `cargo test` at all:
 | `single-feature` | yes | `cargo check --tests` on 14 protocol features **one at a time** — catches a feature whose deps are under-declared, which no multi-feature build can |
 | `orphaned-tests` | yes | Fails if a test dir on disk is undeclared in `mod.rs` (see the footgun above) |
 
+### Terminal (PTY) tests
+
+`tests/terminal_snapshot/` drives the real binary through a pty. Four traps cost a full debugging
+pass each, and all four present as *product* bugs:
+
+- **Write to the right end.** Bytes written to the pty **master** are delivered to the child as
+  keystrokes; bytes written to the **slave** are what appears on the terminal. A test setting up
+  "pre-existing screen content" on the master is typing it into the chat box.
+- **`write_all` is unsafe once anything has set `O_NONBLOCK`.** A capture that drains until quiet
+  has to; afterwards a write can return `EAGAIN` part-way and be abandoned, and `Pty`'s `Write`
+  impl reports the short write as success. The symptom is a *truncated command*, which looks
+  exactly like a UI dropping keystrokes. Retry against a deadline.
+- **Never wait on a fixed sleep.** The rolling TUI processes roughly one keystroke per render
+  cycle, so a 33-character command takes ~1.3s idle and longer under `--test-threads`. Wait for
+  the condition, then let the frame settle — a predicate can go true mid-repaint, between the
+  status block and the status line.
+- **A capture that builds a fresh vt100 `Parser` from only the bytes read in that call is not
+  idempotent.** Calling it twice renders the second from a blank screen. Polling needs one parser
+  fed for the whole wait.
+
+Also: `snapshot_util::assert_snapshot` **creates** a missing snapshot and passes. A new test is
+therefore green on its first run whatever it captured — review the file before trusting it.
+
 ### Whole-tree source ratchets
 
 Four tests scan **all** 136 server and 91 client protocols by reading source, so they hold at
@@ -1125,6 +1148,24 @@ Read before assuming a subsystem is sound:
   because `tests/helpers/netget.rs` passes `--llm-max-concurrent 1000` to every E2E test, so
   the shipped value was exercised by no test at all; `tests/llm_concurrency_default_test.rs`
   now runs with the flag omitted entirely.
+- **Typing a slash command in the `--legacy-tui` rolling TUI destroys the visible output.**
+  Open, and recorded rather than fixed. `update_slash_suggestions_and_render`
+  (`src/cli/rolling_tui.rs`) swaps the footer to `FooterContent::SlashCommands` and calls
+  `footer.render()` directly, skipping the scroll-region and push-content-up bookkeeping that
+  `update_ui_from_state` runs for every *other* height change. The suggestion popup is up to ten
+  entries plus two separators, so on 80x24 the footer jumps 9 → 16 rows with no DECSTBM update
+  and no push: it paints over the output rows, and `StickyFooter::render` then clears
+  `max(old, new)` of them. Nothing keeps a copy of the scrollback, so those rows are gone.
+  Measured on the byte stream — ten lines present after `/test 10`, `ESC[2K` on rows 9-24 during
+  the next slash command, nothing left after.
+
+  **Routing the popup through that bookkeeping is not the fix, and was tried.** The suggestion
+  list changes on every keystroke, so the footer expands and shrinks once per character and
+  `blank_lines_buffer` does not balance across the cycle; the result was strictly worse (all ten
+  lines scrolled away rather than six overwritten). A real fix means the footer stops being a
+  destructive overlay. The dashboard is unaffected — it renders whole frames into the alternate
+  screen — which is why this sits below the bar for reworking deprecated code.
+  `tests/terminal_snapshot/mod.rs` carries the measurement, and its snapshots record the damage.
 - **The 10-second idle sweep is for connectionless protocols only — declare it.**
   `AppState::cleanup_old_connections` (ticked by the TUI and the MCP loop) evicts any connection
   whose `last_activity` is older than 10s. It exists for UDP/raw/link-level servers, whose
