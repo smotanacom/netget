@@ -8,16 +8,16 @@
 
 
 
+  ┌──────────────────────────┐
+  │ ░█▀█░█▀▀░▀█▀░█▀▀░█▀▀░▀█▀ │
+  │ ░█░█░█▀▀░░█░░█░█░█▀▀░░█░ │
+  │ ░▀░▀░▀▀▀░░▀░░▀▀▀░▀▀▀░░▀░ │
+  └──────────────────────────┘
 
+✗  Ollama is not available or no models found.
+   Please ensure Ollama is running: https://ollama.ai
+   Use `/model` to list and select a model once Ollama is running.
 
-
-
-
-
-Test line 3 of 3
-Expanded
-Footer
-Status
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ >                                                                            │
 └──────────────────────────────────────────────────────────────────────────────┘
