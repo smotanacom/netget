@@ -36,15 +36,8 @@ use std::path::{Path, PathBuf};
 
 /// `role:protocol:parameter` for every declared parameter nothing reads.
 ///
-/// Grouped by cause where one is known:
-///
-/// * `nntp:send_first` — the central `send_first` defect the root CLAUDE.md records:
-///   `start_server_from_action` takes it as `_send_first` and ignores it on every path, so
-///   declaring it per-protocol cannot work until that is fixed. Nothing a protocol can do
-///   locally reaches it, which is why this is the one entry left.
-///
-/// Everything else this list used to carry was fixed rather than tolerated, and the three
-/// shapes the fixes took are worth knowing, because a future entry will be one of them:
+/// **Empty, and it may only stay that way.** It once held twenty entries. The three shapes the
+/// fixes took are worth knowing, because a future entry will be one of them:
 ///
 /// * **Wired up** — the parameter now does what it says. `default_headers` (`http`, `http2`,
 ///   `http3`, `jsonrpc`, `webdav`) is merged into every request *underneath* the headers the
@@ -63,8 +56,10 @@ use std::path::{Path, PathBuf};
 ///   than producing a cleartext session that reports itself as encrypted. `imap` set that
 ///   precedent; the note that pop3 "cannot be fixed locally because `connect` does not
 ///   receive startup parameters" was wrong — the parameter list is per-protocol, so adding
-///   `ctx.startup_params` to the call was the whole fix.
-const DEAD_PARAM_BASELINE: &[&str] = &["server:nntp:send_first"];
+///   `ctx.startup_params` to the call was the whole fix. `server:nntp:send_first` was the last
+///   entry and took this exit: NNTP's greeting is mandatory (RFC 3977 5.1), so the parameter
+///   could never have been honoured in the `false` direction and declaring it was the bug.
+const DEAD_PARAM_BASELINE: &[&str] = &[];
 
 fn strip_comments(src: &str) -> String {
     src.lines()
