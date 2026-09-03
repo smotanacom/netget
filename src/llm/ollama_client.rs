@@ -1016,12 +1016,6 @@ impl OllamaClient {
         }
     }
 
-    /// Create a new Ollama client with options (lock_enabled is ignored, maintained for compatibility)
-    pub fn new_with_options(base_url: impl Into<String>, _lock_enabled: bool) -> Self {
-        // Note: lock_enabled is ignored here as locking is handled at a different layer
-        Self::new(base_url)
-    }
-
     /// Create a new client for an OpenAI-compatible API endpoint
     pub fn new_openai(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();

@@ -39,7 +39,6 @@ fn params(use_tls: Option<bool>) -> netget::protocol::StartupParams {
 async fn use_tls_true_is_refused_with_a_reason() {
     let state = Arc::new(AppState::new_with_options(
         false,
-        false,
         "http://127.0.0.1:1".to_string(),
     ));
     let (tx, _rx) = mpsc::unbounded_channel();

@@ -53,7 +53,7 @@ fn round_trip(port: u16, raw: &[u8]) -> String {
 /// server task on a current-thread runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bare_get_slash_is_rejected_by_the_parser_before_netget_sees_it() {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),

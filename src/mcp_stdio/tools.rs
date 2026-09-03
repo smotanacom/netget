@@ -551,8 +551,6 @@ impl NetGetMcpService {
         args: &Args,
         settings: Settings,
     ) -> anyhow::Result<Arc<SharedState>> {
-        let lock_enabled = args.ollama_lock;
-
         // Create app state.
         //
         // This is the same startup configuration the TUI (`cli::run`), the
@@ -570,8 +568,7 @@ impl NetGetMcpService {
             .clone()
             .or_else(|| args.ollama_url.clone())
             .unwrap_or_else(|| "http://localhost:11434".to_string());
-        let app_state =
-            AppState::new_with_options(args.include_disabled_protocols, lock_enabled, base_url);
+        let app_state = AppState::new_with_options(args.include_disabled_protocols, base_url);
         app_state
             .set_min_stability(args.parse_min_stability()?)
             .await;
@@ -645,7 +642,7 @@ impl NetGetMcpService {
             // `/usage` accounting); `with_mock_config_file` is what lets a test
             // drive this transport without a model. Both were missing here while
             // every other startup path set them.
-            let client = crate::cli::create_llm_client(args, lock_enabled)?
+            let client = crate::cli::create_llm_client(args)?
                 .with_mock_config_file(args.mock_config_file.clone())
                 .with_app_state(app_state.clone());
             (client, None)

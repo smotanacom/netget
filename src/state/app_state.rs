@@ -357,7 +357,6 @@ struct AppStateInner {
     /// `None` means no gate — the default, current behaviour.
     min_stability: Option<crate::protocol::metadata::DevelopmentState>,
     /// Whether Ollama API locking is enabled (for concurrent test execution)
-    ollama_lock_enabled: bool,
     /// Ollama API base URL (default: http://localhost:11434)
     ollama_url: String,
     /// Unique instance ID for this NetGet process (for multi-instance isolation)
@@ -533,15 +532,11 @@ fn client_llm_call_limit_from_env() -> u32 {
 impl AppState {
     /// Create a new application state
     pub fn new() -> Self {
-        Self::new_with_options(false, false, "http://localhost:11434".to_string())
+        Self::new_with_options(false, "http://localhost:11434".to_string())
     }
 
     /// Create a new application state with options
-    pub fn new_with_options(
-        include_disabled_protocols: bool,
-        ollama_lock_enabled: bool,
-        ollama_url: String,
-    ) -> Self {
+    pub fn new_with_options(include_disabled_protocols: bool, ollama_url: String) -> Self {
         // Detect scripting environments at startup
         let scripting_env = crate::scripting::ScriptingEnvironment::detect();
 
@@ -581,7 +576,6 @@ impl AppState {
                 web_approval_tx: None,              // Will be set by TUI
                 include_disabled_protocols,
                 min_stability: None,
-                ollama_lock_enabled,
                 ollama_url,
                 instance_id,
                 tasks: HashMap::new(),
@@ -1496,11 +1490,6 @@ impl AppState {
         min: Option<crate::protocol::metadata::DevelopmentState>,
     ) {
         self.inner.write().await.min_stability = min;
-    }
-
-    /// Get whether Ollama API locking is enabled
-    pub async fn get_ollama_lock_enabled(&self) -> bool {
-        self.inner.read().await.ollama_lock_enabled
     }
 
     /// Get the Ollama API base URL

@@ -141,7 +141,7 @@ async fn hls_connection_stats_are_recorded() {
     use tokio::sync::mpsc;
 
     // AppState whose LLM points nowhere; the static handler means nothing here needs a model.
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(::netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -259,7 +259,7 @@ async fn start_hls_in_process(
 
     // Port 1 on loopback is closed, so any real LLM call fails fast — which is exactly the
     // branch under test.
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(::netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),

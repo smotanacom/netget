@@ -82,8 +82,7 @@ pub async fn run_non_interactive(
         .clone()
         .or_else(|| args.ollama_url.clone())
         .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let state =
-        AppState::new_with_options(args.include_disabled_protocols, args.ollama_lock, base_url);
+    let state = AppState::new_with_options(args.include_disabled_protocols, base_url);
     state.set_min_stability(args.parse_min_stability()?).await;
 
     // Configure rate limiter from CLI args
@@ -162,9 +161,7 @@ pub async fn run_non_interactive(
     debug!("Web search mode: {:?}", web_search_mode);
 
     // Create event handler and LLM client
-    let lock_enabled = state.get_ollama_lock_enabled().await;
-    let llm = super::create_llm_client(args, lock_enabled)?
-        .with_mock_config_file(args.mock_config_file.clone());
+    let llm = super::create_llm_client(args)?.with_mock_config_file(args.mock_config_file.clone());
 
     // Store the configured LLM client in state so spawned servers can use it
     state.set_llm_client(llm.clone()).await;
@@ -368,8 +365,7 @@ pub async fn run_with_actions(
         .clone()
         .or_else(|| args.ollama_url.clone())
         .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let state =
-        AppState::new_with_options(args.include_disabled_protocols, args.ollama_lock, base_url);
+    let state = AppState::new_with_options(args.include_disabled_protocols, base_url);
     state.set_min_stability(args.parse_min_stability()?).await;
 
     // Configure rate limiter from CLI args
@@ -400,9 +396,7 @@ pub async fn run_with_actions(
     state.set_web_search_mode(web_search_mode).await;
 
     // Create LLM client
-    let lock_enabled = state.get_ollama_lock_enabled().await;
-    let llm = super::create_llm_client(args, lock_enabled)?
-        .with_mock_config_file(args.mock_config_file.clone());
+    let llm = super::create_llm_client(args)?.with_mock_config_file(args.mock_config_file.clone());
 
     // Store the configured LLM client in state so spawned servers can use it
     state.set_llm_client(llm.clone()).await;

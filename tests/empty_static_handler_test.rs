@@ -82,7 +82,7 @@ async fn llm_calls_for(routing: Option<serde_json::Value>) -> usize {
     .await
     .expect("mock ollama");
 
-    let state = AppState::new_with_options(false, false, mock.base_url());
+    let state = AppState::new_with_options(false, mock.base_url());
     state
         .set_llm_client(netget::llm::OllamaClient::new(mock.base_url()))
         .await;

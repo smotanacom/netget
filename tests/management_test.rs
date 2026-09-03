@@ -35,7 +35,7 @@ fn static_http_handler(body: &str) -> Vec<serde_json::Value> {
 /// handlers never call it, and if any code path did, it would fail loudly rather
 /// than reach the network.
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),

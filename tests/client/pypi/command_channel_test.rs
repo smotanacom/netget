@@ -58,7 +58,7 @@ async fn stub_index(body: &'static str) -> (u16, Arc<Mutex<Vec<String>>>) {
 }
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),

@@ -33,8 +33,8 @@ use crate::state::app_state::AppState;
 use crate::ui::App;
 
 /// Create the LLM client from CLI args, branching on --openai-url vs --ollama-url
-pub fn create_llm_client(args: &Args, lock_enabled: bool) -> Result<OllamaClient> {
-    let mut client = create_llm_client_inner(args, lock_enabled)?;
+pub fn create_llm_client(args: &Args) -> Result<OllamaClient> {
+    let mut client = create_llm_client_inner(args)?;
     if let Some(secs) = args.llm_request_timeout {
         client = client.with_request_timeout(std::time::Duration::from_secs(secs));
     }
@@ -44,7 +44,7 @@ pub fn create_llm_client(args: &Args, lock_enabled: bool) -> Result<OllamaClient
     Ok(client)
 }
 
-fn create_llm_client_inner(args: &Args, lock_enabled: bool) -> Result<OllamaClient> {
+fn create_llm_client_inner(args: &Args) -> Result<OllamaClient> {
     if let Some(ref openai_url) = args.openai_url {
         let api_key = args.resolve_api_key().ok_or_else(|| {
             anyhow::anyhow!(
@@ -63,7 +63,7 @@ fn create_llm_client_inner(args: &Args, lock_enabled: bool) -> Result<OllamaClie
             .ollama_url
             .as_deref()
             .unwrap_or("http://localhost:11434");
-        Ok(OllamaClient::new_with_options(ollama_url, lock_enabled))
+        Ok(OllamaClient::new(ollama_url))
     }
 }
 
@@ -200,8 +200,7 @@ pub async fn run() -> Result<()> {
             .clone()
             .or_else(|| args.ollama_url.clone())
             .unwrap_or_else(|| "http://localhost:11434".to_string());
-        let state =
-            AppState::new_with_options(args.include_disabled_protocols, args.ollama_lock, base_url);
+        let state = AppState::new_with_options(args.include_disabled_protocols, base_url);
         state.set_min_stability(args.parse_min_stability()?).await;
         debug!("AppState created");
 
@@ -269,15 +268,13 @@ pub async fn run() -> Result<()> {
         let system_capabilities = state.get_system_capabilities().await;
         debug!("Creating App...");
         let app = App::new(system_capabilities);
-        debug!("Getting ollama lock status...");
-        let lock_enabled = state.get_ollama_lock_enabled().await;
 
         // Initialize LLM backend (OpenAI, Hybrid, or Ollama-only)
         #[cfg(feature = "embedded-llm")]
         let llm = {
             if args.openai_url.is_some() {
                 debug!("Creating OpenAI-compatible client...");
-                create_llm_client(&args, lock_enabled)?
+                create_llm_client(&args)?
                     .with_mock_config_file(args.mock_config_file.clone())
                     .with_app_state(state.clone())
             } else {
@@ -304,13 +301,13 @@ pub async fn run() -> Result<()> {
                             .ollama_url
                             .as_deref()
                             .unwrap_or("http://localhost:11434");
-                        OllamaClient::new_with_options(ollama_url, lock_enabled)
+                        OllamaClient::new(ollama_url)
                             .with_mock_config_file(args.mock_config_file.clone())
                             .with_app_state(state.clone())
                     }
                 } else {
                     debug!("Creating OllamaClient...");
-                    create_llm_client(&args, lock_enabled)?
+                    create_llm_client(&args)?
                         .with_mock_config_file(args.mock_config_file.clone())
                         .with_app_state(state.clone())
                 }
@@ -320,7 +317,7 @@ pub async fn run() -> Result<()> {
         #[cfg(not(feature = "embedded-llm"))]
         let llm = {
             debug!("Creating LLM client...");
-            create_llm_client(&args, lock_enabled)?
+            create_llm_client(&args)?
                 .with_mock_config_file(args.mock_config_file.clone())
                 .with_app_state(state.clone())
         };
@@ -422,8 +419,7 @@ async fn run_client(protocol: &str, args: &Args) -> Result<()> {
         .clone()
         .or_else(|| args.ollama_url.clone())
         .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let state =
-        AppState::new_with_options(args.include_disabled_protocols, args.ollama_lock, base_url);
+    let state = AppState::new_with_options(args.include_disabled_protocols, base_url);
     state.set_min_stability(args.parse_min_stability()?).await;
 
     state
@@ -452,8 +448,7 @@ async fn run_client(protocol: &str, args: &Args) -> Result<()> {
     }
     state.set_web_search_mode(web_search_mode).await;
 
-    let lock_enabled = state.get_ollama_lock_enabled().await;
-    let llm = create_llm_client(args, lock_enabled)?
+    let llm = create_llm_client(args)?
         .with_mock_config_file(args.mock_config_file.clone())
         .with_app_state(state.clone());
     state.set_llm_client(llm.clone()).await;
@@ -562,8 +557,7 @@ async fn run_server_direct(protocol: &str, args: &Args) -> Result<()> {
         .clone()
         .or_else(|| args.ollama_url.clone())
         .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let state =
-        AppState::new_with_options(args.include_disabled_protocols, args.ollama_lock, base_url);
+    let state = AppState::new_with_options(args.include_disabled_protocols, base_url);
     state.set_min_stability(args.parse_min_stability()?).await;
     state
         .configure_rate_limiter(args.build_rate_limiter_config())
@@ -612,8 +606,7 @@ async fn run_server_direct(protocol: &str, args: &Args) -> Result<()> {
     }
     state.set_web_search_mode(web_search_mode).await;
 
-    let lock_enabled = state.get_ollama_lock_enabled().await;
-    let llm = create_llm_client(args, lock_enabled)?
+    let llm = create_llm_client(args)?
         .with_mock_config_file(args.mock_config_file.clone())
         .with_app_state(state.clone());
     state.set_llm_client(llm.clone()).await;
@@ -708,8 +701,7 @@ async fn run_simple_protocol(protocol: &str, args: &Args) -> Result<()> {
         .clone()
         .or_else(|| args.ollama_url.clone())
         .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let state =
-        AppState::new_with_options(args.include_disabled_protocols, args.ollama_lock, base_url);
+    let state = AppState::new_with_options(args.include_disabled_protocols, base_url);
     state.set_min_stability(args.parse_min_stability()?).await;
 
     // Configure rate limiter from CLI args
@@ -737,8 +729,7 @@ async fn run_simple_protocol(protocol: &str, args: &Args) -> Result<()> {
     state.set_ollama_model(Some(selected_model)).await;
 
     // Create LLM client
-    let lock_enabled = state.get_ollama_lock_enabled().await;
-    let llm = create_llm_client(args, lock_enabled)?
+    let llm = create_llm_client(args)?
         .with_mock_config_file(args.mock_config_file.clone())
         .with_app_state(state.clone());
 

@@ -878,7 +878,7 @@ mod e2e_imap_client {
         ).await?;
         println!("  [TEST] Server started on port {}", server.port);
 
-        // Create 3 clients sequentially (not truly concurrent due to --ollama-lock rate limiting)
+        // Create 3 clients sequentially to keep the LLM call budget predictable.
         // This still verifies the server can handle multiple connections
         let port = server.port;
         for i in 0..3 {

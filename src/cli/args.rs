@@ -215,23 +215,25 @@ pub struct Args {
     // Developer note, deliberately a `//` comment and not a doc comment: clap derive turns
     // doc comments into `--help` output, and none of this belongs in front of an operator.
     //
-    // The flag is parsed, stored on `AppState`, read back by `get_ollama_lock_enabled()` and
-    // handed to `OllamaClient::new_with_options(url, lock_enabled)`, which discards it behind a
-    // comment saying locking is "handled at a different layer". Nothing in `src/` is that
-    // layer, and no `ollama.lock` is ever created.
+    // **This field is now write-only, and that is the whole point.** Nothing reads
+    // `args.ollama_lock`. The plumbing it used to feed is gone: the `ollama_lock_enabled` field
+    // on `AppStateInner`, `AppState::get_ollama_lock_enabled()`, the second parameter of
+    // `AppState::new_with_options`, the `lock_enabled` argument threaded through
+    // `create_llm_client`, and `OllamaClient::new_with_options`, whose body was `Self::new(url)`
+    // under a comment claiming locking was "handled at a different layer". Nothing in `src/` was
+    // that layer and no `ollama.lock` was ever created, so every one of those hops carried a
+    // boolean that could not change any behaviour — while making the flag look implemented to
+    // anyone who followed it.
     //
-    // It is documented as a no-op rather than quietly left alone because the old help text made
-    // a specific, checkable, false promise — down to naming the lock file — and every e2e
-    // invocation passes the flag, so the whole suite looked as though it serialised LLM access
-    // across processes. `tests/ollama_lock_is_a_noop_test.rs` pins both halves.
+    // The flag itself stays **accepted and inert** rather than deleted. Removing it turns
+    // `--ollama-lock` into a hard clap error, and it appears in scripts and in this repo's own
+    // history; breaking those buys nothing, since an ignored flag and an absent one differ only
+    // in whether the caller gets an error for asking. `tests/ollama_lock_is_a_noop_test.rs`
+    // pins that it is still parsed, still does nothing, and that no `ollama.lock` appears.
     //
-    // Deleting it outright is the better end state and is deliberately not done here: the
-    // backing parameter threads through `AppState::new_with_options`, which has ~146 call sites
-    // across `src/` and `tests/`, and the harness passes `--ollama-lock` to every spawned
-    // binary — a sweep that size through shared files is a merge hazard while other agents are
-    // working in this tree. Implementing it was also rejected: a real cross-process lock would
-    // serialise every e2e test, and `--llm-max-concurrent` (with `--llm-queue-timeout` and
-    // `--llm-max-queued`) already bounds LLM concurrency and is enforced.
+    // Implementing it was considered and rejected: a real cross-process lock would serialise
+    // every e2e test, and `--llm-max-concurrent` (with `--llm-queue-timeout` and
+    // `--llm-max-queued`) already bounds LLM concurrency and is actually enforced.
     /// DEPRECATED AND IGNORED. Accepted for compatibility only; it locks nothing.
     #[clap(
         long = "ollama-lock",

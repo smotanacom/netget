@@ -1,8 +1,13 @@
 //! `--ollama-lock` does nothing, and the help text has to keep saying so.
 //!
-//! The flag is parsed, stored on `AppState`, read back by `get_ollama_lock_enabled()` and
-//! passed to `OllamaClient::new_with_options(url, lock_enabled)` — which discards it behind a
-//! comment saying locking is "handled at a different layer". Nothing in `src/` is that layer.
+//! The flag is parsed into `Args::ollama_lock` and **nothing reads it**. That is now literally
+//! true rather than effectively true: the plumbing it used to feed — an `ollama_lock_enabled`
+//! field on `AppStateInner`, `AppState::get_ollama_lock_enabled()`, a parameter on
+//! `AppState::new_with_options` and on `create_llm_client`, and `OllamaClient::new_with_options`
+//! whose body was `Self::new(url)` — has been deleted. Each hop carried a boolean that could not
+//! change any behaviour while making the flag look implemented to anyone who followed it.
+//!
+//! The flag stays accepted so `--ollama-lock` in an existing script is not a hard clap error.
 //!
 //! Its old help text promised the opposite, specifically enough to be checkable: "prevents
 //! concurrent requests from overloading the LLM, allowing multiple NetGet instances to run
@@ -73,8 +78,11 @@ fn constructing_a_client_with_locking_enabled_creates_no_lock_file() {
     let previous = std::env::current_dir().expect("cwd");
     std::env::set_current_dir(&dir).expect("chdir");
 
-    let _client =
-        netget::llm::OllamaClient::new_with_options("http://127.0.0.1:1".to_string(), true);
+    // Parse the flag exactly as the binary does, then build a client the way the CLI now does.
+    // There is no longer an API that takes a lock argument at all, which is the point.
+    let args = <netget::cli::Args as clap::Parser>::parse_from(["netget", "--ollama-lock"]);
+    assert!(args.ollama_lock, "--ollama-lock must still be accepted");
+    let _client = netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string());
 
     let lock_exists = std::path::Path::new("ollama.lock").exists();
 
@@ -85,5 +93,46 @@ fn constructing_a_client_with_locking_enabled_creates_no_lock_file() {
         !lock_exists,
         "an ollama.lock appeared, so locking may now be real — good, but this test and the \
          flag's help text both describe it as a no-op and must be updated together"
+    );
+}
+
+/// No code may read the flag again without re-introducing a mechanism.
+///
+/// The plumbing was deleted, so the honest guard is that `ollama_lock` is *written* by clap and
+/// read nowhere. A source scan is the only way to say that: a runtime check cannot distinguish
+/// "read and ignored" from "not read".
+#[test]
+fn nothing_in_src_reads_the_flag() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+
+    fn walk(dir: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                let src = std::fs::read_to_string(&p).unwrap_or_default();
+                for (i, line) in src.lines().enumerate() {
+                    let code = line.split("//").next().unwrap_or("");
+                    if code.contains("ollama_lock") && !code.contains("pub ollama_lock: bool") {
+                        out.push(format!("{}:{}: {}", p.display(), i + 1, line.trim()));
+                    }
+                }
+            }
+        }
+    }
+    walk(&root, &mut offenders);
+
+    assert!(
+        offenders.is_empty(),
+        "`ollama_lock` is read somewhere in src/ again:\n{}\n\nThe flag is documented as \
+         deprecated and ignored, and its whole plumbing was removed. If locking is being \
+         implemented for real, update the help text and this file together — do not thread a \
+         boolean back through that changes nothing.",
+        offenders.join("\n")
     );
 }

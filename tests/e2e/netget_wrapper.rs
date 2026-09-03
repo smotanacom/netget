@@ -67,7 +67,6 @@ impl NetGetWrapper {
         }
 
         // Add test-specific flags
-        cmd.arg("--ollama-lock"); // Prevent concurrent Ollama access
 
         // Setup pipes
         cmd.stdin(Stdio::piped())

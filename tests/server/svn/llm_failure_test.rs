@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 /// Port 1 on loopback: nothing listens, so every LLM call fails immediately.
 async fn state_with_dead_backend() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),

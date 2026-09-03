@@ -62,9 +62,11 @@ pub const IDLE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 pub const SETUP_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Serializes live tests within this process. Without it, every test spawns
-/// its netget at once and all their setup model calls queue behind the shared
-/// `--ollama-lock`, so most instances blow the 120s startup timeout in
-/// `wait_for_netget_startup` before their first model call even runs. Each
+/// its netget at once and all their setup model calls contend for the one local
+/// Ollama, so most instances blow the 120s startup timeout in
+/// `wait_for_netget_startup` before their first model call even runs. (This note
+/// used to credit `--ollama-lock` with that queueing; the flag has never locked
+/// anything — the contention is Ollama's own.) Each
 /// [`LiveServer`] holds the guard for its whole lifetime, so tests proceed
 /// one at a time no matter what `--test-threads` says.
 static LIVE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -326,7 +328,7 @@ impl LiveRequestTest {
         ensure_model_available(&model).await?;
 
         // One live test at a time (see LIVE_TEST_LOCK): request events still
-        // queue behind the shared --ollama-lock across tests.
+        // contend for the single local Ollama across tests.
         let serialization_guard = LIVE_TEST_LOCK.lock().await;
 
         println!(

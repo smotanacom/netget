@@ -138,7 +138,7 @@ async fn the_answer_to_an_announce_response_is_carried_out() {
     .await
     .expect("mock ollama");
 
-    let state = AppState::new_with_options(false, false, mock.base_url());
+    let state = AppState::new_with_options(false, mock.base_url());
     state
         .set_llm_client(netget::llm::OllamaClient::new(mock.base_url()))
         .await;

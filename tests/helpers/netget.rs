@@ -98,7 +98,6 @@ pub struct NetGetConfig {
     /// Include disabled protocols (default: false)
     pub include_disabled_protocols: bool,
     /// Enable Ollama lock for concurrent test execution (default: true)
-    pub ollama_lock: bool,
     /// Maximum concurrent LLM requests (default: None, uses netget's default of 1)
     pub llm_max_concurrent: Option<usize>,
     /// Mock LLM configuration (for testing without Ollama)
@@ -142,7 +141,6 @@ impl NetGetConfig {
             listen_addr: "127.0.0.1".to_string(),
             no_scripts: false,
             include_disabled_protocols: false,
-            ollama_lock: true, // Enable by default for concurrent testing
             llm_max_concurrent: Some(1000), // High concurrency for E2E tests (effectively unlimited)
             mock_config: None,
             force_ollama: false,
@@ -161,7 +159,6 @@ impl NetGetConfig {
             listen_addr: "127.0.0.1".to_string(),
             no_scripts: true,
             include_disabled_protocols: false,
-            ollama_lock: true,
             llm_max_concurrent: Some(1000), // High concurrency for E2E tests (effectively unlimited)
             mock_config: None,
             force_ollama: false,
@@ -187,7 +184,6 @@ impl NetGetConfig {
             listen_addr: "127.0.0.1".to_string(),
             no_scripts: false,
             include_disabled_protocols: false,
-            ollama_lock: true,
             llm_max_concurrent: None,
             mock_config: None,
             force_ollama: false,
@@ -233,11 +229,6 @@ impl NetGetConfig {
 
     /// Enable or disable Ollama lock for concurrent testing
     #[allow(dead_code)]
-    pub fn with_ollama_lock(mut self, enabled: bool) -> Self {
-        self.ollama_lock = enabled;
-        self
-    }
-
     /// Set maximum concurrent LLM requests (for testing concurrent request handling)
     #[allow(dead_code)]
     pub fn with_llm_max_concurrent(mut self, max_concurrent: usize) -> Self {
@@ -398,10 +389,9 @@ pub async fn start_netget(config: NetGetConfig) -> E2EResult<NetGetInstance> {
         cmd.arg("--include-disabled-protocols");
     }
 
-    // Add --ollama-lock flag if enabled (default: true for concurrent testing)
-    if config.ollama_lock {
-        cmd.arg("--ollama-lock");
-    }
+    // `--ollama-lock` is deliberately NOT passed. It never locked anything, and passing it from
+    // every spawned binary is what made the whole e2e suite look as though it serialised LLM
+    // access across processes. `--llm-max-concurrent` is the real bound; this harness sets it.
 
     // Add --llm-max-concurrent flag if specified (for testing concurrent request handling)
     if let Some(max_concurrent) = config.llm_max_concurrent {
