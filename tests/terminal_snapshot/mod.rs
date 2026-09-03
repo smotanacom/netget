@@ -475,9 +475,9 @@ fn capture_screen_with_height(pty: &mut pty_process::blocking::Pty, height: u16)
 ///
 /// The symptom was a *truncated command*: `test_dynamic_footer_shrinking` typed
 /// `/footer_status Single line status` and the input box showed `/footer_stat`, so the footer
-/// never shrank and the assertion that it had blamed the footer. `test_dynamic_footer_expand_
-/// shrink_expand` lost only the trailing `\r`, leaving the command sitting unsubmitted. Both
-/// read as UI bugs and were neither.
+/// never shrank and the assertion that it had blamed the footer. The expand-shrink-expand test
+/// lost only the trailing `\r`, leaving the command sitting unsubmitted. Both read as UI bugs
+/// and were neither.
 ///
 /// Retrying on `WouldBlock` against a deadline is the fix, and it belongs here rather than in
 /// `capture_screen`: the queue can fill on any write, not just one that follows a capture.
