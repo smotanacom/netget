@@ -202,7 +202,9 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
 
   Re-derive this list rather than trusting it; the counts drift.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
-  majority (~99).
+  majority (100 of the 136 `src/server/*/actions.rs` the script below walks). Note the script
+  reports one `NONE`: `src/server/http_common/actions.rs`, which is a shared response helper
+  with no `impl Protocol` and no registry entry, so it declares no state correctly.
 - **Incomplete** — hidden from the LLM entirely (`is_available_to_llm()` returns false). **None
   remain.** The last one, `bluetooth_ble_beacon`, was a platform limit rather than unfinished
   work, and was resolved by making the platform explicit rather than by hiding the protocol:
@@ -521,10 +523,12 @@ test when its expectation is genuinely wrong.
 **All tests live in `tests/`. Never add `#[cfg(test)] mod tests` to `src/`.** Tests reach
 internals via `use netget::` public APIs; make items public or refactor if needed.
 
-This policy is currently violated by 9 files in `src/` (`llm/config`, `llm/reference_parser`,
-`llm/hybrid_manager`, `llm/embedded_inference`, `protocol/event_logger`, `protocol/log_template`,
-`system_stats`, `server/proxy/cert_cache`, `server/bluetooth_ble/mod`). Migrate them if you are
-working nearby; do not add more. Current list:
+This policy is currently violated by **5** files in `src/`: `server/bluetooth_ble/mod`,
+`server/bluetooth_ble_beacon/mod`, `server/etcd/mod`, `server/grpc/mod` and
+`server/oci_registry/actions`. Migrate them if you are working nearby; do not add more.
+
+This list was wrong in **both** directions before this pass — it named nine files of which eight
+no longer violate, and missed four that do — so derive it rather than trusting it:
 
 ```bash
 grep -rln "#\[cfg(test)\]" src/ --include='*.rs'
@@ -1181,10 +1185,12 @@ Read before assuming a subsystem is sound:
   write: it is what the rail's `↓/↑` counters and connection-scoped task prompts read.
 - Per-connection tasks are untracked, so `stop_server` does not cancel in-flight connections.
 - `AppState` is one global `RwLock` over everything — a throughput ceiling, not a deadlock.
-- ~50 of the 63 root markdown files are one-off session/status reports last touched in 2025.
+- **The root markdown clutter is gone** — the ~50 one-off session/status reports this entry used
+  to warn about were deleted. Ten files remain and all are durable: `README.md`, `CLAUDE.md`,
   `ARCHITECTURE.md`, `METADATA_EXAMPLES.md`, `CLIENT_PROTOCOL_FEASIBILITY.md`,
-  `LICENSE_ANALYSIS.md`, `SYSTEM_DEPENDENCIES_macOS.md`, `TERMUX_INSTALL.md`, and
-  `PROTOCOL_MIGRATION_GUIDE.md` are the durable ones. Do not add new status-report files.
+  `LICENSE_ANALYSIS.md`, `SYSTEM_DEPENDENCIES_macOS.md`, `TERMUX_INSTALL.md`,
+  `PROTOCOL_MIGRATION_GUIDE.md` and `IMPROVEMENTS.md`. **Do not add new status-report files** —
+  that is what let the directory reach 63 in the first place.
 
 ## Git
 
