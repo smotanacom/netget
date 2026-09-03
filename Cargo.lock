@@ -2339,26 +2339,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "c2rust-bitfields"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46dc7d2bffa0d0b3d47eb2dc69973466858281446c2ac9f6d8a10e92ab1017df"
-dependencies = [
- "c2rust-bitfields-derive",
-]
-
-[[package]]
-name = "c2rust-bitfields-derive"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebe1117afa5937ce280034e31fa1e84ed1824a252f75380327eed438535333f8"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "caret"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2505,19 +2485,6 @@ dependencies = [
  "cfg-if 1.0.4",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
-]
-
-[[package]]
-name = "chacha20poly1305"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10cd79432192d1c0f4e1a0fef9527696cc039165d729fb41b3f4f4f354c2dc35"
-dependencies = [
- "aead 0.5.2",
- "chacha20 0.9.1",
- "cipher 0.4.4",
- "poly1305",
- "zeroize",
 ]
 
 [[package]]
@@ -6455,7 +6422,7 @@ dependencies = [
  "socket2 0.5.10",
  "widestring",
  "windows-sys 0.48.0",
- "winreg 0.50.0",
+ "winreg",
 ]
 
 [[package]]
@@ -7975,7 +7942,6 @@ name = "netget"
 version = "0.1.0"
 dependencies = [
  "aes 0.8.4",
- "aes-gcm 0.10.3",
  "anyhow",
  "arti-client",
  "async-imap",
@@ -7998,7 +7964,6 @@ dependencies = [
  "btleplug",
  "bytes",
  "cassandra-protocol",
- "chacha20poly1305",
  "chrono",
  "clap",
  "coap",
@@ -8163,7 +8128,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tui-textarea",
- "tun",
  "url",
  "urlencoding",
  "usbip",
@@ -10824,7 +10788,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "webpki-roots 0.25.4",
- "winreg 0.50.0",
+ "winreg",
 ]
 
 [[package]]
@@ -15115,27 +15079,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tun"
-version = "0.7.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7904c94104239657089d14bccbf23fd6d363e30639ce49af21ef008a445baf97"
-dependencies = [
- "bytes",
- "cfg-if 1.0.4",
- "futures",
- "futures-core",
- "ipnet",
- "libc",
- "log",
- "nix 0.30.1",
- "thiserror 2.0.17",
- "tokio",
- "tokio-util",
- "windows-sys 0.59.0",
- "wintun-bindings",
-]
-
-[[package]]
 name = "tungstenite"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16848,32 +16791,6 @@ checksum = "524e57b2c537c0f9b1e69f1965311ec12182b4122e45035b1508cd24d2adadb1"
 dependencies = [
  "cfg-if 1.0.4",
  "windows-sys 0.48.0",
-]
-
-[[package]]
-name = "winreg"
-version = "0.55.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
-dependencies = [
- "cfg-if 1.0.4",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "wintun-bindings"
-version = "0.7.32"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b88303b411e20a1319b368dcd04db1480003ed46ac35193e139f542720b15fbf"
-dependencies = [
- "blocking",
- "c2rust-bitfields",
- "futures",
- "libloading",
- "log",
- "thiserror 2.0.17",
- "windows-sys 0.60.2",
- "winreg 0.55.0",
 ]
 
 [[package]]
