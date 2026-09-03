@@ -4,7 +4,8 @@ use std::sync::Arc;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tokio::sync::RwLock;
 
-#[cfg(feature = "gpu")]
+/// GPU stats come from `gfxinfo`, and **not on macOS** — see `get_stats`.
+#[cfg(all(feature = "gpu", not(target_os = "macos")))]
 use gfxinfo::active_gpu;
 
 /// System statistics (CPU, memory, GPU)
@@ -131,8 +132,8 @@ impl SystemStatsMonitor {
         // Read stats
         let system = self.system.read().await;
 
-        // Get GPU stats if available (cross-platform: NVIDIA, AMD, Intel)
-        #[cfg(feature = "gpu")]
+        // Get GPU stats if available (NVIDIA, AMD, Intel — not macOS, see below)
+        #[cfg(all(feature = "gpu", not(target_os = "macos")))]
         let (gpu_usage, gpu_memory_used, gpu_memory_total) = {
             // active_gpu() returns Result<Box<dyn Gpu>, _>
             match active_gpu() {
@@ -174,7 +175,25 @@ impl SystemStatsMonitor {
             }
         };
 
-        #[cfg(not(feature = "gpu"))]
+        // No GPU stats: either the feature is off, or this is macOS.
+        //
+        // **`gfxinfo` 0.1 crashes the process on macOS, and it is not a panic that can be
+        // caught.** `MacGpuInfo::load_pct()` calls `gfxinfo::macos::performance_stat`, which
+        // over-releases the `CFDictionary` it builds; the extra `CFRelease` raises
+        // `EXC_BREAKPOINT`/`SIGTRAP` inside CoreFoundation, bypassing Rust's unwinding entirely.
+        // The crash is in a `Drop`, so there is no fallible call to wrap and
+        // `catch_unwind` cannot see it.
+        //
+        // It only ever showed up in the rolling TUI because `run_rolling_tui` is the only caller
+        // of `get_stats` — the dashboard never asks for GPU stats — and it ticks once a second,
+        // so a `--features gpu` build died a second or two after painting. That is what the
+        // `crash_restore` handler in `rolling_tui.rs` was catching: the terminal was restored
+        // and the process still died.
+        //
+        // Reporting `N/A` on macOS is what the operator saw anyway on the machines where the
+        // stat was unsupported, so nothing is lost that was working. Linux and Windows still get
+        // real numbers. Revisit if `gfxinfo` fixes the double release.
+        #[cfg(any(not(feature = "gpu"), target_os = "macos"))]
         let (gpu_usage, gpu_memory_used, gpu_memory_total) = (None, None, None);
 
         SystemStats {

@@ -1396,7 +1396,18 @@ impl StickyFooter {
             ResetColor,
         )?;
 
-        // Add dependency status indicator
+        // Add dependency status indicator - but only as much of it as fits.
+        //
+        // **The status bar is the last line of the terminal, so overflowing it corrupts it.**
+        // Nothing here accounted for the width: the segments above are a fixed cost, and this
+        // suffix is variable ("7 excluded (/env)" when seven scripting runtimes are missing),
+        // so on a wide-enough build the line ran past column 80, the terminal wrapped it, and
+        // the continuation overwrote the *start* of the same row - the bar rendered as
+        // "(/env):None | Log:INFO ..." with `Model:` gone. It showed up at `--all-features`,
+        // where more runtimes are reported missing, and `tests/terminal_snapshot` caught it.
+        //
+        // Widths are counted in characters rather than bytes: the segments are ASCII, but the
+        // model name is arbitrary text and slicing it by byte could split a UTF-8 sequence.
         tracing::debug!("render_status_bar: Getting dependency status...");
         let (dep_status, dep_color) = self.get_dependency_status();
         tracing::debug!(
@@ -1404,15 +1415,48 @@ impl StickyFooter {
             dep_status
         );
         if !dep_status.is_empty() {
-            execute!(
-                stdout,
-                SetForegroundColor(self.palette.dimmed),
-                Print(" |"),
-                ResetColor,
-                SetForegroundColor(dep_color),
-                Print(format!(" {}", dep_status)),
-                ResetColor,
-            )?;
+            let used = " Model:".chars().count()
+                + self.connection_info.model.chars().count()
+                + " | Log:".chars().count()
+                + self.log_level.as_str().chars().count()
+                + " <^l>".chars().count()
+                + " | WebSearch:".chars().count()
+                + web_status.chars().count()
+                + " <^w>".chars().count()
+                + " | Handler:".chars().count()
+                + self
+                    .connection_info
+                    .event_handler_mode
+                    .as_str()
+                    .chars()
+                    .count()
+                + " <^h>".chars().count();
+
+            // " | " plus the text itself.
+            let available = (self.terminal_width as usize).saturating_sub(used + 3);
+            let shown: String = if dep_status.chars().count() <= available {
+                dep_status
+            } else if available > 1 {
+                dep_status
+                    .chars()
+                    .take(available - 1)
+                    .chain(['…'])
+                    .collect()
+            } else {
+                String::new()
+            };
+
+            if !shown.is_empty() {
+                execute!(
+                    stdout,
+                    SetForegroundColor(self.palette.dimmed),
+                    Print(" |"),
+                    ResetColor,
+                    SetForegroundColor(dep_color),
+                    Print(format!(" {}", shown)),
+                    ResetColor,
+                )?;
+            }
         }
 
         Ok(line + 1)

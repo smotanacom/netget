@@ -760,17 +760,29 @@ file in place can fail with `ETXTBSY` while it is running. Rename swaps the inod
 live process keeps the old image, the new binary takes effect on next launch. **Never kill the
 running `netget` to install** — the rename never needs it stopped.
 
-**`--all-features` vs `all-protocols` — they are NOT interchangeable, and using the wrong one
-crashes the binary at startup.** `--all-features` is a Cargo built-in that turns on *every* feature
-in `Cargo.toml`: not just protocols but also `embedded-llm`, **`gpu`** (Metal/MLX GPU backend),
+**`--all-features` vs `all-protocols` — they are NOT interchangeable.** `--all-features` is a
+Cargo built-in that turns on *every* feature in `Cargo.toml`: not just protocols but also
+`embedded-llm`, **`gpu`** (GPU stats via `gfxinfo`),
 `android-termux`, the test-only `terminal-snapshot`, and the `dist*`/`portable-base` aggregates.
-On macOS the `gpu` feature initializes a Metal context at startup that CFRelease-crashes
-(`EXC_BREAKPOINT`/SIGTRAP in CoreFoundation) — so an `--all-features` binary dies the instant the
-TUI renders. Use `--all-features` **only** for a compile check (`cargo check --all-features`), never
-for a binary you run. `all-protocols` is the curated "every protocol, and only things safe to run"
-set — it includes `embedded-llm` (dormant unless `--embedded-model` is passed) but **not** `gpu`,
-which is why it runs. If `gpu`/Metal startup is ever fixed the two could converge; until then, build
-the runtime binary from `all-protocols`.
+`all-protocols` is the curated "every protocol, and only things safe to run" set — it includes
+`embedded-llm` (dormant unless `--embedded-model` is passed) but **not** `gpu`. Use `--all-features`
+for a compile check (`cargo check --all-features`) and `all-protocols` for a binary you run.
+
+**The `gpu` crash this section used to describe is fixed, and the description of it was wrong in
+every detail worth acting on.** It said the feature "initializes a Metal context at startup" that
+crashes "the instant the TUI renders". It is not Metal and not startup: `gpu` pulls in `gfxinfo`,
+whose macOS `MacGpuInfo::load_pct()` over-releases a `CFDictionary`, and the extra `CFRelease`
+raises `EXC_BREAKPOINT`/SIGTRAP inside CoreFoundation. `SystemStatsMonitor::get_stats` is the only
+caller and `run_rolling_tui` is the only caller of *that*, on a one-second interval — so the crash
+landed a second or two **after** the first paint, only in the `--legacy-tui` rolling TUI, and never
+in the dashboard. `src/system_stats.rs` now compiles the `gfxinfo` call out on macOS
+(`cfg(all(feature = "gpu", not(target_os = "macos")))`) and reports `N/A`, which is what the
+operator saw anyway wherever the stat was unsupported. Linux and Windows are unaffected.
+
+The stack is worth keeping because it is not catchable: the crash is inside a `Drop`, so there is
+no fallible call to wrap and `catch_unwind` cannot see it. It surfaced only because
+`tests/terminal_snapshot` is the one suite that *runs the TUI*, and only once those tests were
+pointed at `--legacy-tui` — before that they exercised the dashboard and never touched the path.
 
 The TUI installs a native-crash terminal restorer (`crash_restore` in `src/cli/rolling_tui.rs`): a
 SIGSEGV/SIGABRT/SIGTRAP from a C/ObjC library bypasses Rust's `Drop`/panic machinery, so without it
