@@ -27,6 +27,23 @@
 //! gets as far as asking for its configuration and then times out. Use
 //! `wireguard` for a tunnel.
 //!
+//! There used to be a `crypto` module here — AES-256-GCM and ChaCha20-Poly1305
+//! wrappers plus a `derive_data_keys`. It is deleted rather than kept for a
+//! future data channel, because **it was not OpenVPN's key derivation and a real
+//! client could never have decrypted anything it produced.** OpenVPN keys the
+//! data channel with the TLS 1.0 PRF over the key-method-2 random material from
+//! both peers; that function used HKDF-SHA256 with the invented label
+//! `"OpenVPN data channel keys"`, and said so in its own doc comment ("For MVP,
+//! we use a simplified HKDF-based approach"). Nothing called it, in `src/` or in
+//! `tests/`.
+//!
+//! 222 lines of plausible, unreachable, non-interoperable crypto is the exact
+//! shape that cost `wireguard` its Stable rating: it makes the protocol read as
+//! nearly finished to anyone skimming, and whoever eventually wires it up
+//! inherits a tunnel that silently talks to nobody. A data channel here starts
+//! with the PRF from RFC 5246 §5 and the `key method 2` material this server
+//! already parses — not with this file.
+//!
 //! What it *is* good for is what the control channel gives you without a
 //! tunnel: it identifies who probes UDP/1194, which OpenVPN build they run
 //! (their `IV_*` peer info), what options they expect, and — because the TLS
@@ -49,7 +66,6 @@
 //! [`packet::Opcode::is_tls_crypt_v2`]).
 
 pub mod actions;
-pub mod crypto;
 pub mod keymethod;
 pub mod packet;
 pub mod peer;

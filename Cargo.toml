@@ -248,7 +248,7 @@ saml-idp = []  # SAML Identity Provider (authentication, assertion generation)
 saml-sp = ["urlencoding"]  # SAML Service Provider (assertion validation, session management)
 saml = ["quick-xml", "urlencoding", "dep:flate2"]  # SAML client (SP-initiated SSO, assertion validation)
 wireguard = ["dep:defguard_wireguard_rs", "dep:x25519-dalek"]  # Full WireGuard VPN server with LLM control
-openvpn = ["dep:tun", "dep:aes-gcm", "dep:chacha20poly1305", "dep:rustls", "dep:tokio-rustls", "dep:rcgen", "dep:sha2", "dep:hmac", "dep:hkdf"]  # Full OpenVPN VPN server with TLS control channel and data channel encryption
+openvpn = ["dep:rustls", "dep:tokio-rustls", "dep:rcgen", "dep:sha2"]  # OpenVPN control-plane responder: real TLS control channel, key method 2. No data channel and no TUN - see src/server/openvpn/mod.rs
 ipsec = []  # IPSec/IKEv2 honeypot (packet detection only, no full crypto)
 bgp = ["netgauze-bgp-pkt"]  # BGP routing protocol
 ospf = ["udp"]  # OSPF routing protocol (IP protocol 89, raw sockets, requires root/CAP_NET_RAW, tests use UDP)
@@ -831,9 +831,6 @@ defguard_wireguard_rs = { version = "0.7", optional = true, features = ["serde"]
 x25519-dalek = { version = "2.0", optional = true }  # For WireGuard key generation
 
 # OpenVPN VPN server (full implementation with TLS control channel)
-tun = { version = "0.7", optional = true, features = ["async"] }  # TUN/TAP interface for VPN tunnels
-aes-gcm = { version = "0.10", optional = true }  # AES-GCM encryption for OpenVPN data channel
-chacha20poly1305 = { version = "0.10", optional = true }  # ChaCha20-Poly1305 encryption for OpenVPN data channel
 # rustls, tokio-rustls, sha2, hmac, hkdf, rand already declared above
 
 # MCP (Model Context Protocol) server
