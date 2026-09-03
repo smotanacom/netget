@@ -948,19 +948,20 @@ Assume other agents work in this repo concurrently.
   mid-edit and its failures belong to nobody. Check the committed state in a throwaway
   worktree: `git worktree add --detach <tmp> HEAD && cargo check --all-features` with its own
   `CARGO_TARGET_DIR`. Remove the worktree afterwards.
-- **`--ollama-lock` does nothing, and now says so.** The flag is parsed, stored on `AppState`,
-  read back by `get_ollama_lock_enabled()` and passed to
-  `OllamaClient::new_with_options(url, lock_enabled)` — which ignores it, with a comment saying
-  locking is "handled at a different layer". Nothing in `src/` is that layer. Every test passes
-  the flag, so it looked as though LLM access were serialised across processes. Its `--help`
-  now declares it deprecated and ignored, and `tests/ollama_lock_is_a_noop_test.rs` fails if
-  the old claims come back or if an `ollama.lock` ever appears. **Still don't reason about
-  concurrency from it** — `--llm-max-concurrent`, `--llm-queue-timeout` and `--llm-max-queued`
-  are the real bounds. Deleting the flag remains the better end state and is unfinished: the
-  parameter threads through `AppState::new_with_options` (~146 call sites) and the harness
-  passes it to every spawned binary.
-  Concurrent `git` work should
-  use worktrees.
+- **`--ollama-lock` does nothing, and its plumbing is now gone.** The flag is parsed into
+  `Args::ollama_lock` and **read by nothing**. It used to be threaded through six hops that each
+  made it look implemented — `AppState::new_with_options`'s second parameter, the
+  `ollama_lock_enabled` field, `get_ollama_lock_enabled()`, `create_llm_client(args,
+  lock_enabled)` and `OllamaClient::new_with_options(url, lock_enabled)`, whose body was
+  `Self::new(base_url)` under a comment saying locking is "handled at a different layer". Nothing
+  in `src/` was that layer and no `ollama.lock` was ever created. All six are deleted; the flag
+  stays accepted and inert so `--ollama-lock` in an existing script is not a hard clap error.
+  The harness no longer passes it — it used to go to *every* spawned binary, which is why the
+  whole e2e suite looked as though it serialised LLM access across processes. **Don't reason
+  about concurrency from it**: `--llm-max-concurrent`, `--llm-queue-timeout` and
+  `--llm-max-queued` are the real bounds. `tests/ollama_lock_is_a_noop_test.rs` fails if the old
+  claims come back, if an `ollama.lock` appears, or if anything in `src/` reads the field again.
+- Concurrent `git` work should use worktrees.
 - **Do not run a full sweep while anything else is building.** `tests/examples` and
   `tests/terminal_snapshot` *spawn `target/debug/netget`*, and `target/` is shared with every
   other agent and with your own narrow-feature builds. A concurrent build replaces that binary
