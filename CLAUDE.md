@@ -718,6 +718,25 @@ Use minimal features. `--all-features` compiles 50+ protocols and their dependen
 
 Kill stuck builds with `./cargo-isolated-kill.sh`, never `pkill cargo`.
 
+### `target/` will fill the disk, and it fails in a way that wastes an hour
+
+**Watch `df` during any session that builds several different feature sets.** `target/debug/deps`
+reached **130 GB in 27,587 files** in one session here — Cargo never garbage-collects test
+binaries from feature permutations, and each `--all-features` test binary links the whole
+136-protocol library. Pruning by age does not help: ~17,000 of those files were from that day.
+`cargo clean --profile dev` is the remedy, and it keeps `target/release`.
+
+Two things make this expensive rather than merely annoying:
+
+- **It does not present as a disk problem.** The first symptom was a linker line buried in a
+  19,000-line log — `ld: write() failed, errno=28 (No space left on device)` — after which the
+  sweep reported `exit code 0` having run **zero** tests. An earlier sweep in the same session
+  produced 18 "failures" that were pure artefacts. **A sweep that reports no `test result` lines
+  did not run; check the log tail before believing any count.**
+- **At literally zero bytes free you cannot recover in-session.** Every tool call needs to write
+  its output file, so `df`, `ls` and `cargo clean` all fail with ENOSPC and the only way out is
+  the operator freeing space by hand. Leave headroom rather than discovering the floor.
+
 ### The installed binary — `/Users/matus/bin/netget`
 
 The maintainer's `netget` on `PATH` lives at `/Users/matus/bin/netget` and **must always have every
