@@ -65,7 +65,19 @@ async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
 /// instruction when `instruction` is `None`, and any non-empty instruction makes
 /// `operator_wants_dynamic` true — which is precisely the condition under which the model
 /// *would* be consulted. A test that left this empty would measure nothing.
-async fn llm_calls_for(routing: Option<serde_json::Value>) -> usize {
+/// `expect_call` selects how long to wait, and the two directions genuinely differ.
+///
+/// Proving a call *happened* is a wait-until: poll generously and return the instant it lands,
+/// so a slow machine costs nothing when the answer is yes. Proving one *did not* happen is a
+/// wait-to-be-sure: there is no event to wait for, so the only guarantee is elapsed time, and
+/// the wait has to be long enough that a call would have shown up.
+///
+/// Both used to share one 3-second budget. That is far more than the ~100ms a mock round trip
+/// takes idle, and not enough under `--test-threads=100` in a full sweep: the **control** —
+/// the one assertion that makes the other two mean anything — failed there while passing in
+/// isolation. A flaky control is worse than a flaky test, because when it fails the file has
+/// proved nothing and when it passes nobody re-reads it.
+async fn llm_calls_for(routing: Option<serde_json::Value>, expect_call: bool) -> usize {
     let mock = MockOllamaServer::start(
         MockLlmBuilder::new()
             // Unconstrained, so anything that reaches the model matches and is recorded
@@ -110,10 +122,14 @@ async fn llm_calls_for(routing: Option<serde_json::Value>) -> usize {
     let mut buf = [0u8; 256];
     let _ = stream.read(&mut buf);
 
-    // Poll rather than sleep a fixed amount: a call that is going to happen has happened by
-    // the time the read returns or times out, and this only waits longer when it must.
-    for _ in 0..100 {
-        if mock.call_count().await > 0 {
+    let budget = if expect_call {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(10)
+    };
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if expect_call && mock.call_count().await > 0 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -131,7 +147,7 @@ fn rule(handler: serde_json::Value) -> serde_json::Value {
 /// mock the server never even tried to reach.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn without_a_handler_the_model_is_consulted() {
-    let calls = llm_calls_for(None).await;
+    let calls = llm_calls_for(None, true).await;
     assert!(
         calls > 0,
         "no routing at all must reach the model — if this is 0 the harness is not measuring \
@@ -142,9 +158,10 @@ async fn without_a_handler_the_model_is_consulted() {
 /// The claim under test.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_empty_static_handler_suppresses_the_llm_call() {
-    let calls = llm_calls_for(Some(rule(
-        serde_json::json!({"type": "static", "actions": []}),
-    )))
+    let calls = llm_calls_for(
+        Some(rule(serde_json::json!({"type": "static", "actions": []}))),
+        false,
+    )
     .await;
     assert_eq!(
         calls, 0,
@@ -157,10 +174,13 @@ async fn an_empty_static_handler_suppresses_the_llm_call() {
 /// The comparison the original observation drew, so both halves are measured the same way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wait_for_more_static_handler_suppresses_the_llm_call() {
-    let calls = llm_calls_for(Some(rule(serde_json::json!({
-        "type": "static",
-        "actions": [{"type": "wait_for_more"}]
-    }))))
+    let calls = llm_calls_for(
+        Some(rule(serde_json::json!({
+            "type": "static",
+            "actions": [{"type": "wait_for_more"}]
+        }))),
+        false,
+    )
     .await;
     assert_eq!(
         calls, 0,
