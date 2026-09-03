@@ -121,7 +121,6 @@ client.delete("foo", None).await?;
 
 **Mitigation**:
 
-- Use `--ollama-lock` for concurrent test execution
 - Dynamic port allocation (port 0 in prompt)
 - Reasonable timeouts (30s for startup, 10s per operation)
 - Retry logic for transient failures (optional)

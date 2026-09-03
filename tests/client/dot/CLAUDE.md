@@ -183,7 +183,6 @@ and MX"
 
 - Tests marked as `#[ignore]`
 - Clear documentation in test output
-- Use `--ollama-lock` in test environment
 
 ---
 
@@ -229,7 +228,7 @@ and MX"
 - Ollama server running on `localhost:11434`
 - Model `qwen3-coder:30b` available
 - Internet access to public DoT servers
-- No other tests running concurrently (use `--ollama-lock`)
+- No other tests running concurrently
 
 ## Privacy & Security
 

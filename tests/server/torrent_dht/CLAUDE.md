@@ -452,7 +452,7 @@ with open('query.bin', 'rb') as f:
 - Time: ~30-60s (pattern reuse after first few)
 - LLM calls: 3-4 (ping, find_node, get_peers × 1 each)
 
-**Concurrent Queries** (--ollama-lock enabled):
+**Concurrent Queries**:
 
 - Serialized through Ollama lock
 - Linear slowdown with concurrency

@@ -325,7 +325,6 @@ sudo iptables -L -n | grep -i dhcp
 
 1. Increase timeout in test code
 2. Use faster LLM model (e.g., qwen3-coder:30b → qwen3-coder:8b)
-3. Enable `--ollama-lock` for serialization
 
 **Verification:**
 

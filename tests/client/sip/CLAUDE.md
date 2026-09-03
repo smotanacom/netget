@@ -151,7 +151,6 @@ server and client processes, then asserting on behavior and output.
 - Each test uses unique ephemeral port via `{AVAILABLE_PORT}` placeholder
 - Server and client run as separate processes (no shared state)
 - Cleanup ensures processes terminate after test
-- `--ollama-lock` flag serializes LLM API calls across concurrent tests
 
 ## Performance Characteristics
 

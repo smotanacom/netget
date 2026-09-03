@@ -190,7 +190,7 @@ RUST_LOG=debug ./cargo-isolated.sh test --no-default-features --features tls --t
 ### Future Optimizations
 
 1. Connection pooling within tests
-2. Parallel test execution (with --ollama-lock)
+2. Parallel test execution
 3. Pre-warmed server instances
 
 ## Debugging

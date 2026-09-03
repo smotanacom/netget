@@ -145,7 +145,7 @@ Without it the receiver waits indefinitely. Always `write_all()` then `finish()`
 
 ### 5. Sequential LLM processing
 
-With `--ollama-lock` (default in tests) concurrent streams are processed
+Concurrent streams are processed
 sequentially. Correctness is unaffected; the 15-second timeout in test 3 exists
 to absorb it.
 

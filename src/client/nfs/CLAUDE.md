@@ -396,7 +396,7 @@ Use NetGet NFS server as test target:
 
 ```bash
 # Terminal 1: Start NetGet NFS server
-netget --ollama-lock
+netget
 
 # Terminal 2: Run client tests
 ./cargo-isolated.sh test --no-default-features --features nfs --test client::nfs::e2e_test

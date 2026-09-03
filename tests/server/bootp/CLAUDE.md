@@ -239,7 +239,7 @@ echo -ne '\x01\x01\x06\x00...' | nc -u localhost 67
 ### Test Optimizations
 
 1. **Reuse server** - One server instance for all tests (reduces to 1 LLM call total)
-2. **Parallel execution** - Run tests concurrently with --ollama-lock
+2. **Parallel execution** - Run tests concurrently
 3. **Mock LLM mode** - Bypass Ollama for faster CI tests (not currently implemented)
 
 ## References

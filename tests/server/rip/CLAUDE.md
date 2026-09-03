@@ -216,7 +216,7 @@ test result: ok. 3 passed; 0 failed
 - **Memory**: ~50-100 MB per server instance
 - **CPU**: Minimal (mostly waiting for LLM)
 - **Network**: Localhost only, < 1 KB per test
-- **Ollama**: 1 concurrent request (serialized with --ollama-lock)
+- **Ollama**: mocked in-process; no shared model server is involved
 
 ## Debugging Failed Tests
 

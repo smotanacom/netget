@@ -179,7 +179,7 @@ black-box mode.
 **If test times out**:
 
 1. Verify Ollama is running and accessible
-2. Check `--ollama-lock` is working (prevents concurrent LLM calls)
+2. Check the mock LLM rules actually match (an unmatched rule falls through to a real call)
 3. Increase test timeout if LLM is slow
 
 ## References

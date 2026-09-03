@@ -112,7 +112,7 @@ Run tests with:
 - **curl requirement**: Tests assume curl is available (standard in most CI environments)
 - **pip optional**: Tests gracefully handle pip not being available
 - **No root required**: Tests use high ports, no privileged access needed
-- **Concurrent safe**: Uses `--ollama-lock` flag to serialize LLM calls
+- **Concurrent safe**: random ports and an in-process mock LLM per test
 
 ## Future Improvements
 

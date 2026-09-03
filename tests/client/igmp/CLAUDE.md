@@ -4,7 +4,7 @@
 
 **Approach**: Black-box prompt-driven testing using the NetGet binary
 **LLM Budget**: < 10 total LLM calls across all tests
-**Runtime**: ~10-15 seconds (sequential execution with ollama-lock)
+**Runtime**: ~10-15 seconds
 
 ## Test Organization
 
@@ -146,7 +146,7 @@ All tests use administratively-scoped multicast addresses (239.255.0.0/16):
 
 ### Why < 10 LLM Calls?
 
-Each LLM call takes ~1-2 seconds with ollama-lock serialization:
+Each LLM call takes ~1-2 seconds:
 
 - 7 total calls × 1.5s = ~10.5 seconds for LLM processing
 - Add client startup, network I/O, cleanup = ~15 seconds total runtime

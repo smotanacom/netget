@@ -39,7 +39,7 @@ calls.
 ## Expected Runtime
 
 - **Per test**: ~5-15 seconds (socket creation + 1 LLM call + validation)
-- **Total suite**: ~15-45 seconds with `--ollama-lock`
+- **Total suite**: ~15-45 seconds
 - **Model**: qwen3-coder:30b (default)
 
 **Breakdown**:
@@ -142,7 +142,7 @@ Received: ACK: Hello, Socket!
 - **Faster than TCP**: No network stack overhead, direct IPC
 - **LLM bottleneck**: Same as TCP - LLM response time dominates (3-10s)
 - **Socket creation**: Very fast (<100ms) compared to TCP bind
-- **Concurrency**: Tests run serially with `--ollama-lock` to avoid LLM conflicts
+- **Concurrency**: each test gets its own in-process mock LLM
 
 ## Comparison to TCP Tests
 

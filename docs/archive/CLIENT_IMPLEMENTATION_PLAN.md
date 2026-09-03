@@ -811,7 +811,7 @@ src/
 6. Create `tests/client/redis/CLAUDE.md`
 7. Update `tests/client/helpers.rs` with client test utilities
 8. Ensure all tests are feature-gated
-9. Ensure tests use `--ollama-lock` for concurrency safety
+9. Ensure tests use an in-process mock LLM for concurrency safety
 10. Keep LLM call count < 10 per test suite
 
 **Validation**: All client tests pass, documented, < 10 LLM calls per suite

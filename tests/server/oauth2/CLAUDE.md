@@ -149,7 +149,6 @@ None currently.
 ### Prerequisites
 
 - Ollama running with qwen3-coder:30b model (or configured model)
-- `--ollama-lock` flag used in tests (default in test framework)
 - Isolated cargo build environment (`./cargo-isolated.sh`)
 
 ### Test Output

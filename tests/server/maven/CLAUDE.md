@@ -142,7 +142,7 @@ All tests treat NetGet as a black box:
 - **Always use `--no-default-features --features maven`** - never use `--all-features` (slow!)
 - **Never run all tests together** - use protocol-specific features
 - Build isolation with `cargo-isolated.sh` prevents conflicts with other instances
-- Tests run in parallel by default (safe due to random ports and --ollama-lock)
+- Tests run in parallel by default (safe due to random ports and a per-test mock LLM)
 
 ## Privacy and Offline Testing
 
