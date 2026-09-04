@@ -258,6 +258,26 @@ Both belong to the **deliberately-silent** class for the same reason as LLMNR:
 an NDP or DHCPv6 answer writes a binding into the peer's stack. Fabricating one
 is cache poisoning. Fail silent, log `decision=`.
 
+**The no-storage rule has a consequence worth generalising, which DHCPv6 found
+the hard way.** NetGet holds nothing between one model call and the next — so in
+any multi-message exchange where the client correlates replies on a
+*server-generated* identifier, that identifier must be **deterministic**, not
+random. A DHCPv6 client rejects a REPLY whose Server Identifier differs from the
+ADVERTISE's, and since the two come from separate model calls with no state
+between them, a randomly generated default DUID would break every four-message
+exchange. The default is therefore a constant DUID-EN (enterprise 32473, IANA's
+reserved documentation number), asserted byte for byte. Ask the same question of
+any protocol with a handshake: *what does the peer correlate on, and can we
+reproduce it without remembering anything?*
+
+Two `dhcproto` limitations it worked around, recorded so nobody re-discovers
+them: `v6::duid::Duid::link_layer` takes the link-layer address as an `Ipv6Addr`
+and always writes 16 octets, so it **cannot express a DUID-LL for Ethernet**
+(a real one carries a 6-octet MAC) — all four DUID forms are hand-encoded
+instead; and it emits the domain search list through a `trust-dns` encoder with
+**name compression on**, so a second name sharing a suffix comes back as a
+pointer that a client must follow.
+
 > **Router Advertisement was not separately selected, and is nonetheless
 > implemented** — RA is ICMPv6 type 134, i.e. part of NDP, so building NDP
 > properly delivered it. `send_router_advertisement` carries prefixes with L/A
@@ -390,7 +410,10 @@ Each was found by an agent working inside its own boundary, reported rather than
 reached outside to fix, and is small. Do them once the waves have landed, not
 during — every one touches a shared file.
 
-1. **`src/tui/wireshark.rs` has no entry for any protocol added here.** That table
+1. **`src/tui/wireshark.rs` has no entry for any protocol added here.**
+   Two concrete instances confirmed by agents: DHCPv6 (`wireshark.rs:203` has
+   `"dhcp" | "bootp" => udp("dhcp")` and no `dhcpv6` arm) and Wake-on-LAN.
+   Both are one-line additions. That table
    maps NetGet protocol → transport + Wireshark dissector, and a protocol missing
    from it is treated as plain TCP. That is wrong for every UDP and link-layer
    protocol in this programme. Wake-on-LAN found it (it is UDP/9 with the `wol`
