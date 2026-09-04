@@ -10,6 +10,41 @@ meant to be edited rather than superseded. If an item lands, change its row;
 do not write a new file about it. When every row here reads `landed`, fold the
 durable lessons into `CLAUDE.md` and delete this file.
 
+## Where this stands (4 September 2026)
+
+**All 30 protocols have landed**: 8 servers, 8 clients, 14 root/privileged. Four
+are `Beta`; the other 26 are `Experimental`, each with its *reason* recorded
+rather than a hedge.
+
+Verified after the last one landed:
+
+| Check | Result |
+|---|---|
+| `--features all-protocols` compile | clean (3 pre-existing lib warnings, none in the new 30) |
+| Full suite, `--test-threads=100` | **1265 server + 360 client = 1625 passed, 0 failed** |
+| Six whole-tree ratchets, at `all-protocols` | 29 passed, 0 failed |
+| Orphaned test directories | none, either tree |
+| New `#[cfg(test)]` under `src/` | none — the five pre-existing files are unchanged |
+| `cargo fmt --check` | clean tree-wide |
+| `/Users/matus/bin/netget` | rebuilt with `all-protocols` and reinstalled |
+
+**Three test-deadline defects were found only by the full sweep**, all the same
+shape: asserting a condition while waiting on something that happens *earlier*.
+Two in `tuntap` (waiting on an arrival counter plus a fixed 120 ms settle, then
+asserting a decision) and one in `gtp` (waiting for the model to be called, then
+asserting on a log line written after its answer is handled). Each passes alone
+in under a second at any feature set — which is exactly why the root `CLAUDE.md`
+says passing in isolation tells you the *deadline* was wrong, not that the code
+is fine. No assertion was changed; only what each waits for. GTP's wire
+assertions had already passed, so its protocol behaviour was provably correct
+and only the log line was in flight.
+
+One failure seen mid-sweep was **`server::webrtc::…data_channel_message_round_trip`**,
+which this programme never touched (`git log` confirms) and which passed on the
+final run. It is load-flaky and pre-existing, and worth someone's attention:
+under load its mock expectations go unmet and it trips the
+`Server dropped without calling .verify_mocks()` guard.
+
 ## Status legend
 
 | Status | Meaning |
