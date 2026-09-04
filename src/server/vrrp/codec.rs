@@ -40,6 +40,7 @@
 //!    [`PseudoHeader`] is an error, never a silently-wrong packet.
 
 use anyhow::{bail, ensure, Context, Result};
+use sha1::{Digest, Sha1};
 use std::net::Ipv4Addr;
 
 // ---------------------------------------------------------------------------
@@ -560,8 +561,10 @@ impl CarpAdvertisement {
 ///
 /// **Unverified against a live peer.** This is derived from reading `sys/netinet/ip_carp.c`;
 /// no OpenBSD `carp` interface has ever accepted a packet from this code. The HMAC-SHA1
-/// primitive underneath *is* pinned, against RFC 2202 test vectors and an independent SHA-1
-/// implementation. See `src/server/vrrp/CLAUDE.md`.
+/// underneath is a different matter: the hash is the `sha1` crate's and the RFC 2104
+/// construction is pinned to RFC 2202's vectors. What remains unproven is the CARP-specific
+/// *input ordering* assembled here — which fields, in which order, with which key derivation
+/// — not the primitive computing over it. See `src/server/vrrp/CLAUDE.md`.
 pub fn carp_hmac(passphrase: &[u8], vhid: u8, addresses: &[Ipv4Addr], counter: u64) -> [u8; 20] {
     let mut key = [0u8; CARP_KEY_LEN];
     let take = passphrase.len().min(CARP_KEY_LEN);
@@ -580,78 +583,36 @@ pub fn carp_hmac(passphrase: &[u8], vhid: u8, addresses: &[Ipv4Addr], counter: u
 // SHA-1 / HMAC-SHA1
 // ---------------------------------------------------------------------------
 
-/// SHA-1 (RFC 3174 / FIPS 180-4).
+/// SHA-1 (RFC 3174 / FIPS 180-4) as a fixed-size array, over the `sha1` crate.
 ///
-/// Hand-written because the `vrrp` feature declares no hash dependency and this file must not
-/// add one. It is not used for anything security-bearing here — CARP's HMAC is a protocol
-/// framing field — and it is pinned in `tests/server/vrrp/codec_test.rs` against the
-/// specification's own test vectors *and* cross-checked against the `sha1` crate, which is
-/// already a dev-dependency. That cross-check is what makes it evidence rather than a
-/// round trip through itself.
+/// This is a thin adapter, not an implementation: the `vrrp` feature declares `dep:sha1` and
+/// the hashing is entirely the crate's. It exists only so the rest of this file can take a
+/// `[u8; 20]` without threading `GenericArray` and `Digest` through every caller.
+///
+/// `tests/server/vrrp/codec_test.rs` runs the FIPS 180 / RFC 3174 vectors and a 0..=130 length
+/// sweep through it anyway. Those do not assert that SHA-1 is correct — that is the crate's
+/// problem — they assert that **this adapter drives it correctly**: hashing the wrong buffer,
+/// dropping an `update` or truncating the digest would pass every other test in that file and
+/// fail these.
 pub fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut h: [u32; 5] = [
-        0x6745_2301,
-        0xefcd_ab89,
-        0x98ba_dcfe,
-        0x1032_5476,
-        0xc3d2_e1f0,
-    ];
-
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    let mut message = data.to_vec();
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
-    }
-    message.extend_from_slice(&bit_len.to_be_bytes());
-
-    for block in message.chunks_exact(64) {
-        let mut w = [0u32; 80];
-        for (i, word) in block.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-
-        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
-        for (i, &wi) in w.iter().enumerate() {
-            let (f, k) = match i {
-                0..=19 => ((b & c) | ((!b) & d), 0x5a82_7999u32),
-                20..=39 => (b ^ c ^ d, 0x6ed9_eba1),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8f1b_bcdc),
-                _ => (b ^ c ^ d, 0xca62_c1d6),
-            };
-            let temp = a
-                .rotate_left(5)
-                .wrapping_add(f)
-                .wrapping_add(e)
-                .wrapping_add(k)
-                .wrapping_add(wi);
-            e = d;
-            d = c;
-            c = b.rotate_left(30);
-            b = a;
-            a = temp;
-        }
-
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-    }
-
     let mut out = [0u8; 20];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
-    }
+    out.copy_from_slice(&Sha1::digest(data));
     out
 }
 
 /// HMAC-SHA1 (RFC 2104), block size 64.
+///
+/// The construction is ours because no HMAC crate is reachable from this feature — `hmac` is
+/// optional and gated behind `tor` — but the hashing underneath is the `sha1` crate's. That
+/// makes the key padding and the inner/outer ordering the only part written here, and it is
+/// exactly the part RFC 2202's vectors check: an implementation that swapped `0x36` and
+/// `0x5c`, forgot to hash an over-long key, or concatenated the wrong way round fails them
+/// immediately.
 pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
     const BLOCK: usize = 64;
+
+    // RFC 2104 §2: a key longer than the block size is replaced by its own hash, and any key
+    // is then zero-padded to the block size.
     let mut padded = [0u8; BLOCK];
     if key.len() > BLOCK {
         padded[..20].copy_from_slice(&sha1(key));
@@ -659,17 +620,21 @@ pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
         padded[..key.len()].copy_from_slice(key);
     }
 
-    let mut inner = Vec::with_capacity(BLOCK + data.len());
-    let mut outer = Vec::with_capacity(BLOCK + 20);
-    for byte in padded.iter() {
-        inner.push(byte ^ 0x36);
-    }
-    for byte in padded.iter() {
-        outer.push(byte ^ 0x5c);
-    }
-    inner.extend_from_slice(data);
-    outer.extend_from_slice(&sha1(&inner));
-    sha1(&outer)
+    let ipad: Vec<u8> = padded.iter().map(|byte| byte ^ 0x36).collect();
+    let opad: Vec<u8> = padded.iter().map(|byte| byte ^ 0x5c).collect();
+
+    let mut inner = Sha1::new();
+    inner.update(&ipad);
+    inner.update(data);
+    let inner = inner.finalize();
+
+    let mut outer = Sha1::new();
+    outer.update(&opad);
+    outer.update(inner);
+
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&outer.finalize());
+    out
 }
 
 // ---------------------------------------------------------------------------

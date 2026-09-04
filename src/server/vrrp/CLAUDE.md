@@ -149,15 +149,28 @@ There is no CARP RFC. The layout and the HMAC construction are read out of OpenB
   and type as two separate octets (`0x02`, `0x01`), not the packed `0x21` of the header, and
   the counter in the big-endian form it takes on the wire.
 
-`codec.rs` carries a hand-written SHA-1 and HMAC-SHA1 because the `vrrp` feature declares no
-hash dependency and adding one means editing `Cargo.toml`, a shared file. Nothing
-security-bearing rests on it — this is a protocol framing field — and it is checked against
-FIPS 180 / RFC 3174's own vectors, RFC 2202's HMAC vectors, and the independent `sha1` crate
-at every padding boundary.
+**The hash is the `sha1` crate's** — the `vrrp` feature declares `dep:sha1`, and `codec::sha1`
+is a thin adapter that returns a `[u8; 20]` so the rest of the file need not thread
+`GenericArray` around. Only the RFC 2104 HMAC construction on top is written here, because no
+HMAC crate is reachable from this feature (`hmac` is optional and gated behind `tor`).
 
-**What is proved is the primitive, not the CARP-specific input ordering.** No OpenBSD `carp`
-interface has ever accepted a packet from this code. If a `carpd` rejects our advertisements,
-the input construction is the first thing to doubt, not the hash.
+This file used to carry a hand-written SHA-1, pinned to the published vectors. Vectors prove
+the happy path, not the edge cases, and the next person to touch a hand-rolled compression
+function will not have the context of whoever wrote it — so it is gone. **The vector tests are
+not**: they were kept with their job changed, and that is the part worth understanding.
+`tests/server/vrrp/codec_test.rs` still runs FIPS 180 / RFC 3174 and RFC 2202 through this
+code, and still sweeps every input length 0..=130, but they now assert that *we drive the
+crate correctly* rather than that SHA-1 is correct. An adapter that hashed the wrong buffer,
+dropped an `update`, truncated the digest or swapped the `0x36`/`0x5c` pads would pass every
+other test in that file and fail these. The sweep's oracle moved from "the `sha1` crate"
+— tautological now that we call it — to "the `sha1` crate's *streaming* API", fed one octet at
+a time, which is a genuinely different path through it.
+
+**What is proved is the primitive and how we drive it, not the CARP-specific input ordering.**
+Which fields, in which order, with which key derivation, is still a reading of `ip_carp.c` that
+no OpenBSD `carp` interface has ever accepted. If a `carpd` rejects our advertisements, the
+input construction is the first thing to doubt — the hash underneath is not the suspect it was
+when this was hand-rolled.
 
 With **no** `carp_passphrase` configured, an inbound HMAC is reported to the model as
 `hmac_valid: null`, never `true`. Reporting an unchecked signature as valid is the fail-open
@@ -289,9 +302,9 @@ no virtual-MAC (`00:00:5E:00:01:{VRID}`) handling, no gratuitous ARP on takeover
 (`FF02::12`) in either direction, no VRRPv2 RFC 2338-era authentication (the field is decoded
 and surfaced, never verified), no CARP counter/replay tracking. No storage of any kind.
 
-`pnet` is a declared dependency of the feature and is currently unused: the codec is
-hand-written and `socket2`/`libc` cover the raw socket. Left declared because the feature line
-is a shared file.
+The feature is `vrrp = ["socket2/all", "dep:sha1"]`. It briefly carried `pnet`, which nothing
+here ever used — the codec is hand-written and `socket2`/`libc` cover the raw socket — and it
+was dropped once both this protocol and `stp` reported it unused.
 
 ## Proven and unproven — read this before rating it
 
@@ -302,8 +315,10 @@ is a shared file.
   scopes with the sums worked through by hand, and CARP's 36-octet layout. See
   `tests/server/vrrp/CLAUDE.md` for the provenance of the literals and why they are not
   circular evidence.
-* SHA-1 and HMAC-SHA1, against FIPS 180 / RFC 3174 and RFC 2202 vectors *and* against the
-  independent `sha1` crate at every padding boundary.
+* That this code **drives** SHA-1 and HMAC-SHA1 correctly — the hash itself is the `sha1`
+  crate's — against FIPS 180 / RFC 3174 and RFC 2202 vectors, plus a 0..=130 length sweep
+  against the crate's streaming API. The RFC 2104 construction on top is ours and the RFC 2202
+  vectors are its oracle.
 * The whole decision path over the UDP transport, unprivileged: decode → event → handler/LLM
   dispatch → action → re-encode → transmit, with the response packet decoded and asserted
   field by field, in both VRRP and CARP.

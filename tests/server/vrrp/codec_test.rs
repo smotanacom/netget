@@ -20,9 +20,17 @@
 //! named packet capture and this file does not claim they are. If you can get a capture,
 //! replacing these is a strict improvement — say where they came from when you do.
 //!
-//! The one place a genuinely independent implementation *is* available is the hash: SHA-1 is
-//! checked against FIPS 180 / RFC 3174's own vectors **and** against the `sha1` crate, which
-//! is already a dev-dependency, and HMAC-SHA1 against RFC 2202's vectors.
+//! ## The hash vectors changed job, and were kept
+//!
+//! SHA-1 is the `sha1` crate's; `codec::sha1` is a thin adapter over it, and the RFC 2104
+//! HMAC construction on top is ours only because no HMAC crate is reachable from this
+//! feature. So the FIPS 180 / RFC 3174 and RFC 2202 vectors here no longer assert that SHA-1
+//! is *correct* — that is the crate's problem. They assert that this code **drives it
+//! correctly**: an adapter that hashed the wrong buffer, dropped an `update`, truncated the
+//! digest or mis-ordered the HMAC key padding would pass every other test in this file and
+//! fail those. The 0..=130 padding sweep is kept for the same reason, with its oracle changed
+//! from "the crate" (now tautological) to "the crate's streaming API", which is a genuinely
+//! different code path through it.
 //!
 //! ## The three things implementations get wrong
 //!
@@ -557,21 +565,21 @@ fn a_carp_advertisement_misdecodes_as_a_vrrpv2_resignation() {
 // SHA-1 and HMAC-SHA1
 // ---------------------------------------------------------------------------
 
-/// The `sha1` crate, used only here. It is an independent implementation, which is what makes
-/// the cross-check below evidence rather than a round trip through ourselves.
-fn reference_sha1(data: &[u8]) -> [u8; 20] {
-    use sha1::{Digest, Sha1};
-    let mut out = [0u8; 20];
-    out.copy_from_slice(&Sha1::digest(data));
-    out
-}
-
-/// HMAC-SHA1 (RFC 2104) built on the `sha1` crate rather than on our own hash.
+/// HMAC-SHA1 (RFC 2104) re-derived here, on the `sha1` crate.
+///
+/// This is **not** an independent hash — `codec::hmac_sha1` now uses the same crate, so
+/// comparing the two would be tautological about SHA-1. What it independently re-derives is
+/// the RFC 2104 *construction*: the key padding, the `0x36`/`0x5c` pads, the inner/outer
+/// ordering. Its own correctness is not assumed either — `hmac_sha1_matches_the_rfc_2202_vectors`
+/// runs the published vectors through **both** it and `codec::hmac_sha1`, so the spec is the
+/// oracle for both before this is used to pin CARP's input ordering below.
 fn reference_hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
     use sha1::{Digest, Sha1};
     let mut padded = [0u8; 64];
     if key.len() > 64 {
-        padded[..20].copy_from_slice(&reference_sha1(key));
+        let mut hashed = Sha1::new();
+        hashed.update(key);
+        padded[..20].copy_from_slice(&hashed.finalize());
     } else {
         padded[..key.len()].copy_from_slice(key);
     }
@@ -591,6 +599,13 @@ fn reference_hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
     out
 }
 
+/// The published SHA-1 vectors.
+///
+/// `codec::sha1` is a thin adapter over the `sha1` crate, so these do not assert that SHA-1 is
+/// correct — that is the crate's problem and its own test suite's. They assert that **we drive
+/// it correctly**: an adapter that hashed the wrong buffer, truncated or reordered the digest,
+/// or returned a stale array would pass every other test in this file and fail these
+/// immediately.
 #[test]
 fn sha1_matches_the_published_vectors() {
     // FIPS 180 / RFC 3174 §7.3.
@@ -608,50 +623,104 @@ fn sha1_matches_the_published_vectors() {
         )),
         "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
     );
-    // The million-'a' vector, which is what catches a broken length field or block loop.
+    // The million-'a' vector: the one that catches an adapter silently truncating its input.
     assert_eq!(
         hex::encode(codec::sha1(&vec![b'a'; 1_000_000])),
         "34aa973cd4c4daa4f61eeb2bdbad27316534016f"
     );
 }
 
+/// Every length from 0 to 130, against the crate's **streaming** API.
+///
+/// `codec::sha1` is a one-shot call into the `sha1` crate, so comparing it against
+/// `Sha1::digest` would be tautological. The oracle here is the crate's **streaming** API,
+/// fed one octet at a time: streaming and one-shot are different code paths through it, and
+/// the adapter bugs that matter — passing a truncated slice, hashing the wrong buffer,
+/// copying only part of the digest out — show up as a disagreement between them.
+///
+/// 0..=130 spans both padding cases (the length fits in the final block / it needs another
+/// one) and several whole blocks, which is where an off-by-one in a length or an offset
+/// surfaces.
 #[test]
-fn sha1_agrees_with_the_independent_sha1_crate_at_every_padding_boundary() {
-    // 0..=130 covers both padding cases (the length fits in this block / it does not) and
-    // several whole blocks, which is where a hand-written SHA-1 goes wrong.
+fn sha1_agrees_with_the_streaming_api_at_every_padding_boundary() {
+    use sha1::{Digest, Sha1};
+
+    let mut seen = std::collections::HashSet::new();
     for length in 0..=130usize {
         let input: Vec<u8> = (0..length).map(|i| (i * 7 + 3) as u8).collect();
+
+        let mut streamed = Sha1::new();
+        for byte in &input {
+            streamed.update([*byte]);
+        }
+        let mut expected = [0u8; 20];
+        expected.copy_from_slice(&streamed.finalize());
+
         assert_eq!(
             codec::sha1(&input),
-            reference_sha1(&input),
-            "our SHA-1 disagrees with the sha1 crate at length {length}"
+            expected,
+            "codec::sha1 disagrees with a byte-at-a-time hash of the same input at length \
+             {length}; the wrapper is not feeding the hasher what it was given"
+        );
+        assert!(
+            seen.insert(codec::sha1(&input)),
+            "two different inputs hashed the same at length {length} — the wrapper is \
+             returning something that does not depend on its whole argument"
         );
     }
 }
 
+/// The RFC 2202 HMAC vectors, run through **both** implementations.
+///
+/// `codec::hmac_sha1` is the one that ships; `reference_hmac_sha1` is the test-local
+/// re-derivation used further down to pin CARP's input ordering. The RFC is the oracle for
+/// both, so neither is trusted on the other's say-so.
+///
+/// The RFC 2104 construction is the part written by hand — no HMAC crate is reachable from
+/// this feature — and these vectors are exactly what catch getting it wrong: swapping the
+/// `0x36` and `0x5c` pads, forgetting to hash an over-long key, or concatenating inner and
+/// outer the wrong way round each fail one of the four below.
 #[test]
 fn hmac_sha1_matches_the_rfc_2202_vectors() {
-    // RFC 2202 §3, cases 1-3.
-    assert_eq!(
-        hex::encode(codec::hmac_sha1(&[0x0b; 20], b"Hi There")),
-        "b617318655057264e28bc0b6fb378c8ef146be00"
-    );
-    assert_eq!(
-        hex::encode(codec::hmac_sha1(b"Jefe", b"what do ya want for nothing?")),
-        "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"
-    );
-    assert_eq!(
-        hex::encode(codec::hmac_sha1(&[0xaa; 20], &[0xdd; 50])),
-        "125d7342b9ac11cd91a39af48aa17b4f63f175d3"
-    );
-    // Case 6: a key longer than the 64-octet block, which must be hashed first.
-    assert_eq!(
-        hex::encode(codec::hmac_sha1(
+    // RFC 2202 §3, cases 1, 2, 3 and 6.
+    let cases: [(&[u8], &[u8], &str); 4] = [
+        (
+            &[0x0b; 20],
+            b"Hi There",
+            "b617318655057264e28bc0b6fb378c8ef146be00",
+        ),
+        (
+            b"Jefe",
+            b"what do ya want for nothing?",
+            "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79",
+        ),
+        (
+            &[0xaa; 20],
+            &[0xdd; 50],
+            "125d7342b9ac11cd91a39af48aa17b4f63f175d3",
+        ),
+        // Case 6: an 80-octet key, longer than the 64-octet block, which RFC 2104 §2 requires
+        // to be hashed down first rather than truncated.
+        (
             &[0xaa; 80],
-            b"Test Using Larger Than Block-Size Key - Hash Key First"
-        )),
-        "aa4ae5e15272d00e95705637ce8a3b55ed402112"
-    );
+            b"Test Using Larger Than Block-Size Key - Hash Key First",
+            "aa4ae5e15272d00e95705637ce8a3b55ed402112",
+        ),
+    ];
+
+    for (key, data, expected) in cases {
+        assert_eq!(
+            hex::encode(codec::hmac_sha1(key, data)),
+            expected,
+            "codec::hmac_sha1 fails an RFC 2202 vector"
+        );
+        assert_eq!(
+            hex::encode(reference_hmac_sha1(key, data)),
+            expected,
+            "the test's own reference fails an RFC 2202 vector, so it cannot be trusted as \
+             the oracle for the CARP input ordering below"
+        );
+    }
 }
 
 /// CARP's authentication field is HMAC-SHA1 over

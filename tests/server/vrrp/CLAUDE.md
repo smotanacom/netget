@@ -4,7 +4,7 @@ Two files with different jobs, and the split is the whole strategy:
 
 | File | Proves | Needs |
 |---|---|---|
-| `codec_test.rs` | the VRRP/CARP codec against **literal specification bytes**, both directions, plus SHA-1/HMAC-SHA1 against published vectors and an independent implementation | nothing — no socket, no LLM, no privilege |
+| `codec_test.rs` | the VRRP/CARP codec against **literal specification bytes**, both directions, plus that we drive SHA-1/HMAC-SHA1 correctly against published vectors | nothing — no socket, no LLM, no privilege |
 | `e2e_test.rs` | the full advertisement → event → model → action → packet path, the silence guarantee, and startup-parameter handling | a mock Ollama on loopback |
 
 29 tests, all passing, ~5 s at `--test-threads=100`.
@@ -43,11 +43,36 @@ with itself.
 If you can get a real capture, replacing these with bytes from one is a strict improvement and
 worth doing. Say where they came from when you do.
 
-**The hash is the one place a genuinely independent implementation exists**, and it is used:
-`codec::sha1` is checked against FIPS 180 / RFC 3174's vectors *and* against the `sha1` crate
-(already a dev-dependency) at every length from 0 to 130 — which covers both padding cases and
-several whole blocks, where a hand-written SHA-1 goes wrong. `codec::hmac_sha1` is checked
-against RFC 2202 cases 1, 2, 3 and 6 (the over-long key that must be hashed first).
+### The hash vectors changed job, and were kept
+
+SHA-1 used to be hand-written here and the vectors proved it was correct. It is now the `sha1`
+crate's (`vrrp = ["socket2/all", "dep:sha1"]`), with `codec::sha1` a thin adapter and only the
+RFC 2104 HMAC construction still local — no HMAC crate is reachable from this feature.
+
+Every vector was kept, and **what they assert changed**: not that SHA-1 is correct, which is
+the crate's problem, but that this code **drives** it correctly. That failure mode did not go
+away with the hand-rolled implementation. An adapter that hashed the wrong buffer, dropped an
+`update`, truncated the digest or returned a stale array would pass every other test in the
+file and fail these immediately.
+
+* `sha1_matches_the_published_vectors` — FIPS 180 / RFC 3174 §7.3, including the million-'a'
+  vector, which now catches an adapter that silently truncates its input rather than a broken
+  block loop.
+* `sha1_agrees_with_the_streaming_api_at_every_padding_boundary` — the 0..=130 sweep, kept, with
+  its oracle changed. Comparing against `Sha1::digest` would now be tautological, so the
+  reference feeds the hasher **one octet at a time**: streaming and one-shot are different code
+  paths through the crate, and a wrapper that passes a truncated slice or copies out part of a
+  digest shows up as a disagreement between them. It also asserts all 131 digests are distinct,
+  which catches a wrapper whose output does not depend on its whole argument.
+* `hmac_sha1_matches_the_rfc_2202_vectors` — cases 1, 2, 3 and 6 (the 80-octet key RFC 2104 §2
+  requires to be hashed down rather than truncated), run through **both** `codec::hmac_sha1`
+  **and** the test's own `reference_hmac_sha1`. The construction is the part still written by
+  hand, and these are exactly what catch swapping the `0x36`/`0x5c` pads, skipping the
+  over-long-key hash, or concatenating inner and outer the wrong way round.
+
+Running the vectors through the test's own reference too is what lets it serve as the oracle
+for the CARP input ordering below: the RFC pins both, so neither is trusted on the other's
+say-so.
 
 ### The four literal packets
 
@@ -99,12 +124,20 @@ server takes a `variant` startup parameter instead of sniffing the first octet, 
 for both.
 
 **The CARP HMAC.** `the_carp_hmac_is_hmac_sha1_over_the_openbsd_input` rebuilds the key and the
-message by hand and computes the HMAC with the `sha1` crate, so it pins that `carp_hmac` really
+message by hand and runs them through `reference_hmac_sha1`, so it pins that `carp_hmac` really
 is HMAC-SHA1 over `version || type || vhid || addresses || counter` keyed with the passphrase
-zero-padded to 20 octets. It then varies each of the four inputs and asserts the result changes
-— a field that authenticates nothing would pass a single-vector test. What this does **not**
-prove is that OpenBSD agrees about the input ordering; there is no CARP RFC, the construction
-is a reading of `ip_carp.c`, and no `carpd` has ever accepted a packet from this code.
+zero-padded to 20 octets. What is being checked here is the **input construction**, not the
+HMAC — both sides now compute the hash with the same crate, and the reference is trustworthy
+as an oracle only because the RFC 2202 vectors above are run through it as well.
+
+It then varies each of the four inputs and asserts the result changes — a field that
+authenticates nothing would pass a single-vector test — and checks that a passphrase longer
+than 20 octets is truncated rather than hashed, matching `CARP_KEY_LEN`.
+
+What this does **not** prove is that OpenBSD agrees about the input ordering. There is no CARP
+RFC, the construction is a reading of `ip_carp.c`, and no `carpd` has ever accepted a packet
+from this code. That caveat is unchanged by the move to the `sha1` crate and is the reason the
+protocol stays `Experimental`.
 
 ## Why `e2e_test.rs` does not use the harness
 

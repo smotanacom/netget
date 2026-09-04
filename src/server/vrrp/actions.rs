@@ -631,8 +631,10 @@ impl Protocol for VrrpProtocol {
                  'variant' startup parameter rather than sniffed. codec.rs is pure (no I/O, no \
                  async) and holds the version-dependent interval scaling (v2 whole seconds, v3 \
                  centiseconds), the RFC 1071 checksum, VRRPv3's RFC 5798 §5.2.8 pseudo-header, \
-                 CARP's 36-octet layout and a hand-written SHA-1/HMAC-SHA1 for CARP's \
-                 authentication field. Two transports sit over it: a raw IP-protocol-112 socket \
+                 CARP's 36-octet layout and CARP's HMAC-SHA1 authentication field (the sha1 \
+                 crate for the hash; the RFC 2104 construction over it is local because no HMAC \
+                 crate is reachable from this feature). Two transports sit over it: a raw \
+                 IP-protocol-112 socket \
                  joined to 224.0.0.18, and a UDP transport carrying one complete message per \
                  datagram for unprivileged testing.",
             )
@@ -652,9 +654,11 @@ impl Protocol for VrrpProtocol {
                  tests/server/vrrp/codec_test.rs: complete VRRPv2 and VRRPv3 advertisements \
                  hand-derived from RFC 3768 §5.1 and RFC 5798 §5.1, the one-second interval as \
                  0x01 under v2 and 0x0064 under v3, both checksums (v3 including its \
-                 pseudo-header) computed by hand, and CARP's 36-octet layout. SHA-1 and \
-                 HMAC-SHA1 are checked against FIPS 180 / RFC 2202 vectors and cross-checked \
-                 against the independent `sha1` crate. tests/server/vrrp/e2e_test.rs drives the \
+                 pseudo-header) computed by hand, and CARP's 36-octet layout. The hash is the \
+                 sha1 crate's, so the FIPS 180 / RFC 3174 and RFC 2202 vectors are kept to prove \
+                 this code DRIVES it correctly — right buffer, no dropped update, correct HMAC \
+                 key padding and inner/outer ordering — rather than to prove SHA-1 itself. \
+                 tests/server/vrrp/e2e_test.rs drives the \
                  whole advertisement -> event -> model -> action -> packet path over the UDP \
                  transport, unprivileged, and asserts that an LLM failure puts NOTHING on the \
                  wire. No third-party VRRP or CARP peer has ever spoken to this server.",

@@ -3,7 +3,8 @@
 //! Two files with different jobs:
 //!
 //! * `codec_test` — the packet codec against literal specification bytes, in both directions,
-//!   plus SHA-1/HMAC-SHA1 against published vectors and an independent implementation. No
+//!   plus the FIPS 180 / RFC 2202 vectors proving this code drives the `sha1` crate correctly
+//!   (the hash itself is the crate's; only the RFC 2104 HMAC construction is local). No
 //!   sockets, no LLM, no privilege. This is the part of the protocol that is actually proved.
 //! * `e2e_test` — the full advertisement → event → model → action → packet path over the UDP
 //!   test transport, the silence-on-LLM-failure guarantee, startup-parameter handling, and
