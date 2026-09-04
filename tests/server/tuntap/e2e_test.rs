@@ -172,6 +172,31 @@ mod tests {
             }
         }
 
+        /// Wait until one of the pipeline's own counters reaches `n`, or give up.
+        ///
+        /// [`Harness::wait_for_received`] can only wait for a frame to *arrive*: its counter
+        /// is bumped before the pipeline decides anything, which is why it has to sleep a
+        /// fixed moment afterwards to let the decision land. That settle is enough when this
+        /// file runs alone and is not enough when the whole suite runs at `--test-threads=100`
+        /// — the load-flakiness the root `CLAUDE.md` records, and it cost two failures here.
+        ///
+        /// So any assertion *about a decision* waits on that decision's own counter instead.
+        /// Prefer the last counter in the chain (`sent`, `refused_layer`), because reaching it
+        /// implies everything before it, including the model round trip.
+        async fn wait_for_stat<F>(&self, read: F, n: u64, budget: Duration)
+        where
+            F: Fn(&TunTapStats) -> u64,
+        {
+            let deadline = Instant::now() + budget;
+            let stats = self.stats();
+            while Instant::now() < deadline {
+                if read(&stats) >= n {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+
         /// Collect everything the pipeline wrote back to the "interface".
         fn drain_egress(&mut self) -> Vec<Vec<u8>> {
             let mut out = Vec::new();
@@ -346,7 +371,14 @@ mod tests {
         .await;
 
         h.inject(ping(0x2222, 9)).await;
-        h.wait_for_received(1, Duration::from_secs(30)).await;
+        // `sent` is the end of this chain — model consulted, answer built, frame written —
+        // so waiting on it means all three assertions below are about a finished decision.
+        h.wait_for_stat(
+            |s| TunTapStats::get(&s.sent),
+            1,
+            Duration::from_secs(30),
+        )
+        .await;
 
         assert!(
             h.mock.call_count().await > 0,
@@ -637,7 +669,14 @@ mod tests {
         .await;
 
         h.inject(ping(0x8888, 1)).await;
-        h.wait_for_received(1, Duration::from_secs(30)).await;
+        // The refusal is the end of this chain: the model answered and the pipeline rejected
+        // its layer-two frame. Waiting on `received` would only prove the packet arrived.
+        h.wait_for_stat(
+            |s| TunTapStats::get(&s.refused_layer),
+            1,
+            Duration::from_secs(30),
+        )
+        .await;
 
         assert_eq!(TunTapStats::get(&h.stats().refused_layer), 1);
         assert!(h.drain_egress().is_empty());

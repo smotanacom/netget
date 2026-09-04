@@ -761,6 +761,11 @@ async fn test_gtpv2_create_session_accepted_and_refused() -> E2EResult<()> {
 
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
+    // `wait_for_mocks` only proves the model was *called*; `decision=` is written after its
+    // answer is handled, so under a full-suite run at --test-threads=100 the line can still be
+    // in flight here. Wait for the line itself. This does not weaken the negative assertion
+    // below - giving model_reject time to appear gives fail_closed the same time.
+    server.wait_for_any(&["decision=model_reject"], 30).await;
     assert!(
         server.output_contains("decision=model_reject").await,
         "a refusal the model chose must be logged as model_reject, never as a fail-closed one"
