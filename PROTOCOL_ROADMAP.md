@@ -252,7 +252,7 @@ distinguishable — and what actually matters — is that act versus every
 | Protocol | Feature | Module | Transport | Privilege | Status |
 |---|---|---|---|---|---|
 | NDP | `ndp` | `ndp` | ICMPv6, raw socket | `RawSockets` | `planned` |
-| DHCPv6 | `dhcpv6` | `dhcpv6` | UDP 547 | `PrivilegedPort(547)` | `planned` |
+| DHCPv6 | `dhcpv6` | `dhcpv6` | UDP 547 | `PrivilegedPort(547)` | `landed` (`2724244c`) — Experimental |
 
 Both belong to the **deliberately-silent** class for the same reason as LLMNR:
 an NDP or DHCPv6 answer writes a binding into the peer's stack. Fabricating one
@@ -268,7 +268,7 @@ is cache poisoning. Fail silent, log `decision=`.
 | Protocol | Feature | Module | Privilege | Status |
 |---|---|---|---|---|
 | TUN/TAP endpoint | `tuntap` | `tuntap` | `Root` | `planned` |
-| Raw IP protocol-N | `rawip` | `rawip` | `RawSockets` | `planned` |
+| Raw IP protocol-N | `rawip` | `rawip` | `RawSockets` | `landed` (`a5f40d50`) — Experimental |
 
 **TUN/TAP is the item that changes what NetGet is** rather than adding another
 protocol: it takes a real interface, and every routed IP packet becomes an
@@ -283,6 +283,20 @@ handlers are "the right default for deterministic behavior" is load-bearing here
 
 **Raw IP protocol-N** is the generic home for protocols with no other (GRE 47,
 ESP 50). Keep it genuinely generic; it must not become a per-protocol match.
+
+**Raw IP's genericity is guarded executably, and that is the pattern to copy
+whenever a rule is architectural rather than behavioural.** A comment saying "do
+not branch on the protocol number" decays; `decoding_does_not_depend_on_the_protocol_number`
+does not. It decodes one packet under twelve different protocol numbers and
+asserts identical fields *including the payload slice*, so it fails the moment
+someone adds `47 => parse_gre()`. Two numeric matches survive and are correct:
+the IP **version** nibble (two header formats, not two carried protocols) and a
+protocol-number→name string table, which is data rather than logic.
+
+One honest limitation it surfaced and did not paper over: **IPv6 raw sockets do
+not deliver the IP header** — the kernel strips it — so on that path the decoder
+would see only the payload and drop the packet. Recorded in both its CLAUDE.md
+files rather than discovered later by someone debugging live.
 
 ### Tier 4 — telecom
 
