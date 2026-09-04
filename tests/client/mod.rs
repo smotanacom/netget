@@ -174,6 +174,8 @@ pub mod webrtc;
 pub mod websocket;
 #[cfg(feature = "whois")]
 pub mod whois;
+#[cfg(feature = "netbios-ns")]
+pub mod netbios_ns;
 #[cfg(feature = "nats")]
 pub mod nats;
 #[cfg(feature = "ssdp")]

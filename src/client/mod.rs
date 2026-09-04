@@ -536,6 +536,11 @@ pub use websocket::actions::WebSocketClientProtocol;
 pub mod whois;
 #[cfg(feature = "whois")]
 pub use whois::actions::WhoisClientProtocol;
+// netbios_ns client
+#[cfg(feature = "netbios-ns")]
+pub mod netbios_ns;
+#[cfg(feature = "netbios-ns")]
+pub use netbios_ns::actions::NetbiosNsClientProtocol;
 // nats client
 #[cfg(feature = "nats")]
 pub mod nats;

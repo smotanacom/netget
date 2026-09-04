@@ -65,7 +65,7 @@ separately by the agent that wrote it.
 | Finger | `finger` | `finger` | TCP 79 | `PrivilegedPort(79)` | `finger(1)` confirmed port-locked to 79 → needs root | `landed` (`a28bf0a2`) — Experimental |
 | SSDP | `ssdp` | `ssdp` | UDP 1900 mcast | **structurally none** — no Rust SSDP client can be aimed at a unicast loopback port (see below) | `landed` — Experimental |
 | LLMNR | `llmnr` | `llmnr` | UDP 5355 mcast | none | **none** — only LLMNR crate is a responder, not a querier; real clients are Windows/systemd-resolved. Evidence is circular by construction | `landed` (`19ebd0eb`) — Experimental |
-| NetBIOS-NS | `netbios-ns` | `netbios_ns` | UDP 137 | `PrivilegedPort(137)` | `nmblookup`, probably port-locked to 137 | `building` |
+| NetBIOS-NS | `netbios-ns` | `netbios_ns` | UDP 137 | `PrivilegedPort(137)` | `nmblookup` 4.24.6 **confirmed port-locked to 137** (`nbt port=` is parsed and ignored by the client; proven with tcpdump). Its captured datagrams pin the *decode* direction; the *response* direction is unvalidated | `landed` (`2901a6e9`) — Experimental |
 
 SSDP, LLMNR and NetBIOS-NS are in the **deliberately-silent** class: every
 reply is a positive assertion (a device exists / a name maps to an address), so
