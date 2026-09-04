@@ -227,6 +227,14 @@ octets each and share no code**. There is deliberately no
 `encode_eap_result(code, id)`, so no boolean exists that could be inverted. Every
 fail-closed exit calls the failure builder directly, never the executor.
 
+When its hand-rolled MD5 was later replaced by the `md-5` crate (`008c7261`),
+the RFC 1321 and RFC 1994 vector tests were **kept and re-documented** rather
+than deleted with the implementation: they no longer claim to be an oracle for
+our digest, they guard our *use* of someone else's. A wrapper that feeds the
+hasher the wrong buffer, drops an update, or returns the digest with the wrong
+endianness would pass every other test in the file and fail those four. Deleting
+vector tests along with a hand-rolled primitive is the reflex to resist.
+
 Its own e2e suite then found a real defect the unit tests could not: the model's
 `expected_password` was never recorded, so MD5 verification could never succeed.
 Being fail-closed, it presented as a stuck exchange rather than a bypass — which
@@ -364,7 +372,20 @@ Whichever is chosen, M3UA cannot be rated above `Experimental` from macOS.
 
 | Protocol | Feature | Module | Transport | Status |
 |---|---|---|---|---|
-| CAN bus / SocketCAN | `can` | `can` | `AF_CAN` (Linux) | `planned`, Linux-only |
+| CAN bus / SocketCAN | `can` | `can` | `AF_CAN` (Linux) | `landed` (`09b6876d`) — Experimental, Linux transport never compiled |
+
+**Two patterns from CAN worth reusing for any platform-gated protocol.**
+First, its refusal test does not stop at asserting `spawn()` returns `Err` — it
+then starts the same protocol on its UDP transport on the same host, which proves
+the refusal is a **routing decision rather than a dead end**. An assertion that
+something fails is much weaker than one showing what still works. Second, the
+refusal message is a single `const` quoted verbatim by the runtime error, the
+docs and the test, so the three cannot drift.
+
+It also *removed* a startup parameter it had planned (`fd`): `CanFdSocket` reads
+both classic and FD frames off one socket, so the knob would have had nothing to
+do. Declining to declare a parameter is the cheap way to avoid the
+declared-but-unread trap that `startup_param_drift_test` exists to catch.
 
 An LLM-driven ECU simulator, and a genuinely underserved niche. Linux `vcan`
 needs **no hardware**, so it is trivially testable on Linux and not at all on
