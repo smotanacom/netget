@@ -95,9 +95,24 @@ interval. The pipeline finishes a frame when it has decided about it, so the cou
 condition being waited on. The fixed-sleep-then-assert shape is exactly the load flakiness the
 root `CLAUDE.md` records — enough alone, not enough at `--test-threads=100`.
 
-The one remaining sleep is a 120 ms settle after the last frame is counted, because the counter
-is bumped before the decision is made. If that ever proves marginal, count decisions instead of
-arrivals rather than lengthening the sleep.
+There is still a 120 ms settle after the last frame is counted, because the counter is bumped
+before the decision is made. **That settle did prove marginal, exactly as this file predicted,
+and the prescribed fix was taken rather than a longer sleep.**
+
+It surfaced only in a full `--all-features` sweep at `--test-threads=100` — 1265 tests in one
+run — where 120 ms was no longer enough for a mock model round trip to complete. Two tests
+failed, and both were ones asserting a *decision*: `the_model_is_consulted_when_nothing_else_answers`
+and `a_layer_two_answer_on_a_layer_three_interface_is_refused`. Both pass alone, in 0.5 s, at
+any feature set — which is precisely why the root `CLAUDE.md` says passing in isolation tells
+you the deadline was wrong, not that the code is fine.
+
+`Harness::wait_for_stat` is the fix: it polls **the counter the test actually asserts on**,
+with a real deadline and no settle. Prefer the last counter in the chain — `sent`,
+`refused_layer` — because reaching it implies everything before it, including the model round
+trip. `wait_for_received` remains correct for tests that assert about *arrival*, and for the
+zero-call assertions, where there is no later counter to wait for.
+
+Neither assertion changed when this was fixed. Only the deadline each waits against.
 
 ## The off-by-four has its own test, from both sides
 
