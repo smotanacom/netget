@@ -365,7 +365,7 @@ files rather than discovered later by someone debugging live.
 
 | Protocol | Feature | Module | Transport | Privilege | Status |
 |---|---|---|---|---|---|
-| GTP-C / GTP-U | `gtp` | `gtp` | UDP 2123 / 2152 | **none** — both above 1024 | `planned` |
+| GTP-C / GTP-U | `gtp` | `gtp` | UDP 2123 / 2152 | **none** — both above 1024 | `landed` (`b1642019`) — Experimental |
 | M3UA / SIGTRAN | `m3ua` | `m3ua` | SCTP 2905 | none (port is high) | `landed` (`55f03bb6`) — Experimental; SCTP never executed |
 
 **GTP is the pleasant surprise of this tier**: both its ports are above 1024, so
@@ -444,6 +444,30 @@ Recorded so they are not re-litigated from scratch.
 | 802.11 rogue AP | macOS cannot inject; needs Linux plus a specific chipset. |
 | IPMI/RMCP+, WinRM, DCERPC | Session crypto and IDL marshalling; the model contributes almost nothing for thousands of lines of framing. |
 | Redfish | Cheap to build, but the only real clients are Python, and `CLAUDE.md` rules that a generic HTTP client is not Beta evidence — it would be permanently `Experimental`. |
+
+## An unused validation avenue: `tshark`
+
+**`tshark` 4.x is installed on this machine, and it dissects most of what this
+programme added.** The GTP agent used it and nobody else did: it rebuilt four of
+the server's own outbound packets octet-for-octet from its test assertions,
+wrapped them with `text2pcap`, and dissected them. All four parsed with **zero
+expert warnings**, including a PN-set/S-clear G-PDU where Wireshark found the
+inner IPv4 packet only after all four optional octets — third-party confirmation
+of the E/S/PN all-or-nothing rule, from an implementation that shares no code
+with ours.
+
+This validates the **encode direction only**, which is exactly the half most of
+our raw-socket protocols cannot otherwise prove. It is available today for LLDP,
+CDP, STP, VRRP, NDP, DHCPv6, HSRP, WoL, EAPOL and CAN.
+
+It was deliberately **not** wired into the suite, on the reasoning that a test
+needing `tshark` would skip when absent, and a skip-when-missing gate is a silent
+pass rather than evidence. That reasoning is sound but the conclusion is a
+choice, not a necessity: `npm`'s test shows the third option — **hard-fail when
+the binary is missing**. The real trade is whether `tshark` becomes a build
+requirement wherever the suite runs, exactly as `nats-server` now is. Worth
+deciding deliberately rather than by default; it would move several protocols
+from "codec proven only against ourselves" to "codec proven against Wireshark".
 
 ## A new build requirement: `nats-server`
 
