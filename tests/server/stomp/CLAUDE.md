@@ -1,100 +1,113 @@
 # STOMP E2E Testing
 
-Two files, **21 tests, 8 LLM calls total**.
+Three files, **22 tests, 10 LLM calls**.
 
-| File | Tests | LLM calls | Needs a socket? |
-|---|---|---|---|
-| `codec_test.rs` | 18 | 0 | no |
-| `e2e_test.rs` | 3 | 8 | yes |
+| File | Tests | LLM calls | Peer | What it is for |
+|---|---|---|---|---|
+| `e2e_test.rs` | 2 | 7 | `async-stomp` 0.6.3 | **the Beta evidence** |
+| `raw_socket_test.rs` | 2 | 3 | raw socket | what a client library cannot express |
+| `codec_test.rs` | 18 | 0 | none | the codec against spec byte literals |
 
-## The peer is hand-written, and that is the whole story about the rating
+## `e2e_test.rs` — the real client, and why it counts
 
-`e2e_test.rs` drives the server with a raw `TcpStream` and a frame reader written out in the
-test file. It is **not** a third-party STOMP client, so nothing here supports a `Beta` rating —
-see `src/server/stomp/CLAUDE.md` for the crate that would (`async-stomp 0.6.3`, EUPL-1.2, not
-added because `Cargo.toml` was single-writer).
+The peer is `async-stomp` 0.6.3: an independent STOMP 1.2 implementation, not a codec this test
+drives frame by frame. `Connector::connect()` opens the socket, sends `CONNECT`, and **refuses
+to return a transport unless the reply is a well-formed `CONNECTED` carrying a `version`
+header**; every later frame is decoded by its own parser into typed values
+(`FromServer::Message`, `FromServer::Receipt`), hard-erroring on a missing required header.
 
-Two deliberate choices in that reader:
+It clears each clause of the Beta bar in the root `CLAUDE.md`:
 
-- **It does not call `netget::server::stomp::frame::parse_frame`.** A test that parses the
-  server's output with the server's own parser asserts only that one module round-trips through
-  itself — the circular-evidence trap the root `CLAUDE.md` records for `rss` and
-  `webrtc_signaling`, and which `tests/server/websocket/e2e_test.rs` states in its own header.
-- **It honours `content-length` and falls back to the NUL terminator.** The server sets
-  `content-length` on every non-empty body, so a reader that only scanned for NUL would truncate
-  the binary echo below and the test would pass for the wrong reason.
+- **Not `#[ignore]`d** — runs in the default suite.
+- **Cannot skip.** `async-stomp` is a compiled-in crate dependency; there is no "is it
+  installed?" question and no `SKIP: … not installed` branch. That silent-pass shape is what
+  keeps `kubernetes`, `oci_registry`, `maven` and `websocket` at Experimental. Every failure
+  path here is an `assert!`, an `expect`, or a `?` that propagates — a timeout waiting for a
+  frame **panics**, it does not return `Ok(())`.
+- **Not circular.** Nothing in the file touches `netget::server::stomp::frame`. A test that
+  parsed the server's output with the server's own parser would assert only that one module
+  round-trips through itself — the `rss`/`webrtc_signaling` trap.
 
-`codec_test.rs` asserts against **byte literals written from the spec**, not against whatever
-the encoder happens to produce. That is the point: `encode`→`parse` agreeing proves nothing on
-its own, so the literals are the anchor and the round-trip tests sit on top of them.
+### The negative control, which is the part worth keeping
 
-## LLM call budget
+Deleting the `version` header from `CONNECTED` in `actions.rs` was tried, and:
 
-| Test | Calls | Breakdown |
+- `test_stomp_session_against_the_async_stomp_client` **FAILED** — `async-stomp` rejected the
+  handshake, as a real client would.
+- `raw_socket_test.rs` still **passed** — the hand-written peer never checked `version`.
+
+That is the concrete demonstration that the real client is strictly stronger evidence, and the
+reason the rating rests on `e2e_test.rs` alone. Re-run it before trusting any future change to
+this suite: a green run proves nothing unless a broken server turns it red.
+
+### The two tests
+
+| Test | Calls | What it pins |
 |---|---|---|
-| `test_stomp_session_handshake_subscribe_publish_disconnect` | 5 | startup + `stomp_connect` + `stomp_subscribe` + `stomp_send` + `stomp_disconnect` |
-| `test_stomp_connect_refused_with_error_frame` | 2 | startup + `stomp_connect` |
-| `test_stomp_protocol_errors_never_reach_the_model` | 1 | startup only — **the assertion is that it stays 1** |
+| `test_stomp_session_against_the_async_stomp_client` | 5 | startup + `stomp_connect` + `stomp_subscribe` + `stomp_send` + `stomp_disconnect` |
+| `test_stomp_connect_refusal_is_seen_by_the_async_stomp_client` | 2 | startup + `stomp_connect` |
 
-The whole session is one server and one connection deliberately: five calls for a six-frame
-exchange rather than a server per scenario.
+The first runs a whole session on one connection: the handshake; a `SUBSCRIBE` answered with a
+`MESSAGE` whose `subscription` is asserted to be the id **the client chose** (a `MESSAGE` naming
+any other id is discarded by a real client, so a hardcoded one would make the test prove less
+than it looks); a `SEND` echoed back; and a `DISCONNECT` whose `RECEIPT` is followed by the
+stream ending rather than erroring.
 
-Every rule is on a distinct event id, so the first-match-wins trap does not apply. Two rules use
-`respond_with_actions_from_event` because they *must*:
+The second asserts that a refusal reaches a real client as a *decodable* `ERROR` rather than a
+dropped connection — `async-stomp` fails the handshake with the frame it received, so asserting
+on its error text proves both the `message` header and the body survived its parser.
 
-- `stomp_subscribe` quotes back `e["id"]`. A `MESSAGE` naming any other subscription id is
-  discarded by a real client, so hardcoding it would make the test prove less than it appears to.
-- `stomp_send` echoes `e["body"]` **with `e["body_encoding"]`**. The published body is binary
-  (`00 01 ff 00 7f 80`), so the assertion that the exact bytes come back only holds if the hex
-  contract works in both directions. A static mock could not express this.
+## `raw_socket_test.rs` — only what `async-stomp` cannot do
 
-## What each test pins
+Two hard limits in `async-stomp`, both verified against its source, define this file's scope:
 
-### `test_stomp_session_handshake_subscribe_publish_disconnect`
+- **It never writes `content-length`** (`ToServer::Send` builds the frame without one), so it
+  physically cannot publish a body containing NUL — exactly the case where `content-length`
+  becomes authoritative and a "read to the terminator" parser truncates.
+- **`Connector::connect()` always handshakes first and always sends `accept-version:1.2`**, so
+  a frame before the handshake, a refused version, and deliberately broken framing are all
+  unreachable through it.
 
-1. `CONNECT` → `CONNECTED` carrying `version:1.2`, the session/server the handler chose, and
-   **`heart-beat:0,0` even though the client asked for `10000,10000`** — the server implements
-   no heart-beat timer and must not promise one.
-2. `SUBSCRIBE` with `receipt` → `MESSAGE` **then** `RECEIPT`, in that order. The spec has the
-   receipt acknowledge a frame that has been *processed*; sending it first would also make it
-   impossible for a handler to answer before the acknowledgement.
-3. `SEND` of a binary body with `receipt` → the same bytes back in a `MESSAGE`, then `RECEIPT`.
-4. `DISCONNECT` with `receipt` → `RECEIPT`, then EOF.
+| Test | Calls | Notes |
+|---|---|---|
+| `test_stomp_binary_body_survives_the_encoding_round_trip` | 2 | the handshake is answered by a **static** handler declared on the server, so it costs no LLM call — and exercises the deterministic path an operator would actually use |
+| `test_stomp_protocol_errors_never_reach_the_model` | 1 | startup only, and **that is the assertion** |
 
-### `test_stomp_connect_refused_with_error_frame`
+In the second, the mock has *only* a startup rule across three connections. Any event that
+reached the model would match no rule, fall through to a real LLM call, and fail —
+`verify_mocks` is what makes the absence assertable. This is the check that matters most for a
+honeypot: if framing were a question the model got asked, a stranger could provoke an LLM round
+trip with one malformed byte.
 
-The model answering `send_stomp_error` must reach the wire as an `ERROR` frame **and** close the
-connection, which the spec requires of the server whoever produced the error.
+This file is **not** evidence for the maturity rating. A hand-written reader is an independent
+*reading* of the spec, not an independent implementation — the `dhcp`/`usb-serial` class. It
+also avoids `netget::server::stomp::frame`, for the same reason `e2e_test.rs` does.
 
-### `test_stomp_protocol_errors_never_reach_the_model`
+## `codec_test.rs` — spec literals, no socket, no model
 
-Three connections against one server, and the mock has **only** a startup rule. Any event that
-reached the model would match nothing, fall through to a real LLM call, and fail —
-`verify_mocks` is what makes the absence assertable.
+Assertions are against **byte literals written from the spec**, not against whatever the encoder
+happens to produce. `encode`→`parse` agreeing proves nothing on its own, so the literals are the
+anchor and the round-trip tests sit on top of them.
 
-- a `SUBSCRIBE` before the handshake → `ERROR message:expected CONNECT`
-- `accept-version:1.0,1.1` → `ERROR message:unsupported version` carrying `version:1.2`, as the
-  spec asks a server to name what it does speak
-- a header line with no `:` → `ERROR message:malformed frame`
-
-This is the check that matters most for a honeypot: if framing were a question the model got
-asked, a stranger could provoke an LLM round trip with one malformed byte.
-
-## Codec coverage (`codec_test.rs`)
-
-Edges the e2e test cannot reach through a socket:
-
-- a body containing NUL, under `content-length` (the case a "read to the terminator" parser
-  silently truncates), and a `content-length` not followed by NUL
+- a body containing NUL under `content-length`, and a `content-length` not followed by NUL
 - `\r\n` line endings; heart-beat EOLs; leading EOLs before a frame
 - **every** prefix of a frame returns `Incomplete` and consumes nothing (a loop over all split
-  points, because "works when the whole frame arrives in one read" is not the same claim)
+  points — "works when the whole frame arrives in one read" is a different, weaker claim)
 - the four escape sequences and nothing else; an undefined escape is fatal at both the header
   and the frame level
-- the `CONNECT`/`STOMP`/`CONNECTED` escaping exemption, asserted in both directions — getting it
+- the `CONNECT`/`STOMP`/`CONNECTED` escaping exemption, in both directions — getting it
   backwards corrupts every `host` header containing a colon
-- an unterminated frame past `MAX_FRAME_BYTES`
-- first-occurrence-wins for a repeated header
+- an unterminated frame past `MAX_FRAME_BYTES`; first-occurrence-wins for a repeated header
+
+## Mock rules
+
+Every rule is on a distinct event id, so the first-match-wins trap does not apply. Two use
+`respond_with_actions_from_event` because they *must*:
+
+- `stomp_subscribe` quotes back `e["id"]` — see above.
+- `stomp_send` echoes `e["body"]` **with** `e["body_encoding"]`. In `raw_socket_test.rs` the
+  published body is binary (`00 01 ff 00 7f 80`), so the bytes only come back intact if the hex
+  contract holds in both directions. A static mock could not express this.
 
 ## Privacy
 
@@ -109,6 +122,7 @@ Edges the e2e test cannot reach through a socket:
 
 ## Not covered
 
-Heart-beating, transactions, subscription bookkeeping, STOMP 1.0/1.1, TLS — none of them are
-implemented; see `src/server/stomp/CLAUDE.md`. Also not covered: concurrent connections, and
-anything an actual STOMP client library would do differently from the reader in this file.
+Heart-beating, transactions, subscription bookkeeping, STOMP 1.0/1.1 and TLS are not
+implemented; see `src/server/stomp/CLAUDE.md`. Also not covered: interop with the brokers' own
+client stacks (ActiveMQ/RabbitMQ STOMP), and concurrent sessions. Those are what a human should
+check before this goes past Beta.

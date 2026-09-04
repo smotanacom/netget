@@ -4,44 +4,62 @@ STOMP 1.2 (Simple Text Oriented Messaging Protocol) broker. A client opens a ses
 `CONNECT`, then publishes with `SEND` and receives with `SUBSCRIBE`/`MESSAGE`. The model decides
 whether to admit a session and what every message carries; there is no broker behind it.
 
-**State**: Experimental. **Privilege**: `None` — the default port is 61613, which is
+**State**: Beta. **Privilege**: `None` — the default port is 61613, which is
 unprivileged, so declaring `PrivilegedPort` would be dead code (the `svn` mistake).
-**Stack**: `ETH>IP>TCP>STOMP`. **Library**: none — the codec is `frame.rs`, ~300 lines.
+**Stack**: `ETH>IP>TCP>STOMP`. **Library**: none on the server side — the codec is `frame.rs`,
+~300 lines. `async-stomp` is a **dev-dependency only**, used as the test peer.
 
-## Why the rating is Experimental, precisely
+## Why the rating is Beta, precisely
 
-The bar for `Beta` is a test in which an **independent implementation** completed a real
-exchange. There is none here.
+**A real third-party client completes a real session.** `async-stomp` 0.6.3 — an independent
+STOMP 1.2 implementation, not a codec driven frame by frame — runs
+CONNECT → CONNECTED → SUBSCRIBE → MESSAGE → SEND → MESSAGE → DISCONNECT → RECEIPT → close
+against this server in `tests/server/stomp/e2e_test.rs`, decoding every frame with its own
+parser. A second test has it decode a refusal as an `ERROR` frame with the `message` header and
+body intact.
 
-- **Proven.** The codec round-trips against byte literals written from the spec: escaping and
-  its `CONNECT`/`CONNECTED` exemption, `content-length`-authoritative bodies containing NUL,
-  NUL-terminated bodies without it, `\r\n` line endings, heart-beat EOLs, frames split across
-  every possible read boundary, and the size bound. End to end, a raw socket completes
-  CONNECT → SUBSCRIBE → MESSAGE → SEND → MESSAGE → DISCONNECT with receipts, and a binary body
-  survives the round trip byte for byte.
-- **Not proven.** No third-party STOMP client has ever spoken to this server. The e2e peer is a
-  hand-written frame reader in the test file — an independent *reading* of the spec, not an
-  independent implementation, which is the same class of evidence the root `CLAUDE.md` records
-  for `dhcp` and `usb/serial` and explicitly does not accept for Beta.
+It satisfies every clause of the bar the root `CLAUDE.md` sets:
 
-**A dependency would fix that, and is not added here** (`Cargo.toml` was single-writer while
-this was written). `async-stomp 0.6.3` is a real client: `Connector::connect()` opens the
-socket, sends `CONNECT`, and **verifies the reply is `CONNECTED`**, then hands back a
-`Framed` sink/stream of typed frames. Two things about it were checked against this
-implementation and match:
+- **Not `#[ignore]`d.** It runs in the default suite.
+- **Cannot skip.** `async-stomp` is a compiled-in crate dependency, so there is no "is it
+  installed?" question and no `SKIP: … not installed` branch to take. This is the failure mode
+  that keeps `kubernetes`, `oci_registry`, `maven` and `websocket` out of Beta.
+- **Not circular.** Nothing in that file touches `netget::server::stomp::frame`. The peer is a
+  different implementation by a different author, which is what `rss` had to fix with `feed-rs`
+  and what `webrtc_signaling` structurally cannot have.
+- **Not vacuous.** A negative control was run: deleting the `version` header from `CONNECTED`
+  makes `async-stomp`'s handshake fail and the test fail. Notably `raw_socket_test.rs` still
+  passed under that mutation — the hand-written peer never checked `version`. That is the
+  concrete demonstration that a real client is strictly stronger evidence, and the reason the
+  rating rests on `e2e_test.rs` alone.
 
-- it hard-errors if `CONNECTED` carries no `version` header — this server always sends one;
-- it hard-errors if `MESSAGE` lacks any of `destination`, `message-id`, `subscription` —
-  `send_stomp_message` requires all three.
+Two `async-stomp` requirements were checked against this implementation before relying on it,
+and both hold: it hard-errors if `CONNECTED` carries no `version` header (this server always
+sends one), and if `MESSAGE` lacks any of `destination`, `message-id`, `subscription`
+(`send_stomp_message` requires all three).
 
-It also sends `accept-version:1.2` and no `heart-beat` header, so it needs nothing this server
-does not do. Its licence is **EUPL-1.2**, which is why it wants a look at `LICENSE_ANALYSIS.md`
-before landing even as a dev-dependency; `tokio-stomp 0.4.0` (MIT, unmaintained since 2023, no
-rustls) is the fallback with the same handshake semantics.
+**What Beta still does not claim.** Interop with the brokers' own client stacks
+(ActiveMQ/RabbitMQ STOMP) is unproven, as is behaviour under concurrent sessions. Those are what
+a human should check before this goes past Beta. See also *Not implemented* below — none of it
+is hidden from the peer.
+
+### Two `async-stomp` deviations worth knowing
+
+Neither affects the tests, and neither is a defect on our side, but they will bite whoever
+extends this:
+
+- **It escapes `CONNECT` headers.** STOMP 1.2 exempts `CONNECT`/`STOMP`/`CONNECTED` from
+  escaping for 1.0/1.1 compatibility, and this server implements that exemption; `async-stomp`
+  escapes and unescapes unconditionally. It only matters for a value containing `:` `\r` `\n`
+  or `\`, so a `virtualhost` of `localhost` is unaffected but `example.com:61613` would arrive
+  as the literal `example.com\c61613`. The spec is on our side here; do not "fix" it.
+- **It never writes `content-length`.** `ToServer::Send` builds its frame without one, so it
+  physically cannot publish a body containing NUL. That is why the `content-length` path has to
+  be exercised from `raw_socket_test.rs` instead.
 
 There is **no** command-line STOMP client on macOS and none in Homebrew, so the `npm`/`git`
-"real binary" route is not available. `stomp.py` would have to be pip-installed, which makes it
-a skip-when-missing gate — evidence the root `CLAUDE.md` rejects.
+"real binary" route was never available; `stomp.py` would have been a skip-when-missing gate,
+which the root `CLAUDE.md` rejects. An in-process crate dependency avoids that problem entirely.
 
 ## Where the work is divided
 
@@ -72,8 +90,9 @@ connection, so there is no state to track. Copying TCP's machine here would be d
 parameter. The server implements no heart-beat timer, so any other value would be a promise it
 does not keep, and a client that believes it will hear from us every N ms tears the connection
 down when it does not. Per the spec's negotiation formula, `0,0` from the server makes both
-directions zero whatever the client asked for, so a compliant client stops expecting them. The
-e2e test asks for `10000,10000` and asserts it gets `0,0` back.
+directions zero whatever the client asked for, so a compliant client stops expecting them.
+`raw_socket_test.rs` asks for `10000,10000` and asserts it gets `0,0` back; `async-stomp` sends
+no heart-beat header at all, so it is content either way.
 
 ## What the model sees and controls
 
@@ -118,7 +137,8 @@ A STOMP body may be binary, so `body` always travels with an encoding field and 
 There is no sniffing, deliberately — `"48656c6c6f"` is simultaneously valid text and valid hex,
 and only the sender knows which it means (the `send_tcp_data` bug, `d70bb5b5`). Passing the
 event's `body` and `body_encoding` straight into `send_stomp_message` therefore reproduces the
-exact bytes; the e2e test asserts that with a body containing NUL and 0xFF.
+exact bytes. `raw_socket_test.rs` asserts that with a body containing NUL and 0xFF — it has to
+be the raw peer, because `async-stomp` writes no `content-length` and so cannot send one.
 
 `content-length` supplied through the `headers` map is dropped and recomputed: a wrong one
 truncates the frame or makes the peer wait for bytes that never arrive.
@@ -142,7 +162,8 @@ STOMP has an `ERROR` frame, so this server is **never silent** on failure. Two d
 - **The peer got it wrong** (unknown command, a frame before `CONNECT`, a missing `destination`
   or `id`, a version this server does not speak, unrecoverable framing). Rust decides, the
   `ERROR` names the peer's own mistake — which is theirs to read — and the connection closes.
-  No LLM call is made. `tests/server/stomp/e2e_test.rs::test_stomp_protocol_errors_never_reach_the_model`
+  No LLM call is made.
+  `tests/server/stomp/raw_socket_test.rs::test_stomp_protocol_errors_never_reach_the_model`
   pins this: framing must not be a question the model gets asked, or a stranger can provoke an
   LLM round trip at will.
 - **netget failed.** The peer gets a `crate::utils::WireFailure` **category** (`Overloaded` vs
@@ -213,9 +234,16 @@ destination send it one MESSAGE welcoming it to that destination.
 
 ## Verified
 
-`tests/server/stomp/` is declared in `tests/server/mod.rs` and runs. 21 tests, 8 LLM calls:
+`tests/server/stomp/` is declared in `tests/server/mod.rs` and runs. **22 tests, 10 LLM calls**,
+green on repeated runs at `--test-threads=100`:
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features stomp \
     --test server -- --test-threads=100 stomp
 ```
+
+| File | Tests | LLM calls | Peer |
+|---|---|---|---|
+| `e2e_test.rs` | 2 | 7 | `async-stomp` 0.6.3 — **the Beta evidence** |
+| `raw_socket_test.rs` | 2 | 3 | raw socket, for what a client cannot express |
+| `codec_test.rs` | 18 | 0 | none — spec byte literals |

@@ -84,13 +84,13 @@ impl Protocol for StompProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "Hand-rolled STOMP 1.2 codec over tokio TCP (src/server/stomp/frame.rs). No \
-                 third-party STOMP crate: header escaping, the content-length/NUL body rule and \
-                 the receipt handshake are ~300 lines and a dependency would not have removed \
-                 the part that matters.",
+                 third-party STOMP crate on the server side: header escaping, the \
+                 content-length/NUL body rule and the receipt handshake are ~300 lines and a \
+                 dependency would not have removed the part that matters.",
             )
             .llm_control(
                 "Whether to admit a CONNECT, the contents of MESSAGE frames, and whether to \
@@ -98,21 +98,29 @@ impl Protocol for StompProtocol {
                  negotiation are deterministic Rust.",
             )
             .e2e_testing(
-                "tests/server/stomp/e2e_test.rs - a raw TCP socket that writes and reads STOMP \
-                 frames directly, plus unit tests over the codec. NOT driven by a third-party \
-                 STOMP client.",
+                "Driven by the async-stomp 0.6.3 client (tests/server/stomp/e2e_test.rs), which \
+                 is not #[ignore]d and cannot skip - it is a compiled-in crate dependency, so \
+                 there is nothing to detect as missing. Connector::connect() completes the \
+                 handshake and async-stomp's own parser decodes every later frame. \
+                 raw_socket_test.rs covers what a client library cannot express (a NUL body, a \
+                 frame before the handshake, a refused accept-version, broken framing) and \
+                 codec_test.rs pins the codec against spec byte literals.",
             )
             .notes(
-                "Experimental, and the rating is about evidence rather than about known bugs. \
-                 PROVEN: the codec round-trips against hand-written frames (escaping, \
-                 content-length-authoritative bodies, NUL termination, heart-beat EOLs), and \
-                 the CONNECT/SEND/SUBSCRIBE/receipt/DISCONNECT exchange works against a raw \
-                 socket. NOT PROVEN: no independent STOMP implementation has ever spoken to \
-                 this server, so nothing here is evidence that a real broker client accepts it. \
-                 NOT IMPLEMENTED: heart-beating (negotiated 0,0 and refused otherwise), \
-                 transactions (BEGIN/COMMIT/ABORT are acknowledged and otherwise ignored - \
-                 holding messages would be storage, which protocols may not implement), \
-                 message redelivery, and STOMP 1.0/1.1 compatibility.",
+                "Beta on the evidence of a real third-party client: async-stomp 0.6.3 completes \
+                 CONNECT -> CONNECTED -> SUBSCRIBE -> MESSAGE -> SEND -> MESSAGE -> DISCONNECT \
+                 -> RECEIPT -> close against this server, decoding each frame with its own \
+                 parser, and separately decodes a refusal as an ERROR frame. A negative control \
+                 was run: dropping the CONNECTED 'version' header makes async-stomp's handshake \
+                 fail and the test fail, so it is not passing vacuously. NOT IMPLEMENTED, and \
+                 none of it is hidden from the peer: heart-beating (always negotiated 0,0, \
+                 which is a legal configuration rather than a silent omission), transactions \
+                 (BEGIN/COMMIT/ABORT are acknowledged and otherwise ignored - holding messages \
+                 until COMMIT would be storage, which protocols may not implement; the \
+                 transaction header still reaches the model on the SEND event), subscription \
+                 bookkeeping, message redelivery, STOMP 1.0/1.1 (refused with an ERROR naming \
+                 version:1.2) and TLS. UNPROVEN: interop with brokers' own clients \
+                 (ActiveMQ/RabbitMQ STOMP), and concurrent sessions.",
             )
             .build()
     }
