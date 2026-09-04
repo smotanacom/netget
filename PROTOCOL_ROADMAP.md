@@ -91,7 +91,7 @@ the well-known port does.
 | NATS | `nats` | Joins a real NATS fabric; LLM reacts to live messages and publishes | **`nats-server` v2.14.6 routes and `async-nats` requests — independent implementations on *both* sides** | `landed` (`a982ccc1`) — **Beta** |
 | Ident | `ident` | Queries a remote identd — what an IRC server does. Makes the existing `irc` server able to do genuine ident lookups | **None, structurally**: RFC 1413 has no configurable port, so nothing can be aimed at an ephemeral one | `landed` (`bec74f5d`) — Experimental |
 | LLMNR | `llmnr` | Resolves a name via LLMNR multicast; collects a whole window and raises `llmnr_conflicting_responses` when responders disagree | Real Windows / systemd-resolved hosts. **`llmnr-poison` considered and declined — see below** | `landed` (`f415efb4`) — Experimental |
-| STOMP | `stomp` | Same shape as NATS, against ActiveMQ/RabbitMQ | Needs a broker (Docker, or brew + STOMP plugin) | `planned` |
+| STOMP | `stomp` | Same shape as NATS, against ActiveMQ/RabbitMQ | Needs a real broker. **The two assertions that would catch a buggy client past a lenient one are written down** in `src/client/stomp/CLAUDE.md` | `landed` (`702eb22f`) — Experimental |
 | Gopher | `gopher` | Browses gopherspace; LLM navigates menus | **`geomyidae`/`gophernicus`/`pygopherd` all bind an ordinary port and run fine on loopback** — the external-endpoint ban was never the blocker; none is installed, and a hard-fail (not skip) test would earn Beta | `landed` (`be405db9`) — Experimental |
 | Finger | `finger` | Queries a remote finger daemon; **does not parse the response** (RFC 1288 specifies no format) — raw text to the model, with any scraped field marked `GUESS ONLY` | No packaged daemon anywhere (no Homebrew formula for `bsd-finger`/`fingerd`/`netkit`), but a daemon *can* bind a high port, so Beta is achievable in principle | `landed` (`e3f58a57`) — Experimental |
 
@@ -136,6 +136,20 @@ which needs a peer that *answers*, and a device replies to wherever the search
 came from. So a device emulator is a live option for the client even though a
 client crate was not for the server. Check which *role* a missing-peer finding
 applies to before reusing it; the two halves of a protocol have different needs.
+
+**Wave 2 is complete — all eight clients landed.** Seven are `Experimental`
+because their only peer is NetGet's own server (same-project evidence: it shows
+the two halves agree, not that either matches the spec). **NATS is the exception
+and the template**: the official `nats-server` routes while `async-nats`
+requests, so both sides are independent implementations.
+
+A pattern worth copying from the STOMP client: rather than just recording "a real
+broker would earn Beta", it wrote down **the two specific assertions a lenient
+broker would let a buggy client past** — that the delivery was *acknowledged*
+rather than redelivered (catching an `ACK` that quotes `message_id` instead of
+the `ack` header), and that the session closed on the `RECEIPT` rather than on
+the grace timeout. A "what would earn Beta" note is far more useful when it names
+the assertions than when it names the software.
 
 Client-specific rules that have bitten this repo before, from `CLAUDE.md`:
 
