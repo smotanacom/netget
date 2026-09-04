@@ -1090,6 +1090,7 @@ sha1 = "0.10"  # For info_hash calculation
 # through itself. feed-rs is a separate implementation with its own model, so it is the thing
 # that makes the test evidence.
 feed-rs = "2"
+async-nats = "0.50.0"
 
 [build-dependencies]
 # Protocol buffer compiler for etcd gRPC service
