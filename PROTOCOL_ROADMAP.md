@@ -87,13 +87,29 @@ the well-known port does.
 | Client | Module | What it does | Validation target | Status |
 |---|---|---|---|---|
 | SSDP | `ssdp` | M-SEARCH discovery of real UPnP devices; surfaces `LOCATION` but deliberately does **not** fetch it (that would turn discovery into an outbound request to an attacker-controlled URL) | A device **emulator** is a live option — see the correction below | `landed` (`29708887`) — Experimental |
-| NetBIOS-NS | `netbios_ns` | `nbtstat` equivalent — name query + node status | Real Windows/Samba hosts; no local `nmbd` installed | `planned` |
+| NetBIOS-NS | `netbios_ns` | `nbtstat` equivalent — name query + node status | **Encode is byte-identical to real `nmblookup` queries** (captured with tcpdump, both `NB` and `NBSTAT`). **Decode has no independent evidence** — see the asymmetry note below | `landed` (`41c35f42`) — Experimental |
 | NATS | `nats` | Joins a real NATS fabric; LLM reacts to live messages and publishes | **`nats-server` v2.14.6 routes and `async-nats` requests — independent implementations on *both* sides** | `landed` (`a982ccc1`) — **Beta** |
 | Ident | `ident` | Queries a remote identd — what an IRC server does. Makes the existing `irc` server able to do genuine ident lookups | **None, structurally**: RFC 1413 has no configurable port, so nothing can be aimed at an ephemeral one | `landed` (`bec74f5d`) — Experimental |
 | LLMNR | `llmnr` | Resolves a name via LLMNR multicast; collects a whole window and raises `llmnr_conflicting_responses` when responders disagree | Real Windows / systemd-resolved hosts. **`llmnr-poison` considered and declined — see below** | `landed` (`f415efb4`) — Experimental |
 | STOMP | `stomp` | Same shape as NATS, against ActiveMQ/RabbitMQ | Needs a broker (Docker, or brew + STOMP plugin) | `planned` |
 | Gopher | `gopher` | Browses gopherspace; LLM navigates menus | **`geomyidae`/`gophernicus`/`pygopherd` all bind an ordinary port and run fine on loopback** — the external-endpoint ban was never the blocker; none is installed, and a hard-fail (not skip) test would earn Beta | `landed` (`be405db9`) — Experimental |
 | Finger | `finger` | Queries a remote finger daemon; **does not parse the response** (RFC 1288 specifies no format) — raw text to the model, with any scraped field marked `GUESS ONLY` | No packaged daemon anywhere (no Homebrew formula for `bsd-finger`/`fingerd`/`netkit`), but a daemon *can* bind a high port, so Beta is achievable in principle | `landed` (`e3f58a57`) — Experimental |
+
+**Evidence can be asymmetric, and the rating must follow the weaker half.**
+The NetBIOS-NS client is the worked example: its *encoder* is independently
+pinned — the queries it generates are byte-identical to ones real `nmblookup`
+4.24.6 puts on the wire — while its *decoder* has met no responder but our own.
+It stayed `Experimental`, because Beta's claim is "works against real clients"
+and the unproven direction is the one that matters. Note what was *not* done:
+stepping down one notch into a rating the same evidence also rules out, which is
+the `wireguard` error `CLAUDE.md` records.
+
+Two practical notes from that work, both worth reusing: `tcpdump -i lo0` needs
+only `access_bpf` group membership, not root, so capturing a real client's
+datagrams is available here; and **hand-transcribing encoded NetBIOS names does
+not work** — a 30-character run of `A`s was copied wrong twice, once a byte long
+and once a byte short, and both failures read exactly like an encoder bug.
+Generate such literals from the pcap with a script.
 
 **Dependency decision: `llmnr-poison` was evaluated and declined (September 2026).**
 It is a genuine independent LLMNR encoder — a pure function, depending only on
