@@ -251,17 +251,31 @@ distinguishable — and what actually matters — is that act versus every
 
 | Protocol | Feature | Module | Transport | Privilege | Status |
 |---|---|---|---|---|---|
-| NDP | `ndp` | `ndp` | ICMPv6, raw socket | `RawSockets` | `planned` |
+| NDP | `ndp` | `ndp` | ICMPv6, raw socket | `RawSockets` | `landed` (`ad5ebe4a`) — Experimental |
 | DHCPv6 | `dhcpv6` | `dhcpv6` | UDP 547 | `PrivilegedPort(547)` | `landed` (`2724244c`) — Experimental |
 
 Both belong to the **deliberately-silent** class for the same reason as LLMNR:
 an NDP or DHCPv6 answer writes a binding into the peer's stack. Fabricating one
 is cache poisoning. Fail silent, log `decision=`.
 
-> **Not selected but recommended:** IPv6 **Router Advertisement**. It was the
-> highest-impact item of this tier — a rogue RA reroutes an entire LAN's IPv6
-> (`mitm6` with reasoning) — and it is the natural partner of both rows above.
-> Recorded here so the decision is deliberate rather than forgotten.
+> **Router Advertisement was not separately selected, and is nonetheless
+> implemented** — RA is ICMPv6 type 134, i.e. part of NDP, so building NDP
+> properly delivered it. `send_router_advertisement` carries prefixes with L/A
+> flags and both lifetimes, RDNSS (RFC 8106) and MTU, which is the whole
+> `mitm6`-class capability. Every RA comes from an explicit model action; there
+> is deliberately **no advertisement timer**, so nothing keeps advertising after
+> the model stops answering.
+
+**How NDP answered "independent implementation, same author is weak evidence".**
+Its checksum literals came from a second one's-complement implementation written
+from RFC 8200 §8.1 — which is a weak claim on its own, and it said so. So
+`the_checksum_is_reproducible_by_hand` works the smallest case out arithmetically
+*in its doc comment* (five addends → `0x18446` → fold → `0x8447` → `0x7bb8`), and
+the two terms shown are exactly the two classic mistakes: `0x003a`, the next
+header that must be 58, and `0xff04`, the destination address — which is why an
+ICMPv6 checksum cannot be computed from the ICMPv6 bytes alone. A reader can
+check it without running anything. Copy this wherever a magic constant is the
+evidence.
 
 ### Tier 3 — become an interface
 
