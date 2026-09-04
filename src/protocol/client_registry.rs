@@ -357,6 +357,8 @@ impl ClientRegistry {
 
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::client::whois::WhoisClientProtocol::new()));
+        #[cfg(feature = "stomp")]
+        self.register(Arc::new(crate::client::stomp::StompClientProtocol::new()));
         #[cfg(feature = "netbios-ns")]
         self.register(Arc::new(crate::client::netbios_ns::NetbiosNsClientProtocol::new()));
         #[cfg(feature = "nats")]
@@ -718,6 +720,7 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("TURN", "turn"),
     ("UDP", "udp"),
     ("WHOIS", "whois"),
+    ("STOMP", "stomp"),
     ("NetBIOS-NS", "netbios-ns"),
     ("NATS", "nats"),
     ("SSDP", "ssdp"),

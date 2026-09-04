@@ -117,6 +117,27 @@ impl ServerRegistry {
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::server::WhoisProtocol::new()));
 
+        #[cfg(feature = "ndp")]
+        self.register(Arc::new(crate::server::NdpProtocol::new()));
+
+        #[cfg(feature = "dhcpv6")]
+        self.register(Arc::new(crate::server::Dhcpv6Protocol::new()));
+
+        #[cfg(feature = "tuntap")]
+        self.register(Arc::new(crate::server::TunTapProtocol::new()));
+
+        #[cfg(feature = "rawip")]
+        self.register(Arc::new(crate::server::RawIpProtocol::new()));
+
+        #[cfg(feature = "gtp")]
+        self.register(Arc::new(crate::server::GtpProtocol::new()));
+
+        #[cfg(feature = "m3ua")]
+        self.register(Arc::new(crate::server::M3uaProtocol::new()));
+
+        #[cfg(feature = "can")]
+        self.register(Arc::new(crate::server::CanProtocol::new()));
+
         #[cfg(feature = "lldp")]
         self.register(Arc::new(crate::server::LldpProtocol::new()));
 
@@ -1115,6 +1136,13 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("NTP", "ntp"),
     ("TFTP", "tftp"),
     ("WHOIS", "whois"),
+    ("NDP", "ndp"),
+    ("DHCPv6", "dhcpv6"),
+    ("TUN/TAP", "tuntap"),
+    ("Raw IP", "rawip"),
+    ("GTP", "gtp"),
+    ("M3UA", "m3ua"),
+    ("CAN", "can"),
     ("LLDP", "lldp"),
     ("CDP", "cdp"),
     ("STP", "stp"),

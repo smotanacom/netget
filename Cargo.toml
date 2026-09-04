@@ -153,6 +153,13 @@ udp = []
 datalink = ["dep:pcap"]  # DataLink sniffs L2 frames via libpcap
 arp = ["pnet", "dep:pcap"]  # ARP (Address Resolution Protocol) uses pnet for packet handling + libpcap for capture
 icmp = ["pnet", "socket2/all"]  # ICMP (Internet Control Message Protocol) uses pnet for packet handling + raw sockets (requires socket2 'all' feature for Type::RAW)
+ndp = ["pnet", "socket2/all"]  # IPv6 Neighbor Discovery (ICMPv6) - raw socket via pnet + socket2
+dhcpv6 = ["dhcproto"]  # DHCPv6 (RFC 8415) server on UDP 547 - reuses dhcproto
+tuntap = ["dep:tun"]  # TUN/TAP interface endpoint - every routed IP packet becomes an event
+rawip = ["pnet", "socket2/all"]  # Generic raw IP protocol-N listener (GRE 47, ESP 50, ...)
+gtp = []  # GTP-C / GTP-U mobile core (UDP 2123/2152) - hand-rolled, no extra deps
+m3ua = []  # M3UA/SIGTRAN - SCTP where available, refuses elsewhere; no extra deps
+can = ["dep:socketcan"]  # CAN bus via SocketCAN - Linux only, target-gated like bluetooth-ble-beacon
 lldp = ["pnet", "dep:pcap"]  # LLDP link-layer discovery - raw Ethernet via pnet, capture via libpcap
 cdp = ["pnet", "dep:pcap"]  # Cisco Discovery Protocol - raw Ethernet SNAP via pnet, capture via libpcap
 stp = ["pnet", "dep:pcap"]  # STP/RSTP bridge protocol data units - raw 802.3 LLC via pnet + libpcap
@@ -527,6 +534,13 @@ all-protocols = [
     "tftp",
     "bluetooth-ble-client",
     "whois",
+    "ndp",
+    "dhcpv6",
+    "tuntap",
+    "rawip",
+    "gtp",
+    "m3ua",
+    "can",
     "lldp",
     "cdp",
     "stp",
@@ -665,6 +679,7 @@ all-protocols = [
     "saml",
     "smb-client",
 ]
+tun = ["dep:tun"]
 
 [dependencies]
 # Async runtime
@@ -1051,6 +1066,7 @@ hf-hub = { version = "0.3", optional = true, features = ["tokio"] }  # Hugging F
 
 # SQLite database support (in-memory or file-based)
 rusqlite = { version = "0.37", optional = true, features = ["bundled"] }  # SQLite library with bundled SQLite (matches tor-dirmgr dependency)
+tun = { version = "0.8.14", optional = true }
 
 # Linux-only dependencies
 #
@@ -1061,6 +1077,10 @@ rusqlite = { version = "0.37", optional = true, features = ["bundled"] }  # SQLi
 # feature on macOS/Windows is a no-op and the protocol refuses to start there.
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
+# SocketCAN is an AF_CAN socket family that exists only in the Linux kernel. Target-gated for the
+# same reason as bluer above: the `can` feature compiles everywhere, and the protocol returns a
+# clear Err naming the platform rather than being hidden, on every other OS.
+socketcan = { version = "3.5", optional = true }
 
 [dev-dependencies]
 # For async tests

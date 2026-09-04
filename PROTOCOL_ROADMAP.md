@@ -59,7 +59,7 @@ separately by the agent that wrote it.
 | Protocol | Feature | Module | Transport | Privilege | Validation target | Status |
 |---|---|---|---|---|---|---|
 | NATS | `nats` | `nats` | TCP 4222 | none | **`async-nats` 0.50, official client, non-circular (we use no NATS library)** | `landed` (`b5d451ed`) — **Beta** |
-| STOMP | `stomp` | `stomp` | TCP 61613 | none | **`async-stomp` 0.6.3 (dev-dep, `88108e93`)** — a real client, not a codec | `landed` (`4e06e20c`) — Beta upgrade in flight |
+| STOMP | `stomp` | `stomp` | TCP 61613 | none | **`async-stomp` 0.6.3** drives a full session and decodes every frame itself | `landed` (`f9b4e946`) — **Beta** |
 | Ident | `ident` | `ident` | TCP 113 | `PrivilegedPort(113)` | **none exists** — no RFC 1413 client anywhere takes a configurable port | `landed` (`59a3003b`) — Experimental |
 | Gopher | `gopher` | `gopher` | TCP 70 | `PrivilegedPort(70)` | **`curl gopher://` — real, arbitrary port** | `landed` (`a3573323`) — **Beta** |
 | Finger | `finger` | `finger` | TCP 79 | `PrivilegedPort(79)` | `finger(1)` confirmed port-locked to 79 → needs root | `landed` (`a28bf0a2`) — Experimental |
