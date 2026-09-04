@@ -607,7 +607,10 @@ impl Protocol for StpProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .privilege_requirement(PrivilegeRequirement::RawSockets)
+            // libpcap capture/injection, never a SOCK_RAW. RawSockets would refuse to start on
+            // a host with /dev/bpf* access but no root - the "don't claim more than you need"
+            // rule that ospf got wrong by declaring Root when it wanted CAP_NET_RAW.
+            .privilege_requirement(PrivilegeRequirement::PacketCapture)
             .connectionless()
             .implementation(
                 "Hand-written IEEE 802.1D-2004 / 802.1w BPDU codec (src/server/stp/codec.rs), \
