@@ -37,6 +37,7 @@ rather than trusting them.
 | **`feth` driver present** (`net.link.fake.txstart: 1`) | `sudo ifconfig feth0 create && ifconfig feth1 peer feth0` gives a real Ethernet pair with **no hardware**. Every Tier-1 L2 protocol below can be driven end to end locally. |
 | **`/dev/bpf*` present** | Capture and injection available under root. |
 | **`utun` available** (5 present) | TUN endpoint is viable on macOS. |
+| **Multicast on loopback: joining works, *sending* does not** | Measured on macOS 27, and it contradicts the received wisdom that the *join* fails. Bound to `127.0.0.1`, `join_multicast_v4(239.255.255.250)` **succeeds**; `sendto(239.255.255.250:1900)` fails with **`EADDRNOTAVAIL` (49)** because loopback carries no multicast route. Bound to `0.0.0.0` both work. Any multicast protocol therefore needs a unicast target parameter to be observable in a test — do not "fix" a join that is not broken. |
 | **No SCTP on macOS** (no headers, no stack) | M3UA/SIGTRAN cannot use its real transport here. See its row. |
 | **No `AF_CAN` on macOS** | SocketCAN is Linux-only. Linux `vcan` needs no hardware, so it is testable *there*. |
 | **802.11 injection unavailable on macOS** | Monitor mode works, injection effectively does not. Rogue-AP work would be Linux + specific chipset. Deferred. |
@@ -57,12 +58,12 @@ separately by the agent that wrote it.
 
 | Protocol | Feature | Module | Transport | Privilege | Validation target | Status |
 |---|---|---|---|---|---|---|
-| NATS | `nats` | `nats` | TCP 4222 | none | **`async-nats` (official client, dev-dep added)** | `building` |
+| NATS | `nats` | `nats` | TCP 4222 | none | **`async-nats` 0.50, official client, non-circular (we use no NATS library)** | `landed` (`b5d451ed`) — **Beta** |
 | STOMP | `stomp` | `stomp` | TCP 61613 | none | **`async-stomp` 0.6.3 (dev-dep, `88108e93`)** — a real client, not a codec | `landed` (`4e06e20c`) — Beta upgrade in flight |
 | Ident | `ident` | `ident` | TCP 113 | `PrivilegedPort(113)` | **none exists** — no RFC 1413 client anywhere takes a configurable port | `landed` (`59a3003b`) — Experimental |
 | Gopher | `gopher` | `gopher` | TCP 70 | `PrivilegedPort(70)` | **`curl gopher://` — real, arbitrary port** | `landed` (`a3573323`) — **Beta** |
 | Finger | `finger` | `finger` | TCP 79 | `PrivilegedPort(79)` | `finger(1)` confirmed port-locked to 79 → needs root | `landed` (`a28bf0a2`) — Experimental |
-| SSDP | `ssdp` | `ssdp` | UDP 1900 mcast | none | `ssdp-client` if it can target a unicast port | `building` |
+| SSDP | `ssdp` | `ssdp` | UDP 1900 mcast | **structurally none** — no Rust SSDP client can be aimed at a unicast loopback port (see below) | `landed` — Experimental |
 | LLMNR | `llmnr` | `llmnr` | UDP 5355 mcast | none | **none** — only LLMNR crate is a responder, not a querier; real clients are Windows/systemd-resolved. Evidence is circular by construction | `landed` (`19ebd0eb`) — Experimental |
 | NetBIOS-NS | `netbios-ns` | `netbios_ns` | UDP 137 | `PrivilegedPort(137)` | `nmblookup`, probably port-locked to 137 | `building` |
 

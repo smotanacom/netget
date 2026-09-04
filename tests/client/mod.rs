@@ -174,6 +174,10 @@ pub mod webrtc;
 pub mod websocket;
 #[cfg(feature = "whois")]
 pub mod whois;
+#[cfg(feature = "nats")]
+pub mod nats;
+#[cfg(feature = "ssdp")]
+pub mod ssdp;
 #[cfg(feature = "gopher")]
 pub mod gopher;
 #[cfg(feature = "finger")]

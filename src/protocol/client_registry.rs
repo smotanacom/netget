@@ -357,6 +357,10 @@ impl ClientRegistry {
 
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::client::whois::WhoisClientProtocol::new()));
+        #[cfg(feature = "nats")]
+        self.register(Arc::new(crate::client::nats::NatsClientProtocol::new()));
+        #[cfg(feature = "ssdp")]
+        self.register(Arc::new(crate::client::ssdp::SsdpClientProtocol::new()));
         #[cfg(feature = "gopher")]
         self.register(Arc::new(crate::client::gopher::GopherClientProtocol::new()));
         #[cfg(feature = "finger")]
@@ -712,6 +716,8 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("TURN", "turn"),
     ("UDP", "udp"),
     ("WHOIS", "whois"),
+    ("NATS", "nats"),
+    ("SSDP", "ssdp"),
     ("Gopher", "gopher"),
     ("Finger", "finger"),
     ("Ident", "ident"),

@@ -536,6 +536,16 @@ pub use websocket::actions::WebSocketClientProtocol;
 pub mod whois;
 #[cfg(feature = "whois")]
 pub use whois::actions::WhoisClientProtocol;
+// nats client
+#[cfg(feature = "nats")]
+pub mod nats;
+#[cfg(feature = "nats")]
+pub use nats::actions::NatsClientProtocol;
+// ssdp client
+#[cfg(feature = "ssdp")]
+pub mod ssdp;
+#[cfg(feature = "ssdp")]
+pub use ssdp::actions::SsdpClientProtocol;
 // gopher client
 #[cfg(feature = "gopher")]
 pub mod gopher;
