@@ -56,7 +56,7 @@ reach. It must be non-zero. Read the two together or neither means anything — 
 
 ## LLM call budget
 
-Four model calls across the whole suite, and every one is deliberate:
+Six model calls across the whole suite, and every one is deliberate:
 
 | test | calls |
 |---|---|
