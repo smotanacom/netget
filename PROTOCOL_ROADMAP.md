@@ -63,7 +63,7 @@ separately by the agent that wrote it.
 | Gopher | `gopher` | `gopher` | TCP 70 | `PrivilegedPort(70)` | **`curl gopher://` — real, arbitrary port** | `landed` (`a3573323`) — **Beta** |
 | Finger | `finger` | `finger` | TCP 79 | `PrivilegedPort(79)` | `finger(1)` confirmed port-locked to 79 → needs root | `landed` (`a28bf0a2`) — Experimental |
 | SSDP | `ssdp` | `ssdp` | UDP 1900 mcast | none | `ssdp-client` if it can target a unicast port | `building` |
-| LLMNR | `llmnr` | `llmnr` | UDP 5355 mcast | none | circular (`hickory-proto` is our own codec) → `Experimental` | `building` |
+| LLMNR | `llmnr` | `llmnr` | UDP 5355 mcast | none | **none** — only LLMNR crate is a responder, not a querier; real clients are Windows/systemd-resolved. Evidence is circular by construction | `landed` (`19ebd0eb`) — Experimental |
 | NetBIOS-NS | `netbios-ns` | `netbios_ns` | UDP 137 | `PrivilegedPort(137)` | `nmblookup`, probably port-locked to 137 | `building` |
 
 SSDP, LLMNR and NetBIOS-NS are in the **deliberately-silent** class: every

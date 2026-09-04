@@ -174,6 +174,14 @@ pub mod webrtc;
 pub mod websocket;
 #[cfg(feature = "whois")]
 pub mod whois;
+#[cfg(feature = "gopher")]
+pub mod gopher;
+#[cfg(feature = "finger")]
+pub mod finger;
+#[cfg(feature = "ident")]
+pub mod ident;
+#[cfg(feature = "llmnr")]
+pub mod llmnr;
 #[cfg(feature = "wireguard")]
 pub mod wireguard;
 #[cfg(feature = "xmlrpc")]

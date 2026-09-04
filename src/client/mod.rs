@@ -536,6 +536,26 @@ pub use websocket::actions::WebSocketClientProtocol;
 pub mod whois;
 #[cfg(feature = "whois")]
 pub use whois::actions::WhoisClientProtocol;
+// gopher client
+#[cfg(feature = "gopher")]
+pub mod gopher;
+#[cfg(feature = "gopher")]
+pub use gopher::actions::GopherClientProtocol;
+// finger client
+#[cfg(feature = "finger")]
+pub mod finger;
+#[cfg(feature = "finger")]
+pub use finger::actions::FingerClientProtocol;
+// ident client
+#[cfg(feature = "ident")]
+pub mod ident;
+#[cfg(feature = "ident")]
+pub use ident::actions::IdentClientProtocol;
+// llmnr client
+#[cfg(feature = "llmnr")]
+pub mod llmnr;
+#[cfg(feature = "llmnr")]
+pub use llmnr::actions::LlmnrClientProtocol;
 
 // wireguard client
 #[cfg(feature = "wireguard")]
