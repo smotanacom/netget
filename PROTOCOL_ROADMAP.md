@@ -60,8 +60,8 @@ separately by the agent that wrote it.
 | NATS | `nats` | `nats` | TCP 4222 | none | **`async-nats` (official client, dev-dep added)** | `building` |
 | STOMP | `stomp` | `stomp` | TCP 61613 | none | crate TBD — a codec does not count | `building` |
 | Ident | `ident` | `ident` | TCP 113 | `PrivilegedPort(113)` | likely none; expect `Experimental` | `building` |
-| Gopher | `gopher` | `gopher` | TCP 70 | `PrivilegedPort(70)` | **`curl gopher://` — real, arbitrary port** | `building` |
-| Finger | `finger` | `finger` | TCP 79 | `PrivilegedPort(79)` | `finger(1)` is port-locked to 79 → needs root | `landed` (`a28bf0a2`) |
+| Gopher | `gopher` | `gopher` | TCP 70 | `PrivilegedPort(70)` | **`curl gopher://` — real, arbitrary port** | `landed` (`a3573323`) — **Beta** |
+| Finger | `finger` | `finger` | TCP 79 | `PrivilegedPort(79)` | `finger(1)` confirmed port-locked to 79 → needs root | `landed` (`a28bf0a2`) — Experimental |
 | SSDP | `ssdp` | `ssdp` | UDP 1900 mcast | none | `ssdp-client` if it can target a unicast port | `building` |
 | LLMNR | `llmnr` | `llmnr` | UDP 5355 mcast | none | circular (`hickory-proto` is our own codec) → `Experimental` | `building` |
 | NetBIOS-NS | `netbios-ns` | `netbios_ns` | UDP 137 | `PrivilegedPort(137)` | `nmblookup`, probably port-locked to 137 | `building` |

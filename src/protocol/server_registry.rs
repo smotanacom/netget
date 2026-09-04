@@ -117,6 +117,27 @@ impl ServerRegistry {
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::server::WhoisProtocol::new()));
 
+        #[cfg(feature = "lldp")]
+        self.register(Arc::new(crate::server::LldpProtocol::new()));
+
+        #[cfg(feature = "cdp")]
+        self.register(Arc::new(crate::server::CdpProtocol::new()));
+
+        #[cfg(feature = "stp")]
+        self.register(Arc::new(crate::server::StpProtocol::new()));
+
+        #[cfg(feature = "vrrp")]
+        self.register(Arc::new(crate::server::VrrpProtocol::new()));
+
+        #[cfg(feature = "hsrp")]
+        self.register(Arc::new(crate::server::HsrpProtocol::new()));
+
+        #[cfg(feature = "eapol")]
+        self.register(Arc::new(crate::server::EapolProtocol::new()));
+
+        #[cfg(feature = "wol")]
+        self.register(Arc::new(crate::server::WolProtocol::new()));
+
         #[cfg(feature = "nats")]
         self.register(Arc::new(crate::server::NatsProtocol::new()));
 
@@ -1094,6 +1115,13 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("NTP", "ntp"),
     ("TFTP", "tftp"),
     ("WHOIS", "whois"),
+    ("LLDP", "lldp"),
+    ("CDP", "cdp"),
+    ("STP", "stp"),
+    ("VRRP", "vrrp"),
+    ("HSRP", "hsrp"),
+    ("EAPOL", "eapol"),
+    ("Wake-on-LAN", "wol"),
     ("NATS", "nats"),
     ("STOMP", "stomp"),
     ("Ident", "ident"),

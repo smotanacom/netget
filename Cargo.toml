@@ -153,6 +153,13 @@ udp = []
 datalink = ["dep:pcap"]  # DataLink sniffs L2 frames via libpcap
 arp = ["pnet", "dep:pcap"]  # ARP (Address Resolution Protocol) uses pnet for packet handling + libpcap for capture
 icmp = ["pnet", "socket2/all"]  # ICMP (Internet Control Message Protocol) uses pnet for packet handling + raw sockets (requires socket2 'all' feature for Type::RAW)
+lldp = ["pnet", "dep:pcap"]  # LLDP link-layer discovery - raw Ethernet via pnet, capture via libpcap
+cdp = ["pnet", "dep:pcap"]  # Cisco Discovery Protocol - raw Ethernet SNAP via pnet, capture via libpcap
+stp = ["pnet", "dep:pcap"]  # STP/RSTP bridge protocol data units - raw 802.3 LLC via pnet + libpcap
+vrrp = ["pnet", "socket2/all"]  # VRRP v2/v3 and CARP - IP protocol 112 raw socket
+hsrp = []  # HSRP v1/v2 gateway redundancy over UDP 1985 - no extra deps
+eapol = ["pnet", "dep:pcap"]  # EAPOL / 802.1X supplicant and authenticator - raw Ethernet via pnet + libpcap
+wol = []  # Wake-on-LAN magic packet listener (UDP 9) - no extra deps
 dc = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]  # DC (Direct Connect) - supports TLS (DCCS)
 dns = ["hickory-server", "hickory-proto", "dep:hickory-client"]
 dot = ["dns", "hickory-server/dns-over-rustls", "hickory-proto/dns-over-rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # DNS-over-TLS server
@@ -520,6 +527,13 @@ all-protocols = [
     "tftp",
     "bluetooth-ble-client",
     "whois",
+    "lldp",
+    "cdp",
+    "stp",
+    "vrrp",
+    "hsrp",
+    "eapol",
+    "wol",
     "nats",
     "stomp",
     "ident",
