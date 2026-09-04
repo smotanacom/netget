@@ -88,12 +88,30 @@ the well-known port does.
 |---|---|---|---|---|
 | SSDP | `ssdp` | M-SEARCH discovery of real UPnP devices; surfaces `LOCATION` but deliberately does **not** fetch it (that would turn discovery into an outbound request to an attacker-controlled URL) | A device **emulator** is a live option — see the correction below | `landed` (`29708887`) — Experimental |
 | NetBIOS-NS | `netbios_ns` | `nbtstat` equivalent — name query + node status | Real Windows/Samba hosts; no local `nmbd` installed | `planned` |
-| NATS | `nats` | Joins a real NATS fabric; LLM reacts to live messages and publishes | **`nats-server` via brew — non-circular, deterministic, real Beta path** | `planned` |
+| NATS | `nats` | Joins a real NATS fabric; LLM reacts to live messages and publishes | **`nats-server` v2.14.6 routes and `async-nats` requests — independent implementations on *both* sides** | `landed` (`a982ccc1`) — **Beta** |
 | Ident | `ident` | Queries a remote identd — what an IRC server does. Makes the existing `irc` server able to do genuine ident lookups | **None, structurally**: RFC 1413 has no configurable port, so nothing can be aimed at an ephemeral one | `landed` (`bec74f5d`) — Experimental |
-| LLMNR | `llmnr` | Resolves a name via LLMNR multicast | Real Windows / systemd-resolved hosts | `planned` |
+| LLMNR | `llmnr` | Resolves a name via LLMNR multicast; collects a whole window and raises `llmnr_conflicting_responses` when responders disagree | Real Windows / systemd-resolved hosts. **`llmnr-poison` considered and declined — see below** | `landed` (`f415efb4`) — Experimental |
 | STOMP | `stomp` | Same shape as NATS, against ActiveMQ/RabbitMQ | Needs a broker (Docker, or brew + STOMP plugin) | `planned` |
 | Gopher | `gopher` | Browses gopherspace; LLM navigates menus | **`geomyidae`/`gophernicus`/`pygopherd` all bind an ordinary port and run fine on loopback** — the external-endpoint ban was never the blocker; none is installed, and a hard-fail (not skip) test would earn Beta | `landed` (`be405db9`) — Experimental |
 | Finger | `finger` | Queries a remote finger daemon; **does not parse the response** (RFC 1288 specifies no format) — raw text to the model, with any scraped field marked `GUESS ONLY` | No packaged daemon anywhere (no Homebrew formula for `bsd-finger`/`fingerd`/`netkit`), but a daemon *can* bind a high port, so Beta is achievable in principle | `landed` (`e3f58a57`) — Experimental |
+
+**Dependency decision: `llmnr-poison` was evaluated and declined (September 2026).**
+It is a genuine independent LLMNR encoder — a pure function, depending only on
+`anyhow` and `tokio`, so it hand-rolls the DNS wire format and shares no codec
+with us. That would have broken the *codec* axis of the LLMNR client's circular
+evidence. It was declined anyway, on two grounds that both have to be weighed:
+
+- **Supply chain.** v0.1.0, published three weeks earlier, single author,
+  offensive-security purpose, and its stated repository (`icedracon/llmnr-poison`)
+  returns 404. A dev-dependency still executes on every developer's machine and in
+  CI.
+- **It would not have changed the rating.** The *same-project* axis remains — our
+  own responder is still the peer — and an independent response *encoder* is not a
+  running responder. The protocol stays `Experimental` either way.
+
+A dependency that carries real risk and buys no evidence is a bad trade. If it
+matures, has a real repository, and someone wants the codec axis broken, revisit
+it — but the rating argument will still not hold on its own.
 
 **A correction worth carrying, from the SSDP pair.** The server-side finding —
 "no Rust SSDP crate can be aimed at a unicast loopback port" — is about crates
@@ -258,6 +276,23 @@ Recorded so they are not re-litigated from scratch.
 | 802.11 rogue AP | macOS cannot inject; needs Linux plus a specific chipset. |
 | IPMI/RMCP+, WinRM, DCERPC | Session crypto and IDL marshalling; the model contributes almost nothing for thousands of lines of framing. |
 | Redfish | Cheap to build, but the only real clients are Python, and `CLAUDE.md` rules that a generic HTTP client is not Beta evidence — it would be permanently `Experimental`. |
+
+## A new build requirement: `nats-server`
+
+The NATS **client**'s Beta rating rests on a test that spawns the real
+`nats-server` binary (v2.14.6, installed September 2026) and hard-fails when it
+is absent — deliberately, because a skip-when-missing gate is a silent pass and
+is not evidence. **So `nats-server` must exist wherever that suite runs.**
+
+Today this costs nothing: `ci.yml`'s `test` job builds
+`tcp,http,dns,udp,redis,mcp-stdio`, which does not include `nats`, so the test
+is never compiled there. **Anyone adding `nats` to the CI feature set must also
+install `nats-server` in that job**, or the build will fail — correctly, and
+loudly, which is the intended behaviour.
+
+The same will apply to any protocol promoted by the "install the real client"
+route: Gopher would need `geomyidae`/`gophernicus`, Finger a real daemon, LLDP
+`lldpd`. That is the price of the Beta bar, and it is the right price.
 
 ## Follow-ups this programme created
 
