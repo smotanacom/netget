@@ -117,6 +117,30 @@ impl ServerRegistry {
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::server::WhoisProtocol::new()));
 
+        #[cfg(feature = "nats")]
+        self.register(Arc::new(crate::server::NatsProtocol::new()));
+
+        #[cfg(feature = "stomp")]
+        self.register(Arc::new(crate::server::StompProtocol::new()));
+
+        #[cfg(feature = "ident")]
+        self.register(Arc::new(crate::server::IdentProtocol::new()));
+
+        #[cfg(feature = "gopher")]
+        self.register(Arc::new(crate::server::GopherProtocol::new()));
+
+        #[cfg(feature = "finger")]
+        self.register(Arc::new(crate::server::FingerProtocol::new()));
+
+        #[cfg(feature = "ssdp")]
+        self.register(Arc::new(crate::server::SsdpProtocol::new()));
+
+        #[cfg(feature = "llmnr")]
+        self.register(Arc::new(crate::server::LlmnrProtocol::new()));
+
+        #[cfg(feature = "netbios-ns")]
+        self.register(Arc::new(crate::server::NetbiosNsProtocol::new()));
+
         #[cfg(feature = "snmp")]
         self.register(Arc::new(crate::server::SnmpProtocol::new()));
 
@@ -1070,6 +1094,14 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("NTP", "ntp"),
     ("TFTP", "tftp"),
     ("WHOIS", "whois"),
+    ("NATS", "nats"),
+    ("STOMP", "stomp"),
+    ("Ident", "ident"),
+    ("Gopher", "gopher"),
+    ("Finger", "finger"),
+    ("SSDP", "ssdp"),
+    ("LLMNR", "llmnr"),
+    ("NetBIOS-NS", "netbios-ns"),
     ("SNMP", "snmp"),
     ("IGMP", "igmp"),
     ("Syslog", "syslog"),

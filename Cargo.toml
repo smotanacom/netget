@@ -41,6 +41,14 @@ portable-base = [
     "bootp",
     "ntp",
     "whois",
+    "nats",
+    "stomp",
+    "ident",
+    "gopher",
+    "finger",
+    "ssdp",
+    "llmnr",
+    "netbios-ns",
     "snmp",
     "igmp",
     "syslog",
@@ -174,6 +182,14 @@ bluetooth-ble-cycling = ["bluetooth-ble"]  # BLE Cycling Speed and Cadence
 bluetooth-ble-running = ["bluetooth-ble"]  # BLE Running Speed and Cadence
 bluetooth-ble-weight-scale = ["bluetooth-ble"]  # BLE Weight Scale
 whois = []  # WHOIS uses only TCP, no extra deps
+nats = []  # NATS text-protocol pub/sub server - hand-rolled, no extra deps
+stomp = []  # STOMP 1.2 text-frame messaging server - hand-rolled, no extra deps
+ident = []  # Ident (RFC 1413) identification server - hand-rolled, no extra deps
+gopher = []  # Gopher (RFC 1436) menu/document server - hand-rolled, no extra deps
+finger = []  # Finger (RFC 1288) user information server - hand-rolled, no extra deps
+ssdp = []  # SSDP/UPnP discovery (HTTPU over UDP multicast) - hand-rolled, no extra deps
+llmnr = ["hickory-proto"]  # LLMNR (RFC 4795) - DNS wire format via hickory-proto
+netbios-ns = []  # NetBIOS Name Service (RFC 1002) - hand-rolled name encoding
 snmp = ["rasn-snmp", "rasn", "rasn-smi", "dep:snmp"]
 igmp = []  # IGMP multicast group management, no extra deps
 syslog = ["syslog_loose"]
@@ -388,6 +404,14 @@ dist-windows = [
     "tftp",
     "ftp",
     "whois",
+    "nats",
+    "stomp",
+    "ident",
+    "gopher",
+    "finger",
+    "ssdp",
+    "llmnr",
+    "netbios-ns",
     "snmp",
     # igmp excluded: raw libc sockets (AF_INET/SOCK_RAW), unix-only
     "syslog",
@@ -496,6 +520,14 @@ all-protocols = [
     "tftp",
     "bluetooth-ble-client",
     "whois",
+    "nats",
+    "stomp",
+    "ident",
+    "gopher",
+    "finger",
+    "ssdp",
+    "llmnr",
+    "netbios-ns",
     "snmp",
     "igmp",
     "syslog",
