@@ -1105,6 +1105,7 @@ sha1 = "0.10"  # For info_hash calculation
 # that makes the test evidence.
 feed-rs = "2"
 async-nats = "0.50.0"
+async-stomp = "0.6.3"
 
 [build-dependencies]
 # Protocol buffer compiler for etcd gRPC service
