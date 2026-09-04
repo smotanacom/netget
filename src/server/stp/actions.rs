@@ -236,10 +236,16 @@ impl StpBridgeConfig {
         set("source_mac", json!(codec::format_mac(&self.bridge_mac)));
         set("bridge_mac", json!(codec::format_mac(&self.bridge_mac)));
         set("bridge_priority", json!(self.bridge_priority));
-        set("bridge_system_id_extension", json!(self.system_id_extension));
+        set(
+            "bridge_system_id_extension",
+            json!(self.system_id_extension),
+        );
         // With no better information this bridge claims itself as root, which is what a
         // freshly started bridge does before it hears anything.
-        set("root_bridge_mac", json!(codec::format_mac(&self.bridge_mac)));
+        set(
+            "root_bridge_mac",
+            json!(codec::format_mac(&self.bridge_mac)),
+        );
         set("root_priority", json!(self.bridge_priority));
         set("root_system_id_extension", json!(self.system_id_extension));
         set("root_path_cost", json!(0));
@@ -614,8 +620,8 @@ impl Protocol for StpProtocol {
             .connectionless()
             .implementation(
                 "Hand-written IEEE 802.1D-2004 / 802.1w BPDU codec (src/server/stp/codec.rs), \
-                 pure and I/O-free, under two transports: real 802.3 LLC frames via libpcap \
-                 (pnet for MAC handling), and a UDP transport carrying one complete 802.3 frame \
+                 pure and I/O-free, under two transports: real 802.3 LLC frames via libpcap, \
+                 and a UDP transport carrying one complete 802.3 frame \
                  per datagram for unprivileged use.",
             )
             .llm_control(
@@ -1042,7 +1048,12 @@ fn bpdu_event_parameters() -> Vec<Parameter> {
              number.",
             true,
         ),
-        param("is_rstp", "boolean", "True for an RST BPDU (type 0x02).", true),
+        param(
+            "is_rstp",
+            "boolean",
+            "True for an RST BPDU (type 0x02).",
+            true,
+        ),
         param(
             "is_tcn",
             "boolean",
@@ -1104,8 +1115,18 @@ fn bpdu_event_parameters() -> Vec<Parameter> {
             "System ID extension (VLAN) of the sending bridge's identifier.",
             false,
         ),
-        param("port_priority", "number", "Priority half of the sender's port identifier.", false),
-        param("port_number", "number", "Port number half of the sender's port identifier.", false),
+        param(
+            "port_priority",
+            "number",
+            "Priority half of the sender's port identifier.",
+            false,
+        ),
+        param(
+            "port_number",
+            "number",
+            "Port number half of the sender's port identifier.",
+            false,
+        ),
         param(
             "flags",
             "object",
@@ -1121,7 +1142,12 @@ fn bpdu_event_parameters() -> Vec<Parameter> {
         ),
         param("max_age", "number", "Max age in seconds.", false),
         param("hello_time", "number", "Hello time in seconds.", false),
-        param("forward_delay", "number", "Forward delay in seconds.", false),
+        param(
+            "forward_delay",
+            "number",
+            "Forward delay in seconds.",
+            false,
+        ),
         param(
             "local_bridge_priority",
             "number",

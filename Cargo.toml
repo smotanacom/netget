@@ -162,8 +162,8 @@ m3ua = []  # M3UA/SIGTRAN - SCTP where available, refuses elsewhere; no extra de
 can = ["dep:socketcan"]  # CAN bus via SocketCAN - Linux only, target-gated like bluetooth-ble-beacon
 lldp = ["pnet", "dep:pcap"]  # LLDP link-layer discovery - raw Ethernet via pnet, capture via libpcap
 cdp = ["pnet", "dep:pcap"]  # Cisco Discovery Protocol - raw Ethernet SNAP via pnet, capture via libpcap
-stp = ["pnet", "dep:pcap"]  # STP/RSTP bridge protocol data units - raw 802.3 LLC via pnet + libpcap
-vrrp = ["pnet", "socket2/all"]  # VRRP v2/v3 and CARP - IP protocol 112 raw socket
+stp = ["dep:pcap"]  # STP/RSTP bridge protocol data units - raw 802.3 LLC via libpcap (codec is hand-written; pnet is not used)
+vrrp = ["socket2/all", "dep:sha1"]  # VRRP v2/v3 and CARP - IP protocol 112 raw socket; sha1 for CARP's HMAC-SHA1 auth field
 hsrp = []  # HSRP v1/v2 gateway redundancy over UDP 1985 - no extra deps
 eapol = ["pnet", "dep:pcap", "dep:md-5"]  # EAPOL / 802.1X authenticator - libpcap capture; md-5 for the RFC 1994 MD5-Challenge digest
 wol = []  # Wake-on-LAN magic packet listener (UDP 9) - no extra deps
@@ -680,6 +680,7 @@ all-protocols = [
     "smb-client",
 ]
 tun = ["dep:tun"]
+sha1 = ["dep:sha1"]
 
 [dependencies]
 # Async runtime
@@ -1067,6 +1068,7 @@ hf-hub = { version = "0.3", optional = true, features = ["tokio"] }  # Hugging F
 # SQLite database support (in-memory or file-based)
 rusqlite = { version = "0.37", optional = true, features = ["bundled"] }  # SQLite library with bundled SQLite (matches tor-dirmgr dependency)
 tun = { version = "0.8.14", optional = true }
+sha1 = { version = "0.10", optional = true }
 
 # Linux-only dependencies
 #
