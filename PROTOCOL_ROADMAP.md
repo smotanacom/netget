@@ -58,8 +58,8 @@ separately by the agent that wrote it.
 | Protocol | Feature | Module | Transport | Privilege | Validation target | Status |
 |---|---|---|---|---|---|---|
 | NATS | `nats` | `nats` | TCP 4222 | none | **`async-nats` (official client, dev-dep added)** | `building` |
-| STOMP | `stomp` | `stomp` | TCP 61613 | none | crate TBD — a codec does not count | `building` |
-| Ident | `ident` | `ident` | TCP 113 | `PrivilegedPort(113)` | likely none; expect `Experimental` | `building` |
+| STOMP | `stomp` | `stomp` | TCP 61613 | none | **`async-stomp` 0.6.3 (dev-dep, `88108e93`)** — a real client, not a codec | `landed` (`4e06e20c`) — Beta upgrade in flight |
+| Ident | `ident` | `ident` | TCP 113 | `PrivilegedPort(113)` | **none exists** — no RFC 1413 client anywhere takes a configurable port | `landed` (`59a3003b`) — Experimental |
 | Gopher | `gopher` | `gopher` | TCP 70 | `PrivilegedPort(70)` | **`curl gopher://` — real, arbitrary port** | `landed` (`a3573323`) — **Beta** |
 | Finger | `finger` | `finger` | TCP 79 | `PrivilegedPort(79)` | `finger(1)` confirmed port-locked to 79 → needs root | `landed` (`a28bf0a2`) — Experimental |
 | SSDP | `ssdp` | `ssdp` | UDP 1900 mcast | none | `ssdp-client` if it can target a unicast port | `building` |
@@ -254,6 +254,21 @@ Learned from the incidents recorded in `CLAUDE.md`, and applied to every wave:
 3. **Stage the waves.** Do not run twenty-plus agents at once — they serialize
    on the shared `target/` build lock, and a large wave during a degraded API
    period once burned ~9.8M tokens for 5 usable results.
-4. **Watch `df` between waves.** `target/` reached 130 GB in one session, and at
+4. **A validation client's licence is a dev-dependency question, not a shipping
+   question.** NetGet is `AGPL-3.0-or-later` (`Cargo.toml` line 5). A test-only
+   client is never linked into a distributed binary, which is the same basis on
+   which the MPL-2.0 `irc` and `attohttpc` test dependencies are already here.
+   `async-stomp` is EUPL-1.2 and was cleared on that ground *and* because
+   EUPL-1.2's compatibility appendix names AGPL-3.0 explicitly. Escalate a
+   copyleft **runtime** dependency; a dev-dependency usually just needs the
+   reasoning written down.
+
+   **`LICENSE_ANALYSIS.md` contradicts itself and the manifest** and should be
+   re-derived before anyone relies on it: it claims "No copyleft obligations
+   (can keep code proprietary if desired)" a few lines after answering "Can
+   NetGet be closed-source? **No**", and it describes a project that is not
+   AGPL. Not fixed here; recorded so the next licence question starts from the
+   manifest rather than from that file.
+5. **Watch `df` between waves.** `target/` reached 130 GB in one session, and at
    zero bytes free the session cannot recover — every tool call needs to write.
    `cargo clean --profile dev` is the remedy and keeps `target/release`.
