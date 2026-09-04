@@ -170,8 +170,8 @@ and shares their `pnet` dependency.
 | CDP | `cdp` | `cdp` | SNAP, dest `01:00:0C:CC:CC:CC` | Device model, IOS version, native VLAN — the classic recon leak | `planned` |
 | STP/RSTP | `stp` | `stp` | 802.3 LLC, dest `01:80:C2:00:00:00` | Bridge priority. Claiming root bridge is a real attack | `landed` (`c4090e37`) — Experimental |
 | VRRP + CARP | `vrrp` | `vrrp` | IP proto 112, mcast `224.0.0.18` | Election priority — winning it hijacks the default gateway | `planned` |
-| HSRP | `hsrp` | `hsrp` | UDP 1985, mcast `224.0.0.2` | Same, Cisco's version | `planned` |
-| EAPOL / 802.1X | `eapol` | `eapol` | EtherType 0x888E | Supplicant **and** authenticator | `planned` |
+| HSRP | `hsrp` | `hsrp` | UDP 1985, mcast `224.0.0.2` | Same, Cisco's version. **Unprivileged, so the transport genuinely executes** — no HSRP crate exists in any role; only a Cisco device is a real peer | `landed` (`28781187`) — Experimental |
+| EAPOL / 802.1X | `eapol` | `eapol` | EtherType 0x888E | Authenticator role. **The strictest fail-closed design here** — see below | `landed` (`5e05313a`) — Experimental |
 | Wake-on-LAN | `wol` | `wol` | UDP 9 (or EtherType 0x0842) | Whether a magic packet is honoured, and what is reported | `landed` (`4da604c9`) — Experimental |
 
 **A design consequence LLDP surfaced, which applies to every raw-socket protocol
@@ -200,6 +200,38 @@ calls the most dangerous pattern in the codebase.
 1024 — declare `PrivilegedPort(9)`, not `None`. `CLAUDE.md` records `svn`
 declaring `PrivilegedPort(3690)`, which can never fire and read as protection
 while being dead code; do not invert that mistake here.
+
+**EAPOL is the reference implementation of fail-closed in this repo now**, and
+the technique generalises to any protocol where one message *is* an authorisation.
+`EAP-Success` cannot be produced except by an explicit model action, guaranteed
+four ways: the registry instance holds no request context so it can encode
+nothing; `send_eap_success` is refused unless the session already holds an
+`EAP-Response/Identity`; the decision layer re-checks the encoded frame so a
+regression in that gate is *reported* rather than served; and — the structural
+one — **`eapol_eap_success_frame` and `eapol_eap_failure_frame` are eight literal
+octets each and share no code**. There is deliberately no
+`encode_eap_result(code, id)`, so no boolean exists that could be inverted. Every
+fail-closed exit calls the failure builder directly, never the executor.
+
+Its own e2e suite then found a real defect the unit tests could not: the model's
+`expected_password` was never recorded, so MD5 verification could never succeed.
+Being fail-closed, it presented as a stuck exchange rather than a bypass — which
+is the whole argument for building it that way round.
+
+**Two lessons from HSRP worth reusing.** First, **state codes that overlap
+across versions with different meanings are a silent-corruption trap**: HSRP code
+`4` is *Speak* in v1 and *Standby* in v2, both valid, so a mis-decode produces a
+plausible wrong answer rather than an error. The fix was to never let a state
+cross a version boundary as an integer, have the model see and produce names
+only, and pin it from **both** directions — a test in one direction alone passes
+with the bug present.
+
+Second, **the fail-closed logging vocabulary is protocol-shaped, not universal**.
+`radius` separates `model_reject` from `model_silent` because it has an
+Access-Reject to send. HSRP has no negative message at all, so a refusal and an
+abstention are the same act and collapse to `model_silent`; what stays
+distinguishable — and what actually matters — is that act versus every
+`fail_closed_*`. Copy radius's discipline, not its exact token list.
 
 ### Tier 2 — IPv6
 
