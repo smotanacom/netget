@@ -8,8 +8,10 @@
 //! and `encode(fields)` must yield the literal. Neither direction is allowed to define the
 //! other.
 //!
-//! The MD5 implementation gets a genuinely independent oracle: the RFC 1321 §A.5 published
-//! digest suite, written by neither this file nor `codec.rs`.
+//! MD5 comes from the `md-5` crate, so the RFC 1321 §A.5 vectors here are not testing an
+//! implementation of ours — they are testing that `codec.rs` *drives* one correctly, which is
+//! still a thing that breaks. They were kept for exactly that reason when the hand-rolled
+//! version was removed.
 //!
 //! Layouts used throughout:
 //!
@@ -293,9 +295,13 @@ fn md5_verification_accepts_only_the_right_password() {
     );
 }
 
-/// **The independent oracle.** RFC 1321 §A.5 publishes these seven digests, and they were
-/// written by the IETF rather than by anything in this repository. Everything above depends
-/// on MD5 being MD5; this is what makes that a claim rather than an assumption.
+/// RFC 1321 §A.5 publishes these seven digests, written by the IETF rather than by anything in
+/// this repository.
+///
+/// MD5 itself is the `md-5` crate's, so this no longer guards an implementation of ours. It
+/// still guards our *use* of one, which is where the live mistakes are: a wrapper that feeds
+/// the hasher the wrong buffer, drops an update, or returns the digest with the wrong
+/// endianness would pass every other test in this file and fail here.
 #[test]
 fn md5_matches_the_rfc_1321_test_suite() {
     let vectors: &[(&str, &str)] = &[

@@ -67,11 +67,13 @@ Coverage worth keeping if these are ever rewritten:
   wrong password, wrong identifier (so a replay under another identifier fails), wrong
   challenge, empty response, truncated response. The truncation case matters because a
   comparison that stopped at the shorter length would accept a one-octet "digest".
-- **`md5_matches_the_rfc_1321_test_suite`** is the **independent oracle** for the hand-rolled
-  MD5: seven digests published by the IETF, written by neither this file nor `codec.rs`.
-  Everything else depends on MD5 being MD5; this is what makes that a claim. The
-  padding-boundary test (55/56/57/64 octets) covers the two-block path the short §A.5 vectors
-  mostly do not.
+- **`md5_matches_the_rfc_1321_test_suite`** — seven digests published by the IETF, written by
+  neither this file nor `codec.rs`. MD5 now comes from the `md-5` crate, so this is no longer
+  an oracle for an implementation of ours; **keep it anyway**, because it is an oracle for our
+  *use* of one. It would catch a wrapper that fed the hasher the wrong buffer, dropped an
+  update, or returned the digest with the wrong endianness — all of which are live mistakes
+  and none of which the crate can prevent. The padding-boundary cases (55/56/57/64 octets)
+  are retained for the same reason.
 
 ## `e2e_test.rs` — in-process, over the UDP transport
 

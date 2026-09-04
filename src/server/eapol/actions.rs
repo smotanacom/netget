@@ -560,8 +560,9 @@ impl Protocol for EapolProtocol {
                  EAP-Request/Identity, EAP-Request/Notification, EAP-Request/MD5-Challenge, \
                  EAP-Success and EAP-Failure, with the EAP identifier echoed per RFC 3748 §4.2. \
                  MD5-Challenge is fully performed by NetGet: the challenge is generated here and \
-                 the RFC 1994 §2.2 digest is verified here (constant-time), so the model is never \
-                 asked for cryptographic material. NOT implemented: EAP-TLS, PEAP and MSCHAPv2 as \
+                 the RFC 1994 §2.2 digest is verified here (constant-time) using the md-5 crate, \
+                 the same one src/server/radius uses, so the model is never asked for \
+                 cryptographic material. NOT implemented: EAP-TLS, PEAP and MSCHAPv2 as \
                  methods (TLS/PEAP send only the RFC 5216 Start flag and no handshake is carried), \
                  EAPOL-Key / MKA, RADIUS pass-through, and VLAN assignment. Two transports: raw \
                  Ethernet on EtherType 0x888E via libpcap, and a UDP test transport carrying the \

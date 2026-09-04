@@ -92,8 +92,11 @@ This list is exhaustive in both directions.
   `MD5(Identifier || Secret || Challenge)` per RFC 1994 §2.2 — the order matters, and
   `Secret || Identifier || Challenge` is the classic slip that is self-consistent and rejects
   every real supplicant. Pinned against a Python-computed literal.
-- **MD5 itself**, RFC 1321, hand-rolled in `codec.rs` and checked against the §A.5 published
-  digest suite plus the 55/56/57/64-octet padding boundary.
+- **MD5 itself** comes from the **`md-5` crate**, the same one `src/server/radius/packet.rs`
+  uses — one MD5 in the tree, one place for it to be wrong. `codec::md5` is a thin wrapper
+  kept so the RFC 1321 §A.5 vectors and the 55/56/57/64-octet padding boundary can be
+  exercised directly; those tests now assert that this file *drives the crate correctly*,
+  which is still the thing that can break.
 
 **Not implemented, and claimed nowhere:**
 
@@ -296,22 +299,30 @@ demoted Stable→Beta for never having been validated against a real client, whi
 definition of Beta, and nobody noticed for months. If this protocol is ever demoted, check
 which rating the evidence actually supports rather than stepping down one notch by reflex.
 
-## The hand-rolled MD5, and how to delete it
+## Why MD5 comes from a crate, recorded because the first version did not
 
-`codec.rs` implements MD5 itself. That is not a preference: `md-5` is an optional dependency
-gated on the `radius` feature, and `eapol = ["pnet", "dep:pcap"]` does not pull it in. Editing
-`Cargo.toml` was out of scope for the change that added this protocol.
+The first version of `codec.rs` hand-rolled RFC 1321 MD5, because `md-5` was an optional
+dependency gated on the `radius` feature and `eapol` did not pull it in. It was pinned to the
+RFC 1321 §A.5 vectors and the padding boundary, and it passed.
 
-**The one-line fix, for whoever owns `Cargo.toml` next:**
+**That was still the wrong call, and the reasoning is worth keeping.** Published vectors prove
+the happy path, not the edge cases, and the next person to touch a hand-rolled digest will not
+have the context that made it look safe. Hand-rolled cryptography is a liability even when it
+is tested. The fix was a *feature edge*, not a new dependency — `md-5` was already in the tree
+for `radius`, so the supply chain did not change at all:
 
 ```toml
 eapol = ["pnet", "dep:pcap", "dep:md-5"]
 ```
 
-Then delete the `MD5 (RFC 1321)` block at the foot of `codec.rs`, use `md5::{Digest, Md5}` as
-`src/server/radius/packet.rs` does, and keep `md5_challenge_digest` /
-`md5_response_matches` as they are — their signatures do not change, and the RFC 1321 test
-vectors in `tests/server/eapol/codec_test.rs` should keep passing untouched.
+`codec::md5` is now a thin wrapper over `md5::Md5`, and `md5_challenge_digest` feeds the
+hasher in three ordered `update` calls the way `radius`'s authenticators do — the
+concatenation *is* the specification, so writing it as ordered updates makes the order the
+thing a reader checks. The vector tests were deliberately **kept**: they no longer test an
+implementation, they test that this file drives the crate correctly.
+
+The general rule: when a protocol needs a primitive another protocol already depends on, add
+the feature edge rather than the implementation.
 
 ## Startup parameters
 

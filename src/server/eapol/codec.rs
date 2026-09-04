@@ -10,13 +10,16 @@
 //! **An `EAP-Success` frame is an admission decision**, so there is exactly one function in
 //! this crate that can produce those bytes — [`eapol_eap_success_frame`] — and it shares no
 //! code with [`eapol_eap_failure_frame`]. Neither takes a code, a boolean, or anything else
-//! that could select the other. Grep for `EAP_CODE_SUCCESS` and you will find the constant,
-//! that one builder, and the classifier in `mod.rs` that recognises the byte after the fact.
+//! that could select the other. `grep -rn EAP_CODE_SUCCESS src/ --include='*.rs'` finds five
+//! code sites and exactly one of them writes the octet: the constant, that one builder, the
+//! `EapPacket::decode` arm, `eap_code_name`, and `classify_frame` in `mod.rs`. The other four
+//! only read. A sixth site, or a second one that constructs a frame, wants careful reading.
 //!
 //! A generic `encode_eap_result(code, id)` would be shorter and is precisely what must not
 //! exist: one wrong argument, one inverted condition, and an authentication bypass is a
 //! single character wide.
 
+use md5::{Digest, Md5};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -610,87 +613,24 @@ pub fn tls_flags(type_data: &[u8]) -> Option<(bool, bool, bool)> {
 // MD5 (RFC 1321)
 // ---------------------------------------------------------------------------
 //
-// Hand-rolled because the `md-5` crate is an optional dependency gated on the `radius`
-// feature and `eapol = ["pnet", "dep:pcap"]` does not pull it in; adding it would mean
-// editing Cargo.toml, which this module is not allowed to do. It is ~60 lines of pure
-// arithmetic, checked in `tests/server/eapol/codec_test.rs` against the RFC 1321 §A.5
-// published digest suite — an oracle written by neither this file nor its test.
+// The `md-5` crate, same as `src/server/radius/packet.rs` — the two agree deliberately, so
+// there is one MD5 in the tree and one place for it to be wrong.
 //
-// If `dep:md-5` is ever added to the `eapol` feature, delete this block and use `md5::Md5`
-// as `src/server/radius/packet.rs` does. Nothing else here would change.
+// This was hand-rolled in the first version of this file, because `md-5` was gated on the
+// `radius` feature. Pinning it to the RFC 1321 vectors was not enough of a defence: the
+// vectors prove the happy path, not the edge cases, and the next person to touch it would not
+// have had the context. The `eapol` feature now carries `dep:md-5` and the vector tests were
+// kept — they no longer test an implementation, they test that this file drives the crate
+// correctly, which is still the thing that can break.
 
-const MD5_SHIFTS: [u32; 64] = [
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, //
-    5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, //
-    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, //
-    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
-];
-
-/// `floor(2^32 * abs(sin(i + 1)))`, RFC 1321 §3.4.
-const MD5_SINE: [u32; 64] = [
-    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
-    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
-    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
-    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
-];
-
-/// RFC 1321 MD5. Pure; no allocation beyond the padded message.
+/// RFC 1321 MD5 of a single buffer.
+///
+/// A thin wrapper over the `md-5` crate, kept as a named function because the RFC 1321 §A.5
+/// vector tests exercise it directly.
 pub fn md5(data: &[u8]) -> [u8; 16] {
-    let mut message = data.to_vec();
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    message.push(0x80);
-    while message.len() % 64 != 56 {
-        message.push(0);
-    }
-    message.extend_from_slice(&bit_len.to_le_bytes());
-
-    let mut state: [u32; 4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
-
-    for chunk in message.as_chunks::<64>().0 {
-        let mut m = [0u32; 16];
-        for (i, word) in m.iter_mut().enumerate() {
-            *word = u32::from_le_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-
-        let (mut a, mut b, mut c, mut d) = (state[0], state[1], state[2], state[3]);
-        for i in 0..64 {
-            let (f, g) = match i / 16 {
-                0 => ((b & c) | (!b & d), i),
-                1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
-                2 => (b ^ c ^ d, (3 * i + 5) % 16),
-                _ => (c ^ (b | !d), (7 * i) % 16),
-            };
-            let tmp = d;
-            d = c;
-            c = b;
-            let rotated = f
-                .wrapping_add(a)
-                .wrapping_add(MD5_SINE[i])
-                .wrapping_add(m[g])
-                .rotate_left(MD5_SHIFTS[i]);
-            b = b.wrapping_add(rotated);
-            a = tmp;
-        }
-        state[0] = state[0].wrapping_add(a);
-        state[1] = state[1].wrapping_add(b);
-        state[2] = state[2].wrapping_add(c);
-        state[3] = state[3].wrapping_add(d);
-    }
-
-    let mut out = [0u8; 16];
-    for (i, word) in state.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
-    }
-    out
+    let mut hasher = Md5::new();
+    hasher.update(data);
+    hasher.finalize().into()
 }
 
 /// RFC 1994 §2.2: `MD5(Identifier || Secret || Challenge)`.
@@ -698,11 +638,14 @@ pub fn md5(data: &[u8]) -> [u8; 16] {
 /// The order matters and is the classic implementation mistake — a digest computed over
 /// `Secret || Identifier || Challenge` is self-consistent and rejects every real supplicant.
 pub fn md5_challenge_digest(identifier: u8, secret: &str, challenge: &[u8]) -> [u8; 16] {
-    let mut input = Vec::with_capacity(1 + secret.len() + challenge.len());
-    input.push(identifier);
-    input.extend_from_slice(secret.as_bytes());
-    input.extend_from_slice(challenge);
-    md5(&input)
+    // Fed to the hasher in three updates rather than assembled into a Vec first, the way
+    // `radius`'s authenticators do it: the concatenation is the specification, and writing it
+    // as three ordered `update` calls makes the order the thing a reader checks.
+    let mut hasher = Md5::new();
+    hasher.update([identifier]);
+    hasher.update(secret.as_bytes());
+    hasher.update(challenge);
+    hasher.finalize().into()
 }
 
 /// Whether a supplicant's MD5-Challenge response matches the digest of the expected secret.
