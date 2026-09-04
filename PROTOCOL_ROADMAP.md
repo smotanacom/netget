@@ -183,7 +183,7 @@ and shares their `pnet` dependency.
 | LLDP | `lldp` | `lldp` | EtherType 0x88CC, dest `01:80:C2:00:00:0E` | Chassis/port/system TLVs — impersonate a switch to its neighbour | `landed` (`5e87ba2a`) — Experimental |
 | CDP | `cdp` | `cdp` | SNAP, dest `01:00:0C:CC:CC:CC` | Device model, IOS version, native VLAN — the classic recon leak | `planned` |
 | STP/RSTP | `stp` | `stp` | 802.3 LLC, dest `01:80:C2:00:00:00` | Bridge priority. Claiming root bridge is a real attack | `landed` (`c4090e37`) — Experimental |
-| VRRP + CARP | `vrrp` | `vrrp` | IP proto 112, mcast `224.0.0.18` | Election priority — winning it hijacks the default gateway | `planned` |
+| VRRP + CARP | `vrrp` | `vrrp` | IP proto 112, mcast `224.0.0.18` | Election priority — winning it hijacks the default gateway | `landed` (`88e12101`) — Experimental |
 | HSRP | `hsrp` | `hsrp` | UDP 1985, mcast `224.0.0.2` | Same, Cisco's version. **Unprivileged, so the transport genuinely executes** — no HSRP crate exists in any role; only a Cisco device is a real peer | `landed` (`28781187`) — Experimental |
 | EAPOL / 802.1X | `eapol` | `eapol` | EtherType 0x888E | Authenticator role. **The strictest fail-closed design here** — see below | `landed` (`5e05313a`) — Experimental |
 | Wake-on-LAN | `wol` | `wol` | UDP 9 (or EtherType 0x0842) | Whether a magic packet is honoured, and what is reported | `landed` (`4da604c9`) — Experimental |
@@ -255,6 +255,27 @@ abstention are the same act and collapse to `model_silent`; what stays
 distinguishable — and what actually matters — is that act versus every
 `fail_closed_*`. Copy radius's discipline, not its exact token list.
 
+**The single sharpest protocol finding of this programme, from VRRP.**
+**CARP is byte-ambiguous with VRRPv2 and misdecodes into the most dangerous
+possible message.** Its first octet is `0x21` — a valid VRRPv2 advertisement.
+Its `carp_authlen` of 7 lands exactly on VRRP's count-IP-addresses octet, and
+`8 + 7*4 == 36` is precisely the CARP header length, so a VRRP decoder accepts a
+real CARP packet **without erroring**. Worse, `carp_advskew` of 0 lands on
+VRRP's priority field — so a perfectly healthy CARP host decodes as *a master
+resigning*, which is the one advertisement that provokes an immediate election.
+
+That is why `variant` is a startup parameter and is **never sniffed**, and why
+`a_carp_advertisement_misdecodes_as_a_vrrpv2_resignation` exists to pin it.
+Generalise the lesson: when two protocols share a transport, check whether their
+headers are *distinguishable* before writing a sniffer — and if they are not,
+make the operator say which one, rather than guessing.
+
+A real bug its own CARP e2e caught, worth knowing as a shape: `execute_action`
+runs with **no server config in scope**, so it validated a CARP server's action
+against the VRRP defaults and rejected `advskew` — the entire CARP path was
+unreachable. Anything that validates against configuration must be given that
+configuration, or it validates against the wrong thing.
+
 ### Tier 2 — IPv6
 
 | Protocol | Feature | Module | Transport | Privilege | Status |
@@ -309,7 +330,7 @@ evidence.
 
 | Protocol | Feature | Module | Privilege | Status |
 |---|---|---|---|---|
-| TUN/TAP endpoint | `tuntap` | `tuntap` | `Root` | `planned` |
+| TUN/TAP endpoint | `tuntap` | `tuntap` | `Root` | `landed` (`e73946b9`) — Experimental |
 | Raw IP protocol-N | `rawip` | `rawip` | `RawSockets` | `landed` (`a5f40d50`) — Experimental |
 
 **TUN/TAP is the item that changes what NetGet is** rather than adding another
@@ -345,7 +366,7 @@ files rather than discovered later by someone debugging live.
 | Protocol | Feature | Module | Transport | Privilege | Status |
 |---|---|---|---|---|---|
 | GTP-C / GTP-U | `gtp` | `gtp` | UDP 2123 / 2152 | **none** — both above 1024 | `planned` |
-| M3UA / SIGTRAN | `m3ua` | `m3ua` | SCTP 2905 | none (port is high) | `blocked` on macOS — see below |
+| M3UA / SIGTRAN | `m3ua` | `m3ua` | SCTP 2905 | none (port is high) | `landed` (`55f03bb6`) — Experimental; SCTP never executed |
 
 **GTP is the pleasant surprise of this tier**: both its ports are above 1024, so
 it needs no privilege and is fully testable here. The model plays an SGW/PGW in
@@ -367,6 +388,22 @@ in order of honesty:
    real project, not a side effect of this one.
 
 Whichever is chosen, M3UA cannot be rated above `Experimental` from macOS.
+
+**M3UA's SCTP handling is the pattern for an unavailable transport.** The
+SCTP attempt is a **runtime probe, not a `cfg`**: it asks `socket2` for an
+`IPPROTO_SCTP` socket and, on failure, returns an `Err` naming SCTP, RFC 4666,
+the escape hatch, and the fact that the escape hatch is non-standard. Three
+consequences follow, all of them wanted — the whole path compiles on macOS so it
+is type-checked rather than being code nobody builds; a Linux kernel with `sctp`
+unloaded is diagnosed identically to macOS; and an operator gets a sentence
+rather than an errno.
+
+Equally worth copying: **the non-standard label travels**. `"tcp (NON-STANDARD
+lab transport, not SIGTRAN)"` appears in the startup-parameter description the
+model reads, `metadata().notes`, the startup log, a standalone WARN, the
+dashboard's `protocol_info` row, and **every event's `transport` field** — with a
+test asserting each, plus that the declared default is still `"sctp"`, so a
+flipped default cannot silently give an SCTP-capable host lab framing.
 
 ### Tier 5 — automotive
 
