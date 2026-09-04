@@ -360,7 +360,9 @@ impl ClientRegistry {
         #[cfg(feature = "stomp")]
         self.register(Arc::new(crate::client::stomp::StompClientProtocol::new()));
         #[cfg(feature = "netbios-ns")]
-        self.register(Arc::new(crate::client::netbios_ns::NetbiosNsClientProtocol::new()));
+        self.register(Arc::new(
+            crate::client::netbios_ns::NetbiosNsClientProtocol::new(),
+        ));
         #[cfg(feature = "nats")]
         self.register(Arc::new(crate::client::nats::NatsClientProtocol::new()));
         #[cfg(feature = "ssdp")]

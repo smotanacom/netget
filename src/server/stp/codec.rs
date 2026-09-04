@@ -450,7 +450,11 @@ impl ConfigBpdu {
         }
         // Re-validate the identifiers: they are public fields, so a caller can build a
         // ConfigBpdu without going through the checked constructors.
-        let root = BridgeId::new(self.root.priority, self.root.system_id_extension, self.root.mac)?;
+        let root = BridgeId::new(
+            self.root.priority,
+            self.root.system_id_extension,
+            self.root.mac,
+        )?;
         let bridge = BridgeId::new(
             self.bridge.priority,
             self.bridge.system_id_extension,
@@ -576,7 +580,8 @@ pub struct Frame8023 {
 /// `00 26` (38) and an RST BPDU `00 27` (39).
 pub fn encode_frame(destination: [u8; 6], source: [u8; 6], bpdu: &[u8]) -> Vec<u8> {
     let client_len = LLC_HEADER_LEN + bpdu.len();
-    let mut frame = Vec::with_capacity(MIN_ETHERNET_FRAME_LEN.max(ETHERNET_HEADER_LEN + client_len));
+    let mut frame =
+        Vec::with_capacity(MIN_ETHERNET_FRAME_LEN.max(ETHERNET_HEADER_LEN + client_len));
     frame.extend_from_slice(&destination);
     frame.extend_from_slice(&source);
     frame.extend_from_slice(&(client_len as u16).to_be_bytes());

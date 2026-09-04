@@ -499,7 +499,9 @@ impl StpServer {
             data.get("bpdu_type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("bpdu"),
-            data.get("source_mac").and_then(|v| v.as_str()).unwrap_or(""),
+            data.get("source_mac")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
             data.get("root_bridge_mac")
                 .and_then(|v| v.as_str())
                 .unwrap_or("n/a"),
@@ -593,8 +595,7 @@ impl StpServer {
                             }
                             Err(e) => {
                                 error!("STP transmit failed: {:#}", e);
-                                let _ =
-                                    status_tx.send(format!("✗ STP transmit failed: {:#}", e));
+                                let _ = status_tx.send(format!("✗ STP transmit failed: {:#}", e));
                             }
                         },
                         Err(e) => {

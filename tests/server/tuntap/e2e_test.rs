@@ -373,12 +373,8 @@ mod tests {
         h.inject(ping(0x2222, 9)).await;
         // `sent` is the end of this chain — model consulted, answer built, frame written —
         // so waiting on it means all three assertions below are about a finished decision.
-        h.wait_for_stat(
-            |s| TunTapStats::get(&s.sent),
-            1,
-            Duration::from_secs(30),
-        )
-        .await;
+        h.wait_for_stat(|s| TunTapStats::get(&s.sent), 1, Duration::from_secs(30))
+            .await;
 
         assert!(
             h.mock.call_count().await > 0,
