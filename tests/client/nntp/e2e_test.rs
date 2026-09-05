@@ -2,6 +2,15 @@
 //!
 //! These tests verify NNTP client functionality by spawning the actual NetGet binary
 //! and testing client behavior as a black-box.
+//!
+//! **The `nntp_response_received` rules assert `expect_calls(1)`, not `expect_at_most(1)`.**
+//! They used to be `at_most`, which is satisfied by *zero* calls — so the only thing these
+//! tests proved was that the client could connect. That mattered: the client held a
+//! `client_data` mutex guard borrowed out of a `match` scrutinee across every arm and then
+//! re-locked it inside `apply_action`, so it deadlocked the instant it executed the model's
+//! first command. The command still reached the wire, so the *server's* expectations passed;
+//! the client then never read the reply and the `at_most` rule quietly recorded 0. Requiring
+//! exactly one call is what makes the reply-reading path observable.
 
 #[cfg(all(test, feature = "nntp"))]
 mod nntp_client_tests {
@@ -93,7 +102,7 @@ mod nntp_client_tests {
                         "type": "wait_for_more"
                     }
                 ]))
-                .expect_at_most(1)
+                .expect_calls(1)
                 .and()
         });
 
@@ -216,7 +225,7 @@ mod nntp_client_tests {
                         "type": "wait_for_more"
                     }
                 ]))
-                .expect_at_most(1)
+                .expect_calls(1)
                 .and()
         });
 
@@ -341,7 +350,7 @@ mod nntp_client_tests {
                         "type": "wait_for_more"
                     }
                 ]))
-                .expect_at_most(1)
+                .expect_calls(1)
                 .and()
         });
 
