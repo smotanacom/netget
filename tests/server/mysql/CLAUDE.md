@@ -3,7 +3,7 @@
 ## Test Overview
 
 Tests MySQL server implementation using real `mysql_async` client library. Validates query execution, multi-row results,
-and DDL operations.
+DDL operations, the binary (prepared-statement) protocol, and rows whose value count disagrees with the column list.
 
 ## Test Strategy
 
@@ -33,7 +33,18 @@ completes quickly.
 - **1 CREATE TABLE query** → LLM call for DDL response
 - **Total: 2 LLM calls**
 
-**Total for MySQL test suite: 6 LLM calls** (well under 10 limit)
+### `prepared_statement_test.rs`
+
+Three tests, each **1 server startup + 2-3 query calls** (mysql_async issues one `SELECT @@*`
+during handshake, then the statement). `placeholder_counting_skips_literals_and_comments` is a
+pure unit test and makes **0** LLM calls.
+
+### `llm_failure_test.rs` / `connection_stats_test.rs`
+
+`connection_stats_test` runs with a static handler and makes **0** LLM calls, which is what
+makes it a counter test rather than a timing test.
+
+**Total for the MySQL suite: ~17 LLM calls across 9 tests**, each test on its own server.
 
 ## Scripting Usage
 
@@ -140,25 +151,33 @@ let mut conn = pool.get_conn().await?;
 
 ### Type Precision
 
-**Issue**: LLM may return string "1" instead of integer 1
-**Symptom**: Type parsing error in mysql_async
-**Workaround**: Implementation converts JSON to strings; client parses strings to expected types
-**Status**: Works correctly in practice
+**Issue**: LLM may return string `"1"` where the column is declared `INT`.
+**Status**: Handled. `write_cell` coerces the JSON value to the declared column type (a
+numeric string parses), and a value that genuinely cannot be represented is sent as **NULL**
+with a WARN rather than as a wrong number or as an error that ends the session.
+
+**This used to say "implementation converts JSON to strings; client parses strings to expected
+types", and that was the bug, not the workaround.** It is true of the *text* protocol only. In
+the binary protocol (`conn.exec*`) opensrv-mysql encodes by `Column::coltype` and rejects a
+string for any numeric or temporal column with an `io::Error` that ends the session — so the
+protocol's own advertised example, `{"name": "id", "type": "INT"}`, killed the connection on
+every prepared statement. `prepared_statement_test.rs` is the regression test.
 
 ## Test Execution
 
 ```bash
-# Build release binary first (REQUIRED)
-./cargo-isolated.sh build --release --all-features
+# Run all MySQL server tests. `--test` names a test *target*; `server` is the target and the
+# filter goes after `--`. `--test server::mysql::test` makes cargo list targets and exit.
+./cargo-isolated.sh test --no-default-features --features mysql \
+    --test server -- server::mysql --test-threads=100
 
-# Run all MySQL tests
-./cargo-isolated.sh test --features mysql --test server::mysql::test
-
-# Run specific test
-./cargo-isolated.sh test --features mysql --test server::mysql::test test_mysql_simple_query
+# Run one test
+./cargo-isolated.sh test --no-default-features --features mysql \
+    --test server -- server::mysql::test::test_mysql_simple_query
 
 # Run with output
-./cargo-isolated.sh test --features mysql --test server::mysql::test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features mysql \
+    --test server -- server::mysql --nocapture
 ```
 
 ## Test Output Example
@@ -175,8 +194,11 @@ Executing SELECT 1...
 
 ## Future Improvements
 
-1. **Prepared Statements**: Test PREPARE/EXECUTE/CLOSE flow explicitly
-2. **Transactions**: Test BEGIN/COMMIT/ROLLBACK sequences
-3. **Error Handling**: Test LLM-generated error responses (once opensrv supports errors)
-4. **Binary Protocol**: Test prepared statements with binary data
-5. **Consolidation**: Merge tests into single server with multiple queries
+1. **Transactions**: Test BEGIN/COMMIT/ROLLBACK sequences
+2. **Consolidation**: Merge tests into a single server with multiple queries
+
+Done, and recorded so they are not re-listed: prepared statements
+(`prepared_statement_test.rs` covers PREPARE with and without a bound parameter, and the
+binary result-set encoding for INT/BIGINT/DOUBLE/VARCHAR/TEXT plus SQL NULL) and
+LLM-generated error responses (`llm_failure_test.rs`; opensrv-mysql has had
+`QueryResultWriter::error` since 0.4, so "once opensrv supports errors" was never true).
