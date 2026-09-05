@@ -62,6 +62,10 @@ async fn test_isis_client_startup() -> E2EResult<()> {
     println!("  [TEST] ✓ IS-IS client started successfully");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    instance.wait_for_mocks(30).await;
     instance.verify_mocks().await?;
 
     Ok(())
@@ -119,6 +123,10 @@ async fn test_isis_client_capture_hello() -> E2EResult<()> {
     println!("  [TEST] ✓ IS-IS client capture test structure validated");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    instance.wait_for_mocks(30).await;
     instance.verify_mocks().await?;
 
     Ok(())
@@ -212,6 +220,11 @@ async fn test_isis_client_server_interaction() -> E2EResult<()> {
     println!("  [TEST] ✓ Client-server interaction test structure validated");
 
     // Verify mocks
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
+    client.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 
@@ -281,6 +294,10 @@ async fn test_isis_client_multiple_pdu_types() -> E2EResult<()> {
     println!("  [TEST] ✓ Multiple PDU type test structure validated");
 
     // Verify mocks
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    instance.wait_for_mocks(30).await;
     instance.verify_mocks().await?;
 
     Ok(())

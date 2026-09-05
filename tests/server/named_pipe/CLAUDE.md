@@ -26,9 +26,25 @@ writer/reader dance runs on a blocking thread wrapped in a 15s `tokio::time::tim
 holds both FIFOs open `O_RDWR`, so the test's opens return immediately and the `PONG` the server
 writes is buffered in the kernel until the test reads it.
 
+`test_named_pipe_llm_failure_answers_with_a_category_only`:
+
+1. Same startup, but **no rule matches the `named_pipe_data_received` event**, so the mock
+   answers HTTP 500 and `call_llm` returns `Err` after its retries — the real backend-failure
+   path, not a simulated one.
+2. The real `std::fs` reader must still get bytes: an attributed `netget: …` line carrying a
+   `WireFailure` category. Silence would hang a FIFO reader forever (`cat` has no timeout).
+3. It also asserts the line contains none of the tokens that historically leaked onto the wire
+   (`✗`, `retries`, `http://`, `11434`, `LLM`, `ollama`, `/Users/`), so a future edit cannot
+   reintroduce the interpolated-error bug through this path.
+
+Unmatched calls do not fail `verify_mocks()` — it checks each declared rule's own call count —
+so the deliberate miss is safe.
+
 ## LLM call budget
 
-1 test x 2 mocked LLM calls (startup + one event) = **2 calls**, well under the 10-call budget.
+2 tests: 2 mocked calls in the round-trip (startup + one event), plus 1 mocked startup call and
+a handful of deliberately-unmatched retry calls in the failure test = **well under** the 10-call
+budget.
 
 ## Running
 
@@ -42,3 +58,6 @@ writes is buffered in the kernel until the test reads it.
   root under cargo). The test `mkdir -p ./tmp` and removes stale nodes before and after.
 - Not covered: read-only mode (no `response_pipe_path`), hex-encoded binary payloads, and
   concurrent writers. The round-trip is the one that proves the plumbing both ways.
+- The failure test uses its own `./tmp/netget-test-fifo-fail.{in,out}` nodes so the two tests
+  cannot collide when run in parallel. Both sets are still fixed paths, so two concurrent runs
+  of this suite would.

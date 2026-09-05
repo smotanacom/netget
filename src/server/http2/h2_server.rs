@@ -463,6 +463,12 @@ pub async fn handle_h2_request(
             let mut response_headers = HashMap::new();
             let mut response_body = String::new();
             let mut pushes = Vec::new();
+            // Did any action actually yield a response? Without this the 200 above is emitted
+            // whenever the model answered with nothing, with output that is not JSON, or with
+            // JSON carrying no status/headers/body — an empty 200 that a client reads as a
+            // successful, empty resource. A server push alone does not count: a PUSH_PROMISE
+            // is an extra resource offered alongside an answer, not the answer itself.
+            let mut produced_response = false;
 
             for protocol_result in execution_result.protocol_results {
                 match protocol_result {
@@ -519,6 +525,7 @@ pub async fn handle_h2_request(
                                     json_value.get("status").and_then(|v| v.as_u64())
                                 {
                                     status_code = status as u16;
+                                    produced_response = true;
                                 }
                                 if let Some(headers_obj) =
                                     json_value.get("headers").and_then(|v| v.as_object())
@@ -526,12 +533,14 @@ pub async fn handle_h2_request(
                                     for (k, v) in headers_obj {
                                         if let Some(v_str) = v.as_str() {
                                             response_headers.insert(k.clone(), v_str.to_string());
+                                            produced_response = true;
                                         }
                                     }
                                 }
                                 if let Some(body) = json_value.get("body").and_then(|v| v.as_str())
                                 {
                                     response_body = body.to_string();
+                                    produced_response = true;
                                 }
                             }
                         }
@@ -608,6 +617,37 @@ pub async fn handle_h2_request(
                         }
                     }
                 }
+            }
+
+            // Nothing usable came back. Refuse rather than emitting the pre-set 200, which a
+            // client cannot tell from a real, empty answer.
+            if !produced_response {
+                warn!(
+                    "HTTP/2 {} {} decision=fail_closed_no_action: actions ran but none \
+                     yielded a response",
+                    method, uri
+                );
+                let _ = status_tx.send(format!(
+                    "✗ HTTP/2 {} {} → 500 (no response action produced)",
+                    method, uri
+                ));
+                let body = crate::utils::WireFailure::Unavailable.prefixed_text();
+                let response = Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(())?;
+                let mut stream = send_response.send_response(response, false)?;
+                stream.send_data(Bytes::from(body), true)?;
+                app_state
+                    .update_connection_stats(
+                        server_id,
+                        connection_id,
+                        None,
+                        Some(body.len() as u64),
+                        None,
+                        Some(1),
+                    )
+                    .await;
+                return Ok(());
             }
 
             // Send main response

@@ -59,12 +59,38 @@ An element that will not convert is silently dropped from the batch.
 
 ### Failure behavior
 
-- **No response action** → `{ok: 0, code: 59, errmsg: "netget: no response
-  produced for command '<name>'"}`, logged at WARN. MongoDB is strictly
-  request/response; staying silent hangs the driver until its own timeout.
-- **LLM call fails** → the error propagates and the connection ends.
-- **Unknown response action type** → an error, rather than the old silent
-  `{ok: 1}`.
+MongoDB is strictly request/response: a command with no reply hangs the driver
+until its own timeout, which it then reports as a *network* fault — sending a
+replica-set-aware driver looking for another node instead of surfacing a server
+error. So every failure answers, and every answer carries a category only. The
+error itself goes to `tracing::error!` and the status stream; nothing derived
+from it reaches the socket (`crate::utils::WireFailure`, `&'static str` by
+construction).
+
+Four outcomes, each with its own `decision=` tag in the log:
+
+| Outcome | `decision=` | Reply |
+|---|---|---|
+| The model chose `error_response` | `model_reject` | `{ok: 0, code, errmsg}` — the model's own |
+| The model produced no response action | `fail_closed_no_answer` | `{ok: 0, code: 59, errmsg: "netget: no response produced for command '<name>'"}` |
+| The model's answer would not encode | `fail_closed_unusable_answer` | `{ok: 0, code: 1, errmsg: "netget: request could not be processed"}` |
+| The LLM call errored | `fail_closed_llm_error` | `{ok: 0, code: 365 or 1}` (see below) |
+
+The LLM-error reply splits the two `WireFailure` categories onto distinct codes:
+`Overloaded` → **365 `TemporarilyUnavailable`** with `errmsg: "netget: backend at
+capacity, retry later"`, `Unavailable` → **1 `InternalError`** with `errmsg:
+"netget: request could not be processed"`. The choice of 365 is constrained:
+MongoDB's *driver-retryable* codes all describe replica-set failover
+(`ShutdownInProgress`, `PrimarySteppedDown`, `NotWritablePrimary`) and claiming
+one would send the driver hunting for a primary that does not exist. 365 says
+"saturated, try again" without asserting anything about topology.
+
+`{ok: 0}` is the only shape a driver reads as a command failure. Anything with
+`ok: 1` is a *result*, and an empty `find` result means "no documents matched" —
+a claim about the data that nothing here is in a position to make.
+
+The connection stays open in all four cases; only `close_this_connection` and a
+malformed wire message end it.
 
 ### Handshake
 

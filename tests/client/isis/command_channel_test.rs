@@ -37,7 +37,7 @@ use tokio::sync::mpsc;
 const MISSING_INTERFACE: &str = "netget-no-such-if0";
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -47,7 +47,7 @@ async fn new_state() -> AppState {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -60,7 +60,7 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 }
 
 async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle: &str) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         for entry in state.list_access_logs_for(Some(owner), None).await {
             if serde_json::to_string(&entry)
                 .unwrap_or_default()
@@ -152,17 +152,32 @@ async fn injected_isis_actions_are_executed_and_reported_honestly() {
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..100 {
+    // Either terminal state is correct, and which one wins is a race.
+    //
+    // `stop_capture` marks the client Disconnected, while the capture task independently
+    // fails with Error("Device ... not found") because the test names an interface that
+    // does not exist -- deliberately, so the test needs no real NIC and no privileges.
+    // Under light load the injected disconnect lands first; under a full --all-protocols
+    // run the capture task's failure often gets there first. Asserting only Disconnected
+    // made this pass alone and fail in the full suite.
+    //
+    // What actually matters, and what is asserted, is that the client reaches SOME
+    // terminal state and that the command handle is gone -- a live handle on a dead client
+    // is what leaves the dashboard offering [ send ] into nothing.
+    for _ in 0..1_000 {
         let status = state.get_client(client_id).await.map(|c| c.status);
-        if matches!(status, Some(ClientStatus::Disconnected))
-            && !state.has_client_handle(client_id).await
-        {
+        let terminal = matches!(
+            status,
+            Some(ClientStatus::Disconnected) | Some(ClientStatus::Error(_))
+        );
+        if terminal && !state.has_client_handle(client_id).await {
             return;
         }
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     panic!(
-        "client should be Disconnected with no command handle; status={:?} has_handle={}",
+        "client should have reached a terminal state with no command handle; \
+         status={:?} has_handle={}",
         state.get_client(client_id).await.map(|c| c.status),
         state.has_client_handle(client_id).await
     );

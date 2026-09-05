@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "nfs")]
 use async_trait::async_trait;
@@ -718,8 +718,35 @@ impl NFSFileSystem for LlmNfsFileSystem {
                             return Err(nfsstat3::NFS3ERR_NOENT);
                         }
 
-                        debug!("NFS remove succeeded: {}", filename_str);
-                        return Ok(());
+                        // `success` is declared `required: true` on this action and was never
+                        // read: only a non-empty `error` string produced a failure, so
+                        // `{"type": "nfs_remove_response", "success": false}` — the obvious way
+                        // for a model to refuse a delete — was reported to the client as a
+                        // completed removal. Honour it, and refuse when it is absent rather
+                        // than assuming the file went away.
+                        match action.get("success").and_then(|v| v.as_bool()) {
+                            Some(true) => {
+                                debug!("NFS remove succeeded: {}", filename_str);
+                                return Ok(());
+                            }
+                            Some(false) => {
+                                debug!(
+                                    "NFS remove refused by handler for {} \
+                                     (decision=model_reject)",
+                                    filename_str
+                                );
+                                return Err(nfsstat3::NFS3ERR_ACCES);
+                            }
+                            None => {
+                                warn!(
+                                    "NFS remove: nfs_remove_response for {} omitted the required \
+                                     `success` boolean (decision=fail_closed_no_success); \
+                                     refusing rather than assuming the file was removed",
+                                    filename_str
+                                );
+                                return Err(nfsstat3::NFS3ERR_SERVERFAULT);
+                            }
+                        }
                     }
                 }
                 Err(self.llm_no_answer("remove", "nfs_remove_response"))
@@ -755,8 +782,33 @@ impl NFSFileSystem for LlmNfsFileSystem {
                             return Err(nfsstat3::NFS3ERR_ACCES);
                         }
 
-                        debug!("NFS rename succeeded: {} -> {}", from_name, to_name);
-                        return Ok(());
+                        // Same defect as `remove`: `success` is declared required on
+                        // `nfs_rename_response` and was never read, so a model refusing with
+                        // `success: false` renamed the file anyway as far as the client knew.
+                        match action.get("success").and_then(|v| v.as_bool()) {
+                            Some(true) => {
+                                debug!("NFS rename succeeded: {} -> {}", from_name, to_name);
+                                return Ok(());
+                            }
+                            Some(false) => {
+                                debug!(
+                                    "NFS rename refused by handler for {} -> {} \
+                                     (decision=model_reject)",
+                                    from_name, to_name
+                                );
+                                return Err(nfsstat3::NFS3ERR_ACCES);
+                            }
+                            None => {
+                                warn!(
+                                    "NFS rename: nfs_rename_response for {} -> {} omitted the \
+                                     required `success` boolean \
+                                     (decision=fail_closed_no_success); refusing rather than \
+                                     assuming the rename happened",
+                                    from_name, to_name
+                                );
+                                return Err(nfsstat3::NFS3ERR_SERVERFAULT);
+                            }
+                        }
                     }
                 }
                 Err(self.llm_no_answer("rename", "nfs_rename_response"))

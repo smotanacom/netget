@@ -6,15 +6,57 @@ Layer 2 Address Resolution Protocol (ARP) server that captures and responds to A
 Allows the LLM to respond to "who has" queries with custom MAC addresses, enabling ARP spoofing simulation, network
 mapping experiments, and honeypot operations.
 
+### It cannot run on loopback, and now says so
+
+`arp` is an **Ethernet-only BPF keyword**. On a link type with no Ethernet header — loopback
+(`lo`/`lo0`, DLT_NULL/DLT_LOOP), tunnels, raw-IP devices — libpcap compiles the filter to
+"expression rejects all packets" and returns an error, so `spawn()` refuses. That refusal is
+correct: an ARP server there would sit in `ServerStatus::Running` having captured nothing,
+forever, which is precisely the failure `tests/capture_startup_reports_failure_test.rs` exists
+to prevent. Point it at a real Ethernet or Wi-Fi interface.
+
+What *was* wrong is that the error quoted libpcap's optimiser rather than the reason. It now
+names the interface and explains the link layer.
+
+This is the same trap `src/tui/wireshark.rs` documents for `isis`, and it bit the test suite
+in a way worth remembering: `arp_spawn_outcome_matches_capture_privilege` asserted "capture
+access implies spawn succeeds on loopback", which is true for `datalink` and `isis` and false
+here. It was **green in CI and red on any developer machine with `/dev/bpf*` access** — the
+unprivileged runner passed for the unrelated reason that the capture open failed before the
+filter was ever compiled. The test now asserts the honest contract in both branches.
+
 ### Default behaviour: static (answer nothing), no LLM
 
 An ARP reply is **not wire-determined** — the MAC advertised is a policy choice
 (spoofing/honeypot/custom mapping), like DNS/DHCP. So with **no operator policy** (no server
 instruction and no per-event handler), the server **answers nothing** — it has no MAC to claim —
-and takes **no LLM round-trip per captured packet** (gated by `should_call_llm` in `mod.rs` =
+and takes **no LLM round-trip per captured packet** (gated by `operator_wants_dynamic` in `mod.rs` =
 `has_instruction || has_handler`). The LLM is consulted **only when the operator opts in** with the
 mapping to serve (an instruction or a handler). The material below describing the model receiving
 ARP events and returning `send_arp_reply` therefore describes the opt-in path, not the default.
+
+### LLM failure: silence is the correct answer, and the log says which silence
+
+ARP has **no error message**. The only frame this server can emit is a reply asserting that some
+MAC owns the queried IP — and that MAC is exactly what the failed LLM call was supposed to decide.
+Fabricating one would poison the requester's neighbour cache; a requester that hears nothing simply
+times out, which is RFC 826's normal outcome for "nobody here owns that address". So on an LLM
+error the server deliberately puts **nothing** on the wire. This is the documented exception to the
+"answer the peer on backend failure" rule in the root `CLAUDE.md`, not an oversight.
+
+Because all outcomes look identical on the wire, they are separated **in the log** by a `decision=`
+tag, the same way `radius` separates its cases:
+
+| Tag | Meaning |
+|---|---|
+| `decision=no_policy` | No instruction and no handler — static default, no LLM call at all |
+| `decision=model_reject` | The model answered with `ignore_arp` — a real decision not to reply |
+| `decision=model_no_answer` | The model returned no actions |
+| `decision=fail_closed_overloaded` | The LLM call errored and `WireFailure::classify` said the backend is saturated (retryable) |
+| `decision=fail_closed_llm_error` | The LLM call errored otherwise |
+
+The full error goes to `tracing::error!` and the status stream (operator-facing, both local). It
+never reaches a peer, because no packet is sent.
 
 **Status**: Experimental (Layer 2 Protocol)
 **Layer**: OSI Layer 2 (Data Link)

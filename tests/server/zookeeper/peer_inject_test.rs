@@ -19,7 +19,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -154,7 +154,9 @@ async fn injected_zookeeper_action_reaches_raw_socket_and_close_sends_eof() {
         .send_to_peer(
             server_id,
             conn,
-            serde_json::json!({"type": "zookeeper_response", "zxid": 43}),
+            // `error_code` is required on this action: 0 says the operation succeeded, and
+            // the executor refuses to assume it.
+            serde_json::json!({"type": "zookeeper_response", "zxid": 43, "error_code": 0}),
             Duration::from_secs(5),
         )
         .await

@@ -34,7 +34,7 @@ const BATTERY_SERVICE: &str = "0000180f-0000-1000-8000-00805f9b34fb";
 const BATTERY_LEVEL: &str = "00002a19-0000-1000-8000-00805f9b34fb";
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -44,7 +44,7 @@ async fn new_state() -> AppState {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }

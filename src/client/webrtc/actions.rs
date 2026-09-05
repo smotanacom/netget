@@ -11,25 +11,6 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::LazyLock;
 
-/// WebRTC client connected event (data channel opened) - DEPRECATED
-/// Use WEBRTC_CLIENT_CHANNEL_OPENED_EVENT instead
-pub static WEBRTC_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
-        "webrtc_connected",
-        "WebRTC data channel opened and ready to send messages (deprecated)",
-        json!({
-            "type": "send_message",
-            "message": "Hello, peer!"
-        }),
-    )
-    .with_parameters(vec![Parameter {
-        name: "channel_label".to_string(),
-        type_hint: "string".to_string(),
-        description: "Data channel label".to_string(),
-        required: true,
-    }])
-});
-
 /// WebRTC client channel opened event (supports multi-channel)
 pub static WEBRTC_CLIENT_CHANNEL_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(

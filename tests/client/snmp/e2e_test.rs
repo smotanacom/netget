@@ -37,6 +37,7 @@ mod snmp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection message. Output: {:?}",
@@ -46,8 +47,16 @@ mod snmp_client_tests {
         println!("✅ SNMP client connected and queried OID successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -92,8 +101,16 @@ mod snmp_client_tests {
         println!("✅ SNMP client walked MIB tree using GETNEXT");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -133,6 +150,7 @@ mod snmp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client connected
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should connect. Output: {:?}",
@@ -142,8 +160,16 @@ mod snmp_client_tests {
         println!("✅ SNMP client retrieved bulk data with GETBULK");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -186,8 +212,16 @@ mod snmp_client_tests {
         println!("✅ SNMP client sent SET request successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -225,6 +259,7 @@ mod snmp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client connected successfully
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should connect with correct community string. Output: {:?}",
@@ -234,8 +269,16 @@ mod snmp_client_tests {
         println!("✅ SNMP client authenticated with custom community string");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -272,6 +315,10 @@ mod snmp_client_tests {
         println!("✅ SNMP client handled timeout correctly");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

@@ -153,6 +153,26 @@ half-built.
 3. **set_peer_traffic_limit**: **NOT ENFORCED** - logged only. No tc/iptables configuration is performed.
 4. **disconnect_peer**: remove the peer from the interface, tearing down its tunnel
 
+### Decision logging on the peer-connected event
+
+`handle_peer_connected` emits one stable `decision=` token per event so the outcomes cannot be
+confused with each other in the log (the `radius` separation, applied here):
+
+| token | meaning |
+|---|---|
+| `model_authorize` / `model_reject` | the model changed the interface (and `*_failed` when the change itself errored) |
+| `model_authorize_invalid` | an `authorize_peer` with no usable `allowed_ips`, ignored |
+| `model_no_action` | the model deliberately answered with nothing — "leave the peer as-is" |
+| `fail_closed_llm_error` | the LLM call errored; no decision was produced (logged at ERROR, with a `category=overloaded\|unavailable` classification from `crate::utils::WireFailure`) |
+
+**Nothing is written to the peer on failure, and that is correct.** WireGuard has no error
+frame, and the peer's handshake has already completed in the backend before the event fires, so
+no peer is blocked waiting for an answer. The peer is also *not* removed on an LLM error: it is
+only on the interface because an explicit earlier `wireguard_add_peer` authorized its key
+(unconfigured keys are dropped by the backend), so tearing it down would convert a backend
+hiccup into a VPN outage for an already-authorized peer. The full error goes to the file log and
+the TUI status stream only — never to the wire.
+
 ### Event Types
 
 - `wireguard_peer_connected`: peer completed its handshake and appeared on the interface

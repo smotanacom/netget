@@ -354,6 +354,10 @@ async fn test_websocket_client_against_hand_written_server() -> E2EResult<()> {
          straight back into send_websocket_binary must reproduce the received bytes"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(30).await;
     client.verify_mocks().await?;
     client.stop().await?;
     Ok(())

@@ -41,7 +41,7 @@ mod tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Client connects (peer added)
-                    .on_event("wireguard_peer_added")
+                    .on_event("wireguard_peer_connected")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "authorize_peer",
@@ -107,6 +107,11 @@ mod tests {
         println!("✅ WireGuard client connected successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -175,6 +180,10 @@ mod tests {
 
         println!("✅ WireGuard client status query successful");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -245,6 +254,10 @@ mod tests {
 
         println!("✅ WireGuard client disconnect successful");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

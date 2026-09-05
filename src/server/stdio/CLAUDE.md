@@ -70,7 +70,16 @@ an action error not a panic — the `send_tcp_data` lesson.
 
 - **`spawn()` refuses cleanly** (returns `Err`, no half-started state) under a TTY, `--mcp`, or a
   second stdio server.
-- **Fail closed** on LLM error: emits nothing, logs ERROR on both channels.
+- **Fail closed** on LLM error, and *say so on fd 2*. stdout is the payload stream a downstream
+  process parses, so nothing diagnostic is ever written there. stderr is where a Unix filter
+  reports that it could not do its job, so it receives exactly one category-only line from
+  `crate::utils::WireFailure` — `netget: backend at capacity, retry later` (Overloaded) or
+  `netget: request could not be processed` (Unavailable) — and never the backend error, model
+  name, URL or `anyhow` chain, which go to the log/status channel alone.
+- **Three outcomes, distinguishable in the log** via a `decision=` tag (the `radius` separation):
+  `model_answer` / `model_close` (the model acted), `model_silent` (the model answered with no
+  actions — a real answer for a filter, which emits nothing), and
+  `fail_closed_overloaded` / `fail_closed_unavailable` (the backend failed).
 - Processing is serial (a pipe is a serial stream). The read loop is registered via
   `register_server_task`; a `StdioClaimGuard` releases the process claim on stop/abort.
 

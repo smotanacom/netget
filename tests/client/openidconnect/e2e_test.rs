@@ -48,6 +48,10 @@ mod openid_connect_client_tests {
         println!("✅ OpenID Connect client initialized and attempted discovery");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -82,6 +86,10 @@ mod openid_connect_client_tests {
         println!("✅ OpenID Connect client configured with parameters");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -121,6 +129,10 @@ mod openid_connect_client_tests {
         println!("✅ OpenID Connect client interpreted flow instruction");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -158,6 +170,10 @@ mod openid_connect_client_tests {
         println!("✅ OpenID Connect client handled invalid provider gracefully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -195,6 +211,10 @@ mod openid_connect_client_tests {
         println!("✅ OpenID Connect client handled disconnect instruction");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

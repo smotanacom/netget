@@ -96,7 +96,7 @@ skips.
 
 `--test-threads=100` is safe: the framework holds a suite-wide lock for each
 test, so live tests run one at a time regardless of thread count. This is
-necessary — netget children share `--ollama-lock`, and N concurrent startups
+necessary — netget children share one local Ollama, and N concurrent startups
 would queue N setup calls behind it and blow the startup timeout (the first
 full run failed 16/17 tests exactly that way). Budget: an event case is one
 model call (~45s at 27B); a wire request test is setup-free plus one call per

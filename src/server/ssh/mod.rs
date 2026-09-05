@@ -379,10 +379,19 @@ impl SshHandler {
                     if let ActionResult::Custom { name, data } = protocol_result {
                         if name == "ssh_auth_decision" {
                             if let Some(allowed) = data.get("allowed").and_then(|v| v.as_bool()) {
+                                // Three outcomes reach the same SSH_MSG_USERAUTH_FAILURE on the
+                                // wire, so the `decision=` tag is the only thing that tells an
+                                // operator which one happened. Keep the three distinct, the way
+                                // `src/server/radius/` does: an explicit denial, silence, and a
+                                // backend failure are different incidents.
+                                let decision = if allowed {
+                                    "model_accept"
+                                } else {
+                                    "model_reject"
+                                };
                                 Log::new(Some(&self.status_tx)).info(format!(
-                                    "SSH auth decision for '{}': {}",
-                                    username,
-                                    if allowed { "allowed" } else { "denied" }
+                                    "SSH auth for '{}': decision={}",
+                                    username, decision
                                 ));
                                 return Ok(allowed);
                             }
@@ -392,8 +401,11 @@ impl SshHandler {
 
                 // If no auth decision found, deny by default. Non-fatal: the client
                 // gets a real SSH_MSG_USERAUTH_FAILURE, so this is a WARN, not an error.
-                Log::new(Some(&self.status_tx))
-                    .warn("SSH auth: no decision returned, denying by default");
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "SSH auth for '{}': decision=fail_closed_no_answer (handler returned no \
+                     ssh_auth_decision)",
+                    username
+                ));
                 Ok(false)
             }
             Err(e) => {
@@ -401,13 +413,20 @@ impl SshHandler {
                 // unreachable backend is not consent, and the client gets a real
                 // SSH_MSG_USERAUTH_FAILURE rather than a hung authentication. Non-fatal
                 // (the refusal is a real wire answer), so WARN rather than ERROR.
+                //
+                // The error is classified, never rendered to the peer — SSH has no way to
+                // explain an auth failure anyway, so the category lives only in the log.
+                let failure = crate::utils::WireFailure::classify(&e);
+                warn!(
+                    "SSH auth for '{}' on connection {}: decision=fail_closed_backend_error \
+                     category={:?}: {}",
+                    username, self.connection_id, failure, e
+                );
                 Log::new(Some(&self.status_tx)).warn(format!(
-                    "SSH auth denied for '{}' on connection {}: LLM error: {}",
-                    username, self.connection_id, e
+                    "SSH auth denied for '{}' on connection {}: \
+                     decision=fail_closed_backend_error category={:?}",
+                    username, self.connection_id, failure
                 ));
-                if crate::llm::is_overload_error(&e) {
-                    warn!("SSH auth denied for '{}': LLM capacity exhausted", username);
-                }
                 Ok(false)
             }
         }
@@ -447,15 +466,21 @@ impl SshHandler {
                 }
 
                 // No banner in results
-                debug!("SSH: No banner returned by LLM");
+                debug!("SSH banner: decision=no_answer (handler returned no banner)");
                 Ok(None)
             }
             Err(e) => {
                 // A missing banner is cosmetic - the shell still opens and the server writes
-                // its own "$ " prompt, so the peer is not left waiting. Non-fatal, so WARN.
+                // its own "$ " prompt, so the peer is not left waiting. Nothing derived from
+                // the error is shown to the peer; only the log sees it. Non-fatal, so WARN.
+                let failure = crate::utils::WireFailure::classify(&e);
+                warn!(
+                    "SSH banner on connection {}: decision=backend_error category={:?}: {}",
+                    self.connection_id, failure, e
+                );
                 Log::new(Some(&self.status_tx)).warn(format!(
-                    "SSH banner unavailable on connection {}: {}",
-                    self.connection_id, e
+                    "SSH banner unavailable on connection {}: decision=backend_error category={:?}",
+                    self.connection_id, failure
                 ));
                 Ok(None)
             }
@@ -551,9 +576,19 @@ impl SshHandler {
                 // printed nothing. The caller now sends an SSH disconnect with a reason code
                 // instead, which is a real answer the client reports to the user. Non-fatal
                 // (the disconnect is a defined wire response), so WARN rather than ERROR.
+                //
+                // The error is logged in full here and nowhere else; the callers get it only
+                // to classify it, and put a `&'static str` category on the wire.
+                let failure = crate::utils::WireFailure::classify(&e);
+                warn!(
+                    "SSH shell command on connection {}: decision=fail_closed_backend_error \
+                     category={:?}: {}",
+                    self.connection_id, failure, e
+                );
                 Log::new(Some(&self.status_tx)).warn(format!(
-                    "SSH shell command LLM error on connection {}: {}",
-                    self.connection_id, e
+                    "SSH shell command failed on connection {}: \
+                     decision=fail_closed_backend_error category={:?}",
+                    self.connection_id, failure
                 ));
                 Err(e)
             }
@@ -796,14 +831,60 @@ impl russh::server::Handler for SshHandler {
 
         // Execute command via LLM. A one-shot `ssh host <cmd>` is always the first (and only)
         // input on this channel.
-        if let Ok((Some(output_text), _close)) = self.llm_shell_command(data, true).await {
-            let data = CryptoVec::from_slice(output_text.as_bytes());
-            session.data(channel_id, data);
-            debug!("Sent exec output ({} bytes)", output_text.len());
-        }
+        //
+        // The exit status is the whole answer for a one-shot exec: a script running
+        // `ssh host cmd` branches on it and, in the common `$(ssh host cmd)` form, never even
+        // sees stderr. So a backend failure has to exit non-zero. This used to send
+        // `exit-status 0` with no output on every branch, which is indistinguishable from a
+        // command that ran and printed nothing — the same defect the interactive shell path
+        // already fixes by disconnecting.
+        let exit_status: u32 = match self.llm_shell_command(data, true).await {
+            Ok((output, _close)) => {
+                if let Some(output_text) = output {
+                    let data = CryptoVec::from_slice(output_text.as_bytes());
+                    session.data(channel_id, data);
+                    debug!("Sent exec output ({} bytes)", output_text.len());
+                } else {
+                    // The handler answered, but with nothing to print. That is a legitimate
+                    // "command succeeded silently", and it stays exit 0 — but it is tagged
+                    // separately from the backend-error case so the log can tell them apart.
+                    Log::new(Some(&self.status_tx)).debug(format!(
+                        "SSH exec on channel {}: decision=model_answer_empty",
+                        channel_id
+                    ));
+                }
+                0
+            }
+            Err(e) => {
+                // `llm_shell_command` has already logged the error in full. Here the error is
+                // used only to pick a category: `WireFailure::prefixed_text()` is a
+                // `&'static str`, so nothing derived from `e` can reach the peer.
+                let failure = crate::utils::WireFailure::classify(&e);
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "SSH exec on channel {}: decision=fail_closed_backend_error category={:?}",
+                    channel_id, failure
+                ));
+
+                // stderr, not stdout: `$(ssh host cmd)` captures stdout, and a notice mixed
+                // into it would be indistinguishable from the command's own output.
+                let notice =
+                    CryptoVec::from_slice(format!("{}\r\n", failure.prefixed_text()).as_bytes());
+                session.extended_data(channel_id, 1, notice);
+
+                // Distinct statuses so a caller can back off instead of recording a permanent
+                // fault: sysexits.h EX_TEMPFAIL (75) for a saturated backend, EX_UNAVAILABLE
+                // (69) for anything else. SSH itself has no error code of its own here — the
+                // exit status is the only field that can carry the distinction.
+                if failure.is_overloaded() {
+                    75
+                } else {
+                    69
+                }
+            }
+        };
 
         // Close channel after exec
-        session.exit_status_request(channel_id, 0);
+        session.exit_status_request(channel_id, exit_status);
         session.eof(channel_id);
         session.close(channel_id);
 
@@ -947,23 +1028,24 @@ impl russh::server::Handler for SshHandler {
                         // SSH_DISCONNECT_SERVICE_NOT_AVAILABLE (7) is the closest reason
                         // RFC 4253 §11.1 defines, and ssh(1) prints it verbatim.
                         if let Err(ref e) = command_result {
-                            let overloaded = crate::llm::is_overload_error(e);
-                            let description = if overloaded {
-                                "netget: backend at capacity, try again later"
-                            } else {
-                                "netget: command handler unavailable"
-                            };
-                            if overloaded {
-                                warn!(
-                                    "SSH disconnecting channel {}: LLM capacity exhausted",
-                                    channel_id
-                                );
-                            }
+                            // `llm_shell_command` logged the error in full. Only the category
+                            // travels from here on: `prefixed_text()` is a `&'static str`, so
+                            // no backend URL, model name or anyhow chain can reach the
+                            // terminal of whoever is logged in.
+                            let failure = crate::utils::WireFailure::classify(e);
+                            let description = failure.prefixed_text();
                             let notice = CryptoVec::from_slice(
                                 format!("\r\n{}\r\n", description).as_bytes(),
                             );
                             session.data(channel_id, notice);
-                            session.exit_status_request(channel_id, 1);
+                            // sysexits.h: EX_TEMPFAIL (75) says "retry", EX_UNAVAILABLE (69)
+                            // says "do not". SSH's disconnect reason codes have no equivalent
+                            // pair, so the exit status carries the distinction — matching what
+                            // `exec_request` reports for the same failure.
+                            session.exit_status_request(
+                                channel_id,
+                                if failure.is_overloaded() { 75 } else { 69 },
+                            );
                             session.eof(channel_id);
                             session.close(channel_id);
                             session.disconnect(
@@ -972,8 +1054,9 @@ impl russh::server::Handler for SshHandler {
                                 "en",
                             );
                             Log::new(Some(&self.status_tx)).warn(format!(
-                                "SSH disconnected channel {} after LLM error",
-                                channel_id
+                                "SSH disconnected channel {}: \
+                                 decision=fail_closed_backend_error category={:?}",
+                                channel_id, failure
                             ));
                         }
 

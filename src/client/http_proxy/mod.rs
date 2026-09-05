@@ -51,7 +51,28 @@ impl HttpProxyClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
+        // `proxy_auth` and `default_target` were both declared and neither was read: a
+        // proxy that requires authentication answered 407 to every CONNECT with nothing in
+        // the parameter list to explain it, and `default_target` named a tunnel nothing
+        // ever opened.
+        //
+        // `proxy_auth` is `username:password`, so it is resolved once here into the
+        // `Proxy-Authorization: Basic ...` value every CONNECT now carries.
+        let (proxy_auth, default_target) = match &startup_params {
+            Some(params) => (
+                params.get_optional_string("proxy_auth")?,
+                params.get_optional_string("default_target")?,
+            ),
+            None => (None, None),
+        };
+        let proxy_authorization = proxy_auth.map(|credentials| {
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
+            format!("Basic {encoded}")
+        });
+
         // Connect to the proxy server
         let stream = TcpStream::connect(&remote_addr).await.context(format!(
             "Failed to connect to HTTP proxy at {}",
@@ -65,6 +86,25 @@ impl HttpProxyClient {
             "HTTP proxy client {} connected to proxy {} (local: {})",
             client_id, remote_sock_addr, local_addr
         );
+
+        // Stored so both the tunnel task and an injected `establish_tunnel` read the same
+        // configuration rather than each carrying its own copy.
+        app_state
+            .with_client_mut(client_id, |client| {
+                if let Some(value) = &proxy_authorization {
+                    client.set_protocol_field(
+                        "proxy_authorization".to_string(),
+                        serde_json::json!(value),
+                    );
+                }
+                if let Some(target) = &default_target {
+                    client.set_protocol_field(
+                        "default_target".to_string(),
+                        serde_json::json!(target),
+                    );
+                }
+            })
+            .await;
 
         // Update client state
         app_state
@@ -145,24 +185,27 @@ impl HttpProxyClient {
                                 ClientActionResult::Custom { name, data }
                                     if name == "establish_tunnel" =>
                                 {
-                                    // Handle tunnel establishment
-                                    if let (Some(target_host), Some(target_port)) = (
+                                    // Handle tunnel establishment. A target the model did
+                                    // not fully specify falls back to `default_target`,
+                                    // which is what that parameter is for.
+                                    let target = match (
                                         data.get("target_host").and_then(|v| v.as_str()),
                                         data.get("target_port").and_then(|v| v.as_u64()),
                                     ) {
+                                        (Some(host), Some(port)) => Some(format!("{host}:{port}")),
+                                        _ => default_target.clone(),
+                                    };
+                                    if let Some(target) = target {
                                         info!(
-                                            "HTTP proxy client {} establishing tunnel to {}:{}",
-                                            client_id, target_host, target_port
+                                            "HTTP proxy client {} establishing tunnel to {}",
+                                            client_id, target
                                         );
                                         // We'll establish the tunnel in the spawn task below
                                         app_state
                                             .with_client_mut(client_id, |client| {
                                                 client.set_protocol_field(
                                                     "tunnel_target".to_string(),
-                                                    serde_json::json!(format!(
-                                                        "{}:{}",
-                                                        target_host, target_port
-                                                    )),
+                                                    serde_json::json!(target),
                                                 );
                                             })
                                             .await;
@@ -177,6 +220,21 @@ impl HttpProxyClient {
                     error!("LLM error for HTTP proxy client {}: {}", client_id, e);
                 }
             }
+        }
+
+        // `default_target` means "open this tunnel", not "open it only if the model also
+        // asks". If nothing selected a target above, it is the target.
+        if let Some(target) = &default_target {
+            app_state
+                .with_client_mut(client_id, |client| {
+                    if client.get_protocol_field("tunnel_target").is_none() {
+                        client.set_protocol_field(
+                            "tunnel_target".to_string(),
+                            serde_json::json!(target),
+                        );
+                    }
+                })
+                .await;
         }
 
         // Initialize client data
@@ -214,7 +272,8 @@ impl HttpProxyClient {
                     let target_port = parts[1];
 
                     // Send CONNECT request
-                    let connect_request = connect_request(target_host, target_port);
+                    let connect_request =
+                        connect_request(target_host, target_port, proxy_authorization.as_deref());
 
                     debug!(
                         "HTTP proxy client {} sending CONNECT request: {}",
@@ -587,10 +646,22 @@ impl HttpProxyClient {
 
 /// The CONNECT request the client puts on the wire — the one encoder for both the LLM's
 /// `establish_tunnel` (via the tunnel task) and a dashboard-injected one.
-fn connect_request(target_host: &str, target_port: &str) -> String {
+///
+/// `proxy_authorization` is the already-encoded credential from the `proxy_auth` startup
+/// parameter (`Basic <base64(user:pass)>`). RFC 7235 §4.4 puts it on the CONNECT itself,
+/// which is the only request the proxy ever sees — everything after it is tunnel bytes.
+fn connect_request(
+    target_host: &str,
+    target_port: &str,
+    proxy_authorization: Option<&str>,
+) -> String {
+    let auth = match proxy_authorization {
+        Some(value) => format!("Proxy-Authorization: {value}\r\n"),
+        None => String::new(),
+    };
     format!(
-        "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n\r\n",
-        target_host, target_port, target_host, target_port
+        "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n{}\r\n",
+        target_host, target_port, target_host, target_port, auth
     )
 }
 
@@ -620,17 +691,36 @@ where
     let action = command.action.clone();
     let outcome: anyhow::Result<ClientSendOutcome> = match protocol.execute_action(action.clone()) {
         Ok(ClientActionResult::Custom { data, .. }) => {
-            let host = data
-                .get("target_host")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let port = data
-                .get("target_port")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)
-                .to_string();
-            let bytes = connect_request(&host, &port).into_bytes();
+            // The same two startup parameters the LLM path honours: an injected CONNECT
+            // that names no target uses `default_target`, and every injected CONNECT
+            // carries the `proxy_auth` credential.
+            let (default_target, proxy_authorization) = state
+                .with_client_mut(client_id, |client| {
+                    (
+                        client
+                            .get_protocol_field("default_target")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        client
+                            .get_protocol_field("proxy_authorization")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                    )
+                })
+                .await
+                .unwrap_or((None, None));
+
+            let (host, port) = match (
+                data.get("target_host").and_then(|v| v.as_str()),
+                data.get("target_port").and_then(|v| v.as_u64()),
+            ) {
+                (Some(host), Some(port)) => (host.to_string(), port.to_string()),
+                _ => match default_target.as_deref().and_then(|t| t.rsplit_once(':')) {
+                    Some((host, port)) => (host.to_string(), port.to_string()),
+                    None => (String::new(), "0".to_string()),
+                },
+            };
+            let bytes = connect_request(&host, &port, proxy_authorization.as_deref()).into_bytes();
             let mut guard = write_half.lock().await;
             match guard.write_all(&bytes).await {
                 Ok(()) => match guard.flush().await {

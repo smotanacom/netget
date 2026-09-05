@@ -178,6 +178,133 @@ pub fn bootstrap_target(
     }
 }
 
+/// The write half of a Tor circuit, once one exists.
+type TorWriteHalf = Arc<Mutex<tokio::io::WriteHalf<arti_client::DataStream>>>;
+
+/// Run one directory verb. Needs no circuit — the consensus lives in `AppState`, put there
+/// when `create_bootstrapped` returned.
+#[cfg(feature = "tor")]
+async fn run_directory_action(
+    name: &str,
+    data: &serde_json::Value,
+    client_id: ClientId,
+    app_state: &Arc<AppState>,
+    status_tx: &mpsc::UnboundedSender<String>,
+) {
+    match name {
+        "get_consensus_info" => match TorClient::get_consensus_info(app_state, client_id).await {
+            Ok(info) => {
+                let _ = status_tx.send(format!(
+                    "[TOR] Consensus: {} relays, valid until {}",
+                    info["relay_count"], info["valid_until"]
+                ));
+                trace!("Consensus info: {}", info);
+            }
+            Err(e) => {
+                error!("Failed to get consensus info: {}", e);
+                let _ = status_tx.send(format!("[TOR] Error: {}", e));
+            }
+        },
+        "list_relays" | "search_relays" => {
+            let limit = data.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+            let filter = RelayFilter {
+                flags: data.get("flags").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                }),
+                nickname_pattern: data
+                    .get("nickname")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                limit: Some(limit),
+                ..Default::default()
+            };
+            match TorClient::query_relays(app_state, client_id, filter).await {
+                Ok(relays) => {
+                    let _ = status_tx.send(format!("[TOR] Found {} relays", relays.len()));
+                    for (i, relay) in relays.iter().take(10).enumerate() {
+                        trace!(
+                            "Relay {}: {} ({})",
+                            i + 1,
+                            relay.nickname,
+                            relay.flags.join(", ")
+                        );
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to query relays: {}", e);
+                    let _ = status_tx.send(format!("[TOR] Error: {}", e));
+                }
+            }
+        }
+        other => {
+            warn!("Unknown custom action: {}", other);
+        }
+    }
+}
+
+/// Carry out what the model answered with. Returns `true` if it asked to disconnect.
+///
+/// `write_half` is `None` at `tor_bootstrap_complete`, which fires while `connect()` is still
+/// bootstrapping and no circuit exists yet. A `send_tor_data` there is **refused loudly**
+/// rather than dropped: the directory verbs are the ones that make sense at that moment, and
+/// the model needs to be told which of its answers could not be carried out. Every other
+/// caller has a circuit and passes `Some`.
+///
+/// `pub` so `tests/client/tor/` can pin the no-circuit contract directly: a live test would
+/// need a real Tor bootstrap and a circuit, which this repo has no cheap loopback for.
+pub async fn apply_actions(
+    actions: Vec<serde_json::Value>,
+    write_half: Option<&TorWriteHalf>,
+    client_id: ClientId,
+    app_state: &Arc<AppState>,
+    status_tx: &mpsc::UnboundedSender<String>,
+) -> bool {
+    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+    let protocol = crate::client::tor::actions::TorClientProtocol::new();
+
+    for action in actions {
+        match protocol.execute_action(action) {
+            Ok(ClientActionResult::SendData(bytes)) => {
+                let Some(write_half) = write_half else {
+                    warn!(
+                        "Tor client {} cannot send {} bytes: no circuit yet",
+                        client_id,
+                        bytes.len()
+                    );
+                    let _ = status_tx.send(format!(
+                        "[TOR] ✖ send_tor_data ignored for client {}: the circuit is not open yet",
+                        client_id
+                    ));
+                    continue;
+                };
+                match write_half.lock().await.write_all(&bytes).await {
+                    Ok(()) => trace!("Tor client {} sent {} bytes", client_id, bytes.len()),
+                    Err(e) => error!("Tor client {} write failed: {}", client_id, e),
+                }
+            }
+            Ok(ClientActionResult::Disconnect) => {
+                info!("Tor client {} disconnecting", client_id);
+                return true;
+            }
+            #[cfg(feature = "tor")]
+            Ok(ClientActionResult::Custom { name, data }) => {
+                run_directory_action(&name, &data, client_id, app_state, status_tx).await;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!("Tor client {} rejected action: {}", client_id, e);
+                let _ = status_tx.send(format!(
+                    "[TOR] ✖ client {} rejected action: {}",
+                    client_id, e
+                ));
+            }
+        }
+    }
+    false
+}
+
 /// Tor client that connects through the Tor network
 pub struct TorClient;
 
@@ -266,7 +393,14 @@ impl TorClient {
                         }),
                     );
 
-                    if let Err(e) = call_llm_for_client(
+                    // The answer is carried out, not just logged. At this point there is no
+                    // circuit — `connect()` has not run — so `apply_actions` gets `None` and
+                    // the directory verbs (`get_consensus_info`, `list_relays`,
+                    // `search_relays`) are the ones that can do anything. That is exactly
+                    // what this event is for: it reports `relay_count` and `valid_after`, and
+                    // its whole purpose is letting the model query the consensus it just
+                    // learned about.
+                    match call_llm_for_client(
                         &llm_client,
                         &app_state,
                         client_id.to_string(),
@@ -278,7 +412,18 @@ impl TorClient {
                     )
                     .await
                     {
-                        warn!("Failed to call LLM for bootstrap event: {}", e);
+                        Ok(ClientLlmResult {
+                            actions,
+                            memory_updates,
+                        }) => {
+                            if let Some(mem) = memory_updates {
+                                app_state.set_memory_for_client(client_id, mem).await;
+                            }
+                            apply_actions(actions, None, client_id, &app_state, &status_tx).await;
+                        }
+                        Err(e) => {
+                            warn!("Failed to call LLM for bootstrap event: {}", e);
+                        }
                     }
                 }
                 Err(e) => {
@@ -317,42 +462,11 @@ impl TorClient {
         ));
         let _ = status_tx.send("__UPDATE_UI__".to_string());
 
-        // Call LLM with connected event
-        if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
-            let protocol = Arc::new(crate::client::tor::actions::TorClientProtocol::new());
-            let event = Event::new(
-                &TOR_CLIENT_CONNECTED_EVENT,
-                serde_json::json!({
-                    "target": remote_addr,
-                }),
-            );
-
-            match call_llm_for_client(
-                &llm_client,
-                &app_state,
-                client_id.to_string(),
-                &instruction,
-                "",
-                Some(&event),
-                protocol.as_ref(),
-                &status_tx,
-            )
-            .await
-            {
-                Ok(_) => {
-                    trace!(
-                        "LLM called successfully for Tor client {} connection",
-                        client_id
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to call LLM for Tor client {} connection: {}",
-                        client_id, e
-                    );
-                }
-            }
-        }
+        // The `tor_connected` LLM call happens inside the read-loop task below, not here.
+        // Two reasons, both of which were bugs at this spot: it needs the write half to carry
+        // out what the model answers with, and it must not precede the command channel's
+        // registration — a manual `*` routing rule parks this call until a human answers, and
+        // the dashboard's `[ send ]` has to reach the client for the whole park.
 
         // Split stream into read/write halves
         let (mut read_half, write_half) = tokio::io::split(stream);
@@ -375,6 +489,62 @@ impl TorClient {
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
 
         let task_handle = tokio::spawn(async move {
+            // `tor_connected`: ask the model what to do with the circuit, then do it. The
+            // answer used to be `Ok(_) => trace!("LLM called successfully")` — the round-trip
+            // was paid for and every action the model chose was dropped on the floor, so a
+            // client told "send an HTTP GET and analyse the response" sent nothing and then
+            // waited forever for a reply to a request it never made.
+            if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
+                let protocol = crate::client::tor::actions::TorClientProtocol::new();
+                let event = Event::new(
+                    &TOR_CLIENT_CONNECTED_EVENT,
+                    serde_json::json!({ "target": remote_addr }),
+                );
+                match call_llm_for_client(
+                    &llm_client,
+                    &app_state,
+                    client_id.to_string(),
+                    &instruction,
+                    "",
+                    Some(&event),
+                    &protocol,
+                    &status_tx,
+                )
+                .await
+                {
+                    Ok(ClientLlmResult {
+                        actions,
+                        memory_updates,
+                    }) => {
+                        if let Some(mem) = memory_updates {
+                            client_data.lock().await.memory = mem;
+                        }
+                        if apply_actions(
+                            actions,
+                            Some(&write_half_arc),
+                            client_id,
+                            &app_state,
+                            &status_tx,
+                        )
+                        .await
+                        {
+                            app_state
+                                .update_client_status(client_id, ClientStatus::Disconnected)
+                                .await;
+                            let _ = status_tx.send("__UPDATE_UI__".to_string());
+                            app_state.remove_client_handle(client_id).await;
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to call LLM for Tor client {} connection: {}",
+                            client_id, e
+                        );
+                    }
+                }
+            }
+
             let mut buffer = vec![0u8; 8192];
 
             loop {
@@ -419,7 +589,13 @@ impl TorClient {
                         let data = buffer[..n].to_vec();
                         trace!("Tor client {} received {} bytes", client_id, n);
 
-                        // Handle data with LLM
+                        // Handle data with LLM.
+                        //
+                        // A `disconnect` used to `break` the `for action in actions` loop and
+                        // nothing else, so the model could never actually close a Tor client:
+                        // it stopped executing the rest of that one answer and went straight
+                        // back to reading. The flag carries the decision out to the read loop.
+                        let mut disconnect_requested = false;
                         let mut client_data_lock = client_data.lock().await;
 
                         match client_data_lock.state {
@@ -459,115 +635,20 @@ impl TorClient {
                                             actions,
                                             memory_updates,
                                         }) => {
-                                            // Update memory
                                             if let Some(mem) = memory_updates {
                                                 client_data.lock().await.memory = mem;
                                             }
-
-                                            // Execute actions
-                                            for action in actions {
-                                                use crate::llm::actions::client_trait::Client;
-                                                match protocol.as_ref().execute_action(action) {
-                                                    Ok(crate::llm::actions::client_trait::ClientActionResult::SendData(bytes)) => {
-                                                        if let Ok(_) = write_half_arc.lock().await.write_all(&bytes).await {
-                                                            trace!("Tor client {} sent {} bytes", client_id, bytes.len());
-                                                        }
-                                                    }
-                                                    Ok(crate::llm::actions::client_trait::ClientActionResult::Disconnect) => {
-                                                        info!("Tor client {} disconnecting", client_id);
-                                                        break;
-                                                    }
-                                                    #[cfg(feature = "tor")]
-                                                    Ok(crate::llm::actions::client_trait::ClientActionResult::Custom { name, data }) => {
-                                                        // Handle directory query actions
-                                                        match name.as_str() {
-                                                            "get_consensus_info" => {
-                                                                match TorClient::get_consensus_info(&app_state, client_id).await {
-                                                                    Ok(info) => {
-                                                                        let _ = status_tx.send(format!(
-                                                                            "[TOR] Consensus: {} relays, valid until {}",
-                                                                            info["relay_count"], info["valid_until"]
-                                                                        ));
-                                                                        trace!("Consensus info: {}", info);
-                                                                    }
-                                                                    Err(e) => {
-                                                                        error!("Failed to get consensus info: {}", e);
-                                                                        let _ = status_tx.send(format!("[TOR] Error: {}", e));
-                                                                    }
-                                                                }
-                                                            }
-                                                            "list_relays" => {
-                                                                let limit = data.get("limit")
-                                                                    .and_then(|v| v.as_u64())
-                                                                    .unwrap_or(100) as usize;
-
-                                                                let filter = RelayFilter {
-                                                                    limit: Some(limit),
-                                                                    ..Default::default()
-                                                                };
-
-                                                                match TorClient::query_relays(&app_state, client_id, filter).await {
-                                                                    Ok(relays) => {
-                                                                        let _ = status_tx.send(format!(
-                                                                            "[TOR] Found {} relays in consensus",
-                                                                            relays.len()
-                                                                        ));
-                                                                        for (i, relay) in relays.iter().take(10).enumerate() {
-                                                                            trace!("Relay {}: {} ({})", i+1, relay.nickname, relay.flags.join(", "));
-                                                                        }
-                                                                    }
-                                                                    Err(e) => {
-                                                                        error!("Failed to list relays: {}", e);
-                                                                        let _ = status_tx.send(format!("[TOR] Error: {}", e));
-                                                                    }
-                                                                }
-                                                            }
-                                                            "search_relays" => {
-                                                                let flags = data.get("flags")
-                                                                    .and_then(|v| v.as_array())
-                                                                    .map(|arr| arr.iter()
-                                                                        .filter_map(|v| v.as_str().map(String::from))
-                                                                        .collect());
-
-                                                                let nickname = data.get("nickname")
-                                                                    .and_then(|v| v.as_str())
-                                                                    .map(String::from);
-
-                                                                let limit = data.get("limit")
-                                                                    .and_then(|v| v.as_u64())
-                                                                    .unwrap_or(100) as usize;
-
-                                                                let filter = RelayFilter {
-                                                                    flags,
-                                                                    nickname_pattern: nickname,
-                                                                    limit: Some(limit),
-                                                                    ..Default::default()
-                                                                };
-
-                                                                match TorClient::query_relays(&app_state, client_id, filter).await {
-                                                                    Ok(relays) => {
-                                                                        let _ = status_tx.send(format!(
-                                                                            "[TOR] Found {} matching relays",
-                                                                            relays.len()
-                                                                        ));
-                                                                        for (i, relay) in relays.iter().take(10).enumerate() {
-                                                                            trace!("Relay {}: {} ({})", i+1, relay.nickname, relay.flags.join(", "));
-                                                                        }
-                                                                    }
-                                                                    Err(e) => {
-                                                                        error!("Failed to search relays: {}", e);
-                                                                        let _ = status_tx.send(format!("[TOR] Error: {}", e));
-                                                                    }
-                                                                }
-                                                            }
-                                                            _ => {
-                                                                warn!("Unknown custom action: {}", name);
-                                                            }
-                                                        }
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
+                                            // Shared with the connected-event and
+                                            // bootstrap-complete paths, so the Tor action
+                                            // vocabulary is executed in exactly one place.
+                                            disconnect_requested = apply_actions(
+                                                actions,
+                                                Some(&write_half_arc),
+                                                client_id,
+                                                &app_state,
+                                                &status_tx,
+                                            )
+                                            .await;
                                         }
                                         Err(e) => {
                                             error!("LLM error for Tor client {}: {}", client_id, e);
@@ -591,6 +672,18 @@ impl TorClient {
                                 // Continue queuing
                                 client_data_lock.queued_data.extend_from_slice(&data);
                             }
+                        }
+
+                        if disconnect_requested {
+                            app_state
+                                .update_client_status(client_id, ClientStatus::Disconnected)
+                                .await;
+                            let _ = status_tx.send(format!(
+                                "[CLIENT] Tor client {} disconnected (model asked)",
+                                client_id
+                            ));
+                            let _ = status_tx.send("__UPDATE_UI__".to_string());
+                            break;
                         }
                     }
                     Err(e) => {

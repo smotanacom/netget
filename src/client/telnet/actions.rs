@@ -51,37 +51,6 @@ pub static TELNET_CLIENT_DATA_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::ne
     ])
 });
 
-/// Telnet option negotiation event
-pub static TELNET_CLIENT_OPTION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
-        "telnet_option_negotiated",
-        "Telnet option negotiation occurred",
-        json!({
-            "type": "wait_for_more"
-        }),
-    )
-    .with_parameters(vec![
-        Parameter {
-            name: "command".to_string(),
-            type_hint: "string".to_string(),
-            description: "Negotiation command (WILL/WONT/DO/DONT)".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "option".to_string(),
-            type_hint: "number".to_string(),
-            description: "Option code being negotiated".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "option_name".to_string(),
-            type_hint: "string".to_string(),
-            description: "Human-readable option name".to_string(),
-            required: false,
-        },
-    ])
-});
-
 /// Telnet client protocol action handler
 pub struct TelnetClientProtocol;
 

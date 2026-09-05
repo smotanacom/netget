@@ -115,7 +115,10 @@ Set Content-Type header appropriately (text/plain for /, application/json for /a
     sleep(Duration::from_secs(2)).await;
 
     // Create HTTP/2 client (with prior knowledge - no TLS, direct HTTP/2)
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
 
     // Test 1: GET /
     println!("Test 1: GET /");
@@ -195,6 +198,10 @@ Set Content-Type header appropriately (text/plain for /, application/json for /a
     println!("✓ GET /nonexistent returned 404");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Stop the server
@@ -270,7 +277,10 @@ Set Content-Type: application/json for all responses."#;
     sleep(Duration::from_secs(2)).await;
 
     // Create HTTP/2 client
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
 
     // Test 1: POST /echo with text body
     println!("Test 1: POST /echo with text body");
@@ -326,6 +336,10 @@ Set Content-Type: application/json for all responses."#;
     println!("✓ POST /api/users returned 201 with success message");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Stop the server
@@ -385,7 +399,10 @@ Set Content-Type: application/json."#;
     sleep(Duration::from_secs(2)).await;
 
     // Create HTTP/2 client (reuses connection for multiplexing)
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
 
     // Send 3 concurrent requests over the same connection
     println!("Sending 3 concurrent requests...");
@@ -414,6 +431,10 @@ Set Content-Type: application/json."#;
     println!("✓ All 3 concurrent requests succeeded via HTTP/2 multiplexing");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Stop the server

@@ -130,7 +130,6 @@ transparently.
 
 - HTTP/2 server implementation (NetGet http2 server protocol)
 - Ollama running with model loaded
-- `--ollama-lock` for serialized LLM calls (default in tests)
 
 ## Success Criteria
 

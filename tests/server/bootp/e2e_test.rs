@@ -181,6 +181,10 @@ When receiving BOOTREQUEST:
     println!("✓ BOOTP basic request/reply flow successful");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -306,6 +310,10 @@ When receiving BOOTREQUEST:
     println!("✓ BOOTP boot file configuration successful");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -405,6 +413,10 @@ Use server IP 192.168.1.1 for all responses.
     println!("✓ BOOTP static MAC-based assignment successful");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup

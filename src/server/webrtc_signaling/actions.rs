@@ -252,7 +252,14 @@ impl Protocol for WebRtcSignalingProtocol {
                 "Observe registrations and message flow; speak to or disconnect a peer at \
                  registration time. Relay itself is automatic and not gated on the model.",
             )
-            .e2e_testing("Two tokio-tungstenite clients exchanging an offer and an answer")
+            .e2e_testing(
+                "Two tokio-tungstenite clients exchanging an offer and an answer. Deliberately \
+                 NOT counted as Beta evidence: this server frames with tokio-tungstenite too, so \
+                 driving it with the same crate proves the crate agrees with itself. The layer \
+                 NetGet actually authors is an ad-hoc JSON relay schema, and no third-party \
+                 implementation of it exists or could — which is why this stays Experimental \
+                 despite a non-#[ignore]d test that connects real WebSocket peers.",
+            )
             .notes(
                 "No authentication: any client may claim any unused peer ID. Undeliverable \
                  messages are dropped and the sender gets an error; nothing is queued.",

@@ -108,8 +108,17 @@ impl NtpClient {
                     &app_state,
                     client_id.to_string(),
                     &instruction,
-                    "",   // No memory initially
-                    None, // No event for initial call
+                    "", // No memory initially
+                    // The connected event, not `None`.
+                    //
+                    // NTP_CLIENT_CONNECTED_EVENT was declared and nothing raised it, so
+                    // this call arrived with no event attached: an `ntp_connected` handler
+                    // the operator or the model wrote could never match, and
+                    // `client_llm_action_set` could not union the event's own actions in.
+                    Some(&Event::new(
+                        &crate::client::ntp::actions::NTP_CLIENT_CONNECTED_EVENT,
+                        serde_json::json!({ "remote_addr": remote_addr.clone() }),
+                    )),
                     protocol.as_ref(),
                     &status_tx,
                 )
@@ -137,6 +146,7 @@ impl NtpClient {
                                             );
                                             Self::await_and_report_response(
                                                 &socket_clone,
+                                                remote_sock_addr,
                                                 &query_lock_for_llm,
                                                 client_id,
                                                 &llm_client,
@@ -192,6 +202,21 @@ impl NtpClient {
     }
 
     /// Put one NTP request on the wire, returning the byte count `send_to` reported.
+    /// Send one request and read its reply. Raises no event and calls no LLM.
+    ///
+    /// This is what a `query_time` the model asks for in answer to
+    /// `ntp_response_received` runs through: reporting that reply as another event would
+    /// let one query drive the model in an unbounded loop, and would make
+    /// report -> query -> report a self-referential async chain rustc cannot prove `Send`.
+    async fn query_once(socket: &Arc<UdpSocket>, remote: SocketAddr) -> Result<NtpTimestamps> {
+        Self::send_query(socket, remote).await?;
+        let mut buffer = vec![0u8; 48];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), socket.recv(&mut buffer))
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for NTP reply"))??;
+        Ok(Self::parse_ntp_response(&buffer[..n]))
+    }
+
     async fn send_query(socket: &Arc<UdpSocket>, remote: SocketAddr) -> Result<usize> {
         let packet = Self::build_ntp_request();
         let sent = socket.send_to(&packet, remote).await?;
@@ -206,6 +231,7 @@ impl NtpClient {
     #[allow(clippy::too_many_arguments)]
     async fn await_and_report_response(
         socket: &Arc<UdpSocket>,
+        remote: SocketAddr,
         query_lock: &Arc<Mutex<()>>,
         client_id: ClientId,
         llm_client: &OllamaClient,
@@ -275,11 +301,42 @@ impl NtpClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
+                }
+
+                // Execute what the model asked for. These were discarded, so a model that
+                // read a timestamp and wanted another sample was silently ignored.
+                //
+                // A `query_time` follow-up sends one more request and reads its reply
+                // here, raising no further event. That bounds the loop -- otherwise each
+                // reply would raise an event whose answer could ask for another query,
+                // forever -- and keeps the type non-recursive, which is what
+                // tokio::spawn's Send bound requires.
+                use crate::llm::actions::client_trait::ClientActionResult;
+                for action in actions {
+                    match protocol.execute_action(action.clone()) {
+                        Ok(ClientActionResult::Custom { name, .. }) if name == "query_time" => {
+                            match Self::query_once(socket, remote).await {
+                                Ok(t) => info!(
+                                    "NTP client {} follow-up query_time: stratum {}",
+                                    client_id, t.stratum
+                                ),
+                                Err(e) => error!(
+                                    "NTP client {} follow-up query_time failed: {}",
+                                    client_id, e
+                                ),
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => error!(
+                            "NTP client {} rejected its own follow-up action: {}",
+                            client_id, e
+                        ),
+                    }
                 }
             }
             Err(e) => {
@@ -383,6 +440,7 @@ impl NtpClient {
                 if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
                     Self::await_and_report_response(
                         &socket,
+                        remote,
                         &query_lock,
                         client_id,
                         &llm_client,

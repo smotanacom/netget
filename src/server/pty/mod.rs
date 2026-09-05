@@ -27,6 +27,7 @@ use crate::logging::emit::Log;
 use crate::protocol::Event;
 use crate::server::pty::actions::{PtyProtocol, PTY_INPUT_RECEIVED_EVENT, PTY_OPENED_EVENT};
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 
 /// Removes the slave symlink this server created when the read task ends — including on abort by
 /// `stop_server`, because aborting drops the task future and with it this guard.
@@ -274,16 +275,46 @@ impl PtyServer {
                 for msg in result.messages {
                     let _ = status_tx.send(msg);
                 }
+                let mut wrote = 0usize;
                 for pr in result.protocol_results {
                     if let ActionResult::Output(bytes) = pr {
+                        wrote += 1;
                         Self::write_master(async_master, &bytes, status_tx).await;
                     }
                     // CloseConnection / WaitForMore are meaningless for a PTY and are ignored.
                 }
+                // "The model deliberately printed nothing" is a legitimate answer on a terminal —
+                // a program need not emit a byte for every keystroke — so nothing is written here.
+                // It is logged with its own tag so it stays distinguishable from an LLM failure.
+                if wrote == 0 {
+                    info!(
+                        "PTY {} decision=model_no_output",
+                        event.event_type.id.as_str()
+                    );
+                }
             }
             Err(e) => {
-                // Fail closed: put nothing on the terminal, report on both channels.
-                Log::new(Some(status_tx)).error(format!("PTY LLM error: {e}"));
+                // The backend failed. The terminal gets a *category* only; the error itself goes
+                // to the log and the status stream, never onto the wire (see utils/wire_failure).
+                let failure = WireFailure::classify(&e);
+                let decision = if failure.is_overloaded() {
+                    "fail_closed_overloaded"
+                } else {
+                    "fail_closed_llm_error"
+                };
+                error!(
+                    "PTY {} decision={} error={}",
+                    event.event_type.id.as_str(),
+                    decision,
+                    e
+                );
+                Log::new(Some(status_tx))
+                    .error(format!("PTY LLM error (decision={decision}): {e}"));
+                // CRLF on both sides: cfmakeraw clears ONLCR, so a bare LF would staircase on a
+                // real terminal, and the leading CRLF keeps the notice off whatever half-typed
+                // line the user is looking at.
+                let notice = format!("\r\n[{}]\r\n", failure.prefixed_text());
+                Self::write_master(async_master, notice.as_bytes(), status_tx).await;
             }
         }
     }

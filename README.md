@@ -51,9 +51,10 @@ Both server and client modes for:
 > **Maturity varies a lot.** Most protocols are `Experimental` — LLM-authored and not
 > human-reviewed. Run `netget --mcp` and call `list_protocols` for each protocol's current
 > state, or read its `metadata()`. A few specifics worth knowing: FTP has no data connection,
-> so `LIST`/`RETR`/`STOR` cannot complete against a real client; OpenVPN does real packet
-> encryption but has no TLS handshake and derives the same key for every peer, so it is
-> `Incomplete` and hidden from the LLM.
+> so `LIST`/`RETR`/`STOR` cannot complete against a real client; OpenVPN is a control-plane
+> honeypot — a real `openvpn` binary completes the TLS control channel and the key method 2
+> exchange, but `PUSH_REQUEST` is never answered, no data-channel keys are derived and there is
+> no TUN device, so it observes clients and never carries traffic.
 
 **IoT & Hardware**
 - Bluetooth Low Energy (15+ GATT services: keyboard, mouse, heart rate, etc.)
@@ -465,7 +466,7 @@ brew install samba
 - **sccache**: NetGet uses sccache for caching compiled artifacts
 - **Feature gating**: Each protocol is optional—only compile what you need
 - **Isolated builds**: `./cargo-isolated.sh` uses session-specific target directory to avoid conflicts
-- **Parallel builds**: Multiple instances can build concurrently with `--ollama-lock` for test isolation
+- **Parallel builds**: Multiple instances can build concurrently; `./cargo-isolated.sh` serialises access to the shared `target/`
 
 ### Cargo Isolated Scripts
 
@@ -539,7 +540,7 @@ Similar to server, but:
 ### Multi-Instance Collaboration
 
 - Use `./cargo-isolated.sh` for per-session build isolation
-- Use `--ollama-lock` flag to serialize LLM API access across instances
+- Use `--llm-max-concurrent` (with `--llm-queue-timeout` and `--llm-max-queued`) to bound LLM concurrency
 - Use git worktrees for concurrent development branches
 - Never use `pkill cargo`—use `./cargo-isolated-kill.sh` instead
 
@@ -608,7 +609,7 @@ error: failed to run custom build command for `dbus`
 - **LLM latency**: Each network event may trigger an LLM call (can be slow)
 - **Scripting mode**: For deterministic protocols, use Python/JavaScript scripting (zero LLM calls)
 - **Caching**: Connection state machine prevents concurrent LLM calls on same connection
-- **Ollama lock**: Use `--ollama-lock` to serialize LLM API across instances (default in tests)
+- **LLM concurrency**: `--llm-max-concurrent` bounds in-flight model calls; requests above it queue rather than being dropped
 
 **Use case**: NetGet is ideal for protocol testing, security research, learning, and development. Not recommended for production high-throughput servers.
 

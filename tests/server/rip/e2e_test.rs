@@ -221,6 +221,10 @@ mod e2e_rip {
         println!("  [TEST] ✓ RIP routing table request test passed");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await;
@@ -329,6 +333,10 @@ mod e2e_rip {
         println!("  [TEST] ✓ RIP route advertisement test passed");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await;
@@ -445,6 +453,10 @@ mod e2e_rip {
         println!("  [TEST] ✓ RIP metric handling test passed");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await;

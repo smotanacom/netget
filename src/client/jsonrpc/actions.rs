@@ -142,36 +142,52 @@ impl Protocol for JsonRpcClientProtocol {
         ]
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        vec![ActionDefinition {
-            name: "send_jsonrpc_request".to_string(),
-            description: "Send another JSON-RPC request in response to received data".to_string(),
-            parameters: vec![
-                Parameter {
-                    name: "method".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "JSON-RPC method name".to_string(),
-                    required: true,
-                },
-                Parameter {
-                    name: "params".to_string(),
-                    type_hint: "array | object".to_string(),
-                    description: "Method parameters".to_string(),
-                    required: false,
-                },
-                Parameter {
-                    name: "id".to_string(),
-                    type_hint: "number | string".to_string(),
-                    description: "Request ID".to_string(),
-                    required: false,
-                },
-            ],
-            example: json!({
-                "type": "send_jsonrpc_request",
-                "method": "getStatus",
-                "id": 2
-            }),
-            log_template: None,
-        }]
+        vec![
+            ActionDefinition {
+                name: "wait_for_more".to_string(),
+                description:
+                    "Do nothing and wait for the next JSON-RPC response. The correct answer \
+                    when what arrived needs no follow-up -- without it the model has to \
+                    invent an action it does not want."
+                        .to_string(),
+                parameters: vec![],
+                example: json!({
+                    "type": "wait_for_more"
+                }),
+                log_template: None,
+            },
+            ActionDefinition {
+                name: "send_jsonrpc_request".to_string(),
+                description: "Send another JSON-RPC request in response to received data"
+                    .to_string(),
+                parameters: vec![
+                    Parameter {
+                        name: "method".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "JSON-RPC method name".to_string(),
+                        required: true,
+                    },
+                    Parameter {
+                        name: "params".to_string(),
+                        type_hint: "array | object".to_string(),
+                        description: "Method parameters".to_string(),
+                        required: false,
+                    },
+                    Parameter {
+                        name: "id".to_string(),
+                        type_hint: "number | string".to_string(),
+                        description: "Request ID".to_string(),
+                        required: false,
+                    },
+                ],
+                example: json!({
+                    "type": "send_jsonrpc_request",
+                    "method": "getStatus",
+                    "id": 2
+                }),
+                log_template: None,
+            },
+        ]
     }
     fn protocol_name(&self) -> &'static str {
         "JSON-RPC"
@@ -290,6 +306,7 @@ impl Client for JsonRpcClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                ctx.startup_params,
             )
             .await
         })
@@ -336,6 +353,10 @@ impl Client for JsonRpcClientProtocol {
                 })
             }
             "disconnect" => Ok(ClientActionResult::Disconnect),
+            // Declared in get_sync_actions, so it has to be executable here too --
+            // advertising a name the executor rejects shows the model a tool it is
+            // then punished for using.
+            "wait_for_more" => Ok(ClientActionResult::WaitForMore),
             _ => Err(anyhow::anyhow!(
                 "Unknown JSON-RPC client action: {}",
                 action_type

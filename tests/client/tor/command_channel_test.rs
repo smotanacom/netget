@@ -28,7 +28,7 @@ use netget::state::ClientId;
 
 #[tokio::test]
 async fn send_to_client_without_a_handle_is_refused() {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
 
     // No client 42 exists, so no command handle is registered: the injection must be refused,
     // never silently accepted. This is what the dashboard reads to keep `[ send ]` greyed out

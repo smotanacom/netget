@@ -321,7 +321,7 @@ pub static PEER_HANDSHAKE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
          handshake echoing the same info_hash, then usually a bitfield and an unchoke.",
         json!({
             "type": "send_handshake",
-            "info_hash": "{{event.info_hash}}",
+            "info_hash": "0123456789abcdef0123456789abcdef01234567",
             "peer_id": "-NG0001-netgetserver"
         }),
     )
@@ -533,8 +533,10 @@ pub static SEND_HANDSHAKE_ACTION: LazyLock<ActionDefinition> = LazyLock::new(|| 
         Parameter {
             name: "info_hash".to_string(),
             type_hint: "string".to_string(),
-            description: "Torrent info hash, hex-encoded (exactly 40 hex chars = 20 bytes). \
-                          Use \"{{event.info_hash}}\" to echo the peer's."
+            description: "Torrent info hash, hex-encoded (exactly 40 hex chars = 20 bytes), \
+                          echoing the event's info_hash. A static handler writes the literal \
+                          \"{{event.info_hash}}\", which is substituted before the action \
+                          runs; an LLM answer must carry the real hex."
                 .to_string(),
             required: true,
         },
@@ -554,7 +556,10 @@ pub static SEND_HANDSHAKE_ACTION: LazyLock<ActionDefinition> = LazyLock::new(|| 
             required: false,
         },
     ],
-    example: json!({"type": "send_handshake", "info_hash": "{{event.info_hash}}", "peer_id": "-NT0001-xxxxxxxxxxxx"}),
+    // A real 40-hex-char info_hash, not "{{event.info_hash}}": that substitution
+    // only happens for static event handlers, so a model copying the template
+    // hands the executor a value that is neither valid hex nor 20 bytes.
+    example: json!({"type": "send_handshake", "info_hash": "0123456789abcdef0123456789abcdef01234567", "peer_id": "-NT0001-xxxxxxxxxxxx"}),
     log_template: Some(
         LogTemplate::new()
             .with_info("-> BT handshake")

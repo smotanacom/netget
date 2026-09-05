@@ -135,6 +135,10 @@ async fn test_postgresql_simple_query() -> E2EResult<()> {
     assert_eq!(result, 1, "Expected SELECT 1 to return 1");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ PostgreSQL simple query test passed\n");
@@ -246,6 +250,10 @@ async fn test_postgresql_multi_row_query() -> E2EResult<()> {
     assert!(!rows.is_empty(), "Expected at least one row");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ PostgreSQL multi-row query test passed\n");
@@ -332,6 +340,10 @@ async fn test_postgresql_create_table() -> E2EResult<()> {
     }
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ PostgreSQL CREATE TABLE test completed\n");
@@ -407,6 +419,10 @@ async fn test_postgresql_error_response() -> E2EResult<()> {
     }
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ PostgreSQL error response test passed\n");

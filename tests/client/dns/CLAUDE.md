@@ -238,7 +238,6 @@ this shape now fails the mock expectations instead of killing the process.
 
 - **Ollama server**: Required for LLM processing
 - **Model**: qwen3-coder:30b (or default model)
-- **Lock file**: `--ollama-lock` ensures serialized LLM API calls
 - **Isolation**: Each test runs in separate NetGet process
 
 ## Success Criteria

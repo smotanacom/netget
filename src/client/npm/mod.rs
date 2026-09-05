@@ -116,11 +116,70 @@ impl NpmClient {
         // Registered with AppState so stop_client can abort it —
         // dropping a JoinHandle only detaches it in Tokio.
         let task_registrar = app_state.clone();
+        let connected_llm_client = llm_client.clone();
+        let connected_status_tx = status_tx.clone();
         let task_handle = tokio::spawn(Self::command_loop(
             command_rx, client_id, app_state, llm_client, status_tx,
         ));
         task_registrar
             .register_client_task(client_id, task_handle)
+            .await;
+
+        // Raise the connected event.
+        //
+        // It was declared and never emitted, so the model was never consulted when a
+        // NPM client came up -- and this protocol's own
+        // `get_startup_examples()` shows a `npm_connected` handler, which could not
+        // possibly have fired.
+        //
+        // Raised from its own registered task rather than inline: a dashboard-created
+        // client defaults to a `*` -> manual rule, and awaiting a parked answer here would
+        // block client creation itself.
+        let connected_state = task_registrar.clone();
+        let connected_llm = connected_llm_client;
+        let connected_status = connected_status_tx;
+        let connected = tokio::spawn(async move {
+            let Some(instruction) = connected_state.get_instruction_for_client(client_id).await
+            else {
+                return;
+            };
+            let protocol = crate::client::npm::actions::NpmClientProtocol::new();
+            let event = Event::new(
+                &crate::client::npm::actions::NPM_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({ "registry_url": registry_url.clone(), }),
+            );
+            match crate::client::llm_budget::call_llm_for_client(
+                &connected_llm,
+                &connected_state,
+                client_id.to_string(),
+                &instruction,
+                "",
+                Some(&event),
+                &protocol,
+                &connected_status,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if let Some(mem) = result.memory_updates {
+                        connected_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    Self::run_follow_ups(
+                        client_id,
+                        result.actions,
+                        &connected_state,
+                        &connected_status,
+                    )
+                    .await;
+                }
+                Err(e) => error!(
+                    "NPM client {} LLM error on connected event: {}",
+                    client_id, e
+                ),
+            }
+        });
+        task_registrar
+            .register_client_task(client_id, connected)
             .await;
 
         // Return a dummy local address (NPM is HTTP-based)
@@ -275,6 +334,67 @@ impl NpmClient {
     }
 
     /// Raise `npm_package_info_received` for a completed fetch.
+    /// Run the actions the model returned for a response event.
+    ///
+    /// They were discarded at both notify sites (`actions: _`), so answering
+    /// npm_package_info_received or npm_search_results did nothing at all -- the whole
+    /// point of raising those events.
+    ///
+    /// Everything here goes through the `perform_*` round-trips, which raise no event.
+    /// That bounds the loop -- a follow-up cannot trigger another response event and drive
+    /// the model in circles -- and it is also the only shape that compiles, since routing
+    /// back through the notifying entry points makes notify -> perform -> notify a
+    /// self-referential async chain rustc cannot prove `Send`.
+    async fn run_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        app_state: &AppState,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        let protocol = crate::client::npm::actions::NpmClientProtocol::new();
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            let outcome: Result<()> = match name.as_str() {
+                "npm_get_package" => Self::perform_get_package_info(
+                    client_id,
+                    data["package_name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    data["version"].as_str().unwrap_or("latest").to_string(),
+                    app_state,
+                    status_tx,
+                )
+                .await
+                .map(|_| ()),
+                "npm_search" => Self::perform_search_packages(
+                    client_id,
+                    data["query"].as_str().unwrap_or_default().to_string(),
+                    data["limit"].as_u64().unwrap_or(10),
+                    app_state,
+                    status_tx,
+                )
+                .await
+                .map(|_| ()),
+                other => {
+                    info!(
+                        "NPM client {} follow-up '{}' has no non-notifying path; skipped",
+                        client_id, other
+                    );
+                    Ok(())
+                }
+            };
+            if let Err(e) = outcome {
+                error!("NPM client {} follow-up action failed: {}", client_id, e);
+            }
+        }
+    }
+
     async fn notify_package_info(
         client_id: ClientId,
         info: NpmPackageInfo,
@@ -316,13 +436,14 @@ impl NpmClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state, &status_tx).await;
             }
             Err(e) => {
                 error!("LLM error for NPM client {}: {}", client_id, e);
@@ -339,7 +460,8 @@ impl NpmClient {
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
-        let results = Self::perform_search_packages(client_id, query, limit, &status_tx).await?;
+        let results =
+            Self::perform_search_packages(client_id, query, limit, &app_state, &status_tx).await?;
         Self::notify_search_results(client_id, results, app_state, llm_client, status_tx).await;
         Ok(())
     }
@@ -350,10 +472,25 @@ impl NpmClient {
         client_id: ClientId,
         query: String,
         limit: u64,
+        app_state: &AppState,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<NpmSearchResults> {
-        // NPM search API endpoint
-        let search_url = "https://registry.npmjs.org/-/v1/search";
+        // Search the registry this client was configured with, not always the public one.
+        // The `registry_url` startup parameter was declared and honoured by every other
+        // verb, but search hardcoded https://registry.npmjs.org/-/v1/search -- so a client
+        // pointed at a private registry (or, in a test, at a loopback listener) silently
+        // queried the public registry instead.
+        let registry_url = app_state
+            .with_client_mut(client_id, |client| {
+                client
+                    .get_protocol_field("registry_url")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .await
+            .flatten()
+            .context("No registry URL found")?;
+        let search_url = format!("{}/-/v1/search", registry_url.trim_end_matches('/'));
 
         info!(
             "NPM client {} searching for: {} (limit: {})",
@@ -476,13 +613,14 @@ impl NpmClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state, &status_tx).await;
             }
             Err(e) => {
                 error!("LLM error for NPM client {}: {}", client_id, e);
@@ -635,8 +773,10 @@ impl NpmClient {
                     let limit = data["limit"].as_u64().unwrap_or(20);
                     let requested = query.clone();
 
-                    let results =
-                        Self::perform_search_packages(client_id, query, limit, status_tx).await?;
+                    let results = Self::perform_search_packages(
+                        client_id, query, limit, app_state, status_tx,
+                    )
+                    .await?;
                     let detail = format!(
                         "search_packages {requested:?} -> {} result(s) of {} total",
                         results.results.len(),

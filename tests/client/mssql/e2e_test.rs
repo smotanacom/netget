@@ -33,6 +33,17 @@ mod mssql_client_tests {
                 ]))
                 .expect_calls(1)
                 .and()
+                // The MSSQL server makes login a model decision: `mssql_login_ack` admits the
+                // session and nothing else does, so a suite that only mocks `mssql_query` never
+                // gets a connection to run a query on.
+                .on_event("mssql_login")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "mssql_login_ack"
+                    }
+                ]))
+                .expect_at_least(1)
+                .and()
                 // Mock 2: SELECT 1 query received
                 .on_event("mssql_query")
                 .and_event_data_contains("query", "SELECT 1")
@@ -101,6 +112,7 @@ mod mssql_client_tests {
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection message. Output: {:?}",
@@ -110,6 +122,11 @@ mod mssql_client_tests {
         println!("✅ MSSQL client connected and executed query successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -143,6 +160,17 @@ mod mssql_client_tests {
                     }
                 ]))
                 .expect_calls(1)
+                .and()
+                // The MSSQL server makes login a model decision: `mssql_login_ack` admits the
+                // session and nothing else does, so a suite that only mocks `mssql_query` never
+                // gets a connection to run a query on.
+                .on_event("mssql_login")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "mssql_login_ack"
+                    }
+                ]))
+                .expect_at_least(1)
                 .and()
                 // Mock 2: SELECT * FROM users query
                 .on_event("mssql_query")
@@ -213,6 +241,7 @@ mod mssql_client_tests {
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Verify client received data
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection. Output: {:?}",
@@ -222,6 +251,11 @@ mod mssql_client_tests {
         println!("✅ MSSQL client executed multi-row query successfully");
 
         // Verify mock expectations
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

@@ -534,7 +534,16 @@ impl TftpClient {
                         }),
                     );
                     let memory_snapshot = client_data.lock().await.memory.clone();
-                    if let Err(e) = call_llm_for_client(
+                    // The answer is carried out. It used to be an `if let Err(..)` with no
+                    // success arm, which capped a TFTP client at exactly one transfer: this is
+                    // the only moment the model is asked "that finished — now what?", and
+                    // `send_read_request` / `send_write_request` in reply are how a second
+                    // transfer would ever start.
+                    //
+                    // No depth bound is needed. Nothing here calls back into this function;
+                    // an action puts a packet on the socket and the reply arrives through the
+                    // read loop, one datagram at a time, the same shape as `datalink`.
+                    match call_llm_for_client(
                         &llm_client,
                         &app_state,
                         client_id.to_string(),
@@ -546,7 +555,36 @@ impl TftpClient {
                     )
                     .await
                     {
-                        error!("TFTP client {} LLM error on completion: {}", client_id, e);
+                        Ok(ClientLlmResult {
+                            actions,
+                            memory_updates,
+                        }) => {
+                            if let Some(mem) = memory_updates {
+                                client_data.lock().await.memory = mem;
+                            }
+                            for action in actions {
+                                match protocol.execute_action(action) {
+                                    Ok(ClientActionResult::SendData(bytes)) => {
+                                        let dest = *transfer_addr.lock().await;
+                                        if let Err(e) = socket.send_to(&bytes, dest).await {
+                                            error!(
+                                                "TFTP client {} send failed after completion: {}",
+                                                client_id, e
+                                            );
+                                        }
+                                    }
+                                    Ok(ClientActionResult::Disconnect) => disconnect = true,
+                                    Ok(_) => {}
+                                    Err(e) => warn!(
+                                        "TFTP client {} rejected completion action: {}",
+                                        client_id, e
+                                    ),
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("TFTP client {} LLM error on completion: {}", client_id, e);
+                        }
                     }
                     info!(
                         "TFTP client {} transfer complete ({} bytes, {} blocks)",

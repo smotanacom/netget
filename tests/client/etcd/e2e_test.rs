@@ -49,27 +49,54 @@ async fn test_etcd_client_basic_operations() -> E2EResult<()> {
                     ]))
                     .expect_calls(1)
                     .and()
-                    // Mock 3: GET /test/key1
+                    // Mock 3: both GETs of /test/key1 -- the one before the delete, which
+                    // finds the key, and the one after, which must not.
+                    //
+                    // This was two rules matching on the same event and the same key.
+                    // Rules are first-match-wins, so the first answered both GETs and the
+                    // key appeared to survive its own deletion, while the second rule
+                    // reported zero calls. The store's state is what tells the two apart,
+                    // and only the mock knows it, so the mock has to carry it.
                     .on_event("etcd_range_request")
                     .and_event_data_contains("key", "/test/key1")
-                    .respond_with_actions(json!([
-                        {
-                            "type": "etcd_range_response",
-                            "kvs": [
-                                {
-                                    "key": "/test/key1",
-                                    "value": "value1",
-                                    "create_revision": 1,
-                                    "mod_revision": 1,
-                                    "version": 1,
-                                    "lease": 0
-                                }
-                            ],
-                            "more": false,
-                            "count": 1
+                    .respond_with_actions_from_event({
+                        let deleted =
+                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        move |_e| {
+                            if deleted.load(std::sync::atomic::Ordering::SeqCst) {
+                                json!([
+                                    {
+                                        "type": "etcd_range_response",
+                                        "kvs": [],
+                                        "more": false,
+                                        "count": 0
+                                    }
+                                ])
+                            } else {
+                                // First GET: the key is still there. The delete below
+                                // flips the flag.
+                                deleted.store(true, std::sync::atomic::Ordering::SeqCst);
+                                json!([
+                                    {
+                                        "type": "etcd_range_response",
+                                        "kvs": [
+                                            {
+                                                "key": "/test/key1",
+                                                "value": "value1",
+                                                "create_revision": 1,
+                                                "mod_revision": 1,
+                                                "version": 1,
+                                                "lease": 0
+                                            }
+                                        ],
+                                        "more": false,
+                                        "count": 1
+                                    }
+                                ])
+                            }
                         }
-                    ]))
-                    .expect_calls(1)
+                    })
+                    .expect_calls(2)
                     .and()
                     // Mock 4: DELETE /test/key1
                     .on_event("etcd_delete_request")
@@ -78,19 +105,6 @@ async fn test_etcd_client_basic_operations() -> E2EResult<()> {
                         {
                             "type": "etcd_delete_range_response",
                             "deleted": 1
-                        }
-                    ]))
-                    .expect_calls(1)
-                    .and()
-                    // Mock 5: GET /test/key1 after delete (returns empty)
-                    .on_event("etcd_range_request")
-                    .and_event_data_contains("key", "/test/key1")
-                    .respond_with_actions(json!([
-                        {
-                            "type": "etcd_range_response",
-                            "kvs": [],
-                            "more": false,
-                            "count": 0
                         }
                     ]))
                     .expect_calls(1)
@@ -144,16 +158,29 @@ async fn test_etcd_client_basic_operations() -> E2EResult<()> {
             ]))
             .expect_calls(1)
             .and()
-            // Mock 4: Response from GET - perform DELETE
+            // Mock 4: both GET responses, told apart by what came back.
+            //
+            // This was two rules on `etcd_response_received` with `operation: get` and
+            // nothing else. Rules are first-match-wins, so the first answered both and
+            // the client deleted the key twice instead of disconnecting, while the
+            // second reported zero calls. The GET after the delete returns count 0, and
+            // that is the difference the mock can actually see.
             .on_event("etcd_response_received")
             .and_event_data_contains("operation", "get")
-            .respond_with_actions(json!([
-                {
-                    "type": "etcd_delete",
-                    "key": "/test/key1"
+            .respond_with_actions_from_event(|e| {
+                if e["count"].as_u64().unwrap_or(0) == 0 {
+                    // The key is gone: the sequence is finished.
+                    json!([{ "type": "disconnect" }])
+                } else {
+                    json!([
+                        {
+                            "type": "etcd_delete",
+                            "key": "/test/key1"
+                        }
+                    ])
                 }
-            ]))
-            .expect_calls(1)
+            })
+            .expect_calls(2)
             .and()
             // Mock 5: Response from DELETE - perform final GET
             .on_event("etcd_response_received")
@@ -166,16 +193,6 @@ async fn test_etcd_client_basic_operations() -> E2EResult<()> {
             ]))
             .expect_calls(1)
             .and()
-            // Mock 6: Response from final GET - disconnect
-            .on_event("etcd_response_received")
-            .and_event_data_contains("operation", "get")
-            .respond_with_actions(json!([
-                {
-                    "type": "disconnect"
-                }
-            ]))
-            .expect_calls(1)
-            .and()
     });
 
     let mut client = start_netget_client(client_config).await?;
@@ -184,6 +201,7 @@ async fn test_etcd_client_basic_operations() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify client output shows connection and operations
+    client.wait_for_any(&["etcd"], 30).await;
     assert!(
         client.output_contains("etcd").await,
         "Client should show etcd protocol. Output: {:?}",
@@ -193,6 +211,11 @@ async fn test_etcd_client_basic_operations() -> E2EResult<()> {
     println!("✅ etcd client completed PUT, GET, DELETE sequence successfully");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
+    client.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 
@@ -239,7 +262,10 @@ async fn test_etcd_client_multiple_keys() -> E2EResult<()> {
                             "revision": 1
                         }
                     ]))
-                    .expect_calls(3) // Will be called 3 times
+                    // Two: /app/config/database, then /app/config/timeout. It was 3,
+                    // calibrated against the client re-PUTting the same key because one
+                    // unconstrained response rule answered every PUT the same way.
+                    .expect_calls(2)
                     .and()
                     // Mocks: GET operations
                     .on_event("etcd_range_request")
@@ -299,17 +325,34 @@ async fn test_etcd_client_multiple_keys() -> E2EResult<()> {
             ]))
             .expect_calls(1)
             .and()
-            // Mock: After first PUT - PUT second key
+            // Mock: both PUT responses. The first stores the second key; the second
+            // moves on to the GET.
+            //
+            // One unconstrained rule answered every PUT with "now PUT /app/config/timeout",
+            // so the client stored the same key over and over until the follow-up depth
+            // limit stopped it, and the GET below never happened. The response event
+            // carries the key it just wrote, which is what tells the two steps apart.
             .on_event("etcd_response_received")
             .and_event_data_contains("operation", "put")
-            .respond_with_actions(json!([
-                {
-                    "type": "etcd_put",
-                    "key": "/app/config/timeout",
-                    "value": "30"
+            .respond_with_actions_from_event(|e| {
+                if e["key"].as_str() == Some("/app/config/database") {
+                    json!([
+                        {
+                            "type": "etcd_put",
+                            "key": "/app/config/timeout",
+                            "value": "30"
+                        }
+                    ])
+                } else {
+                    json!([
+                        {
+                            "type": "etcd_get",
+                            "key": "/app/config/database"
+                        }
+                    ])
                 }
-            ]))
-            .expect_at_least(1)  // Will be called at least once
+            })
+            .expect_calls(2)
             .and()
             // Mock: After GET - disconnect
             .on_event("etcd_response_received")
@@ -330,6 +373,11 @@ async fn test_etcd_client_multiple_keys() -> E2EResult<()> {
     println!("✅ etcd client completed multiple key operations");
 
     // Verify mocks
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
+    client.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 
@@ -426,6 +474,11 @@ async fn test_etcd_client_nonexistent_key() -> E2EResult<()> {
     println!("✅ etcd client verified nonexistent key returns empty");
 
     // Verify mocks
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
+    client.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 

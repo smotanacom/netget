@@ -90,6 +90,68 @@ impl SocketFileClient {
         let mut command_rx =
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
 
+        // Raise the connected event.
+        //
+        // SOCKET_FILE_CLIENT_CONNECTED_EVENT was declared and nothing raised it, so the
+        // model was only ever consulted once the peer had already said something. A client
+        // meant to speak first -- which this protocol's own example action
+        // (`send_socket_file_data`) implies -- could never do so.
+        //
+        // From a registered task, not inline: a dashboard-created client defaults to a
+        // `*` -> manual rule and awaiting a parked answer would block creation.
+        let conn_state = app_state.clone();
+        let conn_llm = llm_client.clone();
+        let conn_status = status_tx.clone();
+        let conn_write = write_half_arc.clone();
+        let conn_path = socket_path.clone();
+        let conn_task = tokio::spawn(async move {
+            let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
+            let protocol = crate::client::socket_file::actions::SocketFileClientProtocol::new();
+            let event = Event::new(
+                &crate::client::socket_file::actions::SOCKET_FILE_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({ "socket_path": conn_path }),
+            );
+            match call_llm_for_client(
+                &conn_llm,
+                &conn_state,
+                client_id.to_string(),
+                &instruction,
+                "",
+                Some(&event),
+                &protocol,
+                &conn_status,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if let Some(mem) = result.memory_updates {
+                        conn_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in result.actions {
+                        if let Ok(ClientActionResult::SendData(bytes)) =
+                            protocol.execute_action(action)
+                        {
+                            let mut guard = conn_write.lock().await;
+                            if let Err(e) = guard.write_all(&bytes).await {
+                                error!(
+                                    "Socket File client {} connect-time write failed: {}",
+                                    client_id, e
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => error!(
+                    "Socket File client {} LLM error on connected event: {}",
+                    client_id, e
+                ),
+            }
+        });
+        app_state.register_client_task(client_id, conn_task).await;
+
         let task_handle = tokio::spawn(async move {
             let mut buffer = vec![0u8; 8192];
 

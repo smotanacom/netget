@@ -58,9 +58,21 @@ impl JsonRpcClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         // JSON-RPC is HTTP-based, so "connection" is logical
         // We'll create an HTTP client and store it in protocol_data
+
+        // Every other client protocol takes a bare `host:port`, and that is what a model
+        // asked to "connect to 127.0.0.1:8080" produces. reqwest requires an absolute URL,
+        // so a bare authority reached the wire as `builder error` (relative URL without a
+        // base) on every single request -- with nothing in the message naming the address.
+        // An explicit scheme is left exactly as given, including https.
+        let remote_addr = if remote_addr.contains("://") {
+            remote_addr
+        } else {
+            format!("http://{remote_addr}")
+        };
 
         info!(
             "JSON-RPC client {} initialized for {}",
@@ -72,6 +84,15 @@ impl JsonRpcClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .context("Failed to build HTTP client for JSON-RPC")?;
+
+        // `default_headers` is declared as "headers included in all requests" - the one
+        // place this protocol's own docs point at for API keys and bearer tokens - and
+        // nothing read it, so an authenticated endpoint refused every call. Stored here and
+        // applied by `perform_request` / `perform_batch_request`.
+        let default_headers = match &startup_params {
+            Some(params) => params.get_optional_object("default_headers")?.cloned(),
+            None => None,
+        };
 
         // Store client in protocol_data
         app_state
@@ -85,6 +106,12 @@ impl JsonRpcClient {
                     serde_json::json!(remote_addr.clone()),
                 );
                 client.set_protocol_field("next_id".to_string(), serde_json::json!(1));
+                if let Some(headers) = &default_headers {
+                    client.set_protocol_field(
+                        "default_headers".to_string(),
+                        serde_json::Value::Object(headers.clone()),
+                    );
+                }
             })
             .await;
 
@@ -439,6 +466,44 @@ impl JsonRpcClient {
     /// [`Self::make_request`] so the injected-command loop can await the round-trip - and
     /// report what really happened - without also awaiting the LLM call the response event
     /// triggers, which a manual routing rule can park for minutes.
+    /// Endpoint plus the request headers to send: the `default_headers` startup parameter
+    /// with JSON-RPC's mandatory `content-type` on top of it, so a default can carry an API
+    /// key or bearer token but cannot make the body unparseable to the server.
+    ///
+    /// Keys are lowercased before merging because HTTP header names are case-insensitive,
+    /// and applied from one map because `RequestBuilder::header` appends rather than
+    /// replaces.
+    async fn endpoint_and_headers(
+        client_id: ClientId,
+        app_state: &Arc<AppState>,
+    ) -> Result<(String, serde_json::Map<String, serde_json::Value>)> {
+        let (endpoint, defaults) = app_state
+            .with_client_mut(client_id, |client| {
+                (
+                    client
+                        .get_protocol_field("endpoint")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    client
+                        .get_protocol_field("default_headers")
+                        .and_then(|v| v.as_object().cloned()),
+                )
+            })
+            .await
+            .unwrap_or((None, None));
+        let endpoint = endpoint.context("No endpoint found")?;
+
+        let mut headers = serde_json::Map::new();
+        for (key, value) in defaults.unwrap_or_default() {
+            headers.insert(key.to_ascii_lowercase(), value);
+        }
+        headers.insert(
+            "content-type".to_string(),
+            serde_json::json!("application/json"),
+        );
+        Ok((endpoint, headers))
+    }
+
     async fn perform_request(
         client_id: ClientId,
         method: &str,
@@ -446,17 +511,7 @@ impl JsonRpcClient {
         id: Option<serde_json::Value>,
         app_state: &Arc<AppState>,
     ) -> Result<(u16, Option<serde_json::Value>)> {
-        // Get endpoint from client
-        let endpoint = app_state
-            .with_client_mut(client_id, |client| {
-                client
-                    .get_protocol_field("endpoint")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            })
-            .await
-            .flatten()
-            .context("No endpoint found")?;
+        let (endpoint, headers) = Self::endpoint_and_headers(client_id, app_state).await?;
 
         info!("JSON-RPC client {} calling method: {}", client_id, method);
 
@@ -479,12 +534,13 @@ impl JsonRpcClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
 
-        let response = http_client
-            .post(&endpoint)
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
+        let mut http_request = http_client.post(&endpoint);
+        for (key, value) in &headers {
+            if let Some(val_str) = value.as_str() {
+                http_request = http_request.header(key, val_str);
+            }
+        }
+        let response = http_request.json(&request).send().await?;
 
         let status_code = response.status().as_u16();
         let body_text = response.text().await.unwrap_or_default();
@@ -507,6 +563,59 @@ impl JsonRpcClient {
     }
 
     /// Raise `jsonrpc_response_received` for a completed exchange.
+    /// Run the actions the model returned for a response event.
+    ///
+    /// They were discarded (`actions: _`) at both notify sites, so answering
+    /// jsonrpc_response_received did nothing -- the whole point of raising it. Dispatch
+    /// goes through the `perform_*` cores, which raise no event: that bounds the loop and
+    /// avoids a notify -> perform -> notify chain rustc cannot prove `Send`.
+    async fn run_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        app_state: &Arc<AppState>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        let protocol = crate::client::jsonrpc::actions::JsonRpcClientProtocol::new();
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            let outcome = match name.as_str() {
+                "jsonrpc_request" => Self::perform_request(
+                    client_id,
+                    data["method"].as_str().unwrap_or_default(),
+                    data.get("params").cloned(),
+                    data.get("id").cloned(),
+                    app_state,
+                )
+                .await
+                .map(|_| ()),
+                "jsonrpc_batch" => Self::perform_batch_request(
+                    client_id,
+                    data["requests"].as_array().cloned().unwrap_or_default(),
+                    app_state,
+                )
+                .await
+                .map(|_| ()),
+                other => {
+                    info!(
+                        "JSON-RPC client {} follow-up '{}' has no non-notifying path; skipped",
+                        client_id, other
+                    );
+                    Ok(())
+                }
+            };
+            if let Err(e) = outcome {
+                error!(
+                    "JSON-RPC client {} follow-up action failed: {}",
+                    client_id, e
+                );
+            }
+        }
+    }
+
     async fn notify_response(
         client_id: ClientId,
         exchange: (u16, Option<serde_json::Value>),
@@ -542,13 +651,14 @@ impl JsonRpcClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state).await;
             }
             Err(e) => {
                 error!("LLM error for JSON-RPC client {}: {}", client_id, e);
@@ -576,17 +686,7 @@ impl JsonRpcClient {
         requests: Vec<serde_json::Value>,
         app_state: &Arc<AppState>,
     ) -> Result<(u16, Option<serde_json::Value>)> {
-        // Get endpoint from client
-        let endpoint = app_state
-            .with_client_mut(client_id, |client| {
-                client
-                    .get_protocol_field("endpoint")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            })
-            .await
-            .flatten()
-            .context("No endpoint found")?;
+        let (endpoint, headers) = Self::endpoint_and_headers(client_id, app_state).await?;
 
         info!(
             "JSON-RPC client {} sending batch with {} requests",
@@ -620,12 +720,13 @@ impl JsonRpcClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
 
-        let response = http_client
-            .post(&endpoint)
-            .header("Content-Type", "application/json")
-            .json(&batch)
-            .send()
-            .await?;
+        let mut http_request = http_client.post(&endpoint);
+        for (key, value) in &headers {
+            if let Some(val_str) = value.as_str() {
+                http_request = http_request.header(key, val_str);
+            }
+        }
+        let response = http_request.json(&batch).send().await?;
 
         let status_code = response.status().as_u16();
         let body_text = response.text().await.unwrap_or_default();
@@ -689,13 +790,14 @@ impl JsonRpcClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state).await;
             }
             Err(e) => {
                 error!("LLM error for JSON-RPC client {}: {}", client_id, e);

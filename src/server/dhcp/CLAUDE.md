@@ -123,6 +123,38 @@ datagram with a WARN. It used to raise `dhcp_request` anyway, with `"unknown"` i
 that spent an LLM round trip on an event from which no reply could be built, since `base_reply`
 has no transaction id to echo and errors out. Fail closed instead.
 
+### 8. LLM Failure: Silence Is the Correct Reply, and It Is Logged as Such
+
+When the LLM call errors, or returns no usable action, **netget sends the client nothing** — and
+that is deliberate, not the "70 of 79 protocols go silent" defect CLAUDE.md warns about.
+
+DHCP has no "try again later" message. The only reply netget could synthesise unaided is a
+DHCPNAK, and RFC 2131 4.3.2 defines a NAK as *"your notion of the network address is incorrect"* —
+a statement about the client's lease, not about the server's health. A client in RENEWING or
+REBINDING that receives one must drop its address and restart from INIT (4.4.5), so NAKing on an
+internal error destroys a lease that was never invalid. The same section requires a server with no
+knowledge of a binding to **remain silent**, which is precisely netget's position when the model
+that would have decided is unreachable. Silence is also the protocol's own retry path: clients
+retransmit DISCOVER/REQUEST with backoff (4.4.1), so a transient overload recovers on the retry —
+which is what a 503 buys in HTTP. **Do not "fix" this by emitting a NAK.**
+
+Nothing internal reaches the wire because nothing reaches the wire at all. The distinctions live in
+the log, with a stable `decision=` token per request (the `src/server/radius/` convention):
+
+| `decision=` | Meaning | Bytes sent |
+|---|---|---|
+| `model_reply` | the model's action produced a packet | yes |
+| `model_no_reply` | the model answered, and chose to send nothing (`ignore_request`) | no |
+| `fail_closed_no_action` | the model produced no action at all | no |
+| `fail_closed_llm_error` | the LLM call errored | no |
+
+`grep decision=fail_closed_` finds every request netget dropped on the floor. The error itself is
+logged at ERROR with a `category=overloaded` / `category=unavailable` tag from
+`crate::utils::wire_failure::WireFailure::classify` — DHCP cannot express the difference on the
+wire, so it is kept where an operator can act on it — and each fail-closed request also logs a WARN
+noting that the client will retransmit (RFC 2131 4.3.2's "MAY output a warning to the network
+administrator").
+
 ## LLM Integration
 
 ### Event Type

@@ -366,7 +366,18 @@ impl RadiusServer {
                 result
             }
             Err(e) => {
-                log.error(format!("RADIUS LLM call failed for {}: {}", peer_addr, e));
+                // RADIUS has exactly one way to say no, so an overloaded backend and a dead
+                // one both produce the same Access-Reject on the wire. The distinction is
+                // still worth having, so it goes in the log next to the decision token —
+                // the error itself is logged here and never reaches the peer.
+                let category = match crate::utils::wire_failure::WireFailure::classify(&e) {
+                    crate::utils::wire_failure::WireFailure::Overloaded => "overloaded",
+                    crate::utils::wire_failure::WireFailure::Unavailable => "unavailable",
+                };
+                log.error(format!(
+                    "RADIUS LLM call failed for {} (category={}): {}",
+                    peer_addr, category, e
+                ));
                 return (
                     Decision::FailClosedLlmError,
                     Self::synthesised_reject(request, protocol, is_authorization),

@@ -15,8 +15,16 @@ use tracing::{debug, error, info, trace, warn};
 /// Internal backend implementation for LLM communication
 #[derive(Clone)]
 enum LlmBackend {
-    /// Ollama HTTP API via ollama-rs
-    Ollama(Ollama),
+    /// Ollama HTTP API via ollama-rs.
+    ///
+    /// The second field is the HTTP client used for the two endpoints `ollama-rs` does not
+    /// cover (`/api/generate` with a raw body, and `/api/chat` with tools). Both used to call
+    /// `reqwest::Client::new()` **per request**, which is the defect the root CLAUDE.md
+    /// describes: building a client sets up the rustls stack and loads the platform root
+    /// store, on macOS through Security.framework, synchronously. Doing that on every LLM
+    /// call parks a runtime worker every time. It is built once, here, with the same
+    /// literal-IP resolver short-circuit as the `ollama-rs` client.
+    Ollama(Ollama, reqwest::Client),
     /// OpenAI-compatible API via reqwest
     OpenAI {
         client: reqwest::Client,
@@ -834,13 +842,86 @@ impl std::str::FromStr for CommandInterpretation {
 /// back is equally dead at 120s or 300s. Override with `--llm-request-timeout`.
 pub const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// The bare host from anything callers hand us: `127.0.0.1`, `http://127.0.0.1`,
+/// `http://127.0.0.1:11434`, `http://127.0.0.1:11434/v1`, `http://[::1]:11434`.
+///
+/// Written out because the first version of this only stripped the scheme, so
+/// `http://127.0.0.1:54321` reduced to `127.0.0.1:54321` — which does not parse as an
+/// `IpAddr`, so the override silently did not apply and the very call it was meant to fix
+/// (`/api/tags`, on a 5-second budget) kept spending all five seconds in `getaddrinfo`. A
+/// short-circuit that quietly fails to engage is worse than none, because the symptom is
+/// unchanged; hence `host_of_extracts_the_bare_host` in tests/.
+pub fn host_of(url_or_host: &str) -> &str {
+    let after_scheme = url_or_host
+        .rsplit_once("//")
+        .map(|(_, h)| h)
+        .unwrap_or(url_or_host);
+    let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
+    // IPv6 literals are bracketed, and their own colons must not be read as a port separator.
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(rest);
+    }
+    match authority.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => authority,
+    }
+}
+
+/// Add a resolver override when `host` is a **literal IP address**, so the request never
+/// consults the system name resolver.
+///
+/// Asking the resolver about `127.0.0.1` is never meaningful — a dotted quad already *is* the
+/// answer — but `reqwest` hands the URL host to its resolver unconditionally, and
+/// `hyper-util`'s `GaiResolver` does not special-case one. That becomes a real
+/// `getaddrinfo()` call, which on macOS goes through libinfo to mDNSResponder: a single
+/// system-wide daemon, and a serialisation point under concurrency. It was measured blocking
+/// for **8.25 seconds** with ~100 processes asking at once (see `src/server/doh/CLAUDE.md`),
+/// which is long enough to expire a request timeout against a server that is up and idle.
+///
+/// A hostname is left alone: resolving `localhost` or a real name is the resolver's job, and
+/// `/etc/hosts` or split-horizon DNS may legitimately point it somewhere unexpected. Only the
+/// case where resolution has exactly one correct answer is short-circuited.
+fn without_dns_for_literal_ip(
+    builder: reqwest::ClientBuilder,
+    host: &str,
+) -> reqwest::ClientBuilder {
+    let bare = host_of(host);
+    match bare.parse::<std::net::IpAddr>() {
+        // The port is irrelevant: hyper overwrites it with the one from the URL, so a single
+        // override serves every port this client is later pointed at.
+        Ok(ip) => builder.resolve(bare, std::net::SocketAddr::new(ip, 0)),
+        Err(_) => builder,
+    }
+}
+
+/// An HTTP client for a NetGet-configured endpoint, with no request timeout.
+///
+/// Use this instead of `reqwest::Client::new()` anywhere the URL comes from configuration
+/// (`--ollama-url`, `--openai-url`). It applies [`without_dns_for_literal_ip`], and building
+/// it once per endpoint rather than once per request is the other half of the same lesson —
+/// see the note on [`LlmBackend::Ollama`].
+pub fn client_for_endpoint(base_url: &str) -> reqwest::Client {
+    without_dns_for_literal_ip(reqwest::Client::builder(), base_url)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// As [`client_for_endpoint`], bounded by `timeout`.
+pub fn client_for_endpoint_with_timeout(
+    base_url: &str,
+    timeout: std::time::Duration,
+) -> reqwest::Client {
+    without_dns_for_literal_ip(reqwest::Client::builder().timeout(timeout), base_url)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 /// The HTTP client used for OpenAI-compatible backends, bounded by `timeout`.
 ///
 /// One constructor so the reqwest-level bound and [`OllamaClient::request_timeout`] cannot
 /// disagree; see [`OllamaClient::with_request_timeout`] for what that disagreement cost.
-fn openai_http_client(timeout: std::time::Duration) -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(timeout)
+fn openai_http_client(timeout: std::time::Duration, base_url: &str) -> reqwest::Client {
+    without_dns_for_literal_ip(reqwest::Client::builder().timeout(timeout), base_url)
         .build()
         .expect("Failed to build HTTP client")
 }
@@ -903,9 +984,14 @@ impl OllamaClient {
             (url_str.as_str(), 11434)
         };
 
-        let ollama = Ollama::new(host, port);
+        // Built here rather than left to `Ollama::new`, which makes its own default client,
+        // so a literal-IP host skips the system resolver. See `without_dns_for_literal_ip`.
+        let http = without_dns_for_literal_ip(reqwest::Client::builder(), host)
+            .build()
+            .expect("Failed to build Ollama HTTP client");
+        let ollama = Ollama::new_with_client(host, port, http.clone());
         Self {
-            backend: LlmBackend::Ollama(ollama),
+            backend: LlmBackend::Ollama(ollama, http),
             status_tx: None,
             mock_config_file: None,
             app_state: None,
@@ -920,7 +1006,7 @@ impl OllamaClient {
     pub fn default() -> Self {
         let ollama = Ollama::default();
         Self {
-            backend: LlmBackend::Ollama(ollama),
+            backend: LlmBackend::Ollama(ollama, reqwest::Client::new()),
             status_tx: None,
             mock_config_file: None,
             app_state: None,
@@ -930,19 +1016,14 @@ impl OllamaClient {
         }
     }
 
-    /// Create a new Ollama client with options (lock_enabled is ignored, maintained for compatibility)
-    pub fn new_with_options(base_url: impl Into<String>, _lock_enabled: bool) -> Self {
-        // Note: lock_enabled is ignored here as locking is handled at a different layer
-        Self::new(base_url)
-    }
-
     /// Create a new client for an OpenAI-compatible API endpoint
     pub fn new_openai(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
-        let client = openai_http_client(DEFAULT_REQUEST_TIMEOUT);
+        let base_url = base_url.into().trim_end_matches('/').to_string();
+        let client = openai_http_client(DEFAULT_REQUEST_TIMEOUT, &base_url);
         Self {
             backend: LlmBackend::OpenAI {
                 client,
-                base_url: base_url.into().trim_end_matches('/').to_string(),
+                base_url,
                 api_key: api_key.into(),
             },
             status_tx: None,
@@ -974,7 +1055,7 @@ impl OllamaClient {
     /// Returns the backend type as a string ("ollama", "openai", or "agent")
     pub fn backend_type(&self) -> &str {
         match &self.backend {
-            LlmBackend::Ollama(_) => "ollama",
+            LlmBackend::Ollama(..) => "ollama",
             LlmBackend::OpenAI { .. } => "openai",
             LlmBackend::Queue { .. } => "agent",
         }
@@ -983,7 +1064,7 @@ impl OllamaClient {
     /// Returns the base URL of the current backend
     pub fn backend_url(&self) -> String {
         match &self.backend {
-            LlmBackend::Ollama(ollama) => {
+            LlmBackend::Ollama(ollama, _) => {
                 // ollama-rs doesn't expose the URL directly, reconstruct from known state
                 // The URL was parsed in new(), but we can't easily get it back.
                 // For display purposes, use a best-effort approach.
@@ -1187,8 +1268,11 @@ impl OllamaClient {
     /// timeout the user had asked for.
     pub fn with_request_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.request_timeout = timeout;
-        if let LlmBackend::OpenAI { client, .. } = &mut self.backend {
-            *client = openai_http_client(timeout);
+        if let LlmBackend::OpenAI {
+            client, base_url, ..
+        } = &mut self.backend
+        {
+            *client = openai_http_client(timeout, base_url);
         }
         self
     }
@@ -1230,7 +1314,7 @@ impl OllamaClient {
     fn breaker_applies(&self) -> bool {
         matches!(
             self.backend,
-            LlmBackend::Ollama(_) | LlmBackend::OpenAI { .. }
+            LlmBackend::Ollama(..) | LlmBackend::OpenAI { .. }
         )
     }
 
@@ -1333,7 +1417,7 @@ impl OllamaClient {
 
         // Dispatch to the appropriate backend
         let (response_text, token_usage) = match &self.backend {
-            LlmBackend::Ollama(ollama) => {
+            LlmBackend::Ollama(ollama, http_client) => {
                 // Streamed `/api/generate`: `stream: true` returns NDJSON deltas we
                 // forward live (reasoning) while accumulating the full response. Called
                 // via reqwest rather than ollama-rs because ollama-rs's high-level
@@ -1351,7 +1435,7 @@ impl OllamaClient {
                 }
 
                 let url = format!("{}/api/generate", ollama.url_str().trim_end_matches('/'));
-                let http_client = reqwest::Client::new();
+                let http_client = http_client.clone();
 
                 let http_response = tokio::time::timeout(
                     self.request_timeout,
@@ -1590,7 +1674,10 @@ impl OllamaClient {
         ));
 
         let chat_response = match &self.backend {
-            LlmBackend::Ollama(ollama) => self.chat_with_tools_ollama(ollama, request).await?,
+            LlmBackend::Ollama(ollama, http_client) => {
+                self.chat_with_tools_ollama(ollama, http_client, request)
+                    .await?
+            }
             LlmBackend::OpenAI {
                 client,
                 base_url,
@@ -1701,6 +1788,7 @@ impl OllamaClient {
     async fn chat_with_tools_ollama(
         &self,
         ollama: &Ollama,
+        http_client: &reqwest::Client,
         request: &ChatRequest,
     ) -> Result<ChatResponse> {
         // Build the request body manually since ollama-rs may not support tools natively
@@ -1739,7 +1827,7 @@ impl OllamaClient {
         // Preserve the client's full base URL (scheme, host, port, path prefix).
         let url = format!("{}/api/chat", ollama.url_str().trim_end_matches('/'));
 
-        let http_client = reqwest::Client::new();
+        let http_client = http_client.clone();
         let http_response = tokio::time::timeout(
             self.request_timeout,
             http_client.post(&url).json(&body).send(),
@@ -2056,7 +2144,7 @@ impl OllamaClient {
     /// List available models from the backend
     pub async fn list_models(&self) -> Result<Vec<String>> {
         match &self.backend {
-            LlmBackend::Ollama(ollama) => {
+            LlmBackend::Ollama(ollama, _) => {
                 // ollama-rs applies no timeout of its own, so an unreachable host that
                 // silently drops packets would hang this call — and `is_available()` with it
                 // — indefinitely.

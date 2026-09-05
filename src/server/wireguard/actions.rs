@@ -122,10 +122,18 @@ impl Protocol for WireguardProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            // Beta, not Stable. Demoted from Stable because it has NEVER been validated
-            // end-to-end against a real WireGuard client, and by the project's own rule
-            // Stable requires exactly that. See the notes below and tests/server/wireguard/.
-            .state(DevelopmentState::Beta)
+            // Experimental. The earlier Stable->Beta demotion undershot: the stated reason was
+            // that this has never been validated end-to-end against a real WireGuard client —
+            // but that is also precisely what Beta requires ("human-reviewed, works against
+            // real clients"), so the same evidence rules Beta out too.
+            //
+            // There is still no real peer. `boringtun` was evaluated as an in-test client and
+            // deliberately not adopted; what remains is one #[ignore]d, root-gated harness that
+            // asserts on NetGet's own log line rather than on anything a WireGuard peer did.
+            // NetGet also implements none of the protocol itself and, on macOS, cannot bring an
+            // interface up at all without an external wireguard-go binary — so nothing here has
+            // completed a handshake in this environment.
+            .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::Root)
             .implementation(
                 "Thin orchestration layer over defguard_wireguard_rs v0.7 - NetGet \
@@ -363,7 +371,7 @@ impl Server for WireguardProtocol {
                 .await?;
 
             Ok(ActionResult::Custom {
-                name: "wireguard_peer_added".to_string(),
+                name: "wireguard_peer_connected".to_string(),
                 data: json!({
                     "public_key": public_key,
                     "allowed_ips": allowed_ips,

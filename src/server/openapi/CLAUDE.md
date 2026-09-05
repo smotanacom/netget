@@ -93,6 +93,31 @@ where the spec says 200" scenarios that test client error handling.
 on a status outside 100–599, or on a header value containing CR/LF (a response-splitting
 attempt). Out-of-range statuses become 500 and bad headers are dropped individually.
 
+## Failure handling — fail closed, category only
+
+A model answer, a model refusal, a model silence and a backend error are four different things
+and stay distinguishable in the log. Only the first is a success on the wire:
+
+| Case | Response | Log |
+|---|---|---|
+| Model returns `send_openapi_response` | as instructed | `decision=model_response` |
+| Model returns `send_validation_error` | its status (400 if it gave none) | `decision=model_reject` |
+| Model returns no response action | **500** + `{"error":"Internal Server Error","message":"request could not be processed"}` | `decision=fail_closed_no_action` |
+| LLM call errors — overloaded | **503** + `Retry-After: 1` + `"backend at capacity, retry later"` | `decision=fail_closed_llm_error category=overloaded` |
+| LLM call errors — anything else | **500** + `"request could not be processed"` | `decision=fail_closed_llm_error category=unavailable` |
+
+A silent model used to be answered with **200** and a body reading "OpenAPI server received
+request but LLM did not generate a response" — a no-answer that read on the wire as a success,
+and a body naming netget's own LLM machinery to a stranger. Both are gone: the peer now gets a
+category from `crate::utils::WireFailure` (`&'static str`, so nothing derived from the error can
+reach it) and the error itself goes to the log and the TUI status stream via `Log`.
+
+Overload is split off from a plain failure deliberately: it is transient, and 503 +
+`Retry-After` makes a client back off instead of recording a permanent fault.
+
+`tests/server/openapi/fail_closed_test.rs` pins the no-action case at 500 and scans the body
+for internal tokens.
+
 ## Storage
 
 None, per the project rule. The parsed spec and router are configuration, not data: there is no

@@ -118,7 +118,7 @@ Tests error handling:
 
 **Sequential Runtime**: ~19s (sum of all tests)
 **Parallel Runtime**: ~4s (longest test)
-**CI Environment**: Tests run with `--ollama-lock` for serialization
+**CI Environment**: Tests run against an in-process mock LLM
 
 **Per-Test Breakdown**:
 
@@ -148,7 +148,6 @@ UDP is inherently less reliable than TCP, but:
 ### CI/CD Considerations
 
 - Tests require Ollama running (LLM dependency)
-- Use `--ollama-lock` to prevent concurrent LLM calls
 - Use `cargo-isolated.sh` to avoid build conflicts
 - Each test allocates ephemeral UDP port (no conflicts)
 

@@ -108,6 +108,10 @@ async fn test_ftp_greeting() -> E2EResult<()> {
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test completed ===\n");
@@ -196,6 +200,10 @@ async fn test_ftp_user_pass() -> E2EResult<()> {
         "expected 230 to PASS, got: {pass_response}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test completed ===\n");
@@ -289,6 +297,10 @@ async fn test_ftp_pwd_quit() -> E2EResult<()> {
         .expect("server must close the control connection after QUIT")?;
     assert_eq!(n, 0, "unexpected data after QUIT: {rest:?}");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test completed ===\n");

@@ -429,6 +429,50 @@ impl BitcoinClient {
     }
 
     /// Raise `bitcoin_response_received` for a completed exchange.
+    /// Run the actions the model returned for a response event.
+    ///
+    /// They were discarded (`actions: _`), so answering bitcoin_response_received did nothing -- the whole
+    /// point of raising it. Dispatch goes through `perform_rpc`, which raises no event: that
+    /// bounds the loop, and avoids a notify -> perform -> notify chain that rustc cannot
+    /// prove `Send`.
+    async fn run_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        let protocol = crate::client::bitcoin::actions::BitcoinClientProtocol::new();
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            if name != "bitcoin_rpc" {
+                info!(
+                    "Bitcoin client {} follow-up '{}' has no non-notifying path; skipped",
+                    client_id, name
+                );
+                continue;
+            }
+            if let Err(e) = Self::perform_rpc(
+                client_id,
+                data["method"].as_str().unwrap_or_default().to_string(),
+                data["params"].as_array().cloned().unwrap_or_default(),
+                app_state,
+                status_tx,
+            )
+            .await
+            {
+                error!(
+                    "Bitcoin client {} follow-up action failed: {}",
+                    client_id, e
+                );
+            }
+        }
+    }
+
     async fn notify_response(
         client_id: ClientId,
         exchange: BitcoinRpcExchange,
@@ -469,13 +513,14 @@ impl BitcoinClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state, &status_tx).await;
 
                 // Note: We don't execute follow-up actions here.
                 // The LLM will be called again on the next response or user interaction.

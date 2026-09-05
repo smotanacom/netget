@@ -93,9 +93,118 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   event and a `log_packet` action **that do not exist**, all `#[ignore]`d behind root so the
   mismatch never surfaced. The bar for Stable is a test that a real independent peer completed a
   real exchange — treat any Stable claim without one as this same bug.
-- **Beta** — human-reviewed, works against real clients (12 protocols).
+
+  **That demotion undershot, and the correction is the useful lesson.** `wireguard` was moved
+  Stable→Beta on the grounds that it had never been validated against a real client — but that
+  is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
+  months. It is now Experimental. When you demote for missing evidence, check which ratings that
+  evidence actually supports rather than stepping down one notch by reflex.
+- **Beta** — human-reviewed, works against real clients (35 protocols as of August 30 2026;
+  re-derive, the count drifts every pass). The original ten are
+  `dns`, `doh`, `dot`, `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`; August 2026 added
+  fourteen that are each driven by the protocol's own third-party client in a test that is **not**
+  `#[ignore]`d — `amqp` (lapin), `cassandra` (scylla), `coap` (coap-lite), `imap` (async-imap),
+  `ldap` (ldap3), `mongodb` (official driver), `mssql` (tiberius), `mysql` (mysql_async),
+  `postgresql` (tokio-postgres), `redis` (redis-rs), `ssh` (russh), `sqs` (aws-sdk-sqs), `webdav`
+  (reqwest_dav), `zookeeper` (zookeeper-async). Each protocol's `metadata()` names its client.
+  **August 28 2026 added two more**: `npm` (the real npm CLI — `npm view` resolves the packument
+  and `npm install` unpacks the served tarball into `node_modules/`) and `mqtt` (rumqttc, taken
+  through CONNECT → SUBSCRIBE → SUBACK → PUBLISH and back to the broker's own PUBLISH).
+  **August 29 2026 added five more, all of which already had the evidence** and were sitting at
+  Experimental only because nobody had re-read it: `etcd` (etcd-client), `modbus`
+  (tokio-modbus), `quic` (quinn), `mdns` (mdns-sd) and `dynamo` (aws-sdk-dynamodb). Two of
+  those were on the "not promoted" list below for reasons that had gone stale — `etcd` was
+  listed as having only generic-HTTP evidence when its test drives the official `etcd_client`,
+  and `modbus` as having "no independent peer at all" when its test is literally named
+  `test_modbus_reads_writes_and_exceptions_against_tokio_modbus`. **Re-derive this list before
+  trusting it in either direction**: it under-rates as readily as it over-rates.
+  **August 30 2026 added four more** (`rss` is the fourth — see below) from a sweep of the
+  remaining ~104 Experimental servers:
+  `git` (the real `git` binary clones over Smart HTTP, then `git fsck --full` validates the pack
+  and `git show HEAD:README.md` asserts exact blob bytes), `s3` (rust-s3 0.37 `Bucket`, path-style
+  — ListObjects/GetObject/PutObject/HeadObject/DeleteObject, each pinned to `expect_calls(1)`
+  through a retry helper, so a response rust-s3 rejected would retry and fail the count), and
+  `webrtc` (a webrtc-rs 0.11 `RTCPeerConnection` completes ICE + DTLS + SCTP and a message is
+  asserted to have crossed the data channel in both directions). `git` was on the
+  generic-HTTP-client list below and had stopped being true.
+
+  Checked and *not* promoted in the same pass, with the reason: `xmpp` (its own test says
+  `tokio_xmpp::Client` cannot complete its connect), `bitcoin` (the `bitcoin` crate is used as a
+  codec, not as a peer completing a session — the `dhcp` situation), `vnc` (no third-party
+  client; the apparent import was netget's own path), `bgp` and `grpc` and `torrent_dht` and
+  `xmlrpc` (codecs and parsers rather than clients).
+
+  The August 30 sweep of the rest turned up four more near-misses, and the reasons are worth
+  keeping because each looks like evidence until you read it:
+
+  - **A real client behind a skip-when-missing gate is not evidence** — `kubernetes` (kubectl),
+    `oci_registry` (crane), `maven` (mvn, and additionally `#[ignore]`d), `websocket`
+    (websocat). Each prints `SKIP: … is not installed` and returns `Ok(())`, so on a runner
+    without the binary it is a silent pass. `npm`'s real-CLI test is the shape to copy: it
+    **fails** when npm is absent, saying in as many words that skipping "would leave NPM's
+    maturity rating resting on nothing". Converting these four to hard-fail is the cheap path
+    to promoting them, but it means the binary has to exist wherever the suite runs.
+  - **`#[ignore]`d, however good the reason** — `bluetooth_ble` (btleplug is a real BLE central
+    and the suite is verified passing by hand, but all three tests claim the machine's single
+    adapter and are ignored so a 100-thread run does not deadlock on it) and `tor_relay`
+    (`tests/server/tor_integration` drives the official `tor` binary and is `#[ignore]`d).
+  - **Circular: the "peer" is the same crate the server frames with** — `webrtc_signaling` and
+    `websocket` are both driven by `tokio-tungstenite`, which is what their servers use.
+    `tests/server/websocket/e2e_test.rs` states the rule in its own header and hand-writes a raw
+    RFC 6455 client instead. For `webrtc_signaling` there is no way out: the layer NetGet
+    actually authors is an ad-hoc JSON relay schema, so no third-party implementation of it
+    exists or could. (`webrtc` itself is *not* this case in the way that matters — the peer is
+    webrtc-rs in the opposite role completing a real ICE/DTLS/SCTP handshake, which is the
+    already-accepted `quic`/quinn precedent, and what it validates is NetGet's own signalling,
+    admission and data-channel plumbing. Browser interop remains unproven and is what a human
+    should check before it goes past Beta.)
+  - **A client hand-written inside the test is not a third-party client** — `usb/serial` and
+    `usb/smartcard` are driven by `tests/helpers/usbip_client.rs`, which speaks USB/IP from the
+    wire format deliberately (no macOS USB/IP client exists). Same class as `dhcp`'s in-test RFC
+    2131 decoder: an independent reading of the spec, not an independent implementation.
+    `torrent_tracker` is the same shape via `serde_bencode`.
+
+  `openvpn` is a fifth case and a different one: its real-client test is **not** ignored and
+  **does** hard-fail when the binary is missing, the system `openvpn` 2.x accepts our
+  `P_CONTROL_HARD_RESET_SERVER_V2` and goes on to send a TLS ClientHello, and the test asserts
+  both. It stays Experimental anyway, on its own metadata's reasoning: the server implements
+  only the front of the protocol, so no client can use it as a VPN, and "works against real
+  clients" would be a false claim whatever the test shows. Do not promote it on the test alone.
+
+  Deliberately **not** promoted despite an audit suggesting them: anything whose only evidence is
+  a generic HTTP client (`reqwest` proves an HTTP server answers, not that the protocol on top is
+  right — `couchdb`, `openapi`, `spark`, `xmlrpc`, `yarn`,
+  `jsonrpc`, `oauth2`, `saml_sp`, `proxy`, `http2`); anything with no independent peer at
+  all (`memcached`, `named_pipe`, `pty`, `radius`, `socket_file`, `stdio`).
+
+  **`rss` was on that list for circular evidence and is now Beta**, by the fix the list itself
+  prescribed. The server builds its XML with the `rss` crate's `ChannelBuilder` and the test
+  parsed the result back with the `rss` crate, so it asserted only that one crate round-trips
+  through itself. `feed-rs` 2 is now a dev-dependency and does the parsing: it recognises the
+  feed as `FeedType::RSS2` and the test asserts channel title/description/language, three
+  entries, the first entry's title and link, that its RFC 2822 `pub_date` became a real
+  timestamp, and its categories. RSS has no session — fetch-and-parse *is* the protocol — so an
+  independent reader is the strongest evidence the protocol admits. (The same note claimed the
+  `rss` test "currently fails"; it passes.)
+
+  **`mqtt` was on this list for a reason that was wrong twice over** and is now Beta. The claim
+  was "whose rumqttc tests are all `#[ignore]`d": in fact the four pub/sub tests were inside a
+  `/* … */` block, so nothing compiled them and `--include-ignored` could never have run them,
+  and the rumqttc test that *does* run was never ignored. Their "MQTT broker not yet
+  implemented" markers were left over from a placeholder the broker had long replaced. **Check
+  whether an `#[ignore]` is even reachable before believing what it says** — a stale marker
+  inside dead code held a working protocol at Experimental for months.
+
+  `dhcp` and `wireguard` were removed for the same reason — neither has a third-party
+  peer. dhcp's own metadata says no real DHCP client can be pointed at it (dhclient/ipconfig bind
+  UDP/68, need root, and cannot target an ephemeral loopback port), so its peer is an in-test RFC
+  2131 decoder: an independent reading of the spec, but not an independent implementation.
+
+  Re-derive this list rather than trusting it; the counts drift.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
-  majority (~99).
+  majority (100 of the 136 `src/server/*/actions.rs` the script below walks). Note the script
+  reports one `NONE`: `src/server/http_common/actions.rs`, which is a shared response helper
+  with no `impl Protocol` and no registry entry, so it declares no state correctly.
 - **Incomplete** — hidden from the LLM entirely (`is_available_to_llm()` returns false). **None
   remain.** The last one, `bluetooth_ble_beacon`, was a platform limit rather than unfinished
   work, and was resolved by making the platform explicit rather than by hiding the protocol:
@@ -414,10 +523,12 @@ test when its expectation is genuinely wrong.
 **All tests live in `tests/`. Never add `#[cfg(test)] mod tests` to `src/`.** Tests reach
 internals via `use netget::` public APIs; make items public or refactor if needed.
 
-This policy is currently violated by 9 files in `src/` (`llm/config`, `llm/reference_parser`,
-`llm/hybrid_manager`, `llm/embedded_inference`, `protocol/event_logger`, `protocol/log_template`,
-`system_stats`, `server/proxy/cert_cache`, `server/bluetooth_ble/mod`). Migrate them if you are
-working nearby; do not add more. Current list:
+This policy is currently violated by **5** files in `src/`: `server/bluetooth_ble/mod`,
+`server/bluetooth_ble_beacon/mod`, `server/etcd/mod`, `server/grpc/mod` and
+`server/oci_registry/actions`. Migrate them if you are working nearby; do not add more.
+
+This list was wrong in **both** directions before this pass — it named nine files of which eight
+no longer violate, and missed four that do — so derive it rather than trusting it:
 
 ```bash
 grep -rln "#\[cfg(test)\]" src/ --include='*.rs'
@@ -450,6 +561,34 @@ server implementing `/api/chat`, `/api/generate`, `/api/tags`. Configure with `.
 and **always finish with `server.verify_mocks().await?`** — without it the test asserts
 nothing about LLM interaction. An unmatched request returns HTTP 500 with a clear error, and
 `verify_calls()` dumps full call history on mismatch.
+
+**Call `wait_for_mocks(30)` before `verify_mocks()`.** A protocol exchange finishes with the
+last LLM call it provokes, which is exactly what the expectations describe, so waiting on
+them waits on the exchange. Suites used to sleep a fixed 1–2s and then verify, which is
+enough alone and not when a hundred run together. It returns quietly on timeout —
+`verify_mocks` remains the thing that asserts, and it names the rule that fell short.
+`wait_for_any(&[needles], secs)` does the same job for output assertions.
+
+**Rules are first-match-wins, and two rules on the same event with no way to tell them apart
+is the most common mistake in this repo.** The first answers every occurrence and the second
+reports zero calls; if the first answers with an action that produces the same event again,
+it loops until something else stops it (99 calls, in one case). To express "then", use ONE
+rule with `respond_with_actions_from_event` that branches on the event — a GET after a delete
+returns count 0, a PUT response names the key it just wrote, an IMAP reply carries the tag.
+
+**A response generator may carry state between calls, but only because it is now rendered
+once per request.** `to_response_string` used to be called twice — once to build the routing
+diagnostics and once for the reply — so a stateful closure advanced two steps per request and
+answered the first request with the second answer. That cost real debugging time; it is fixed,
+and worth not reintroducing.
+
+**Check the event id and the action name against the protocol, not against the neighbouring
+suite.** Whole suites were mocked against events their server never raises (`http_request` for
+Elasticsearch, which raises `elasticsearch_request`), fields the event does not carry
+(`uri` where it is `path`, and vice versa for HTTP/2), and actions the protocol cannot execute
+(`send_http_response` to an OpenAPI server). None of these fail loudly: the rule simply never
+matches, the request falls through to a real LLM call, the server answers an error, and the
+failure surfaces two steps later on a different expectation.
 
 UDP-style protocols (DNS, STUN, NTP, DHCP, BOOTP, TFTP…) **must** use
 `.respond_with_actions_from_event()` to echo the client's random transaction/query ID back.
@@ -497,6 +636,63 @@ after a long period when no CI job ran `cargo test` at all:
 | `test` | yes | `cargo test` on `tcp,http,dns,udp,redis,mcp-stdio` |
 | `single-feature` | yes | `cargo check --tests` on 14 protocol features **one at a time** — catches a feature whose deps are under-declared, which no multi-feature build can |
 | `orphaned-tests` | yes | Fails if a test dir on disk is undeclared in `mod.rs` (see the footgun above) |
+| `clippy-wide` | **no** (`continue-on-error`) | Clippy over a wide feature set. Advisory because at `--all-features` the lib alone emits ~495 warnings |
+| `registry-audit` | **no** (`continue-on-error`) | The registry-walking audits at `--all-features`, with the system libraries installed. This is the only job that sees more than 6 of 116 protocols — and it cannot fail the build, so **a green PR is not evidence the audits passed**. Read its log |
+
+Six jobs, not four: `clippy-wide` and `registry-audit` are easy to miss because both are
+`continue-on-error` and so report green regardless of outcome.
+
+### Terminal (PTY) tests
+
+`tests/terminal_snapshot/` drives the real binary through a pty. Four traps cost a full debugging
+pass each, and all four present as *product* bugs:
+
+- **Write to the right end.** Bytes written to the pty **master** are delivered to the child as
+  keystrokes; bytes written to the **slave** are what appears on the terminal. A test setting up
+  "pre-existing screen content" on the master is typing it into the chat box.
+- **`write_all` is unsafe once anything has set `O_NONBLOCK`.** A capture that drains until quiet
+  has to; afterwards a write can return `EAGAIN` part-way and be abandoned, and `Pty`'s `Write`
+  impl reports the short write as success. The symptom is a *truncated command*, which looks
+  exactly like a UI dropping keystrokes. Retry against a deadline.
+- **Never wait on a fixed sleep.** The rolling TUI processes roughly one keystroke per render
+  cycle, so a 33-character command takes ~1.3s idle and longer under `--test-threads`. Wait for
+  the condition, then let the frame settle — a predicate can go true mid-repaint, between the
+  status block and the status line.
+- **A capture that builds a fresh vt100 `Parser` from only the bytes read in that call is not
+  idempotent.** Calling it twice renders the second from a blank screen. Polling needs one parser
+  fed for the whole wait.
+
+Also: `snapshot_util::assert_snapshot` **creates** a missing snapshot and passes. A new test is
+therefore green on its first run whatever it captured — review the file before trusting it.
+
+### Whole-tree source ratchets
+
+Four tests scan **all** 136 server and 91 client protocols by reading source, so they hold at
+any feature set — including the 6-protocol CI gate, where a registry-walking test only ever
+sees what that build compiled. Each carries a baseline that **may only shrink**:
+
+| Test | Catches | Baseline |
+|---|---|---|
+| `client_event_wiring_test` | a client that asks the model and cannot act on the answer — including `if let Err(..)` with no success arm, `Ok(ClientLlmResult { .., .. })` dropping actions, `Ok(_) =>`, and count-and-log | 6 clients |
+| `event_emit_sites_test` | an `EventType` declared and never raised (the USB/BLE/imap defect) | empty, both trees |
+| `startup_param_drift_test` | a startup parameter declared and read by nothing — an advertised knob that does nothing when turned | 20 params |
+| `executable_examples_test` | an action whose own `example` its own `execute_action` refuses — the shape the model copies | 18 examples |
+| `event_action_declarations_test` | actions the model can never see, and advertised names the executor cannot run | — |
+
+A third check worth understanding: `event_action_declarations_test` probes each advertised
+name with a bare `{"type": name}`, which finds *unknown action* but can never find a wrong
+**field**, because it never sends one. `executable_examples_test` sends the declared example
+itself, and that is what caught `ospf` advertising `list_neighbors`/`list_lsdb` with no
+executor arm, and `tor_relay_log` advertised under a comment claiming the executor "has always
+handled it" when there was no arm at all.
+
+Two lessons from building them, both about false positives rather than misses. **Detect at the
+right nesting depth**: an `Ok(_) => {}` catch-all on an inner `match protocol.execute_action(..)`
+is correct and everywhere, and a substring version of that check flagged `ntp` and `tor` while
+they executed the model's actions perfectly well. And **for a build-failing check, prefer the
+conservative rule**: the strict version of the startup-param scan flagged 57 client parameters,
+of which many were read through `get_protocol_field` or a helper — a false positive trains
+people to edit the baseline instead of the code.
 
 The gate is deliberately not `--all-features`: that needs system libraries the runner does not
 install (`protoc`, `libpcap`, `dbus`, `libusb`, `pcsclite`). So **the CI feature set covers 6 of
@@ -527,6 +723,25 @@ Use minimal features. `--all-features` compiles 50+ protocols and their dependen
 
 Kill stuck builds with `./cargo-isolated-kill.sh`, never `pkill cargo`.
 
+### `target/` will fill the disk, and it fails in a way that wastes an hour
+
+**Watch `df` during any session that builds several different feature sets.** `target/debug/deps`
+reached **130 GB in 27,587 files** in one session here — Cargo never garbage-collects test
+binaries from feature permutations, and each `--all-features` test binary links the whole
+136-protocol library. Pruning by age does not help: ~17,000 of those files were from that day.
+`cargo clean --profile dev` is the remedy, and it keeps `target/release`.
+
+Two things make this expensive rather than merely annoying:
+
+- **It does not present as a disk problem.** The first symptom was a linker line buried in a
+  19,000-line log — `ld: write() failed, errno=28 (No space left on device)` — after which the
+  sweep reported `exit code 0` having run **zero** tests. An earlier sweep in the same session
+  produced 18 "failures" that were pure artefacts. **A sweep that reports no `test result` lines
+  did not run; check the log tail before believing any count.**
+- **At literally zero bytes free you cannot recover in-session.** Every tool call needs to write
+  its output file, so `df`, `ls` and `cargo clean` all fail with ENOSPC and the only way out is
+  the operator freeing space by hand. Leave headroom rather than discovering the floor.
+
 ### The installed binary — `/Users/matus/bin/netget`
 
 The maintainer's `netget` on `PATH` lives at `/Users/matus/bin/netget` and **must always have every
@@ -545,17 +760,29 @@ file in place can fail with `ETXTBSY` while it is running. Rename swaps the inod
 live process keeps the old image, the new binary takes effect on next launch. **Never kill the
 running `netget` to install** — the rename never needs it stopped.
 
-**`--all-features` vs `all-protocols` — they are NOT interchangeable, and using the wrong one
-crashes the binary at startup.** `--all-features` is a Cargo built-in that turns on *every* feature
-in `Cargo.toml`: not just protocols but also `embedded-llm`, **`gpu`** (Metal/MLX GPU backend),
+**`--all-features` vs `all-protocols` — they are NOT interchangeable.** `--all-features` is a
+Cargo built-in that turns on *every* feature in `Cargo.toml`: not just protocols but also
+`embedded-llm`, **`gpu`** (GPU stats via `gfxinfo`),
 `android-termux`, the test-only `terminal-snapshot`, and the `dist*`/`portable-base` aggregates.
-On macOS the `gpu` feature initializes a Metal context at startup that CFRelease-crashes
-(`EXC_BREAKPOINT`/SIGTRAP in CoreFoundation) — so an `--all-features` binary dies the instant the
-TUI renders. Use `--all-features` **only** for a compile check (`cargo check --all-features`), never
-for a binary you run. `all-protocols` is the curated "every protocol, and only things safe to run"
-set — it includes `embedded-llm` (dormant unless `--embedded-model` is passed) but **not** `gpu`,
-which is why it runs. If `gpu`/Metal startup is ever fixed the two could converge; until then, build
-the runtime binary from `all-protocols`.
+`all-protocols` is the curated "every protocol, and only things safe to run" set — it includes
+`embedded-llm` (dormant unless `--embedded-model` is passed) but **not** `gpu`. Use `--all-features`
+for a compile check (`cargo check --all-features`) and `all-protocols` for a binary you run.
+
+**The `gpu` crash this section used to describe is fixed, and the description of it was wrong in
+every detail worth acting on.** It said the feature "initializes a Metal context at startup" that
+crashes "the instant the TUI renders". It is not Metal and not startup: `gpu` pulls in `gfxinfo`,
+whose macOS `MacGpuInfo::load_pct()` over-releases a `CFDictionary`, and the extra `CFRelease`
+raises `EXC_BREAKPOINT`/SIGTRAP inside CoreFoundation. `SystemStatsMonitor::get_stats` is the only
+caller and `run_rolling_tui` is the only caller of *that*, on a one-second interval — so the crash
+landed a second or two **after** the first paint, only in the `--legacy-tui` rolling TUI, and never
+in the dashboard. `src/system_stats.rs` now compiles the `gfxinfo` call out on macOS
+(`cfg(all(feature = "gpu", not(target_os = "macos")))`) and reports `N/A`, which is what the
+operator saw anyway wherever the stat was unsupported. Linux and Windows are unaffected.
+
+The stack is worth keeping because it is not catchable: the crash is inside a `Drop`, so there is
+no fallible call to wrap and `catch_unwind` cannot see it. It surfaced only because
+`tests/terminal_snapshot` is the one suite that *runs the TUI*, and only once those tests were
+pointed at `--legacy-tui` — before that they exercised the dashboard and never touched the path.
 
 The TUI installs a native-crash terminal restorer (`crash_restore` in `src/cli/rolling_tui.rs`): a
 SIGSEGV/SIGABRT/SIGTRAP from a C/ObjC library bypasses Rust's `Drop`/panic machinery, so without it
@@ -732,20 +959,123 @@ Assume other agents work in this repo concurrently.
 - **Give scratchpad files a name unique to you.** Two agents independently wrote `mod.rs.bak`
   into the shared session scratchpad; one clobbered the other, and restoring "the" backup put
   one protocol's source into another protocol's file. Prefix every scratch file with your task.
+- **Never revert a dirty working-tree file you did not demonstrably write** — no
+  `git checkout -- <path>`, `git restore`, or overwrite to "tidy up" an edit that looks
+  half-finished. You cannot tell your own abandoned work from another agent's work in progress,
+  and the tree is routinely mid-edit for several agents at once. An unverified edit left in the
+  tree is a far smaller problem than deleted work. This happened: a batch of subagents died
+  mid-task leaving three modified files, and the reflex to restore a clean tree wiped edits that
+  may not have been theirs. They survived only because `git diff > patch` had been run first.
+  If you truly must clear a path, save `git diff -- <path>` to a uniquely named scratch file
+  **first** and say so — but prefer leaving it alone and reporting it.
+- **Don't fan out a large agent wave while the API is failing.** If agents start returning
+  "stalled" or the tool-permission classifier times out, stop and wait instead of launching the
+  next slice. Three waves were attempted during one degraded period and burned **~9.8M tokens to
+  return 5 usable results**; the dead agents also left half-written files in the shared tree for
+  someone else to trip over.
+
+  Two diagnoses that looked obvious and were both **wrong**, recorded so they are not re-tried:
+  (1) *a cold `target/` making agents queue on the build lock* — warming the cache first changed
+  nothing; (2) *agents blocking >180s inside `cargo check` with no output* — a rewritten wave that
+  forbade cargo entirely still lost 28 of 29 agents. The stall is in the agent infrastructure, not
+  in what the agents were asked to do, so **rewriting the task does not rescue it — only waiting
+  does.** The tell is uniformity: when nearly every agent dies with the same "no progress for
+  180000ms" on all 6 retries while one or two trivial ones succeed, that is the platform, not the
+  prompt.
 - **Pause and report** if you hit an error in code you did not modify. It is almost always
   another agent mid-edit; retry rather than "fixing" their file.
 - **Verify HEAD, not the working tree.** During parallel work the working tree is routinely
   mid-edit and its failures belong to nobody. Check the committed state in a throwaway
   worktree: `git worktree add --detach <tmp> HEAD && cargo check --all-features` with its own
   `CARGO_TARGET_DIR`. Remove the worktree afterwards.
-- `--ollama-lock` serializes LLM API access (default in tests). Concurrent `git` work should
-  use worktrees.
+- **`--ollama-lock` does nothing, and its plumbing is now gone.** The flag is parsed into
+  `Args::ollama_lock` and **read by nothing**. It used to be threaded through six hops that each
+  made it look implemented — `AppState::new_with_options`'s second parameter, the
+  `ollama_lock_enabled` field, `get_ollama_lock_enabled()`, `create_llm_client(args,
+  lock_enabled)` and `OllamaClient::new_with_options(url, lock_enabled)`, whose body was
+  `Self::new(base_url)` under a comment saying locking is "handled at a different layer". Nothing
+  in `src/` was that layer and no `ollama.lock` was ever created. All six are deleted; the flag
+  stays accepted and inert so `--ollama-lock` in an existing script is not a hard clap error.
+  The harness no longer passes it — it used to go to *every* spawned binary, which is why the
+  whole e2e suite looked as though it serialised LLM access across processes. **Don't reason
+  about concurrency from it**: `--llm-max-concurrent`, `--llm-queue-timeout` and
+  `--llm-max-queued` are the real bounds. `tests/ollama_lock_is_a_noop_test.rs` fails if the old
+  claims come back, if an `ollama.lock` appears, or if anything in `src/` reads the field again.
+- Concurrent `git` work should use worktrees.
+- **Do not run a full sweep while anything else is building.** `tests/examples` and
+  `tests/terminal_snapshot` *spawn `target/debug/netget`*, and `target/` is shared with every
+  other agent and with your own narrow-feature builds. A concurrent build replaces that binary
+  mid-run, and the sweep then reports things like `Protocol 'SOCKS5' exists but is not compiled
+  into this build` for protocols that are in fact compiled, or hangs a pty snapshot test. Those
+  are contention artefacts, not regressions — check for other `cargo test` processes before
+  believing a binary-spawning failure.
 - Never `pkill cargo`; use `./cargo-isolated-kill.sh`.
 - The user runs `netget --mcp` interactively. **Never kill netget processes.**
 
 ## Known systemic issues
 
 Read before assuming a subsystem is sound:
+
+- **Clients that ask the model what to do and then throw the answer away.** The single most
+  common client defect, found in six protocols in one pass and fixed in all of them. It has
+  three shapes, and none of them fails loudly — the client connects, reports success, and
+  does nothing:
+  - *Discarded outright.* `etcd` counted the actions and logged the count. `turn` logged
+    "initial LLM call returned 1 actions" and dropped them, so a client told to allocate a
+    relay never put a byte on the wire. `datalink` made no connected-event call at all.
+  - *Run through a deliberately non-notifying path.* `elasticsearch` and `http2` executed
+    follow-ups with a core that raises no event, so the chain was one step deep: a `search`
+    issued in reply to an index confirmation ran and its hits went nowhere.
+  - *Event declared and never emitted.* `imap` advertised `imap_mailbox_selected`,
+    `imap_search_results` and `imap_message_fetched`; nothing raised any of them, so the
+    model got one turn on connect and then went deaf.
+
+  The reason these persist is that the honest fix looks impossible at first: action → event
+  → action is genuinely self-referential, and an `async fn` that awaits itself has an
+  infinitely-sized future (E0391). **The answer is a depth bound, not silence.** Box the
+  recursive call — and name `+ Send` explicitly on the boxed type if it is awaited inside a
+  `tokio::spawn`, which inference will not give you — then cap it (`MAX_FOLLOWUP_DEPTH`,
+  4–8). Where the cycle already passes through a queue or a separate task, as in
+  `datalink`'s pcap loop, no boxing is needed at all: the chain continues by itself.
+
+  When you touch a client, check what it does with `result.actions`. `let _ =`, a bare
+  `debug!` of `.len()`, or a comment explaining why the model's answer is not needed are all
+  the same bug.
+
+- **A literal IP still goes through the system resolver, and it can block for seconds.**
+  `reqwest` hands the URL host to its DNS resolver unconditionally, and `hyper-util`'s
+  `GaiResolver` does not special-case a dotted quad — so `http://127.0.0.1:11434` performs a
+  real `getaddrinfo("127.0.0.1")`. On macOS that goes through libinfo to mDNSResponder, one
+  system-wide daemon, which serialises under concurrency: **measured at 8.25 seconds** with
+  ~100 processes asking at once. Use
+  `crate::llm::ollama_client::client_for_endpoint{,_with_timeout}`, which applies the override
+  when — and only when — the host parses as an `IpAddr`. A hostname is left alone; resolving it
+  is the resolver's job.
+
+  Two traps this produced, both worth knowing:
+  - **The override is gated on that parse, so extracting the host must be right.** A first
+    version stripped only the scheme, leaving `127.0.0.1:54321`, which does not parse — so the
+    bypass silently did not engage and the symptom was unchanged. `host_of` and
+    `tests/literal_ip_dns_bypass_test.rs` exist for exactly that.
+  - **It presents as "the machine is loaded".** The failing test showed a healthy server that
+    had never been spoken to. What settled it was one raw `TcpStream::connect` next to the
+    failing request: 464µs and the server logged the accept, while reqwest's own connect had
+    not arrived 8 seconds later. **When a client times out against a healthy server, prove
+    which step is stuck before blaming the environment** — an earlier pass concluded "external
+    machine load" and closed the investigation with the bug still there.
+
+- **More test threads is not the fix for a starved runtime here.** `--test-threads=100` already
+  oversubscribes a 12-core box; giving one test `flavor = "multi_thread", worker_threads = 4`
+  made the same failure go from 2/6 to **7/8**. Measure before adding workers.
+
+- **Building a `reqwest::Client` is a blocking operation.** `Client::builder().build()` sets
+  up the rustls stack and loads the platform root store; on macOS that reads the keychain
+  through Security.framework, synchronously and serialised across processes. Called on the
+  async runtime it parks a tokio worker, and under load that stalled an entire client
+  runtime. Build it on `spawn_blocking`, build it **once** rather than per request (`doh`,
+  `http` and `openapi` all rebuilt it every time, and `http`/`openapi` additionally built one
+  at connect and dropped it), and pass `tls_built_in_root_certs(false)` when
+  `danger_accept_invalid_certs` is set, since nothing will be checked against those roots.
 
 - **Fail-open defaults are the most dangerous pattern in this codebase.** When the LLM returns
   nothing usable, a protocol must not fall through to a permissive default. OAuth2 did: no
@@ -780,13 +1110,59 @@ Read before assuming a subsystem is sound:
   goes through `call_llm_for_client` (budget, limiter and client `event_handlers` all apply),
   and `src/server/git/mod.rs` and `src/server/mercurial/mod.rs` both use
   `action_helper::call_llm`. Re-run that grep before trusting any similar claim here.
-- On LLM failure most protocols reset to Idle and write nothing, leaving the peer to hang
-  until its own timeout. Still true for **70 of the 79** server `mod.rs` files with a
-  recognisable LLM-error branch — 6 answer on every branch, 3 on some. `http` (500, or 503 +
-  `Retry-After` when the error is an overload) and `tcp` (half-close, so the peer reads EOF)
-  are fixed; copy one of those shapes when you touch a protocol. Re-derive the count with a
-  grep for `LLM error` in `src/server/*/mod.rs` and check whether the following ~18 lines
+- On LLM failure a protocol must not reset to Idle and write nothing, leaving the peer to hang
+  until its own timeout. **Swept across all 135 server protocols in August 2026** (audit found
+  64 defective: 54 silent, 4 leaking the error onto the wire, 6 mixed). 44 now answer with a
+  `crate::utils::WireFailure` category; copy `http` (503 + `Retry-After` vs 500) or `tcp`
+  (half-close, so the peer reads EOF) when you touch a new one. Re-derive rather than trusting
+  this: grep `LLM error` in `src/server/*/mod.rs` and check whether the following ~18 lines
   write anything.
+
+  **20 protocols are deliberately silent and must stay that way** — `arp`, `bootp`, `datalink`,
+  `dhcp`, `igmp`, `ipsec`, `isis`, `mdns`, `openvpn`, `ospf`, `radius`, `rip`, `rtp`, `syslog`,
+  `udp`, `usb/mouse`, `usb/keyboard` and the BLE profiles. Each says so in its own CLAUDE.md.
+  The rule is that **a fabricated reply is worse than silence when every reply the protocol
+  defines is a positive assertion.** `openvpn` is the case to remember: its only pre-TLS server
+  message is `P_CONTROL_HARD_RESET_SERVER_V2`, and sending it *is* admitting the peer — so
+  "fixing the silence" there would turn a backend outage into an authentication bypass. ARP
+  would write a fabricated MAC into the requester's neighbour cache; OSPF/IGMP/RIP/BOOTP/DHCP
+  have no error frame at all. Where the wire cannot carry the distinction, the **log** must:
+  tag `decision=model_reject` / `model_silent` / `fail_closed_llm_error` as `radius` does.
+- **Resolved: a static handler with an empty `actions` array DOES suppress the LLM call.**
+  This file used to carry it as an unexplained observation — seen in
+  `tests/server/xmpp/peer_inject_test.rs` under full-suite load, where a probe on the `call_llm`
+  error branch fired with `{"type":"static","actions":[]}` on a `*` pattern and stopped firing
+  when only that JSON became `[{"type":"wait_for_more"}]`. Every candidate mechanism had been
+  ruled out by inspection, correctly: there was no mechanism, because there was no defect.
+
+  `tests/empty_static_handler_test.rs` measures it directly instead of through a probe on an
+  error branch — point NetGet at a mock model that **records every call it receives**, and
+  count. Three cases differing only in the routing table:
+
+  | routing | LLM calls |
+  |---|---|
+  | no handler at all (control) | non-zero |
+  | `{"type":"static","actions":[]}` | **0** |
+  | `{"type":"static","actions":[{"type":"wait_for_more"}]}` | **0** |
+
+  The control is the part that makes the zeros mean anything; without it they are
+  indistinguishable from a mock the server never tried to reach. Holds under a full
+  `--all-features --test-threads=100` run, which is the condition the original was seen in.
+
+  So **`src/tui/modal/form.rs`'s zero-action `<proto>_connected` rule works**, and the earlier
+  advice to prefer `wait_for_more` over an empty list is unnecessary — though harmless, and
+  `wait_for_more` still reads more clearly where the protocol declares it. The lesson worth
+  keeping is about the evidence, not the handler: an indirect probe on an error branch, under
+  load, in a suite doing many other things, produced a confident and wrong attribution that
+  stood in this file for months. Measure the thing itself.
+
+- **`ServerForm::create` substitutes a default instruction** (`"You are a {protocol} server.
+  Handle requests appropriately."`) whenever `instruction` is `None` — see
+  `src/cli/management.rs`. Any non-empty instruction makes `operator_wants_dynamic` true, so a
+  test built with `..Default::default()` **does consult the model**, whatever its comments claim.
+  Two `peer_inject` tests documented "Zero LLM calls" while doing the opposite, and passed only
+  because the old fail-open swallowed the resulting error. Pass `instruction: Some(String::new())`
+  when you want a genuinely model-free server.
 - **Answering the peer is not a licence to tell it anything.** Fixing the silence above
   introduced the opposite defect across ~25 protocols at once: each interpolated the error into
   the reply, so a plain `telnet` session printed `[netget] cannot answer right now: ✗  LLM
@@ -813,6 +1189,24 @@ Read before assuming a subsystem is sound:
   because `tests/helpers/netget.rs` passes `--llm-max-concurrent 1000` to every E2E test, so
   the shipped value was exercised by no test at all; `tests/llm_concurrency_default_test.rs`
   now runs with the flag omitted entirely.
+- **Typing a slash command in the `--legacy-tui` rolling TUI destroys the visible output.**
+  Open, and recorded rather than fixed. `update_slash_suggestions_and_render`
+  (`src/cli/rolling_tui.rs`) swaps the footer to `FooterContent::SlashCommands` and calls
+  `footer.render()` directly, skipping the scroll-region and push-content-up bookkeeping that
+  `update_ui_from_state` runs for every *other* height change. The suggestion popup is up to ten
+  entries plus two separators, so on 80x24 the footer jumps 9 → 16 rows with no DECSTBM update
+  and no push: it paints over the output rows, and `StickyFooter::render` then clears
+  `max(old, new)` of them. Nothing keeps a copy of the scrollback, so those rows are gone.
+  Measured on the byte stream — ten lines present after `/test 10`, `ESC[2K` on rows 9-24 during
+  the next slash command, nothing left after.
+
+  **Routing the popup through that bookkeeping is not the fix, and was tried.** The suggestion
+  list changes on every keystroke, so the footer expands and shrinks once per character and
+  `blank_lines_buffer` does not balance across the cycle; the result was strictly worse (all ten
+  lines scrolled away rather than six overwritten). A real fix means the footer stops being a
+  destructive overlay. The dashboard is unaffected — it renders whole frames into the alternate
+  screen — which is why this sits below the bar for reworking deprecated code.
+  `tests/terminal_snapshot/mod.rs` carries the measurement, and its snapshots record the damage.
 - **The 10-second idle sweep is for connectionless protocols only — declare it.**
   `AppState::cleanup_old_connections` (ticked by the TUI and the MCP loop) evicts any connection
   whose `last_activity` is older than 10s. It exists for UDP/raw/link-level servers, whose
@@ -827,10 +1221,12 @@ Read before assuming a subsystem is sound:
   write: it is what the rail's `↓/↑` counters and connection-scoped task prompts read.
 - Per-connection tasks are untracked, so `stop_server` does not cancel in-flight connections.
 - `AppState` is one global `RwLock` over everything — a throughput ceiling, not a deadlock.
-- ~50 of the 63 root markdown files are one-off session/status reports last touched in 2025.
+- **The root markdown clutter is gone** — the ~50 one-off session/status reports this entry used
+  to warn about were deleted. Ten files remain and all are durable: `README.md`, `CLAUDE.md`,
   `ARCHITECTURE.md`, `METADATA_EXAMPLES.md`, `CLIENT_PROTOCOL_FEASIBILITY.md`,
-  `LICENSE_ANALYSIS.md`, `SYSTEM_DEPENDENCIES_macOS.md`, `TERMUX_INSTALL.md`, and
-  `PROTOCOL_MIGRATION_GUIDE.md` are the durable ones. Do not add new status-report files.
+  `LICENSE_ANALYSIS.md`, `SYSTEM_DEPENDENCIES_macOS.md`, `TERMUX_INSTALL.md`,
+  `PROTOCOL_MIGRATION_GUIDE.md` and `IMPROVEMENTS.md`. **Do not add new status-report files** —
+  that is what let the directory reach 63 in the first place.
 
 ## Git
 
@@ -843,3 +1239,39 @@ Read before assuming a subsystem is sound:
   ```
 - Conventional Commits, one logical change per commit. No co-author or bot attribution
   trailers of any kind.
+- **Commit as you go.** Land each logical change as soon as it is verified, rather than
+  accumulating a large uncommitted tree and committing at the end. Other agents are editing this
+  repo continuously: a big working tree is a merge hazard, it is what broad `git add` sweeps pick
+  up, and an interrupted session loses all of it. Verify, commit, continue.
+- **Verify against a clean baseline, not against "does it pass".** The suite has pre-existing
+  failures, so a red run proves nothing on its own. Run the same suite at unmodified `HEAD` in a
+  throwaway worktree and **diff the two failure sets** — only the difference is yours. This is
+  what separates a real regression from the repo's existing red.
+  **Cross-check any suspect failure by re-running it in isolation before calling it a
+  regression.**
+
+  **But do not stop there, because "load-flaky" is where real bugs hide.** Both suites are
+  now green at `--test-threads=100` — client 299/0, server 799/0, several consecutive runs
+  each — and every test that used to be on a list here of things that "only fail under load"
+  is on it because of a defect that was found and fixed, not because the list was wrong to
+  notice them. Passing in isolation told us the *deadline* was wrong; it did not tell us the
+  code was fine, and three times it was not:
+
+  - The four `doh` **client** tests failed every run at 100 threads and passed at 30. Not
+    timing: raising the wait from 10s to 30s changed nothing. `Client::builder().build()`
+    loads the platform root store, which on macOS reads the keychain through
+    Security.framework — synchronously, serialised across processes. On the async runtime it
+    parked a tokio worker long enough to stall the client's whole runtime. The tell was a
+    configured 10s request timeout that never fired: a timeout that *cannot* fire means the
+    future was never created.
+  - `ServerForm::create` failing with "Address already in use" for `port: 0` — in zookeeper
+    one run, cassandra the next. Different protocol each time, which is what gave it away:
+    the shared startup path resolved port 0 by binding a probe listener and dropping it
+    before the protocol bound for real.
+  - Whole e2e suites waited with a fixed `sleep` and then verified. One second is enough
+    alone and not when a hundred run together. `wait_for_any` and `wait_for_mocks` on the
+    harnesses wait for the condition instead; every e2e suite now calls one before asserting.
+
+  A protocol whose e2e test binds sockets and waits on a mocked model *is* timing-sensitive by
+  construction, so a lone failure in a 100-thread run is still unproven until re-run. Re-run
+  it — and if it reproduces at all, find the defect rather than labelling it.

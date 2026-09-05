@@ -115,6 +115,10 @@ mod tests {
         println!("[PASS] Elasticsearch search request succeeded with valid JSON response");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -203,6 +207,10 @@ mod tests {
         println!("[PASS] Elasticsearch index document succeeded");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -286,6 +294,10 @@ mod tests {
         println!("[PASS] Elasticsearch get document succeeded");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -390,6 +402,10 @@ mod tests {
         println!("[PASS] Elasticsearch bulk operations succeeded");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -477,6 +493,10 @@ mod tests {
         println!("[PASS] Elasticsearch cluster health succeeded");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -566,6 +586,10 @@ mod tests {
         println!("[PASS] Elasticsearch root endpoint succeeded");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -648,6 +672,10 @@ mod tests {
         println!("[PASS] Elasticsearch delete document succeeded");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;

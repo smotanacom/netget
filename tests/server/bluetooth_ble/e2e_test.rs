@@ -145,12 +145,17 @@ async fn test_bluetooth_heart_rate_server() -> E2EResult<()> {
                     ]))
                     .expect_calls(1)
                     .and()
-                    // Mock 3: BLE characteristic read
-                    .on_event("ble_characteristic_read")
+                    // Mock 3: BLE characteristic read.
+                    //
+                    // The event is `bluetooth_read_request` and the verb is `respond_to_read`.
+                    // This rule named `ble_characteristic_read` / `send_ble_response`, neither
+                    // of which exists, so it never matched and the action was never checked —
+                    // `assert_actions_valid_for_event` skips an event id it cannot resolve.
+                    .on_event("bluetooth_read_request")
                     .and_event_data_contains("characteristic_uuid", "00002a37")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_ble_response",
+                            "type": "respond_to_read",
                             "value": "0048"
                         }
                     ]))
@@ -260,6 +265,10 @@ async fn test_bluetooth_heart_rate_server() -> E2EResult<()> {
     println!("✓ Disconnected from device");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -338,12 +347,17 @@ async fn test_bluetooth_battery_service() -> E2EResult<()> {
                     ]))
                     .expect_calls(1)
                     .and()
-                    // Mock 3: BLE characteristic read
-                    .on_event("ble_characteristic_read")
+                    // Mock 3: BLE characteristic read.
+                    //
+                    // The event is `bluetooth_read_request` and the verb is `respond_to_read`.
+                    // This rule named `ble_characteristic_read` / `send_ble_response`, neither
+                    // of which exists, so it never matched and the action was never checked —
+                    // `assert_actions_valid_for_event` skips an event id it cannot resolve.
+                    .on_event("bluetooth_read_request")
                     .and_event_data_contains("characteristic_uuid", "00002a19")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_ble_response",
+                            "type": "respond_to_read",
                             "value": "5f"
                         }
                     ]))
@@ -435,6 +449,10 @@ async fn test_bluetooth_battery_service() -> E2EResult<()> {
     peripheral.disconnect().await?;
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -507,6 +525,10 @@ async fn test_bluetooth_ble_startup() -> E2EResult<()> {
     println!("✓ Server running without errors");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;

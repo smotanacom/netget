@@ -15,9 +15,30 @@ DoH contributes the HTTPS/HTTP2 transport and the RFC 8484 request encodings;
 every DNS semantic - the action set, action execution, response construction -
 is the DNS protocol's, reached through delegation (see below). Both the GET
 (base64url `?dns=`) and POST (`application/dns-message` body) paths are
-exercised by `tests/server/doh/e2e_test.rs` against a real hyper/rustls client.
+exercised by `tests/server/doh/e2e_test.rs` against **reqwest** (hyper + rustls under the hood).
 Not covered: HTTP/1.1, CA-signed or custom certificates, rate limiting, caching,
 EDNS0.
+
+### ALPN
+
+The listener advertises **`h2`**, via
+`tls_cert_manager::generate_default_tls_config_with_alpn(&["h2"])` rather than the shared
+`generate_default_tls_config()` — `dot`, `tls` and `quic` are built from that default and
+document themselves as ALPN-less, so it must stay that way for them.
+
+It advertised nothing until August 2026, and this server speaks only HTTP/2. A client that
+negotiates normally therefore had no way to learn the protocol: it fell back to HTTP/1.1 and
+hyper's `http2::Builder` rejected the connection with "http2 error", or it refused outright.
+
+**The E2E test could not have caught this**, because `create_insecure_client()` uses
+`http2_prior_knowledge()`, which asserts HTTP/2 out of band and skips ALPN entirely. Dropping
+that option does not fix the coverage either: under `danger_accept_invalid_certs` reqwest builds
+its own rustls `ClientConfig` that does not offer `h2`, so it simply sends HTTP/1.1 and fails.
+`server_advertises_h2_alpn` covers the property directly instead, and also asserts the shared
+default is still ALPN-less so this cannot be "fixed" by changing it under the other three.
+
+Still unproven end to end: that a client which negotiates via ALPN completes a real DoH query.
+That needs a client which offers `h2` while trusting a self-signed certificate.
 
 ## Library Choices
 
@@ -363,3 +384,80 @@ Excellent scripting candidate:
 - [hyper Documentation](https://docs.rs/hyper/latest/hyper/)
 - [tokio-rustls Documentation](https://docs.rs/tokio-rustls/latest/tokio_rustls/)
 - [Mozilla DoH Documentation](https://wiki.mozilla.org/Trusted_Recursive_Resolver)
+
+---
+
+## `test_doh_server`: a literal IP still goes through the system resolver (August 2026)
+
+`test_doh_server` failed roughly **4 runs in 6** of the full suite at `--test-threads=100`,
+always the same way: `reqwest ... source: TimedOut` on the first GET, against a DoH server that
+had logged `DoH server listening on 127.0.0.1:<port>` and had never been asked anything — the
+mock reported zero `doh_query` calls.
+
+**Cause: `reqwest` resolves the URL host unconditionally, even when it is a dotted quad.**
+`hyper-util`'s default `GaiResolver` does not special-case `127.0.0.1`, so every request made a
+`getaddrinfo("127.0.0.1")` call. On macOS that goes through libinfo to mDNSResponder — one
+system-wide daemon — and at 100 test threads about a hundred processes ask it simultaneously.
+
+The measurement that pinned it, after the timing was instrumented directly:
+
+```
+!!!T!!! client built after 1.047375ms
+!!!T!!! raw TCP connect took 464µs ok=true          <- same runtime, same port, immediately before
+!!!T!!! GET FAILED after 10.001948584s: ... TimedOut
+[STDERR] ... DoH TCP connection from 127.0.0.1:59561   <- the raw probe
+[STDERR] ... DoH TCP connection from 127.0.0.1:62223   <- reqwest, 8.25s later
+```
+
+A raw `TcpStream::connect` from the same test, on the same runtime, in the same moment, reached
+the server in 464µs. reqwest's connect had not reached it 8 seconds later. The machine, the
+runtime, the accept loop and the TLS stack were all healthy; only the name lookup was stuck.
+
+**Fix:** `.resolve("127.0.0.1", <addr>)` on the client builder, which bypasses the system
+resolver. That took the test from 4/6 failures to **0/8** at the same machine load
+(load average ~120 on 12 cores).
+
+### What this replaces, and why the earlier reading was wrong
+
+An earlier pass concluded the evidence "points at external machine load" and listed four ruled-out
+hypotheses. Load was real and was what made the bug *visible*, but it was not the cause, and
+treating it as one nearly cost the fix. Two of the earlier candidates were also tested properly
+here and are genuinely not needed: a multi-threaded test runtime and building the client on
+`spawn_blocking` each changed nothing once the resolver was overridden (the client builds in
+~1ms), so neither was kept.
+
+The lesson is the method rather than the finding: **when a client times out against a healthy
+server, prove which step is stuck before blaming the environment.** One raw `TcpStream::connect`
+next to the failing request separated "the machine cannot connect" from "this library will not
+connect", and that single line is what turned an unexplained flake into a one-line fix.
+
+**Every other e2e test that points `reqwest` at `127.0.0.1` had the same latent defect** — all
+18 now carry the override. So does NetGet itself, for any endpoint configured with an IP
+(`src/llm/ollama_client.rs::without_dns_for_literal_ip`); that second fix is what stopped the
+`bluetooth_ble` read tests failing, whose `/api/tags` probe was spending its entire 5-second
+budget in the resolver.
+
+### The residual, and what was measured
+
+After both fixes, `test_doh_server` still timed out about 2 runs in 6 at load ~150. reqwest now
+connects in ~30ms and it is the **TLS handshake** that does not complete inside the remaining
+budget. Two candidate remedies were tested rather than assumed, and the result is worth
+recording because one of them is the opposite of the intuition:
+
+| change | failures |
+|---|---|
+| baseline (before either DNS fix) | 4 / 6 |
+| DNS fixes only | 2 / 6 |
+| **+ `multi_thread` test runtime and batched harness output** | **7 / 8 — much worse** |
+| + request budget raised 10s → 30s | **0 / 8** at load 161 |
+
+Giving the test its own 4 worker threads makes it *worse*, because `--test-threads=100` already
+oversubscribes a 12-core box and four workers per test multiplies the contention. That is the
+reverse of what "starved runtime → add threads" suggests, and it is why the earlier pass was
+right to drop it — though for the wrong reason.
+
+The 10s budget was the only tight deadline in the file (its siblings wait 20s and 30s) and it
+bounds a two-process TLS + HTTP/2 handshake, not server health. It is now 30s. **That change
+was made last, deliberately.** Raising it first would have hidden both real defects, which is
+exactly what nearly happened when an earlier pass concluded the cause was "machine load".
+

@@ -165,6 +165,10 @@ async fn test_quic_echo() -> E2EResult<()> {
     endpoint.wait_idle().await;
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -298,6 +302,10 @@ async fn test_quic_custom_response() -> E2EResult<()> {
     endpoint.wait_idle().await;
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -443,6 +451,10 @@ async fn test_quic_multiple_streams() -> E2EResult<()> {
     endpoint.wait_idle().await;
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -626,6 +638,10 @@ async fn test_quic_binary_echo_round_trip() -> E2EResult<()> {
     connection.close(0u32.into(), b"done");
     endpoint.wait_idle().await;
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
 

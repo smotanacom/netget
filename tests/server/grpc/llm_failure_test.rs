@@ -109,7 +109,10 @@ async fn test_grpc_answers_internal_when_llm_fails() -> E2EResult<()> {
     let server = start_netget_server(config).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
     let url = format!("http://127.0.0.1:{}/failtest.EchoService/Echo", server.port);
 
     let response = tokio::time::timeout(
@@ -168,6 +171,10 @@ async fn test_grpc_answers_internal_when_llm_fails() -> E2EResult<()> {
         body.len()
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -233,7 +240,10 @@ async fn test_grpc_answers_internal_when_handler_returns_no_usable_action() -> E
     let server = start_netget_server(config).await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
     let url = format!("http://127.0.0.1:{}/failtest.EchoService/Echo", server.port);
 
     let response = tokio::time::timeout(
@@ -293,6 +303,10 @@ async fn test_grpc_answers_internal_when_handler_returns_no_usable_action() -> E
         body.len()
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

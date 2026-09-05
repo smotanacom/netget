@@ -85,6 +85,10 @@ async fn test_ssh_banner() -> E2EResult<()> {
     }
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -161,6 +165,10 @@ async fn test_ssh_version_exchange() -> E2EResult<()> {
     }
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -240,6 +248,10 @@ async fn test_ssh_connection_attempt() -> E2EResult<()> {
     }
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -314,6 +326,10 @@ async fn test_ssh_multiple_connections() -> E2EResult<()> {
     println!("✓ Multiple connection handling tested");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -474,6 +490,10 @@ async fn test_ssh_python_auth_script() -> E2EResult<()> {
     );
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -591,6 +611,10 @@ async fn test_ssh_script_update() -> E2EResult<()> {
     println!("  ✓ Verified: Scripts handled authentication (no LLM calls for auth events)");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -710,6 +734,10 @@ async fn test_ssh_script_fallback_to_llm() -> E2EResult<()> {
     // Verify mock expectations: exactly one setup call, exactly one fallback call each for eve
     // and frank, and — implicitly — none for dave, since no rule would have matched him and an
     // unmatched request is an HTTP 500 the server would log.
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -921,6 +949,10 @@ async fn test_sftp_basic_operations() -> E2EResult<()> {
     println!("  ✓ auth, readdir, open+read and stat all round-tripped");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;

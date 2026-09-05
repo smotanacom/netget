@@ -248,13 +248,18 @@ impl S3Client {
     /// Execute an S3 operation, returning the operation's own JSON result so the
     /// caller can report what actually happened (the command loop puts it in the
     /// `ClientSendOutcome` detail).
-    pub async fn execute_operation(
+    /// Build a client and run one operation. Raises no event, calls no LLM.
+    ///
+    /// Deliberately free of any path back into `notify_response`: that would make the async
+    /// type self-referential (notify -> apply -> operation -> notify), which rustc cannot
+    /// prove `Send`, so `tokio::spawn` refuses it. Follow-up actions the model returns for a
+    /// response event run through here, which breaks that cycle and bounds the loop -- a
+    /// follow-up cannot raise another response event.
+    pub async fn run_operation_once(
         client_id: ClientId,
-        operation_name: String,
+        operation_name: &str,
         operation_data: serde_json::Value,
-        app_state: Arc<AppState>,
-        llm_client: OllamaClient,
-        status_tx: mpsc::UnboundedSender<String>,
+        app_state: &Arc<AppState>,
     ) -> Result<serde_json::Value> {
         info!(
             "S3 client {} executing operation: {}",
@@ -325,7 +330,7 @@ impl S3Client {
         let s3_client = aws_sdk_s3::Client::from_conf(config);
 
         // Execute the operation
-        let result = match operation_name.as_str() {
+        let result = match operation_name {
             "s3_put_object" => Self::put_object(&s3_client, operation_data).await,
             "s3_get_object" => Self::get_object(&s3_client, operation_data).await,
             "s3_list_buckets" => Self::list_buckets(&s3_client).await,
@@ -336,6 +341,25 @@ impl S3Client {
             "s3_delete_bucket" => Self::delete_bucket(&s3_client, operation_data).await,
             _ => Err(anyhow::anyhow!("Unknown S3 operation: {}", operation_name)),
         };
+
+        result
+    }
+
+    pub async fn execute_operation(
+        client_id: ClientId,
+        operation_name: String,
+        operation_data: serde_json::Value,
+        app_state: Arc<AppState>,
+        llm_client: OllamaClient,
+        status_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<serde_json::Value> {
+        info!(
+            "S3 client {} executing operation: {}",
+            client_id, operation_name
+        );
+
+        let result =
+            Self::run_operation_once(client_id, &operation_name, operation_data, &app_state).await;
 
         // Raise the response event from its own registered task rather than inline. A
         // dashboard-created client defaults to a `*` -> manual routing rule, so this LLM
@@ -519,11 +543,39 @@ impl S3Client {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
+                }
+
+                // Execute what the model asked for. These were discarded, so answering
+                // s3_response_received did nothing -- a model that listed a bucket and
+                // wanted to fetch one of the objects it had just seen was ignored.
+                //
+                // Dispatch goes through `run_operation_once`, which raises no event: that
+                // bounds the loop and keeps the async type non-recursive, which is what
+                // tokio::spawn's Send bound requires.
+                use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                let protocol = crate::client::s3::actions::S3ClientProtocol::new();
+                for action in actions {
+                    let Ok(ClientActionResult::Custom { name, data }) =
+                        protocol.execute_action(action.clone())
+                    else {
+                        continue;
+                    };
+                    match Self::run_operation_once(client_id, &name, data, &app_state).await {
+                        Ok(v) => info!(
+                            "S3 client {} follow-up {} -> {}",
+                            client_id,
+                            name,
+                            crate::utils::truncate_for_log(&v.to_string(), 120)
+                        ),
+                        Err(e) => {
+                            error!("S3 client {} follow-up {} failed: {}", client_id, name, e)
+                        }
+                    }
                 }
             }
             Err(e) => {

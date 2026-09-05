@@ -103,8 +103,16 @@ mod dns_client_tests {
         .await?;
         tokio::time::sleep(Duration::from_secs(2)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -154,8 +162,16 @@ mod dns_client_tests {
         .await?;
         tokio::time::sleep(Duration::from_secs(2)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -201,8 +217,16 @@ mod dns_client_tests {
         .await?;
         tokio::time::sleep(Duration::from_secs(2)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())
@@ -291,8 +315,16 @@ mod dns_client_tests {
         let mut client = start_netget_client(client_config).await?;
         tokio::time::sleep(Duration::from_secs(3)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())

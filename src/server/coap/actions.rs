@@ -80,7 +80,10 @@ impl Protocol for CoapProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — coap-lite —
+            // covering RFC 7252 message-layer encode/decode by an independent codec. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             // 5683 is above 1023; declaring PrivilegedPort here could never fire.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(

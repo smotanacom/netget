@@ -139,6 +139,10 @@ Initialize the heartbeat counter to 0 when the server starts."#;
 
     println!("✓ Recurring task executed and counter incremented");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -257,6 +261,10 @@ Initialize the ready flag to false when the server starts."#;
 
     println!("✓ One-shot task executed and flag was set");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -421,6 +429,10 @@ Initialize metrics counter to 0 and initialized flag to false."#;
 
     println!("✓ Server-attached tasks executed successfully");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

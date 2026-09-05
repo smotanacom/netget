@@ -92,6 +92,10 @@ async fn test_reverse_shell_command_output() -> E2EResult<()> {
         "Expected the model-supplied shell output 'www-data', got: {response:?}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -141,16 +145,21 @@ async fn test_reverse_shell_fails_closed_on_no_answer() -> E2EResult<()> {
     stream.write_all(b"anything\n").await?;
     stream.flush().await?;
 
-    // Fail-closed: the server half-closes, so a read must eventually return EOF (0 bytes).
+    // Fail-closed: the server writes one category line, then half-closes, so a read must
+    // eventually return EOF (0 bytes).
     let mut buf = vec![0u8; 1024];
     let mut saw_eof = false;
+    let mut tail = String::new();
     for _ in 0..8 {
         match tokio::time::timeout(READ_TIMEOUT, stream.read(&mut buf)).await {
             Ok(Ok(0)) => {
                 saw_eof = true;
                 break;
             }
-            Ok(Ok(_)) => continue, // drain any buffered prompt bytes
+            Ok(Ok(n)) => {
+                tail.push_str(&String::from_utf8_lossy(&buf[..n]));
+                continue;
+            }
             _ => break,
         }
     }
@@ -159,6 +168,28 @@ async fn test_reverse_shell_fails_closed_on_no_answer() -> E2EResult<()> {
         "Expected the connection to be closed (EOF) after a no-usable-answer, but it stayed open"
     );
 
+    // The operator is told a *category* before the FIN, so a dropped session is not mistaken
+    // for the far-end implant dying.
+    assert!(
+        tail.contains("[netget] request could not be processed"),
+        "Expected the fail-closed category notice before EOF, got: {tail:?}"
+    );
+
+    // And nothing from netget's internals reaches the operator's terminal. These are the
+    // tokens that actually leaked in the incident tests/wire_failure_test.rs documents.
+    for token in [
+        "\u{2717}", "retries", "http://", "11434", "qwen", "/Users/", "LLM", "ollama", "Ollama",
+    ] {
+        assert!(
+            !tail.contains(token),
+            "fail-closed notice leaked {token:?} to the operator: {tail:?}"
+        );
+    }
+
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

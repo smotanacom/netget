@@ -512,9 +512,30 @@ fn spawn_task_ticker(
     });
 }
 
+/// The port a server is actually listening on.
+///
+/// `ServerInstance::port` is the port that was *requested*, which is `0` for an OS-assigned
+/// one; the address it really bound is in `local_addr`. Reporting the requested value meant an
+/// MCP caller who started a server with `"port": 0` — the documented way to get an ephemeral
+/// port — was told it was listening on port 0 and had no way at all to discover the real one.
+/// `list_servers`, `get_server_details`, `get_status` and the `stop_server` confirmation all
+/// had it.
+///
+/// Same defect as the dashboard's edit form had (`ServerPrefill::from_server`), from the same
+/// cause: `port: 0` now passes through to the protocol's own bind, so every reader of `.port`
+/// has to resolve it.
+fn bound_port(server: &crate::state::server::ServerInstance) -> u16 {
+    server
+        .local_addr
+        .map(|a| a.port())
+        .filter(|p| *p != 0)
+        .unwrap_or(server.port)
+}
+
 // === Tool implementations ===
 
 #[tool_router]
+
 impl NetGetMcpService {
     pub async fn new(args: &Args, settings: Settings) -> anyhow::Result<Self> {
         let state = Self::create_shared_state(args, settings).await?;
@@ -530,8 +551,6 @@ impl NetGetMcpService {
         args: &Args,
         settings: Settings,
     ) -> anyhow::Result<Arc<SharedState>> {
-        let lock_enabled = args.ollama_lock;
-
         // Create app state.
         //
         // This is the same startup configuration the TUI (`cli::run`), the
@@ -549,8 +568,7 @@ impl NetGetMcpService {
             .clone()
             .or_else(|| args.ollama_url.clone())
             .unwrap_or_else(|| "http://localhost:11434".to_string());
-        let app_state =
-            AppState::new_with_options(args.include_disabled_protocols, lock_enabled, base_url);
+        let app_state = AppState::new_with_options(args.include_disabled_protocols, base_url);
         app_state
             .set_min_stability(args.parse_min_stability()?)
             .await;
@@ -624,7 +642,7 @@ impl NetGetMcpService {
             // `/usage` accounting); `with_mock_config_file` is what lets a test
             // drive this transport without a model. Both were missing here while
             // every other startup path set them.
-            let client = crate::cli::create_llm_client(args, lock_enabled)?
+            let client = crate::cli::create_llm_client(args)?
                 .with_mock_config_file(args.mock_config_file.clone())
                 .with_app_state(app_state.clone());
             (client, None)
@@ -848,7 +866,7 @@ impl NetGetMcpService {
         match self.state.app_state.get_server(server_id).await {
             Some(server) => {
                 let protocol = server.protocol_name.clone();
-                let port = server.port;
+                let port = bound_port(&server);
                 self.state.app_state.remove_server(server_id).await;
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Server #{} ({} on port {}) stopped",
@@ -880,7 +898,7 @@ impl NetGetMcpService {
                 "- **Server #{}**: {} on port {} ({})\n  Instruction: {}\n  Memory: {}\n\n",
                 server.id.as_u32(),
                 server.protocol_name,
-                server.port,
+                bound_port(server),
                 server.status,
                 if server.instruction.is_empty() {
                     "(none)"
@@ -916,7 +934,7 @@ impl NetGetMcpService {
                      - **Memory**: {}\n",
                     server.id.as_u32(),
                     server.protocol_name,
-                    server.port,
+                    bound_port(&server),
                     server.status,
                     if server.instruction.is_empty() {
                         "(none)"
@@ -967,7 +985,7 @@ impl NetGetMcpService {
                     "- #{}: {} on port {} ({})\n",
                     server.id.as_u32(),
                     server.protocol_name,
-                    server.port,
+                    bound_port(server),
                     server.status
                 ));
             }

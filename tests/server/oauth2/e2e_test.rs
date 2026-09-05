@@ -68,6 +68,7 @@ async fn test_oauth2_authorization_code_flow() -> E2EResult<()> {
 
     // Create client that doesn't follow redirects (so we can inspect the 302 response)
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
@@ -192,6 +193,10 @@ async fn test_oauth2_authorization_code_flow() -> E2EResult<()> {
     }
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("\n✓ OAuth2 Authorization Code Flow test completed\n");
@@ -303,6 +308,10 @@ async fn test_oauth2_client_credentials_flow() -> E2EResult<()> {
     // Client credentials flow typically doesn't return refresh tokens
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("\n✓ OAuth2 Client Credentials Flow test completed\n");
@@ -458,6 +467,10 @@ async fn test_oauth2_token_introspection() -> E2EResult<()> {
     println!("✓ Token is inactive");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("\n✓ OAuth2 Token Introspection test completed\n");
@@ -547,6 +560,10 @@ async fn test_oauth2_token_revocation() -> E2EResult<()> {
     println!("✓ Token revoked successfully");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("\n✓ OAuth2 Token Revocation test completed\n");

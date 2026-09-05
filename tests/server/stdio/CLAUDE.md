@@ -35,6 +35,17 @@ via `mock_server.verify_calls()`.
      was rerouted, not dropped.
 4. `verify_calls()` confirms the one event call.
 
+`test_stdio_llm_failure_writes_category_to_stderr_only`:
+
+1. Launches the same `--server stdio` shape, but the mock answers `stdio_input_received` with
+   prose the action parser cannot use, so `call_llm` returns `Err` after its retries.
+2. Asserts a category-only line (`could not be processed` / `backend at capacity`) reaches
+   **stderr** — a backend failure must not be silence.
+3. Asserts that line does **not** reach stdout: the payload stream stays uncorrupted.
+4. Asserts the `netget: ` line carries none of the historically leaked tokens (`✗`, `retries`,
+   `http://`, `11434`, `qwen`, `/Users/`) — the per-protocol counterpart of
+   `tests/wire_failure_test.rs`.
+
 ## Bootstrap facts (both now fixed — see `src/server/stdio/CLAUDE.md`)
 
 - **stdin is not drained when a trailing prompt or `--load` is present.** `Args::get_actions_json`
@@ -47,7 +58,9 @@ via `mock_server.verify_calls()`.
 
 ## LLM call budget
 
-2 tests x 1 mocked LLM call each (the one stdin line; startup is deterministic) = **2 calls**.
+2 happy-path tests x 1 mocked LLM call each (the one stdin line; startup is deterministic), plus
+the failure test's single event, which the retry loop repeats a few times before `call_llm` gives
+up = **~3-5 calls**.
 
 ## Running
 

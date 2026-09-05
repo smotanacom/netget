@@ -189,6 +189,10 @@ async fn test_amqp_publish_is_delivered_to_consumer() -> E2EResult<()> {
     // Exercises Connection.Close -> Close-Ok.
     let _ = conn.close(200, "test finished".into()).await;
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -238,6 +242,10 @@ async fn test_amqp_connection_refused_when_handler_makes_no_decision() -> E2ERes
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -283,6 +291,10 @@ async fn test_amqp_connection_refused_by_handler() -> E2EResult<()> {
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -344,6 +356,10 @@ async fn test_amqp_unimplemented_method_closes_the_channel() -> E2EResult<()> {
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())

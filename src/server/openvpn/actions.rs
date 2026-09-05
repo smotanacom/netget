@@ -1,14 +1,23 @@
-//! OpenVPN control-plane responder: events and actions.
+//! OpenVPN control channel: events and actions.
 //!
-//! The server owns the wire format; the model owns exactly one policy decision —
-//! whether to answer a peer's session reset at all. That decision is enforced:
-//! `accept_peer` is the only thing that causes a
-//! `P_CONTROL_HARD_RESET_SERVER_V2` to be sent, and `reject_peer`, an empty
-//! answer, or an LLM error all leave the peer unanswered.
+//! The server owns the wire format, the reliability layer, the TLS session and
+//! the key-method-2 encoding; the model owns the two policy decisions in the
+//! handshake, and both are enforced:
 //!
-//! Nothing here promises a tunnel, because this server cannot build one: it has
-//! no TLS control channel, no key exchange and no data channel. See
-//! `src/server/openvpn/mod.rs`.
+//! 1. **`openvpn_peer_reset`** — answer the session reset, or stay silent.
+//!    `accept_peer` is the only thing that causes a
+//!    `P_CONTROL_HARD_RESET_SERVER_V2` to be sent.
+//! 2. **`openvpn_client_key_exchange`** — the client has completed the TLS
+//!    handshake and sent its options string and `--auth-user-pass` credentials.
+//!    `accept_key_exchange` is the only thing that causes the server's own key
+//!    method 2 message to be sent.
+//!
+//! For both, `reject_*`, an empty answer, and an LLM error all leave the peer
+//! with nothing, under distinct `decision=` tokens in the log.
+//!
+//! Nothing here promises a tunnel, because this server cannot build one: it
+//! answers no `PUSH_REQUEST`, derives no data channel keys and has no TUN
+//! device. See `src/server/openvpn/mod.rs`.
 
 use crate::llm::actions::{
     protocol_trait::{ActionResult, Protocol, Server},
@@ -26,6 +35,12 @@ use std::sync::LazyLock;
 /// producer and the consumer cannot drift apart.
 pub const PEER_DECISION_RESULT: &str = "openvpn_peer_decision";
 
+/// Name of the `ActionResult::Custom` the server looks for when deciding whether
+/// to answer the client's key-method-2 message. Distinct from
+/// [`PEER_DECISION_RESULT`] so a decision about one stage of the handshake can
+/// never be read as a decision about the other.
+pub const KEY_EXCHANGE_DECISION_RESULT: &str = "openvpn_key_exchange_decision";
+
 /// A client began an OpenVPN handshake. The one point where policy applies.
 pub static OPENVPN_PEER_RESET_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
@@ -34,9 +49,9 @@ pub static OPENVPN_PEER_RESET_EVENT: LazyLock<EventType> = LazyLock::new(|| {
          first packet of a handshake. Decide whether to answer it. Reply with accept_peer to \
          send P_CONTROL_HARD_RESET_SERVER_V2 and begin tracking the peer, or reject_peer to \
          stay silent and drop it. If you reply with neither, the peer is left unanswered. \
-         Note this server is a control-plane responder: even an accepted peer never gets a \
-         tunnel, because there is no TLS control channel, no key exchange and no data \
-         channel.",
+         Answering starts a real TLS control channel, and the client's credentials arrive \
+         next as an openvpn_client_key_exchange event. Even an accepted peer never gets a \
+         tunnel: this server answers no PUSH_REQUEST and has no data channel.",
         json!({
             "type": "accept_peer",
             "reason": "Answer the handshake and observe what the client sends next"
@@ -54,14 +69,51 @@ pub static OPENVPN_PEER_RESET_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     )
 });
 
+/// The client finished the control-channel TLS handshake and sent key method 2.
+///
+/// This is where the credentials are: the message carries the client's OCC
+/// options string, its `--auth-user-pass` username and password, and its `IV_*`
+/// peer info (OpenVPN version, platform, supported data ciphers). The key
+/// material itself is deliberately not in the event — it is 112 secret random
+/// bytes and no decision can be made from it.
+pub static OPENVPN_KEY_EXCHANGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "openvpn_client_key_exchange",
+        "An OpenVPN client completed the control-channel TLS handshake and sent its key \
+         method 2 message: its options string, its username and password if it is using \
+         --auth-user-pass, and its IV_* peer info. Decide whether to answer. Reply with \
+         accept_key_exchange to send this server's own key method 2 message, or \
+         reject_key_exchange to stay silent and drop the session. If you reply with neither, \
+         the client is left unanswered. Note that even an accepted client never gets a \
+         tunnel: this server does not answer PUSH_REQUEST and derives no data channel keys.",
+        json!({
+            "type": "accept_key_exchange",
+            "reason": "Answer so the client reveals what it asks for next"
+        }),
+    )
+    .with_actions(vec![
+        accept_key_exchange_action(),
+        reject_key_exchange_action(),
+    ])
+    .with_log_template(
+        LogTemplate::new()
+            .with_info("{client_ip} OpenVPN key exchange (user {username})")
+            .with_debug("OpenVPN key method 2 from {client_ip}: user {username}, {options}")
+            .with_trace("OpenVPN key exchange: {json_pretty(.)}"),
+    )
+});
+
 /// Get all OpenVPN event types.
 ///
-/// One event, and it is the only one raised. Control packets after the reset
-/// are acknowledged by the server without consulting the model: a client
+/// Two events, one per policy decision in the handshake. Individual control
+/// packets are acknowledged by the server without consulting the model: a client
 /// retransmits them, so an event per packet would spend model calls on
-/// duplicates while changing nothing this server is able to do.
+/// duplicates while changing nothing.
 pub fn get_openvpn_event_types() -> Vec<EventType> {
-    vec![OPENVPN_PEER_RESET_EVENT.clone()]
+    vec![
+        OPENVPN_PEER_RESET_EVENT.clone(),
+        OPENVPN_KEY_EXCHANGE_EVENT.clone(),
+    ]
 }
 
 /// OpenVPN protocol implementation.
@@ -91,7 +143,12 @@ impl Protocol for OpenvpnProtocol {
     }
 
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        vec![accept_peer_action(), reject_peer_action()]
+        vec![
+            accept_peer_action(),
+            reject_peer_action(),
+            accept_key_exchange_action(),
+            reject_key_exchange_action(),
+        ]
     }
 
     fn protocol_name(&self) -> &'static str {
@@ -117,40 +174,56 @@ impl Protocol for OpenvpnProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            // Experimental, not Incomplete: what it claims to do is implemented
-            // and was checked against a real client. It is not Beta because it
-            // implements only the front of the protocol - no client can use it
-            // as a VPN.
+            // Experimental, not Beta. A real openvpn client now completes the
+            // control-channel TLS handshake and the key method 2 exchange
+            // against this server, which is genuinely more than "the front of
+            // the protocol" - but Beta means "works against real clients", and
+            // no client can use this as a VPN: PUSH_REQUEST is unanswered and
+            // there is no data channel. Promoting it for a handshake that ends
+            // in a timeout would repeat the mistake wireguard was demoted for.
             .state(DevelopmentState::Experimental)
             // No TUN device and no privileged port by default (1194 is
             // unprivileged), so nothing here needs elevation. Declaring Root, as
             // this protocol used to, made it unstartable for no benefit.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
-                "Control plane only. Decodes the OpenVPN UDP wire format (P_CONTROL_*, \
-                 P_ACK_V1, P_DATA_V1/V2), answers P_CONTROL_HARD_RESET_CLIENT_V1/V2 with \
-                 P_CONTROL_HARD_RESET_SERVER_V2, and ACKs the client's control packets. \
-                 There is NO TLS control channel, NO key exchange, NO data channel and NO \
-                 TUN device, so no tunnel is ever established and no traffic is carried. \
-                 --tls-auth, --tls-crypt and --tls-crypt-v2 clients are detected and \
-                 refused rather than mis-parsed.",
+                "Control channel only. Decodes the OpenVPN UDP wire format (P_CONTROL_*, \
+                 P_ACK_V1, P_DATA_V1/V2); implements the reliability layer (packet ids, ACK \
+                 arrays, ordered delivery, retransmission with backoff); answers \
+                 P_CONTROL_HARD_RESET_CLIENT_V1/V2 with P_CONTROL_HARD_RESET_SERVER_V2; runs \
+                 a real rustls TLS session whose records are fragmented across P_CONTROL_V1 \
+                 packets, using a self-signed P-256 certificate generated per run whose \
+                 SHA-256 fingerprint is logged for --peer-fingerprint; and reads and answers \
+                 the client's key method 2 message (options string, username, password, IV_* \
+                 peer info). There is NO PUSH_REPLY, NO data channel key derivation, NO data \
+                 channel and NO TUN device, so no tunnel is ever established and no traffic \
+                 is carried. --tls-auth, --tls-crypt and --tls-crypt-v2 clients are detected \
+                 and refused rather than mis-parsed.",
             )
             .llm_control(
-                "One event, openvpn_peer_reset, raised once per handshake. accept_peer sends \
-                 the reset reply; reject_peer stays silent. The decision is enforced, and no \
-                 decision means no reply.",
+                "Two events, one per policy decision. openvpn_peer_reset: accept_peer sends \
+                 the reset reply, reject_peer stays silent. openvpn_client_key_exchange \
+                 carries the client's username, password, options and IV_* peer info; \
+                 accept_key_exchange sends the server's key method 2 answer, \
+                 reject_key_exchange stays silent. Both decisions are enforced and both fail \
+                 closed: no decision means nothing is sent.",
             )
             .e2e_testing(
                 "Wire format pinned to frames captured from OpenVPN 2.7.4 and decoded by a \
-                 hand-written decoder in the test, not by this codec. A live openvpn client \
-                 is driven against the server and must log 'TLS: Initial packet from', which \
-                 it emits only after accepting our reset reply. That client then times out, \
-                 as expected: the handshake cannot proceed past the reset.",
+                 hand-written decoder in the test, not by this codec. A live openvpn 2.7 \
+                 client is driven against the server with --peer-fingerprint set from the \
+                 fingerprint the server logs, and must log 'Control Channel: TLSv1.x' (the \
+                 TLS handshake completed over the reliability layer) and 'Peer Connection \
+                 Initiated' (its key method 2 message was answered acceptably). The same test \
+                 asserts the client never logs 'Initialization Sequence Completed', because \
+                 the server answers no PUSH_REQUEST.",
             )
             .notes(
-                "NOT A VPN - it never carries traffic. Useful as an OpenVPN honeypot and \
-                 protocol observatory: it identifies who probes UDP/1194 and captures the \
-                 client's TLS ClientHello. Use WireGuard for a working tunnel.",
+                "NOT A VPN - it never carries traffic; a real client stalls at PUSH_REQUEST. \
+                 Useful as an OpenVPN honeypot and protocol observatory: because the TLS \
+                 session is real, it captures the client's OpenVPN version and platform \
+                 (IV_* peer info), its expected options, and the username and password it \
+                 was going to authenticate with. Use WireGuard for a working tunnel.",
             )
             .build()
     }
@@ -242,17 +315,23 @@ impl Server for OpenvpnProtocol {
             .map(|s| s.to_string());
 
         match action_type {
-            "accept_peer" => Ok(decision_result(true, reason)),
-            "reject_peer" => Ok(decision_result(false, reason)),
+            "accept_peer" => Ok(decision_result(PEER_DECISION_RESULT, true, reason)),
+            "reject_peer" => Ok(decision_result(PEER_DECISION_RESULT, false, reason)),
+            "accept_key_exchange" => {
+                Ok(decision_result(KEY_EXCHANGE_DECISION_RESULT, true, reason))
+            }
+            "reject_key_exchange" => {
+                Ok(decision_result(KEY_EXCHANGE_DECISION_RESULT, false, reason))
+            }
             _ => Err(anyhow::anyhow!("Unknown OpenVPN action: {}", action_type)),
         }
     }
 }
 
-/// Encode a peer decision for the server loop to act on.
-fn decision_result(accept: bool, reason: Option<String>) -> ActionResult {
+/// Encode a decision for the server loop to act on.
+fn decision_result(name: &str, accept: bool, reason: Option<String>) -> ActionResult {
     ActionResult::Custom {
-        name: PEER_DECISION_RESULT.to_string(),
+        name: name.to_string(),
         data: json!({ "accept": accept, "reason": reason }),
     }
 }
@@ -307,6 +386,61 @@ fn reject_peer_action() -> ActionDefinition {
             LogTemplate::new()
                 .with_info("-> OpenVPN refuse peer ({reason})")
                 .with_debug("OpenVPN reject_peer: {reason}"),
+        ),
+    }
+}
+
+/// Action: answer the client's key method 2 message.
+fn accept_key_exchange_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "accept_key_exchange".to_string(),
+        description: "Answer this client's key method 2 message with this server's own, so the \
+                      handshake continues and the client reveals what it asks for next \
+                      (PUSH_REQUEST and its option requirements). This is enforced: without it, \
+                      nothing is sent. It still does not create a tunnel - PUSH_REQUEST is never \
+                      answered and no data channel keys are derived, so the client stalls there."
+            .to_string(),
+        parameters: vec![Parameter {
+            name: "reason".to_string(),
+            type_hint: "string".to_string(),
+            description: "Why this client is being answered (recorded in the log)".to_string(),
+            required: false,
+        }],
+        example: json!({
+            "type": "accept_key_exchange",
+            "reason": "Credentials captured; let it continue so it reveals its push requirements"
+        }),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("-> OpenVPN answer key exchange ({reason})")
+                .with_debug("OpenVPN accept_key_exchange: {reason}"),
+        ),
+    }
+}
+
+/// Action: stay silent after the key exchange.
+fn reject_key_exchange_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "reject_key_exchange".to_string(),
+        description: "Refuse this client after its key method 2 message: send nothing and drop \
+                      the control session. This is enforced. OpenVPN's AUTH_FAILED is only read \
+                      by a client that has already received the server's key method 2 answer, so \
+                      before that point silence is the only refusal the peer can understand."
+            .to_string(),
+        parameters: vec![Parameter {
+            name: "reason".to_string(),
+            type_hint: "string".to_string(),
+            description: "Why this client is being refused (recorded in the log)".to_string(),
+            required: false,
+        }],
+        example: json!({
+            "type": "reject_key_exchange",
+            "reason": "Username is not on the allow list"
+        }),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("-> OpenVPN refuse key exchange ({reason})")
+                .with_debug("OpenVPN reject_key_exchange: {reason}"),
         ),
     }
 }

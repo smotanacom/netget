@@ -30,14 +30,18 @@ mod webdav_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Server receives PROPFIND request
-                    .on_event("http_request_received")
+                    .on_event("webdav_request")
                     .and_event_data_contains("method", "PROPFIND")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_response",
-                            "status": 207,
-                            "headers": {"Content-Type": "application/xml"},
-                            "body": "<?xml version=\"1.0\"?><D:multistatus xmlns:D=\"DAV:\"><D:response><D:href>/</D:href><D:propstat><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>"
+                            // The WebDAV server builds DAV:multistatus itself;
+                            // send_http_response is the HTTP server's verb and this
+                            // server cannot execute it.
+                            "type": "send_webdav_listing",
+                            "path": "/",
+                            "entries": [
+                                { "name": "documents", "is_collection": true }
+                            ]
                         }
                     ]))
                     .expect_calls(1)
@@ -70,20 +74,20 @@ mod webdav_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Client connected
-                    .on_event("http_connected")
+                    .on_event("webdav_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_request",
-                            "method": "PROPFIND",
+                            // WebDAV's own verb. `send_http_request` is the HTTP
+                            // client's, and WebDAV cannot execute it.
+                            "type": "propfind",
                             "path": "/",
-                            "headers": {"Depth": "1"},
-                            "body": ""
+                            "depth": "1"
                         }
                     ]))
                     .expect_calls(1)
                     .and()
                     // Mock 3: Client receives multistatus response
-                    .on_event("http_response_received")
+                    .on_event("webdav_response_received")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "wait_for_more"
@@ -99,6 +103,9 @@ mod webdav_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection/response
+        client
+            .wait_for_any(&["WebDAV", "connected", "PROPFIND"], 30)
+            .await;
         assert!(
             client.output_contains("WebDAV").await
                 || client.output_contains("connected").await
@@ -110,6 +117,11 @@ mod webdav_client_tests {
         println!("✅ WebDAV client made PROPFIND request successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -128,35 +140,39 @@ mod webdav_client_tests {
         let server_config = NetGetConfig::new(
             "Listen on port {AVAILABLE_PORT} via WebDAV. Log all incoming WebDAV requests.",
         )
-            .with_mock(|mock| {
-                mock
-                    // Mock 1: Server startup
-                    .on_instruction_containing("Listen on port")
-                    .and_instruction_containing("WebDAV")
-                    .respond_with_actions(serde_json::json!([
-                        {
-                            "type": "open_server",
-                            "port": 0,
-                            "base_stack": "WebDAV",
-                            "instruction": "Log all incoming requests"
-                        }
-                    ]))
-                    .expect_calls(1)
-                    .and()
-                    // Mock 2: Server receives PROPFIND
-                    .on_event("http_request_received")
-                    .and_event_data_contains("method", "PROPFIND")
-                    .respond_with_actions(serde_json::json!([
-                        {
-                            "type": "send_http_response",
-                            "status": 207,
-                            "headers": {"Content-Type": "application/xml"},
-                            "body": "<?xml version=\"1.0\"?><D:multistatus xmlns:D=\"DAV:\"></D:multistatus>"
-                        }
-                    ]))
-                    .expect_calls(1)
-                    .and()
-            });
+        .with_mock(|mock| {
+            mock
+                // Mock 1: Server startup
+                .on_instruction_containing("Listen on port")
+                .and_instruction_containing("WebDAV")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_server",
+                        "port": 0,
+                        "base_stack": "WebDAV",
+                        "instruction": "Log all incoming requests"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                // Mock 2: Server receives PROPFIND
+                .on_event("webdav_request")
+                .and_event_data_contains("method", "PROPFIND")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        // The WebDAV server builds DAV:multistatus itself;
+                        // send_http_response is the HTTP server's verb and this
+                        // server cannot execute it.
+                        "type": "send_webdav_listing",
+                        "path": "/",
+                        "entries": [
+                            { "name": "documents", "is_collection": true }
+                        ]
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+        });
 
         let mut server = start_netget_server(server_config).await?;
 
@@ -184,20 +200,18 @@ mod webdav_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Client connected - send PROPFIND
-                .on_event("http_connected")
+                .on_event("webdav_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_request",
-                        "method": "PROPFIND",
+                        "type": "propfind",
                         "path": "/",
-                        "headers": {"Depth": "1"},
-                        "body": ""
+                        "depth": "1"
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 3: Client receives response
-                .on_event("http_response_received")
+                .on_event("webdav_response_received")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "wait_for_more"
@@ -220,6 +234,11 @@ mod webdav_client_tests {
         println!("✅ WebDAV client responded to LLM instruction");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

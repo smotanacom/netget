@@ -101,6 +101,10 @@ async fn test_rtp_synthesizes_pcmu_reply() -> E2EResult<()> {
     );
     assert!(len2 >= 12);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())

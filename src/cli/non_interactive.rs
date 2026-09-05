@@ -82,8 +82,7 @@ pub async fn run_non_interactive(
         .clone()
         .or_else(|| args.ollama_url.clone())
         .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let state =
-        AppState::new_with_options(args.include_disabled_protocols, args.ollama_lock, base_url);
+    let state = AppState::new_with_options(args.include_disabled_protocols, base_url);
     state.set_min_stability(args.parse_min_stability()?).await;
 
     // Configure rate limiter from CLI args
@@ -162,9 +161,7 @@ pub async fn run_non_interactive(
     debug!("Web search mode: {:?}", web_search_mode);
 
     // Create event handler and LLM client
-    let lock_enabled = state.get_ollama_lock_enabled().await;
-    let llm = super::create_llm_client(args, lock_enabled)?
-        .with_mock_config_file(args.mock_config_file.clone());
+    let llm = super::create_llm_client(args)?.with_mock_config_file(args.mock_config_file.clone());
 
     // Store the configured LLM client in state so spawned servers can use it
     state.set_llm_client(llm.clone()).await;
@@ -225,7 +222,50 @@ pub async fn run_non_interactive(
         return run_server(&state, llm, new_status_rx).await;
     }
 
+    // Client mode: stay alive while a client is still connected.
+    //
+    // This used to return here, so the process exited 500ms after the instruction was
+    // interpreted. That is fine for a client whose whole exchange happens during
+    // interpretation, and wrong for any client that listens: an IGMP client asked to
+    // "join a group and log all received data" bound its socket, joined the group, logged
+    // that its receive loop was listening, and was killed before a single datagram could
+    // arrive. The same applies to every client with a read loop.
+    run_clients(&state).await;
+
     Ok(())
+}
+
+/// Block while any client is still connected, or until Ctrl+C.
+///
+/// Returns immediately when there are no clients at all, so a one-shot instruction that
+/// started nothing still exits rather than hanging.
+async fn run_clients(state: &AppState) {
+    use tokio::time::{sleep, Duration};
+
+    let shutdown = Arc::new(Mutex::new(false));
+    let shutdown_clone = shutdown.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        *shutdown_clone.lock().await = true;
+    });
+
+    loop {
+        let live = state
+            .get_all_clients()
+            .await
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    c.status,
+                    crate::state::ClientStatus::Connecting | crate::state::ClientStatus::Connected
+                )
+            })
+            .count();
+        if live == 0 || *shutdown.lock().await {
+            return;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Run a server in non-interactive mode
@@ -325,8 +365,7 @@ pub async fn run_with_actions(
         .clone()
         .or_else(|| args.ollama_url.clone())
         .unwrap_or_else(|| "http://localhost:11434".to_string());
-    let state =
-        AppState::new_with_options(args.include_disabled_protocols, args.ollama_lock, base_url);
+    let state = AppState::new_with_options(args.include_disabled_protocols, base_url);
     state.set_min_stability(args.parse_min_stability()?).await;
 
     // Configure rate limiter from CLI args
@@ -357,9 +396,7 @@ pub async fn run_with_actions(
     state.set_web_search_mode(web_search_mode).await;
 
     // Create LLM client
-    let lock_enabled = state.get_ollama_lock_enabled().await;
-    let llm = super::create_llm_client(args, lock_enabled)?
-        .with_mock_config_file(args.mock_config_file.clone());
+    let llm = super::create_llm_client(args)?.with_mock_config_file(args.mock_config_file.clone());
 
     // Store the configured LLM client in state so spawned servers can use it
     state.set_llm_client(llm.clone()).await;

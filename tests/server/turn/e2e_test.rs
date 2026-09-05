@@ -412,6 +412,10 @@ async fn test_turn_relays_payload_between_two_peers() -> E2EResult<()> {
         "peer must see the traffic coming from the relay address, not the client"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     Ok(())
 }
@@ -506,6 +510,10 @@ async fn test_turn_relays_over_a_bound_channel() -> E2EResult<()> {
         "channelled traffic must leave from the relay address"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     Ok(())
 }
@@ -579,6 +587,10 @@ async fn test_turn_stops_relaying_after_the_lifetime_expires() -> E2EResult<()> 
     )
     .await;
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     Ok(())
 }
@@ -656,6 +668,10 @@ async fn test_turn_refuses_an_invented_relay_address() -> E2EResult<()> {
     client.send_to(&bogus, server_addr).await?;
     expect_silence(&client, 1000, "a reply to a bad magic cookie").await;
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     Ok(())
 }
@@ -759,6 +775,10 @@ async fn test_turn_denied_allocation_and_refresh() -> E2EResult<()> {
         "refresh must report the lifetime the model granted"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     Ok(())
 }

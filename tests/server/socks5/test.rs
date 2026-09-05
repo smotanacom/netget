@@ -225,11 +225,17 @@ async fn test_socks5_basic_connect() -> E2EResult<()> {
                         }
                     ]))
                     .and()
-                    // Mock 2: SOCKS5 handshake completed
-                    .on_event("socks5_handshake")
+                    // Mock 2: the SOCKS5 greeting/auth exchange.
+                    //
+                    // The event is `socks5_auth_request` and the verb is `allow_socks5_auth`.
+                    // This rule named `socks5_handshake` / `wait_for_more`, neither of which
+                    // exists here, so it never matched: the `.on_any()` catch-all below answered
+                    // instead, which is why the test passed while this rule did nothing. An
+                    // unresolvable event id also means the action was never validated.
+                    .on_event("socks5_auth_request")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "wait_for_more"
+                            "type": "allow_socks5_auth"
                         }
                     ]))
                     .and()
@@ -301,6 +307,10 @@ async fn test_socks5_basic_connect() -> E2EResult<()> {
     }
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -401,6 +411,10 @@ async fn test_socks5_with_authentication() -> E2EResult<()> {
     }
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -440,10 +454,10 @@ async fn test_socks5_connection_rejection() -> E2EResult<()> {
                     // .expect_calls(1)
                     .and()
                     // Mock 2: Handshake
-                    .on_event("socks5_handshake")
+                    .on_event("socks5_auth_request")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "wait_for_more"
+                            "type": "allow_socks5_auth"
                         }
                     ]))
                     // NOTE: .expect_calls() disabled
@@ -489,6 +503,10 @@ async fn test_socks5_connection_rejection() -> E2EResult<()> {
     println!("✓ Connection correctly denied");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -525,10 +543,10 @@ async fn test_socks5_domain_name() -> E2EResult<()> {
                     // .expect_calls(1)
                     .and()
                     // Mock 2: Handshake
-                    .on_event("socks5_handshake")
+                    .on_event("socks5_auth_request")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "wait_for_more"
+                            "type": "allow_socks5_auth"
                         }
                     ]))
                     // NOTE: .expect_calls() disabled
@@ -577,6 +595,10 @@ async fn test_socks5_domain_name() -> E2EResult<()> {
     println!("✓ CONNECT with domain name successful");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -606,10 +628,12 @@ async fn test_socks5_mitm_inspection() -> E2EResult<()> {
             .with_mock(|mock| {
                 mock
                     // Mock 1: Data inspection (most specific first)
-                    .on_event("socks5_data_from_client")
+                    // `socks5_data_to_target` is the client->target direction; there is no
+                    // `socks5_data_from_client`, and the verb is `forward_socks5_data`.
+                    .on_event("socks5_data_to_target")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "forward_data"
+                            "type": "forward_socks5_data"
                         }
                     ]))
                     // NOTE: .expect_at_least() disabled
@@ -626,10 +650,10 @@ async fn test_socks5_mitm_inspection() -> E2EResult<()> {
                     // .expect_calls(1)
                     .and()
                     // Mock 3: Handshake
-                    .on_event("socks5_handshake")
+                    .on_event("socks5_auth_request")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "wait_for_more"
+                            "type": "allow_socks5_auth"
                         }
                     ]))
                     // NOTE: .expect_calls() disabled
@@ -738,6 +762,10 @@ async fn test_socks5_mitm_inspection() -> E2EResult<()> {
     println!("✓ MITM inspection successful");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup

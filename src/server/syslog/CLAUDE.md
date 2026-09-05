@@ -297,7 +297,7 @@ have the LLM open a SQLite database via the generic `create_database` / `execute
 - Attacker can send thousands of messages per second
 - Each message triggers LLM call (expensive)
 
-**Workaround**: Use `--ollama-lock` to serialize LLM calls. LLM can implement filtering logic to ignore noisy sources.
+**Workaround**: Use `--llm-max-concurrent` to bound in-flight LLM calls, or a script/static handler so high-rate sources cost no LLM call at all.
 
 ### 6. No Authentication
 
@@ -420,7 +420,7 @@ Syslog commonly targeted by attackers:
 - Each triggers LLM call (expensive)
 - No built-in rate limiting
 
-**Mitigation**: LLM can implement logic to ignore high-rate sources. Use `--ollama-lock` to prevent Ollama overload.
+**Mitigation**: match high-rate sources with a script or static handler so they never reach the model; `--llm-max-concurrent` bounds the rest.
 
 ## References
 

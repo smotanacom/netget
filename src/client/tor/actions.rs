@@ -243,6 +243,10 @@ impl Protocol for TorClientProtocol {
                 "Triggered when Tor client receives data from destination",
                 json!({"type": "placeholder", "event_id": "tor_data_received"}),
             ),
+            // Emitted but never advertised until now: mod.rs raises it once the Tor
+            // directory bootstrap finishes, and nothing told the model it existed, so no
+            // handler could be written for the one event that says the circuit is usable.
+            TOR_BOOTSTRAP_COMPLETE_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {

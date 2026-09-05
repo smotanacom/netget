@@ -189,6 +189,99 @@ impl MdnsClient {
     ///
     /// Shared by the connected-event path and injected commands, so a `[ send ]` from
     /// the dashboard drives exactly the same daemon calls the LLM would.
+    /// Run one mDNS verb against the daemon. Raises no event and calls no LLM.
+    ///
+    /// Follow-up actions the model returns for a service-found or service-resolved event
+    /// run through here. Routing them back through `execute_mdns_action` would recurse
+    /// directly -- those events are raised from inside that very function -- and would let
+    /// one discovered service spawn another browse loop, and that one another, without
+    /// bound.
+    ///
+    /// `browse_service` is therefore drained for a bounded window here rather than given
+    /// its own long-lived task: a follow-up browse is a look, not a subscription.
+    async fn run_mdns_op(
+        client_id: ClientId,
+        mdns: &ServiceDaemon,
+        name: &str,
+        data: &serde_json::Value,
+    ) -> Result<String> {
+        match name {
+            "resolve_hostname" => {
+                let hostname = data["hostname"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing hostname"))?;
+                let events = mdns.resolve_hostname(hostname, Some(5000))?;
+                let mut found: Vec<String> = Vec::new();
+                while let Ok(event) = events.recv_async().await {
+                    match event {
+                        mdns_sd::HostnameResolutionEvent::AddressesFound(_, addrs) => {
+                            found.extend(addrs.iter().map(|a| a.to_string()));
+                            break;
+                        }
+                        mdns_sd::HostnameResolutionEvent::SearchTimeout(_)
+                        | mdns_sd::HostnameResolutionEvent::SearchStopped(_) => break,
+                        _ => continue,
+                    }
+                }
+                found.sort();
+                Ok(format!("resolve_hostname '{hostname}' -> {found:?}"))
+            }
+            "browse_service" => {
+                let service_type = data["service_type"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Missing service_type"))?;
+                let rx = mdns.browse(service_type)?;
+                let mut seen: Vec<String> = Vec::new();
+                let deadline = tokio::time::sleep(std::time::Duration::from_secs(2));
+                tokio::pin!(deadline);
+                loop {
+                    tokio::select! {
+                        _ = &mut deadline => break,
+                        ev = rx.recv_async() => match ev {
+                            Ok(mdns_sd::ServiceEvent::ServiceFound(_, full)) => seen.push(full),
+                            Ok(_) => continue,
+                            Err(_) => break,
+                        },
+                    }
+                }
+                let _ = mdns.stop_browse(service_type);
+                seen.sort();
+                seen.dedup();
+                info!("mDNS client {} follow-up browse saw {:?}", client_id, seen);
+                Ok(format!(
+                    "browse_service '{service_type}' -> {} found",
+                    seen.len()
+                ))
+            }
+            other => Ok(format!("'{other}' has no non-notifying path; skipped")),
+        }
+    }
+
+    /// Execute the actions the model returned for a browse event.
+    ///
+    /// They were discarded at both sites (`actions: _`), so a model that saw a service
+    /// appear and wanted to resolve its hostname was ignored -- discovery reported
+    /// nothing actionable back.
+    async fn run_browse_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        mdns: &ServiceDaemon,
+        protocol: &crate::client::mdns::actions::MdnsClientProtocol,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            match Self::run_mdns_op(client_id, mdns, &name, &data).await {
+                Ok(detail) => info!("mDNS client {} follow-up: {}", client_id, detail),
+                Err(e) => error!("mDNS client {} follow-up {} failed: {}", client_id, name, e),
+            }
+        }
+    }
+
     async fn execute_mdns_action(
         client_id: ClientId,
         action: serde_json::Value,
@@ -227,6 +320,9 @@ impl MdnsClient {
                         let app_state_browse = app_state.clone();
                         let status_tx_browse = status_tx.clone();
                         let protocol_browse = protocol.clone();
+                        // The browse task needs the daemon so a follow-up the model asks
+                        // for can actually run; ServiceDaemon is a cheap handle clone.
+                        let mdns_browse = mdns.clone();
 
                         // Registered with AppState so stop_client can abort this task —
                         // dropping a JoinHandle only detaches it in Tokio.
@@ -293,7 +389,7 @@ impl MdnsClient {
                                                     .await
                                                     {
                                                         Ok(ClientLlmResult {
-                                                            actions: _,
+                                                            actions,
                                                             memory_updates,
                                                         }) => {
                                                             if let Some(mem) = memory_updates {
@@ -303,6 +399,13 @@ impl MdnsClient {
                                                                     )
                                                                     .await;
                                                             }
+                                                            Self::run_browse_follow_ups(
+                                                                client_id,
+                                                                actions,
+                                                                &mdns_browse,
+                                                                protocol_browse.as_ref(),
+                                                            )
+                                                            .await;
                                                         }
                                                         Err(e) => {
                                                             error!("LLM error processing service found: {}", e);
@@ -359,7 +462,7 @@ impl MdnsClient {
                                                     .await
                                                     {
                                                         Ok(ClientLlmResult {
-                                                            actions: _,
+                                                            actions,
                                                             memory_updates,
                                                         }) => {
                                                             if let Some(mem) = memory_updates {
@@ -369,6 +472,13 @@ impl MdnsClient {
                                                                     )
                                                                     .await;
                                                             }
+                                                            Self::run_browse_follow_ups(
+                                                                client_id,
+                                                                actions,
+                                                                &mdns_browse,
+                                                                protocol_browse.as_ref(),
+                                                            )
+                                                            .await;
                                                         }
                                                         Err(e) => {
                                                             error!("LLM error processing service resolved: {}", e);
@@ -436,13 +546,53 @@ impl MdnsClient {
 
                         // Use mdns to resolve hostname (timeout in milliseconds)
                         match mdns.resolve_hostname(hostname, Some(5000)) {
-                            Ok(addrs) => {
-                                info!("Resolved {} to {} addresses", hostname, addrs.len());
+                            Ok(events) => {
+                                // `resolve_hostname` returns a Receiver of resolution
+                                // EVENTS, not addresses. This used to bind it as `addrs`
+                                // and log `addrs.len()` -- the channel's queue depth,
+                                // which is 0 -- so the client reported "Resolved X to 0
+                                // addresses" and never surfaced a single address, however
+                                // well the resolution went. Drain it instead; it is a
+                                // flume receiver, so `recv_async` keeps this off the
+                                // runtime's worker threads.
+                                let mut found: Vec<String> = Vec::new();
+                                while let Ok(event) = events.recv_async().await {
+                                    match event {
+                                        mdns_sd::HostnameResolutionEvent::AddressesFound(
+                                            _,
+                                            addrs,
+                                        ) => {
+                                            found.extend(addrs.iter().map(|a| a.to_string()));
+                                            break;
+                                        }
+                                        mdns_sd::HostnameResolutionEvent::SearchTimeout(_)
+                                        | mdns_sd::HostnameResolutionEvent::SearchStopped(_) => {
+                                            break
+                                        }
+                                        _ => continue,
+                                    }
+                                }
+                                found.sort();
+                                info!(
+                                    "Resolved {} to {} address(es): {:?}",
+                                    hostname,
+                                    found.len(),
+                                    found
+                                );
                                 let _ = status_tx
-                                    .send(format!("[CLIENT] Resolved {}: {:?}", hostname, addrs));
-                                return Ok(Applied::Executed(format!(
-                                    "resolve_hostname '{hostname}' issued"
-                                )));
+                                    .send(format!("[CLIENT] Resolved {}: {:?}", hostname, found));
+                                return Ok(Applied::Executed(if found.is_empty() {
+                                    format!(
+                                        "resolve_hostname '{hostname}': no addresses \
+                                         (search timed out after 5s)"
+                                    )
+                                } else {
+                                    format!(
+                                        "resolve_hostname '{hostname}': {} -> {}",
+                                        found.len(),
+                                        found.join(", ")
+                                    )
+                                }));
                             }
                             Err(e) => {
                                 warn!("Failed to resolve {}: {}", hostname, e);

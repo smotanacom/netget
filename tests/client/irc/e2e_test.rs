@@ -136,6 +136,11 @@ mod irc_client_tests {
         // The mocks are the real assertion: mock 2 firing exactly once proves the client
         // detected 001 and raised irc_connected, and mocks 2-3 on the server prove NICK and
         // USER actually went out on the wire.
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -236,6 +241,11 @@ mod irc_client_tests {
 
         println!("✅ IRC client joined channel and sent message");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -340,6 +350,11 @@ mod irc_client_tests {
 
         println!("✅ IRC client responded to server messages");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

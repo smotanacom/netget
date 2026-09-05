@@ -207,11 +207,72 @@ async fn handle_ollama_request(
             .await
         }
         (Method::POST, "/api/embeddings") => handle_embeddings(req, status_tx).await,
-        (Method::POST, "/api/show") => handle_show(req, status_tx).await,
-        (Method::POST, "/api/pull") => handle_pull(req, status_tx).await,
-        (Method::POST, "/api/create") => handle_create(req, status_tx).await,
-        (Method::POST, "/api/copy") => handle_copy(req, status_tx).await,
-        (Method::DELETE, "/api/delete") => handle_delete(req, status_tx).await,
+        (Method::POST, "/api/show") => {
+            handle_show(
+                req,
+                connection_id,
+                llm_client,
+                app_state,
+                status_tx,
+                protocol,
+                server_id,
+            )
+            .await
+        }
+        // The four model-management endpoints are decisions, so they go through the model.
+        // They used to answer {"status":"success"} unconditionally without an event.
+        (Method::POST, "/api/pull") => {
+            handle_admin(
+                "pull",
+                req,
+                connection_id,
+                llm_client,
+                app_state,
+                status_tx,
+                protocol,
+                server_id,
+            )
+            .await
+        }
+        (Method::POST, "/api/create") => {
+            handle_admin(
+                "create",
+                req,
+                connection_id,
+                llm_client,
+                app_state,
+                status_tx,
+                protocol,
+                server_id,
+            )
+            .await
+        }
+        (Method::POST, "/api/copy") => {
+            handle_admin(
+                "copy",
+                req,
+                connection_id,
+                llm_client,
+                app_state,
+                status_tx,
+                protocol,
+                server_id,
+            )
+            .await
+        }
+        (Method::DELETE, "/api/delete") => {
+            handle_admin(
+                "delete",
+                req,
+                connection_id,
+                llm_client,
+                app_state,
+                status_tx,
+                protocol,
+                server_id,
+            )
+            .await
+        }
         _ => {
             Log::new(Some(&status_tx))
                 .debug(format!("Ollama API: Unknown endpoint {} {}", method, path));
@@ -760,235 +821,253 @@ async fn handle_embeddings(
         .unwrap())
 }
 
+/// Answer `/api/show` from the model, or refuse.
+///
+/// This used to reply with a fabricated Modelfile (`FROM {name}`), a hardcoded
+/// `temperature 0.7` and a `gguf`/`llama` details block — for any name at all, with no event
+/// and no `call_llm` in the path. A server told "this instance serves only llama2" happily
+/// described every model a client asked about, including ones it had just refused to pull.
+/// Nothing is invented now: no `ollama_show_response` means the request is refused.
+#[allow(clippy::too_many_arguments)]
 async fn handle_show(
     req: Request<Incoming>,
+    connection_id: ConnectionId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<OllamaProtocol>,
+    server_id: crate::state::ServerId,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    let log = Log::new(Some(&status_tx));
+
+    let body_bytes = match req.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => return Ok(bad_request("Failed to read body")),
+    };
+    let request_json: Value = serde_json::from_slice(&body_bytes).unwrap_or(Value::Null);
+    let model = request_json
+        .get("name")
+        .or_else(|| request_json.get("model"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let event = Event::new(
+        &actions::OLLAMA_SHOW_REQUEST_EVENT,
+        json!({ "model": model }),
+    );
+
+    match call_llm(
+        &llm_client,
+        &app_state,
+        server_id,
+        Some(connection_id),
+        &event,
+        protocol.as_ref(),
+    )
+    .await
+    {
+        Ok(result) => {
+            for msg in result.messages {
+                let _ = status_tx.send(msg);
+            }
+            if let Some(response) = model_error_response(&result.raw_actions) {
+                log.info(format!(
+                    "Ollama show refused for '{}' (decision=model_reject)",
+                    model
+                ));
+                return Ok(response);
+            }
+            use crate::llm::actions::protocol_trait::ActionResult;
+            if let Some(data) = result.protocol_results.iter().find_map(|r| match r {
+                ActionResult::Custom { name, data } if name == "ollama_show_response" => Some(data),
+                _ => None,
+            }) {
+                log.debug(format!("Ollama show answered for '{}'", model));
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(Full::new(Bytes::from(data.to_string())))
+                    .unwrap());
+            }
+            log.warn(format!(
+                "Ollama show refused for '{}' (decision=fail_closed_no_action): the handler \
+                 produced no ollama_show_response",
+                model
+            ));
+            Ok(server_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::utils::WireFailure::Unavailable.text(),
+            ))
+        }
+        Err(e) => {
+            let failure = crate::utils::WireFailure::classify(&e);
+            error!(
+                "Ollama show for '{}' decision=fail_closed_llm_error category={:?}: {:#}",
+                model, failure, e
+            );
+            let status = if failure.is_overloaded() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Ok(server_error(status, failure.text()))
+        }
+    }
+}
+
+/// Ask the model whether to perform a model-management operation, and refuse unless it says so.
+///
+/// `/api/pull`, `/api/create`, `/api/copy` and `/api/delete` used to answer
+/// `{"status": "success"}` unconditionally, with no event and no LLM call anywhere in the path.
+/// A server instructed "this instance only serves llama2, refuse anything else" reported every
+/// pull as downloaded and every delete as removed, and `/api/pull` additionally invented a
+/// digest of `sha256:0000000000000000`. The model was never asked, so its instruction could not
+/// be wrong — it simply had no effect.
+///
+/// Confirmation requires an explicit `ollama_admin_ok`. A model refusal
+/// (`ollama_error_response`), an answer containing neither, and a backend failure all refuse,
+/// and stay distinguishable: the refusal carries the model's own message and status, the other
+/// two carry only a `WireFailure` category and are separated by `decision=` in the log.
+#[allow(clippy::too_many_arguments)]
+async fn handle_admin(
+    operation: &str,
+    req: Request<Incoming>,
+    connection_id: ConnectionId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<OllamaProtocol>,
+    server_id: crate::state::ServerId,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let log = Log::new(Some(&status_tx));
+
     let body_bytes = match req.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Failed to read body"}).to_string(),
-                )))
-                .unwrap());
+            return Ok(bad_request("Failed to read body"));
         }
     };
 
-    let request_json: Value = match serde_json::from_slice(&body_bytes) {
-        Ok(json) => json,
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Invalid JSON"}).to_string(),
-                )))
-                .unwrap());
-        }
-    };
+    // DELETE may legitimately arrive with no body; the others carry JSON. An unparseable body
+    // is still shown to the model rather than answered here, so the decision stays in one place.
+    let request_json: Value = serde_json::from_slice(&body_bytes).unwrap_or(Value::Null);
 
     let model = request_json
         .get("name")
+        .or_else(|| request_json.get("model"))
         .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    Log::new(Some(&status_tx)).debug(format!("Show model: {}", model));
-
-    let response = json!({
-        "modelfile": format!("FROM {}", model),
-        "parameters": "temperature 0.7",
-        "template": "{{ .Prompt }}",
-        "details": {
-            "format": "gguf",
-            "family": "llama"
-        }
-    });
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(response.to_string())))
-        .unwrap())
-}
-
-async fn handle_pull(
-    req: Request<Incoming>,
-    status_tx: mpsc::UnboundedSender<String>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    let body_bytes = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Failed to read body"}).to_string(),
-                )))
-                .unwrap());
-        }
-    };
-
-    let request_json: Value = match serde_json::from_slice(&body_bytes) {
-        Ok(json) => json,
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Invalid JSON"}).to_string(),
-                )))
-                .unwrap());
-        }
-    };
-
-    let model = request_json
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    Log::new(Some(&status_tx)).debug(format!("Pull model: {}", model));
-
-    let response = json!({
-        "status": "success",
-        "digest": "sha256:0000000000000000",
-        "total": 1000000
-    });
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(response.to_string())))
-        .unwrap())
-}
-
-async fn handle_create(
-    req: Request<Incoming>,
-    status_tx: mpsc::UnboundedSender<String>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    let body_bytes = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Failed to read body"}).to_string(),
-                )))
-                .unwrap());
-        }
-    };
-
-    let request_json: Value = match serde_json::from_slice(&body_bytes) {
-        Ok(json) => json,
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Invalid JSON"}).to_string(),
-                )))
-                .unwrap());
-        }
-    };
-
-    let model = request_json
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    Log::new(Some(&status_tx)).debug(format!("Create model: {}", model));
-
-    let response = json!({
-        "status": "success"
-    });
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(response.to_string())))
-        .unwrap())
-}
-
-async fn handle_copy(
-    req: Request<Incoming>,
-    status_tx: mpsc::UnboundedSender<String>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    let body_bytes = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Failed to read body"}).to_string(),
-                )))
-                .unwrap());
-        }
-    };
-
-    let request_json: Value = match serde_json::from_slice(&body_bytes) {
-        Ok(json) => json,
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Invalid JSON"}).to_string(),
-                )))
-                .unwrap());
-        }
-    };
-
-    let source = request_json
-        .get("source")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+        .unwrap_or("")
+        .to_string();
     let destination = request_json
         .get("destination")
         .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    Log::new(Some(&status_tx)).debug(format!("Copy model: {} -> {}", source, destination));
+        .unwrap_or("")
+        .to_string();
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(
-            json!({"status": "success"}).to_string(),
-        )))
-        .unwrap())
+    let event = Event::new(
+        &actions::OLLAMA_ADMIN_REQUEST_EVENT,
+        json!({
+            "operation": operation,
+            "model": model,
+            "destination": destination,
+        }),
+    );
+
+    match call_llm(
+        &llm_client,
+        &app_state,
+        server_id,
+        Some(connection_id),
+        &event,
+        protocol.as_ref(),
+    )
+    .await
+    {
+        Ok(result) => {
+            for msg in result.messages {
+                let _ = status_tx.send(msg);
+            }
+
+            // A deliberate refusal first: it must not be collapsed into the no-answer path.
+            if let Some(response) = model_error_response(&result.raw_actions) {
+                log.info(format!(
+                    "Ollama {} refused for '{}' (decision=model_reject)",
+                    operation, model
+                ));
+                return Ok(response);
+            }
+
+            use crate::llm::actions::protocol_trait::ActionResult;
+            if let Some(data) = result.protocol_results.iter().find_map(|r| match r {
+                ActionResult::Custom { name, data } if name == "ollama_admin_ok" => Some(data),
+                _ => None,
+            }) {
+                log.info(format!(
+                    "Ollama {} acknowledged for '{}' (decision=model_accept)",
+                    operation, model
+                ));
+                // `pull` reports progress fields; the others just report status. Only what the
+                // model supplied is echoed — no invented digest.
+                let mut body = json!({ "status": "success" });
+                if let Some(d) = data.get("digest") {
+                    body["digest"] = d.clone();
+                }
+                if let Some(t) = data.get("total") {
+                    body["total"] = t.clone();
+                }
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(Full::new(Bytes::from(body.to_string())))
+                    .unwrap());
+            }
+
+            log.warn(format!(
+                "Ollama {} refused for '{}' (decision=fail_closed_no_action): the handler \
+                 produced no ollama_admin_ok",
+                operation, model
+            ));
+            Ok(server_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::utils::WireFailure::Unavailable.text(),
+            ))
+        }
+        Err(e) => {
+            let failure = crate::utils::WireFailure::classify(&e);
+            error!(
+                "Ollama {} for '{}' decision=fail_closed_llm_error category={:?}: {:#}",
+                operation, model, failure, e
+            );
+            log.warn(format!(
+                "Ollama {} refused for '{}' (decision=fail_closed_llm_error)",
+                operation, model
+            ));
+            let status = if failure.is_overloaded() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Ok(server_error(status, failure.text()))
+        }
+    }
 }
 
-async fn handle_delete(
-    req: Request<Incoming>,
-    status_tx: mpsc::UnboundedSender<String>,
-) -> Result<Response<Full<Bytes>>, Infallible> {
-    let body_bytes = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Failed to read body"}).to_string(),
-                )))
-                .unwrap());
-        }
-    };
+/// A 400 with Ollama's `{"error": ...}` envelope.
+fn bad_request(message: &str) -> Response<Full<Bytes>> {
+    server_error(StatusCode::BAD_REQUEST, message)
+}
 
-    let request_json: Value = match serde_json::from_slice(&body_bytes) {
-        Ok(json) => json,
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Invalid JSON"}).to_string(),
-                )))
-                .unwrap());
-        }
-    };
-
-    let model = request_json
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    Log::new(Some(&status_tx)).debug(format!("Delete model: {}", model));
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
+/// An `{"error": ...}` body at the given status. Never 2xx: these are all refusals.
+fn server_error(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
+    let body = json!({ "error": message }).to_string();
+    Response::builder()
+        .status(status)
         .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(
-            json!({"status": "success"}).to_string(),
-        )))
-        .unwrap())
+        .body(Full::new(Bytes::from(body.clone())))
+        .unwrap_or_else(|_| {
+            let mut response = Response::new(Full::new(Bytes::from(body)));
+            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            response
+        })
 }

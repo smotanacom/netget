@@ -171,7 +171,10 @@ impl Protocol for SqsProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — aws-sdk-sqs —
+            // covering the AWS SDK issuing real SQS operations. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation("hyper v1.5 HTTP with AWS JSON protocol")
             .llm_control("All SQS operations (SendMessage, ReceiveMessage, DeleteMessage)")
             .e2e_testing("aws-sdk-sqs client")

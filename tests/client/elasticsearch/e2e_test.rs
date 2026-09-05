@@ -38,15 +38,21 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Index request
-                .on_event("http_request_received")
-                .and_event_data_contains("method", "PUT")
+                // The Elasticsearch server raises `elasticsearch_request` (carrying method,
+                // path and index). `http_request` is a different protocol's event, so
+                // these rules never matched and every request fell through to a real
+                // LLM call that answered 500.
+                .on_event("elasticsearch_request")
+                // The client POSTs to /{index}/_doc/{id} -- valid Elasticsearch for an
+                // explicit id, and what it does whether or not an id is given. The path
+                // constraint matters because this rule is first: unconstrained, a plain
+                // "POST" would also swallow the /_search request below.
+                .and_event_data_contains("method", "POST")
+                .and_event_data_contains("path", "/_doc")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_elasticsearch_response",
                         "status_code": 200,
-                        "headers": {
-                            "Content-Type": "application/json"
-                        },
                         "body": json!({
                             "_index": "test-index",
                             "_id": "test-doc-1",
@@ -58,16 +64,17 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 3: Search request
-                .on_event("http_request_received")
+                // The Elasticsearch server raises `elasticsearch_request` (carrying method,
+                // path and index). `http_request` is a different protocol's event, so
+                // these rules never matched and every request fell through to a real
+                // LLM call that answered 500.
+                .on_event("elasticsearch_request")
                 .and_event_data_contains("method", "POST")
                 .and_event_data_contains("path", "/_search")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_elasticsearch_response",
                         "status_code": 200,
-                        "headers": {
-                            "Content-Type": "application/json"
-                        },
                         "body": json!({
                             "took": 1,
                             "hits": {
@@ -119,30 +126,29 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
                 .on_event("elasticsearch_connected")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_request",
-                        "method": "PUT",
-                        "path": "/test-index/_doc/test-doc-1",
-                        "body": json!({"title": "Test", "content": "Hello World"})
+                        "type": "index_document",
+                        "index": "test-index",
+                        "id": "test-doc-1",
+                        "document": json!({"title": "Test", "content": "Hello World"})
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 3: Index response - search
                 .on_event("elasticsearch_response_received")
-                .and_event_data_contains("status_code", "200")
+                .and_event_data_contains("operation", "index_document")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_request",
-                        "method": "POST",
-                        "path": "/test-index/_search",
-                        "body": json!({"query": {"match_all": {}}})
+                        "type": "search",
+                        "index": "test-index",
+                        "query": json!({"match_all": {}})
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 4: Search response - wait
                 .on_event("elasticsearch_response_received")
-                .and_event_data_contains("hits", "")
+                .and_event_data_contains("operation", "search")
                 .respond_with_actions(json!([
                     {
                         "type": "wait_for_more"
@@ -158,12 +164,19 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify client output
+    client.wait_for_any(&["Elasticsearch"], 30).await;
     assert!(
         client.output_contains("Elasticsearch").await,
         "Client should show Elasticsearch connection"
     );
 
     println!("✅ Elasticsearch client indexed and searched successfully");
+
+    // Wait for the exchange itself, not for a sleep long enough to probably cover it.
+    // The search response reached the client a few hundred ms after the fixed 2s sleep
+    // expired, and the test reported it as never having happened.
+    client.wait_for_mocks(15).await;
+    server.wait_for_mocks(15).await;
 
     // Verify mock expectations were met
     server.verify_mocks().await?;
@@ -202,15 +215,16 @@ async fn test_elasticsearch_client_bulk_operations() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Bulk request
-                .on_event("http_request_received")
+                // The Elasticsearch server raises `elasticsearch_request` (carrying method,
+                // path and index). `http_request` is a different protocol's event, so
+                // these rules never matched and every request fell through to a real
+                // LLM call that answered 500.
+                .on_event("elasticsearch_request")
                 .and_event_data_contains("path", "/_bulk")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_elasticsearch_response",
                         "status_code": 200,
-                        "headers": {
-                            "Content-Type": "application/json"
-                        },
                         "body": json!({
                             "took": 2,
                             "errors": false,
@@ -256,14 +270,18 @@ async fn test_elasticsearch_client_bulk_operations() -> E2EResult<()> {
                 .on_event("elasticsearch_connected")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_bulk",
+                        "type": "bulk_operation",
+                        // The structured shape the action declares -- one entry per
+                        // document with `action`/`index`/`id`/`document`. Raw Elasticsearch
+                        // NDJSON meta/source pairs have no `action` field, so the client
+                        // refused the whole batch with "Missing 'action' field".
                         "operations": [
-                            {"index": {"_index": "products", "_id": "1"}},
-                            {"name": "laptop", "price": 999},
-                            {"index": {"_index": "products", "_id": "2"}},
-                            {"name": "phone", "price": 699},
-                            {"index": {"_index": "products", "_id": "3"}},
-                            {"name": "tablet", "price": 499}
+                            {"action": "index", "index": "products", "id": "1",
+                             "document": {"name": "laptop", "price": 999}},
+                            {"action": "index", "index": "products", "id": "2",
+                             "document": {"name": "phone", "price": 699}},
+                            {"action": "index", "index": "products", "id": "3",
+                             "document": {"name": "tablet", "price": 499}}
                         ]
                     }
                 ]))
@@ -271,7 +289,7 @@ async fn test_elasticsearch_client_bulk_operations() -> E2EResult<()> {
                 .and()
                 // Mock 3: Bulk response
                 .on_event("elasticsearch_response_received")
-                .and_event_data_contains("items", "")
+                .and_event_data_contains("operation", "bulk_operation")
                 .respond_with_actions(json!([
                     {
                         "type": "wait_for_more"
@@ -288,6 +306,10 @@ async fn test_elasticsearch_client_bulk_operations() -> E2EResult<()> {
     println!("✅ Elasticsearch bulk operations completed");
 
     // Verify mock expectations
+    // Wait for the exchange itself, not for a sleep long enough to probably cover it.
+    client.wait_for_mocks(15).await;
+    server.wait_for_mocks(15).await;
+
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 
@@ -324,39 +346,53 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Index request
-                .on_event("http_request_received")
-                .and_event_data_contains("method", "PUT")
+                // The Elasticsearch server raises `elasticsearch_request` (carrying method,
+                // path and index). `http_request` is a different protocol's event, so
+                // these rules never matched and every request fell through to a real
+                // LLM call that answered 500.
+                .on_event("elasticsearch_request")
+                // The client POSTs to /{index}/_doc/{id} -- valid Elasticsearch for an
+                // explicit id, and what it does whether or not an id is given. The path
+                // constraint matters because this rule is first: unconstrained, a plain
+                // "POST" would also swallow the /_search request below.
+                .and_event_data_contains("method", "POST")
+                .and_event_data_contains("path", "/_doc")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_elasticsearch_response",
                         "status_code": 200,
-                        "headers": {"Content-Type": "application/json"},
                         "body": json!({"_index": "test-index", "_id": "test-doc-1", "result": "created"}).to_string()
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 3: Get request
-                .on_event("http_request_received")
+                // The Elasticsearch server raises `elasticsearch_request` (carrying method,
+                // path and index). `http_request` is a different protocol's event, so
+                // these rules never matched and every request fell through to a real
+                // LLM call that answered 500.
+                .on_event("elasticsearch_request")
                 .and_event_data_contains("method", "GET")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_elasticsearch_response",
                         "status_code": 200,
-                        "headers": {"Content-Type": "application/json"},
                         "body": json!({"_index": "test-index", "_id": "test-doc-1", "found": true, "_source": {"test": "data"}}).to_string()
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 4: Delete request
-                .on_event("http_request_received")
+                // The Elasticsearch server raises `elasticsearch_request` (carrying method,
+                // path and index). `http_request` is a different protocol's event, so
+                // these rules never matched and every request fell through to a real
+                // LLM call that answered 500.
+                .on_event("elasticsearch_request")
                 .and_event_data_contains("method", "DELETE")
                 .respond_with_actions(json!([
                     {
-                        "type": "http_response",
+                        "type": "send_elasticsearch_response",
                         "status_code": 200,
-                        "headers": {"Content-Type": "application/json"},
                         "body": json!({"_index": "test-index", "_id": "test-doc-1", "result": "deleted"}).to_string()
                     }
                 ]))
@@ -393,41 +429,41 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
                 .on_event("elasticsearch_connected")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_request",
-                        "method": "PUT",
-                        "path": "/test-index/_doc/test-doc-1",
-                        "body": json!({"test": "data"})
+                        "type": "index_document",
+                        "index": "test-index",
+                        "id": "test-doc-1",
+                        "document": json!({"test": "data"})
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 3: Index response - get
                 .on_event("elasticsearch_response_received")
-                .and_event_data_contains("result", "created")
+                .and_event_data_contains("operation", "index_document")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_request",
-                        "method": "GET",
-                        "path": "/test-index/_doc/test-doc-1"
+                        "type": "get_document",
+                        "index": "test-index",
+                        "id": "test-doc-1"
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 4: Get response - delete
                 .on_event("elasticsearch_response_received")
-                .and_event_data_contains("found", "true")
+                .and_event_data_contains("operation", "get_document")
                 .respond_with_actions(json!([
                     {
-                        "type": "elasticsearch_request",
-                        "method": "DELETE",
-                        "path": "/test-index/_doc/test-doc-1"
+                        "type": "delete_document",
+                        "index": "test-index",
+                        "id": "test-doc-1"
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 5: Delete response - done
                 .on_event("elasticsearch_response_received")
-                .and_event_data_contains("result", "deleted")
+                .and_event_data_contains("operation", "delete_document")
                 .respond_with_actions(json!([
                     {
                         "type": "disconnect"
@@ -444,6 +480,10 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
     println!("✅ Elasticsearch document lifecycle completed");
 
     // Verify mock expectations
+    // Wait for the exchange itself, not for a sleep long enough to probably cover it.
+    client.wait_for_mocks(15).await;
+    server.wait_for_mocks(15).await;
+
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 

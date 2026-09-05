@@ -28,57 +28,6 @@ pub static GIT_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     }])
 });
 
-/// Git operation completed event
-pub static GIT_OPERATION_COMPLETED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
-        "git_operation_completed",
-        "Git operation completed successfully",
-        json!({
-            "type": "git_log",
-            "max_count": 5
-        }),
-    )
-    .with_parameters(vec![
-        Parameter {
-            name: "operation".to_string(),
-            type_hint: "string".to_string(),
-            description: "Type of operation (clone, fetch, pull, push, etc.)".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "result".to_string(),
-            type_hint: "string".to_string(),
-            description: "Operation result details".to_string(),
-            required: true,
-        },
-    ])
-});
-
-/// Git operation error event
-pub static GIT_OPERATION_ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
-        "git_operation_error",
-        "Git operation encountered an error",
-        json!({
-            "type": "git_status"
-        }),
-    )
-    .with_parameters(vec![
-        Parameter {
-            name: "operation".to_string(),
-            type_hint: "string".to_string(),
-            description: "Type of operation that failed".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "error".to_string(),
-            type_hint: "string".to_string(),
-            description: "Error message".to_string(),
-            required: true,
-        },
-    ])
-});
-
 /// Git client protocol action handler
 pub struct GitClientProtocol;
 

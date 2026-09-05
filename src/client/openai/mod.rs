@@ -558,11 +558,78 @@ impl OpenAiClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
+                }
+
+                // Execute what the model asked for. These used to be discarded
+                // (`actions: _`), so answering openai_response_received did nothing --
+                // the whole point of raising it. A model that reads a completion and
+                // wants to send a follow-up prompt was silently ignored.
+                //
+                // They run through the `perform_*` round-trips, which raise no event and
+                // call no LLM. That bounds the loop -- a follow-up cannot raise another
+                // response event and drive the model round in circles -- and it is also
+                // the only shape that compiles: routing them back through
+                // `make_chat_completion` would make notify -> apply -> make -> notify a
+                // self-referential async chain, which rustc cannot prove `Send`.
+                use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                for action in actions {
+                    let decoded = match protocol.execute_action(action.clone()) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            error!(
+                                "OpenAI client {} rejected its own follow-up action: {}",
+                                client_id, e
+                            );
+                            continue;
+                        }
+                    };
+                    let ClientActionResult::Custom { name, data } = decoded else {
+                        continue;
+                    };
+                    let outcome = match name.as_str() {
+                        "openai_chat_completion" => Self::perform_chat_completion(
+                            client_id,
+                            data.get("messages")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                            data.get("model").and_then(|v| v.as_str()).map(String::from),
+                            data.get("temperature").and_then(|v| v.as_f64()),
+                            data.get("max_tokens")
+                                .and_then(|v| v.as_u64())
+                                .map(|n| n as u32),
+                            data.get("functions").cloned().filter(|v| !v.is_null()),
+                            &app_state,
+                            &status_tx,
+                        )
+                        .await
+                        .map(|_| ()),
+                        "openai_embedding" => Self::perform_embedding_request(
+                            client_id,
+                            data.get("input")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                            data.get("model").and_then(|v| v.as_str()).map(String::from),
+                            &app_state,
+                            &status_tx,
+                        )
+                        .await
+                        .map(|_| ()),
+                        other => {
+                            info!(
+                                "OpenAI client {} follow-up '{}' has no wire effect",
+                                client_id, other
+                            );
+                            Ok(())
+                        }
+                    };
+                    if let Err(e) = outcome {
+                        error!("OpenAI client {} follow-up action failed: {}", client_id, e);
+                    }
                 }
             }
             Err(e) => {

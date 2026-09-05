@@ -29,7 +29,7 @@ const FB_WIDTH: u16 = 32;
 const FB_HEIGHT: u16 = 32;
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),

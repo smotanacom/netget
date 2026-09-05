@@ -117,7 +117,6 @@ mod tests {
 - Real BLE adapter (built-in laptop Bluetooth or USB dongle)
 - Real BLE peripheral device with known services
 - Ollama running with suitable model
-- `--ollama-lock` flag to serialize LLM calls
 
 ### Recommended Test Device
 

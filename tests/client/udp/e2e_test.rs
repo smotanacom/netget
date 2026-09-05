@@ -73,6 +73,7 @@ mod udp_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows connection (socket bound)
+        client.wait_for_any(&["ready", "bound"], 30).await;
         assert!(
             client.output_contains("ready").await || client.output_contains("bound").await,
             "Client should show ready/bound message. Output: {:?}",
@@ -81,9 +82,17 @@ mod udp_client_tests {
 
         println!("✅ UDP client connected to server successfully");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -158,9 +167,17 @@ mod udp_client_tests {
 
         // The server mock asserts udp_datagram_received fired exactly once, which is the
         // real check that the client's datagram arrived.
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -247,9 +264,17 @@ mod udp_client_tests {
 
         println!("✅ UDP client received and processed response");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -353,11 +378,23 @@ mod udp_client_tests {
         println!("✅ UDP client successfully changed target address");
 
         // Each server saw exactly one datagram — the retarget worked.
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server1.wait_for_mocks(30).await;
         server1.verify_mocks().await?;
         server1.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server2.wait_for_mocks(30).await;
         server2.verify_mocks().await?;
         server2.stop().await?;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

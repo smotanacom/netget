@@ -138,6 +138,50 @@ whose stream is merely slow. See `src/server/http/CLAUDE.md` for who reads them.
 **Still a gap**: `ProtocolConnectionInfo` starts as `{"stream_count": 0}` and is
 never updated — the count does not move as streams open and close.
 
+## When the LLM backend fails
+
+A raw QUIC stream has no error frame, so the only protocol-level way to tell a peer
+"this stream is over and it did not succeed" is `RESET_STREAM` with an application
+error code. The server negotiates ALPN `h3`, so the two RFC 9114 codes whose meaning
+matches are the ones used:
+
+| Classification (`crate::utils::WireFailure`) | Wire | Log |
+|---|---|---|
+| `Overloaded` (backend saturated) | `RESET_STREAM`, `H3_EXCESSIVE_LOAD` (0x0107) | `decision=llm_error` |
+| `Unavailable` (anything else) | `RESET_STREAM`, `H3_INTERNAL_ERROR` (0x0102) | `decision=llm_error` |
+
+They are distinct on purpose: a client can back off on the first and record a
+permanent fault on the second. **Only the code travels** — the error is logged and
+sent to the status stream, never rendered into anything the peer can read. See
+`src/utils/wire_failure.rs` for why that guarantee lives in the type.
+
+This applies to `quic_data_received`, the one event where the peer is actually
+blocked on a reply. `RESET_STREAM` discards data still buffered for the stream; in a
+request/response exchange the peer has already consumed the previous round's reply
+before sending the request that failed, so the loss window is the reply that is not
+going to exist anyway.
+
+The other two events are deliberately silent on failure, and that is not the same
+defect:
+
+- `quic_connection_opened` carries `.with_no_actions()` — no stream exists yet, so
+  the model could not have put a byte anywhere even on success. The peer is waiting
+  for nothing and goes on to open its own stream.
+- `quic_stream_opened` would only have produced an unsolicited greeting; the client
+  writes first on a raw QUIC stream. Killing the stream over a missing banner is
+  worse than not sending one, and the next `quic_data_received` gets its own chance.
+  Same shape as TCP's banner path.
+
+Three outcomes stay distinguishable in the log. `decision=llm_error` is the backend
+failing (above). `decision=model_no_actions` is the model being reached and choosing
+to say nothing — a real answer for a stream protocol, and the stream is left open.
+There is no `decision=model_reject`: this protocol advertises no rejection action, so
+a model that wants to refuse says nothing or closes the stream.
+
+`tests/server/quic/llm_failure_test.rs` is the regression test: a mock with no rule
+for any event, a client that writes one line, and an assertion that `read_to_end`
+comes back as `Reset(0x0102)` rather than hanging.
+
 ## Not supported
 
 - HTTP/3 framing, QPACK, real HTTP/3 clients (see above)
@@ -176,7 +220,8 @@ design invariant. What used to make this one grate was the shared name, which th
 
 `tests/server/quic/e2e_test.rs` — 4 mocked scenarios (echo, custom response,
 multiple streams, **binary round trip**) plus two pure-function tests (keyword
-resolution, payload codec), declared in `tests/server/quic/mod.rs`. They use a raw
+resolution, payload codec); `tests/server/quic/llm_failure_test.rs` — the
+backend-failure reset. Both declared in `tests/server/quic/mod.rs`. They use a raw
 `quinn::Endpoint` client, which is why they pass despite the absence of HTTP/3
 framing; nothing in the suite exercises a real HTTP/3 client.
 

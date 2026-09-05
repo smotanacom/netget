@@ -59,6 +59,7 @@ impl Http3Client {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         info!(
             "HTTP/3 client {} initializing for {}",
@@ -73,12 +74,25 @@ impl Http3Client {
         // Store base URL and connection info in protocol_data
         let base_url = format!("https://{}", remote_addr);
 
+        // `default_headers` is declared as "headers included in all requests" and nothing
+        // read it, so setting it changed nothing. Stored here, merged in `perform_request`.
+        let default_headers = match &startup_params {
+            Some(params) => params.get_optional_object("default_headers")?.cloned(),
+            None => None,
+        };
+
         app_state
             .with_client_mut(client_id, |client| {
                 client.set_protocol_field("base_url".to_string(), serde_json::json!(base_url));
                 client
                     .set_protocol_field("remote_addr".to_string(), serde_json::json!(remote_addr));
                 client.set_protocol_field("quic_initialized".to_string(), serde_json::json!(true));
+                if let Some(headers) = &default_headers {
+                    client.set_protocol_field(
+                        "default_headers".to_string(),
+                        serde_json::Value::Object(headers.clone()),
+                    );
+                }
             })
             .await;
 
@@ -111,6 +125,81 @@ impl Http3Client {
             Self::command_loop(command_rx, client_id, cmd_state, cmd_llm, cmd_tx).await;
         });
         app_state.register_client_task(client_id, cmd_task).await;
+
+        // Raise the connected event.
+        //
+        // It was declared and nothing ever raised it, and nothing else called this
+        // client's request code either -- so a HTTP/3 client initialised itself and
+        // then did nothing for the rest of its life. The command channel was, until now,
+        // the only thing that could reach the wire at all.
+        //
+        // Raised from a registered task rather than inline: a dashboard-created client
+        // defaults to a `*` -> manual rule, and awaiting a parked answer here would block
+        // client creation itself. Requests go through `perform_request`, which raises no
+        // event, so a connect instruction cannot start an unbounded chain.
+        let conn_state = app_state.clone();
+        let conn_llm = llm_client.clone();
+        let status_tx_c = status_tx.clone();
+        let conn_task = tokio::spawn(async move {
+            let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
+            let protocol = crate::client::http3::actions::Http3ClientProtocol::new();
+            let event = Event::new(
+                &crate::client::http3::actions::HTTP3_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({ "base_url": base_url.clone() }),
+            );
+            match crate::client::llm_budget::call_llm_for_client(
+                &conn_llm,
+                &conn_state,
+                client_id.to_string(),
+                &instruction,
+                "",
+                Some(&event),
+                &protocol,
+                &status_tx_c,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if let Some(mem) = result.memory_updates {
+                        conn_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in result.actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        if name != "http3_request" {
+                            continue;
+                        }
+                        if let Err(e) = Self::perform_request(
+                            client_id,
+                            data["method"].as_str().unwrap_or("GET").to_string(),
+                            data["path"].as_str().unwrap_or("/").to_string(),
+                            data["headers"].as_object().cloned(),
+                            data["body"].as_str().map(|s| s.to_string()),
+                            data["priority"].as_u64().map(|p| p as u8),
+                            &conn_state,
+                        )
+                        .await
+                        {
+                            error!(
+                                "HTTP/3 client {} connect-time request failed: {}",
+                                client_id, e
+                            );
+                        }
+                    }
+                }
+                Err(e) => error!(
+                    "HTTP/3 client {} LLM error on connected event: {}",
+                    client_id, e
+                ),
+            }
+        });
+        app_state.register_client_task(client_id, conn_task).await;
 
         // Return the remote address
         Ok(remote_sock_addr)
@@ -336,7 +425,7 @@ impl Http3Client {
         app_state: &AppState,
     ) -> Result<Http3Exchange> {
         // Get connection info from client
-        let (base_url, remote_addr) = app_state
+        let (base_url, remote_addr, default_headers) = app_state
             .with_client_mut(client_id, |client| {
                 let base_url = client
                     .get_protocol_field("base_url")
@@ -346,7 +435,10 @@ impl Http3Client {
                     .get_protocol_field("remote_addr")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                (base_url, remote_addr)
+                let default_headers = client
+                    .get_protocol_field("default_headers")
+                    .and_then(|v| v.as_object().cloned());
+                (base_url, remote_addr, default_headers)
             })
             .await
             .context("Client not found")?;
@@ -420,12 +512,22 @@ impl Http3Client {
         // Build HTTP request
         let mut req_builder = Request::builder().uri(&url).method(method.as_str());
 
-        // Add headers
+        // Startup defaults merged *underneath* the request's own headers, keyed by the
+        // lowercased name (HTTP/3 puts header names on the wire lowercased anyway). Merged
+        // before anything is applied because `http::request::Builder::header` appends -
+        // applying both sets in turn would send the same header twice.
+        let mut merged = serde_json::Map::new();
+        for (key, value) in default_headers.unwrap_or_default() {
+            merged.insert(key.to_ascii_lowercase(), value);
+        }
         if let Some(hdrs) = headers {
             for (key, value) in hdrs {
-                if let Some(val_str) = value.as_str() {
-                    req_builder = req_builder.header(&key, val_str);
-                }
+                merged.insert(key.to_ascii_lowercase(), value);
+            }
+        }
+        for (key, value) in merged {
+            if let Some(val_str) = value.as_str() {
+                req_builder = req_builder.header(&key, val_str);
             }
         }
 
@@ -542,12 +644,47 @@ impl Http3Client {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
+                }
+
+                // Execute what the model asked for. These were discarded, so a model that
+                // read a response and wanted to follow it with another request was
+                // silently ignored -- the entire purpose of raising the event.
+                //
+                // They run through `perform_request`, which raises no event: that bounds
+                // the loop, and avoids making notify -> apply -> make -> notify a
+                // self-referential async chain that rustc cannot prove `Send`.
+                use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                for action in actions {
+                    let Ok(ClientActionResult::Custom { name, data }) =
+                        protocol.execute_action(action.clone())
+                    else {
+                        continue;
+                    };
+                    if name != "http3_request" {
+                        continue;
+                    }
+                    let result = Self::perform_request(
+                        client_id,
+                        data["method"].as_str().unwrap_or("GET").to_string(),
+                        data["path"].as_str().unwrap_or("/").to_string(),
+                        data["headers"].as_object().cloned(),
+                        data["body"].as_str().map(|s| s.to_string()),
+                        data["priority"].as_u64().map(|p| p as u8),
+                        &app_state,
+                    )
+                    .await;
+                    if let Err(e) = result {
+                        error!(
+                            "HTTP/3 client {} follow-up request failed: {}",
+                            client_id, e
+                        );
+                    }
                 }
             }
             Err(e) => {

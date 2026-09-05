@@ -53,6 +53,10 @@ enum Dispatch {
     Deferred,
 }
 
+/// Request timeout when the `timeout_secs` startup parameter is not set. Matches the value
+/// that parameter's own description names as the default.
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
 /// XML-RPC client that calls methods on remote servers
 pub struct XmlRpcClient;
 
@@ -64,9 +68,19 @@ impl XmlRpcClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         // For XML-RPC, "connection" is logical, not a persistent connection
         // The server URL is stored and used for each method call
+
+        // `timeout_secs` was declared as "request timeout in seconds (default: 30)" and
+        // read by nothing, so a call to an unresponsive server never returned. See
+        // `perform_call` for what it can and cannot bound.
+        let timeout_secs = match &startup_params {
+            Some(params) => params.get_optional_u64("timeout_secs")?,
+            None => None,
+        }
+        .unwrap_or(DEFAULT_TIMEOUT_SECS);
 
         info!(
             "XML-RPC client {} initialized for {}",
@@ -85,6 +99,10 @@ impl XmlRpcClient {
         app_state
             .with_client_mut(client_id, |client| {
                 client.set_protocol_field("server_url".to_string(), serde_json::json!(server_url));
+                client.set_protocol_field(
+                    "timeout_secs".to_string(),
+                    serde_json::json!(timeout_secs),
+                );
             })
             .await;
 
@@ -435,17 +453,23 @@ impl XmlRpcClient {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<CallOutcome> {
-        // Get server URL from client
-        let server_url = app_state
+        // Server URL and the `timeout_secs` startup parameter, read together under one guard.
+        let (server_url, timeout_secs) = app_state
             .with_client_mut(client_id, |client| {
-                client
-                    .get_protocol_field("server_url")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                (
+                    client
+                        .get_protocol_field("server_url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    client
+                        .get_protocol_field("timeout_secs")
+                        .and_then(|v| v.as_u64()),
+                )
             })
             .await
-            .flatten()
-            .context("No server URL found")?;
+            .unwrap_or((None, None));
+        let server_url = server_url.context("No server URL found")?;
+        let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
 
         info!(
             "XML-RPC client {} calling method: {} with {} params",
@@ -465,15 +489,41 @@ impl XmlRpcClient {
         let log_name = method_name.to_string();
 
         // The `xmlrpc` crate is blocking, so the call runs on the blocking pool.
-        match tokio::task::spawn_blocking(move || {
+        //
+        // `timeout_secs` is applied here, around the whole call, rather than on the HTTP
+        // client: `xmlrpc::Request::call_url` builds its own `reqwest::blocking::Client`
+        // internally and exposes no way to configure it, and the only alternative
+        // (`Request::call` with a transport) takes a `reqwest` **0.11** `RequestBuilder`,
+        // a different major version from the 0.12 this crate depends on.
+        //
+        // What that bounds and what it does not: the caller stops waiting after
+        // `timeout_secs` and gets an error, which is what the parameter promises. The
+        // blocking thread itself is not cancelled - `spawn_blocking` cannot be - so a
+        // server that never answers still holds a pool thread until its own TCP timeout.
+        let call = tokio::task::spawn_blocking(move || {
             let mut request = xmlrpc::Request::new(&method_owned);
             for param in xmlrpc_params {
                 request = request.arg(param);
             }
             request.call_url(&server_url)
-        })
-        .await
-        {
+        });
+        let call = match tokio::time::timeout(timeout, call).await {
+            Ok(joined) => joined,
+            Err(_) => {
+                Log::new(Some(status_tx)).error(format!(
+                    "XML-RPC client {} call to {} timed out after {}s",
+                    client_id,
+                    log_name,
+                    timeout.as_secs()
+                ));
+                return Err(anyhow::anyhow!(
+                    "XML-RPC call '{}' timed out after {}s (timeout_secs)",
+                    log_name,
+                    timeout.as_secs()
+                ));
+            }
+        };
+        match call {
             Ok(Ok(response)) => {
                 info!(
                     "XML-RPC client {} received response for {}",

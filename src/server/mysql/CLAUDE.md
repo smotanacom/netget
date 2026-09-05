@@ -57,7 +57,14 @@ back. Verified: `mysql_error_response` with 1146 arrives as
 
 ### Failure behavior
 
-- **No response action** → empty OK packet, logged at WARN.
+- **No response action** → ERR packet `1105` / `HY000` carrying the `WireFailure` category,
+  logged at WARN with `decision=fail_closed_no_action`. It used to be an empty OK packet, which
+  a driver reads as a statement that ran and affected zero rows — so an INSERT/UPDATE/DELETE the
+  model declined was reported as completed. 1105 and not 1205, because nothing timed out here
+  and a retryable code would invite the client to try again.
+- **EXECUTE against an unknown or already-closed statement id** →
+  `ER_UNKNOWN_STMT_HANDLER` (1243). It used to be an OK packet, so a client reusing a stale
+  handle after a reconnect saw a successful write that never ran.
 - **LLM call fails** → ERR packet `1105` / SQLSTATE `HY000`, message
   `netget: <error>`. (It used to send an empty OK, which the client could not
   distinguish from success.) When `crate::llm::is_overload_error` says the

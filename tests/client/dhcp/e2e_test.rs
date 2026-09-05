@@ -110,6 +110,7 @@ mod dhcp_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client shows connection
+        client.wait_for_any(&["dhcp", "DHCP"], 30).await;
         assert!(
             client.output_contains("dhcp").await || client.output_contains("DHCP").await,
             "Client should show DHCP activity. Output: {:?}",
@@ -119,6 +120,11 @@ mod dhcp_client_tests {
         println!("✅ DHCP client sent DISCOVER and received OFFER");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -256,6 +262,11 @@ mod dhcp_client_tests {
         println!("✅ DHCP client completed full DORA exchange");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -348,6 +359,7 @@ mod dhcp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client initiated DHCP activity
+        client.wait_for_any(&["DHCP", "dhcp"], 30).await;
         assert!(
             client.output_contains("DHCP").await || client.output_contains("dhcp").await,
             "Client should show DHCP activity"
@@ -356,6 +368,11 @@ mod dhcp_client_tests {
         println!("✅ DHCP client sent broadcast DISCOVER");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

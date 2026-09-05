@@ -33,6 +33,16 @@ async fn test_mssql_simple_query() -> E2EResult<()> {
             ]))
             .expect_calls(1)
             .and()
+            // The login is now an explicit decision: `mssql_login_ack` admits the session and
+            // nothing else does, so every test that wants to run a query has to say so.
+            .on_event("mssql_login")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "mssql_login_ack"
+                }
+            ]))
+            .expect_at_least(1)
+            .and()
             // Mock 2: SELECT 1 query
             .on_event("mssql_query")
             .and_event_data_contains("query", "SELECT 1")
@@ -118,6 +128,10 @@ async fn test_mssql_simple_query() -> E2EResult<()> {
     println!("✓ Query results received");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ MSSQL simple query test passed\n");
@@ -143,6 +157,16 @@ async fn test_mssql_multi_row_query() -> E2EResult<()> {
                 }
             ]))
             .expect_calls(1)
+            .and()
+            // The login is now an explicit decision: `mssql_login_ack` admits the session and
+            // nothing else does, so every test that wants to run a query has to say so.
+            .on_event("mssql_login")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "mssql_login_ack"
+                }
+            ]))
+            .expect_at_least(1)
             .and()
             // Mock 2: SELECT * FROM users query
             .on_event("mssql_query")
@@ -197,6 +221,10 @@ async fn test_mssql_multi_row_query() -> E2EResult<()> {
     println!("✓ Query results received");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ MSSQL multi-row query test passed\n");
@@ -223,6 +251,16 @@ async fn test_mssql_create_table() -> E2EResult<()> {
                 }
             ]))
             .expect_calls(1)
+            .and()
+            // The login is now an explicit decision: `mssql_login_ack` admits the session and
+            // nothing else does, so every test that wants to run a query has to say so.
+            .on_event("mssql_login")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "mssql_login_ack"
+                }
+            ]))
+            .expect_at_least(1)
             .and()
             // Mock 2: CREATE TABLE query
             .on_event("mssql_query")
@@ -270,6 +308,10 @@ async fn test_mssql_create_table() -> E2EResult<()> {
     }
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ MSSQL CREATE TABLE test completed\n");

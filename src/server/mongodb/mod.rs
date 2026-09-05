@@ -375,22 +375,33 @@ impl MongodbHandler {
                         // anything with `ok: 1` is a result, and an empty result for `find`
                         // means "no documents matched" - a statement about the data.
                         //
-                        // The code is InternalError for both branches. MongoDB's
-                        // driver-retryable codes all describe replica-set failover
-                        // (ShutdownInProgress, PrimarySteppedDown, NotWritablePrimary) and
-                        // claiming one would send the driver hunting for a new primary that
-                        // does not exist, so the overload distinction stays in the log.
-                        let overloaded = crate::llm::is_overload_error(&e);
+                        // The two categories get distinct codes so a client can back off
+                        // rather than record a permanent fault. The choice is constrained:
+                        // MongoDB's *driver-retryable* codes all describe replica-set
+                        // failover (ShutdownInProgress, PrimarySteppedDown,
+                        // NotWritablePrimary), and claiming one would send the driver
+                        // hunting for a new primary that does not exist. `TemporarilyUnavailable`
+                        // (365) says exactly "saturated, try again" without implying a
+                        // topology change, so it carries the overload case; everything else
+                        // is InternalError (1).
+                        let failure = crate::utils::WireFailure::classify(&e);
+                        let code = match failure {
+                            crate::utils::WireFailure::Overloaded => {
+                                MONGODB_TEMPORARILY_UNAVAILABLE
+                            }
+                            crate::utils::WireFailure::Unavailable => MONGODB_INTERNAL_ERROR,
+                        };
                         error!(
-                            "LLM error for MongoDB command '{}' on connection {} (overload={}): {}",
-                            command_name, self.connection_id, overloaded, e
+                            "MongoDB command '{}' on connection {}: decision=fail_closed_llm_error \
+                             category={:?} code={} error={}",
+                            command_name, self.connection_id, failure, code, e
                         );
-                        let message = crate::utils::WireFailure::classify(&e).prefixed_text();
+                        let message = failure.prefixed_text();
                         let _ = self.status_tx.send(format!(
-                            "[ERROR] MongoDB connection {} replying ok:0 InternalError: {}",
-                            self.connection_id, message
+                            "[ERROR] MongoDB connection {} decision=fail_closed_llm_error code={}: {}",
+                            self.connection_id, code, message
                         ));
-                        let doc = mongodb_error_doc(MONGODB_INTERNAL_ERROR, &message);
+                        let doc = mongodb_error_doc(code, message);
                         let response_bytes = self.encode_op_msg_response(request_id, doc)?;
                         writer.write_all(&response_bytes).await?;
                         continue;
@@ -406,7 +417,43 @@ impl MongodbHandler {
                     match protocol_result {
                         ActionResult::Custom { name, data } => {
                             if name == "mongodb_response" {
-                                let response_doc = self.json_to_bson_doc(&data, &namespace)?;
+                                // A model answer the encoder cannot use is a *third* case,
+                                // distinct from the backend erroring and from the model
+                                // saying nothing. It used to propagate with `?`, which drops
+                                // the connection mid-command: the driver blocks on a reply
+                                // that never comes and reports a network fault. Answer
+                                // `{ok: 0}` and keep the connection, exactly as the LLM-error
+                                // branch does.
+                                let response_doc = match self.json_to_bson_doc(&data, &namespace) {
+                                    Ok(d) => {
+                                        if data.get("type").and_then(|v| v.as_str())
+                                            == Some("error_response")
+                                        {
+                                            debug!(
+                                                "MongoDB command '{}' on connection {}: \
+                                                 decision=model_reject",
+                                                command_name, self.connection_id
+                                            );
+                                        }
+                                        d
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "MongoDB command '{}' on connection {}: \
+                                             decision=fail_closed_unusable_answer error={}",
+                                            command_name, self.connection_id, e
+                                        );
+                                        let _ = self.status_tx.send(format!(
+                                            "[ERROR] MongoDB connection {} \
+                                             decision=fail_closed_unusable_answer for command '{}'",
+                                            self.connection_id, command_name
+                                        ));
+                                        mongodb_error_doc(
+                                            MONGODB_INTERNAL_ERROR,
+                                            crate::utils::WireFailure::Unavailable.prefixed_text(),
+                                        )
+                                    }
+                                };
                                 let response_bytes =
                                     self.encode_op_msg_response(request_id, response_doc)?;
                                 writer.write_all(&response_bytes).await?;
@@ -433,9 +480,13 @@ impl MongodbHandler {
                     // MongoDB is strictly request/response: a command with no reply hangs the
                     // driver until its own timeout. Answer with an error instead.
                     warn!(
-                        "MongoDB: no response action for command '{}', replying with an error",
-                        command_name
+                        "MongoDB command '{}' on connection {}: decision=fail_closed_no_answer",
+                        command_name, self.connection_id
                     );
+                    let _ = self.status_tx.send(format!(
+                        "[WARN] MongoDB connection {} decision=fail_closed_no_answer for command '{}'",
+                        self.connection_id, command_name
+                    ));
                     let doc = mongodb_error_doc(
                         59,
                         &format!(
@@ -627,13 +678,20 @@ impl MongodbHandler {
     }
 }
 
-/// Build a MongoDB command-failure document.
-#[cfg(feature = "mongodb-server")]
 /// MongoDB `InternalError`: "an internal server error occurred". Paired with `ok: 0`, which is
 /// what makes a driver raise rather than return a result.
 #[cfg(feature = "mongodb-server")]
 const MONGODB_INTERNAL_ERROR: i32 = 1;
 
+/// MongoDB `TemporarilyUnavailable` (6.0+): the server is saturated and the same request may
+/// succeed later. Used for [`crate::utils::WireFailure::Overloaded`] so a client backs off
+/// instead of recording a permanent fault. Unlike the driver-retryable codes it does not
+/// assert anything about replica-set topology.
+#[cfg(feature = "mongodb-server")]
+const MONGODB_TEMPORARILY_UNAVAILABLE: i32 = 365;
+
+/// Build a MongoDB command-failure document.
+#[cfg(feature = "mongodb-server")]
 fn mongodb_error_doc(code: i32, message: &str) -> Document {
     doc! { "ok": 0, "code": code, "errmsg": message }
 }

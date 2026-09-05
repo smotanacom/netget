@@ -1,8 +1,8 @@
 //! The dashboard's "message this peer" / "disconnect this peer" path on an XMPP server
 //! connection: `AppState::send_to_peer` injects a wire action into one live connection and the
-//! bytes reach the socket. Zero LLM calls - the XMPP server writes nothing on its own until a
-//! `xmpp_data_received` event fires, so a raw socket that stays silent never triggers the model,
-//! yet the connection (and its peer handle) is registered the instant the connection is accepted.
+//! bytes reach the socket. Zero LLM calls — the server is created with an empty instruction and
+//! a static rule that answers every event, so nothing reaches the model. The connection (and its
+//! peer handle) is registered the instant the connection is accepted, before any event fires.
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features xmpp --test server -- xmpp::peer_inject --test-threads=100
@@ -20,7 +20,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -64,11 +64,28 @@ async fn injected_xmpp_action_reaches_raw_socket_and_close_sends_eof() {
     let state = new_state().await;
     let (tx, _rx) = mpsc::unbounded_channel();
 
-    // No event handlers are needed: the peer never sends a stanza, so the server never calls the
-    // model. The peer handle is registered when the connection is accepted, independent of that.
+    // Both fields below are load-bearing, and together they are what keeps this test model-free.
+    //
+    // `ServerForm::create` substitutes a default instruction when `instruction` is None, so an
+    // explicitly empty one is required to leave the server with no natural-language policy.
+    //
+    // That alone is not enough, because the stats probe further down really does send a stanza,
+    // which fires `xmpp_data_received`. With the backend pointed at a dead port that event fails,
+    // and a failed event is answered with a *fatal* stream error and a closed stream (RFC 6120
+    // §4.9) — correct behaviour, asserted by `llm_failure_test.rs`, but it would tear down the
+    // very connection this test injects into. So the event needs a deterministic answer.
     let server_id = ServerForm {
         protocol: "xmpp".to_string(),
         port: Some(0),
+        instruction: Some(String::new()),
+        event_handlers: Some(vec![serde_json::json!({
+            "event_pattern": "*",
+            // `wait_for_more` is the protocol's own "write nothing, keep reading" verb, so the
+            // stream stays open and no byte reaches the peer. An empty `actions` array does NOT
+            // work here: the event still reaches `call_llm`, which fails against the dead
+            // backend and now closes the stream, which this test would then race against.
+            "handler": { "type": "static", "actions": [ { "type": "wait_for_more" } ] }
+        })]),
         ..Default::default()
     }
     .create(&state, tx.clone())

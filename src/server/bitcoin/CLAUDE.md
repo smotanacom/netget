@@ -299,6 +299,34 @@ hex = "0.4"   # For hex encoding/decoding
    socket (it previously only dropped the map entry and left the peer connected).
    Zero-LLM test: `tests/server/bitcoin/peer_inject_test.rs`.
 
+8. **LLM failure is a disconnect, never a message.** When `call_llm` returns `Err` - backend
+   down, rate-limit queue exhausted, no usable answer after retries - `fail_closed`
+   (`mod.rs`) half-closes the write side so the peer reads EOF immediately, the same shape
+   `tcp` uses. Both LLM-error sites (the `bitcoin_connection_opened` handler and the
+   `bitcoin_message_received` handler) go through it; both previously logged a warning, reset
+   the connection to `Idle` and wrote nothing, so a peer that had just sent `version` or
+   `ping` blocked until its own timeout.
+
+   Bitcoin P2P has no error frame worth sending: BIP61 `reject` was removed from Bitcoin Core
+   in 0.20 and is ignored across the network, and it could not express "backend busy" anyway.
+   Disconnecting is what a real node does when it cannot serve a peer, and it is the only
+   signal that actually reaches one.
+
+   **Nothing derived from the error goes on the wire** - FIN carries no text, and the error
+   is logged and pushed to the status stream instead (see `src/utils/wire_failure.rs` and
+   `tests/wire_failure_test.rs`). Because the wire has only this one shape, the
+   `WireFailure::Overloaded` / `Unavailable` distinction is carried in the log:
+
+   - `decision=fail_closed_llm_overloaded` - backend at capacity (retryable)
+   - `decision=fail_closed_llm_error` - anything else the LLM call raised
+   - `decision=model_no_action` - the model answered, choosing to send nothing. Legitimate
+     and deliberately silent (an `addr` or an `inv` needs no reply), and the connection stays
+     open.
+   - `decision=model_close` - the model asked for `close_this_connection`.
+
+   The three are distinct on purpose: a model that declines to answer must never be logged
+   the same way as a backend that fell over.
+
 ## Future Enhancements
 
 Potential additions (not currently implemented):

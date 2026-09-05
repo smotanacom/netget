@@ -47,7 +47,12 @@ Always respond quickly with these standard capabilities."#;
             .expect_calls(1)
             .and()
             // Mock 2: Network event - capabilities request
-            .on_prompt_containing("Mercurial client is requesting capabilities")
+            // Match the event id, not its prose. These rules matched on the event *description*,
+            // which was later reworded ("asked which capabilities the server supports"), so they
+            // silently stopped matching: the mock returned nothing, call_llm failed, and the
+            // server correctly answered 500 — four tests failing for a reason that had nothing
+            // to do with Mercurial.
+            .on_event("hg_capabilities")
             .respond_with_actions(serde_json::json!([
                 {
                     "type": "hg_capabilities",
@@ -91,23 +96,43 @@ Always respond quickly with these standard capabilities."#;
     let body = response.text().await?;
     println!("Capabilities response:\n{}", body);
 
-    // Verify capabilities format (newline-separated)
-    assert!(
-        body.contains("batch"),
-        "Should advertise 'batch' capability"
-    );
-    assert!(
-        body.contains("branchmap"),
-        "Should advertise 'branchmap' capability"
-    );
-    assert!(
-        body.contains("getbundle"),
-        "Should advertise 'getbundle' capability"
-    );
+    // The server advertises what it can honour, not what the model asked for.
+    //
+    // `sanitize_capabilities` filters the model's list down to SUPPORTED_CAPABILITIES, and that
+    // is deliberate: advertising `unbundle` invites a push that gets a 403, and advertising
+    // `bundle2` makes a real hg client negotiate a format this server never speaks. The mock
+    // above asks for eight capabilities precisely so this asserts the filtering.
+    for supported in ["branchmap", "getbundle", "listkeys"] {
+        assert!(
+            body.contains(supported),
+            "should advertise the supported capability {supported:?}, got {body:?}"
+        );
+    }
+
+    // This test used to assert `batch`, which this server does not implement. Advertising it
+    // would make hg use the batch protocol and fail, so the assertion was wrong rather than the
+    // server — the filter is the behaviour worth pinning.
+    for unsupported in [
+        "batch",
+        "unbundle",
+        "pushkey",
+        "lookup",
+        "known",
+        "httpheader",
+    ] {
+        assert!(
+            !body.contains(unsupported),
+            "must not advertise {unsupported:?}, which this server cannot honour, got {body:?}"
+        );
+    }
 
     println!("✓ Capabilities test passed");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -138,7 +163,7 @@ This represents the tip of the default branch."#;
                     .expect_calls(1)
                     .and()
                     // Mock 2: Network event - heads request
-                    .on_prompt_containing("Mercurial client is requesting repository heads")
+                    .on_event("hg_heads")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "hg_heads",
@@ -185,6 +210,10 @@ This represents the tip of the default branch."#;
     }
 
     println!("✓ Heads test passed");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }
@@ -217,7 +246,7 @@ Each line represents one branch with its head node IDs."#;
                     .expect_calls(1)
                     .and()
                     // Mock 2: Network event - branchmap request
-                    .on_prompt_containing("Mercurial client is requesting branch mappings")
+                    .on_event("hg_branchmap")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "hg_branchmap",
@@ -281,6 +310,10 @@ Each line represents one branch with its head node IDs."#;
     }
 
     println!("✓ Branchmap test passed");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }
@@ -313,7 +346,7 @@ Each line is tab-separated: bookmark name, then node ID."#;
                     .expect_calls(1)
                     .and()
                     // Mock 2: Network event - listkeys request
-                    .on_prompt_containing("Mercurial client is requesting listkeys")
+                    .on_event("hg_listkeys")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "hg_listkeys",
@@ -377,6 +410,10 @@ Each line is tab-separated: bookmark name, then node ID."#;
     }
 
     println!("✓ Listkeys test passed");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }
@@ -444,6 +481,10 @@ Test error handling for non-existent repositories."#;
     }
 
     println!("✓ Error handling test passed");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
 }

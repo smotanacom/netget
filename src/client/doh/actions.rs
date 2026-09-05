@@ -3,7 +3,7 @@
 use crate::llm::actions::{
     client_trait::{Client, ClientActionResult},
     protocol_trait::Protocol,
-    ActionDefinition, Parameter,
+    ActionDefinition, Parameter, ParameterDefinition,
 };
 use crate::protocol::EventType;
 use crate::state::app_state::AppState;
@@ -78,6 +78,35 @@ impl DohClientProtocol {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for DohClientProtocol {
+    fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
+        vec![
+            ParameterDefinition {
+                name: "ca_cert_pem".to_string(),
+                description: "PEM-encoded certificate to trust in addition to the system \
+                              roots. Use this to reach a DoH server presenting a private-CA \
+                              or self-signed certificate -- including NetGet's own DoH \
+                              server, which serves a self-signed cert by default."
+                    .to_string(),
+                type_hint: "string".to_string(),
+                required: false,
+                example: json!("-----BEGIN CERTIFICATE-----\n..."),
+            },
+            ParameterDefinition {
+                name: "insecure_skip_verify".to_string(),
+                description: "Disable certificate verification entirely. Off by default, \
+                              and deliberately named for what it does: it accepts ANY \
+                              certificate, so a DoH connection made with it is not \
+                              authenticated and offers no protection against interception. \
+                              Prefer `ca_cert_pem`, which trusts one certificate rather \
+                              than all of them."
+                    .to_string(),
+                type_hint: "boolean".to_string(),
+                required: false,
+                example: json!(false),
+            },
+        ]
+    }
+
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         vec![
             ActionDefinition {
@@ -285,6 +314,7 @@ impl Client for DohClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                ctx.startup_params,
             )
             .await
         })

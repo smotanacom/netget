@@ -42,6 +42,21 @@ pub use actions::XmlRpcProtocol;
 #[cfg(feature = "xmlrpc")]
 const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 
+/// XML-RPC fault codes used for netget's own failures.
+///
+/// The peer gets a category, never the error: an LLM backend URL, a model name or an
+/// `anyhow` context chain is for the log, not for a stranger's client. See
+/// `src/utils/wire_failure.rs`.
+///
+/// `-32000..=-32099` is the implementation-defined server-error range in the XML-RPC
+/// fault-code interop note, so a saturated backend gets its own retryable code instead of
+/// being flattened into the permanent `-32603 internal error`.
+#[cfg(feature = "xmlrpc")]
+const FAULT_INTERNAL_ERROR: i32 = -32603;
+/// Backend saturated — transient, the client should back off and retry.
+#[cfg(feature = "xmlrpc")]
+const FAULT_SERVER_BUSY: i32 = -32000;
+
 /// XML-RPC server that handles RPC method calls with LLM
 pub struct XmlRpcServer;
 
@@ -209,8 +224,11 @@ async fn handle_xmlrpc_request(
     let method_call = match parse_method_call(&body_str) {
         Ok(call) => call,
         Err(e) => {
+            tracing::warn!("XML-RPC parse error (decision=reject_malformed_request): {e:#}");
             Log::new(Some(&status_tx)).warn(format!("XML-RPC parse error: {}", e));
-            let fault_xml = generate_fault(-32700, &format!("Parse error: {}", e));
+            // The codec's message names library internals; the peer learns only that its
+            // document did not parse.
+            let fault_xml = generate_fault(-32700, "Parse error: malformed XML-RPC methodCall");
             return Ok(Response::builder()
                 .status(200)
                 .header("Content-Type", "text/xml; charset=utf-8")
@@ -241,8 +259,22 @@ async fn handle_xmlrpc_request(
     {
         Ok(result) => result,
         Err(e) => {
-            Log::new(Some(&status_tx)).warn(format!("XML-RPC LLM error: {}", e));
-            let fault_xml = generate_fault(-32603, &format!("Internal error: {}", e));
+            // Three cases must stay apart in the log: the model rejected (it emits its own
+            // `xmlrpc_fault_response`, so it never reaches here), the model answered nothing
+            // (below), and the LLM call itself errored (here).
+            let failure = crate::utils::WireFailure::classify(&e);
+            let (fault_code, decision) = if failure.is_overloaded() {
+                (FAULT_SERVER_BUSY, "fail_closed_llm_overloaded")
+            } else {
+                (FAULT_INTERNAL_ERROR, "fail_closed_llm_error")
+            };
+            tracing::error!(
+                "XML-RPC LLM error (decision={decision}, fault_code={fault_code}): {e:#}"
+            );
+            Log::new(Some(&status_tx))
+                .warn(format!("XML-RPC LLM error (decision={}): {}", decision, e));
+            // Category only — never the error text.
+            let fault_xml = generate_fault(fault_code, failure.text());
             return Ok(Response::builder()
                 .status(200)
                 .header("Content-Type", "text/xml; charset=utf-8")
@@ -273,8 +305,18 @@ async fn handle_xmlrpc_request(
 
     // If no XML response was generated, return a fault
     if response_xml.is_empty() {
-        Log::new(Some(&status_tx)).warn("XML-RPC: LLM did not generate a response".to_string());
-        response_xml = generate_fault(-32603, "Internal error: no response generated");
+        tracing::warn!(
+            "XML-RPC: model produced no response action for method {} (decision=fail_closed_no_action, fault_code={})",
+            method_call.method_name,
+            FAULT_INTERNAL_ERROR
+        );
+        Log::new(Some(&status_tx)).warn(
+            "XML-RPC: LLM did not generate a response (decision=fail_closed_no_action)".to_string(),
+        );
+        response_xml = generate_fault(
+            FAULT_INTERNAL_ERROR,
+            crate::utils::WireFailure::Unavailable.text(),
+        );
     }
 
     let log = Log::new(Some(&status_tx));

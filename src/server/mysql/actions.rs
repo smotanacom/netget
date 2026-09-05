@@ -77,7 +77,10 @@ impl Protocol for MysqlProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — mysql_async —
+            // covering handshake, queries and prepared statements. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation("opensrv-mysql v0.7 protocol library")
             .llm_control("Query responses (result sets, OK packets, ERR packets)")
             .e2e_testing("mysql_async client crate")

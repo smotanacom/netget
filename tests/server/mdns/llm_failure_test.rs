@@ -62,6 +62,10 @@ async fn test_mdns_stays_silent_but_reports_the_failure() -> E2EResult<()> {
         "no service may be registered when the handler never produced one"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

@@ -12,7 +12,30 @@ client instances to verify LLM-controlled behavior.
 - **Binary execution:** Tests spawn `target/release/netget` in scripting mode
 - **Real protocol:** Client connects to NetGet IMAP server (or real test server)
 - **LLM integration:** Tests validate that LLM interprets prompts and executes actions
-- **No mocking:** Real IMAP protocol exchange over TCP
+- **Mocked model, real protocol:** the LLM is `mock_ollama`; the IMAP exchange itself is a
+  real one over TCP between two NetGet processes
+
+### Every mock reply must echo the event's tag
+
+`async-imap` numbers its own tags (`a1`, `a2`, …) and matches replies by tag. A mock that
+hardcodes one — `"tag": "A001"`, or a raw `"A002 OK …"` in a `response` string — tags the
+reply to a command the client never sent, so async-imap discards it as unsolicited and the
+client parks until the test gives up. It then fails as *"the client never connected"*, which
+points at the client rather than at the mock, and every rule after the stall reports
+`expected 1, got 0`.
+
+Use `.respond_with_actions_from_event(|e| …)` and take the tag from the event
+(`e["tag"]`); both `imap_auth` and `imap_command` carry it. This is the same rule the DNS
+tests document for query ids — anything the peer generates and matches on has to come back
+out of the event.
+
+Two related traps, both of which this suite had:
+
+- An IMAP literal must declare its exact octet count. `BODY[] {50}` in front of a 54-byte
+  body leaves the parser four bytes into the wrong place.
+- If a test's client is told to SELECT, the *server* config needs an `imap_command` /
+  `SELECT` rule. Without one the server has nothing to answer with, and the failure surfaces
+  on the client's next expectation.
 
 ### Test Scenarios
 

@@ -333,7 +333,6 @@ tail -f netget.log | grep -i socks
 
 2. **Test Isolation**
     - Use `cargo-isolated.sh` for separate target directories
-    - Run tests with `--ollama-lock` (default in tests)
 
 3. **Timeout Settings**
     - Increase LLM timeout for slower CI machines

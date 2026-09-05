@@ -22,6 +22,21 @@ use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 use crate::utils::truncate::truncate_for_log;
 
+/// Expand a leading `~/` in a kubeconfig path.
+///
+/// The parameter's own example is `~/.kube/config`, and `std::fs` does no tilde expansion —
+/// a path taken literally would fail with "No such file or directory" on the one value the
+/// documentation suggests.
+fn expand_home(path: &str) -> std::path::PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => std::path::PathBuf::from(home).join(rest),
+            None => std::path::PathBuf::from(path),
+        },
+        None => std::path::PathBuf::from(path),
+    }
+}
+
 /// Kubernetes client that interacts with Kubernetes API server
 pub struct KubernetesClient;
 
@@ -33,6 +48,7 @@ impl KubernetesClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         // For Kubernetes, "connection" means establishing API client configuration
         // The kube client is stateless and makes requests on-demand
@@ -42,35 +58,87 @@ impl KubernetesClient {
             client_id, remote_addr
         );
 
-        // Try to create a Kubernetes client using default kubeconfig
-        let k8s_client = if remote_addr == "default" || remote_addr == "~/.kube/config" {
-            // Use default kubeconfig
-            match kube::Client::try_default().await {
-                Ok(client) => {
-                    info!(
-                        "Kubernetes client {} connected using default kubeconfig",
-                        client_id
-                    );
-                    client
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to connect to Kubernetes using default kubeconfig: {}",
-                        e
-                    );
-                    return Err(anyhow::anyhow!(
-                        "Failed to connect to Kubernetes: {}. Make sure kubeconfig is configured.",
-                        e
-                    ));
-                }
-            }
-        } else {
-            // Custom kubeconfig path or cluster URL
-            return Err(anyhow::anyhow!("Custom Kubernetes configurations not yet supported. Use 'default' to use ~/.kube/config"));
+        // `kubeconfig` and `namespace` were both declared and neither was read. `kubeconfig`
+        // named a file this client then ignored - it always ran `try_default()`, which reads
+        // `$KUBECONFIG` or `~/.kube/config` - and `namespace` was overwritten by a hardcoded
+        // "default" one line later, so every operation that did not name a namespace itself
+        // went to `default` whatever the operator asked for.
+        let (kubeconfig_path, namespace) = match &startup_params {
+            Some(params) => (
+                params.get_optional_string("kubeconfig")?,
+                params.get_optional_string("namespace")?,
+            ),
+            None => (None, None),
         };
 
-        // Store namespace (default to "default")
-        let namespace = "default".to_string();
+        let k8s_client = match &kubeconfig_path {
+            // An explicit kubeconfig file, read from where the operator said it is.
+            Some(path) => {
+                let path = expand_home(path);
+                let kubeconfig = kube::config::Kubeconfig::read_from(&path).map_err(|e| {
+                    anyhow::anyhow!("Failed to read kubeconfig at {}: {}", path.display(), e)
+                })?;
+                let config = kube::Config::from_custom_kubeconfig(
+                    kubeconfig,
+                    &kube::config::KubeConfigOptions::default(),
+                )
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to build Kubernetes configuration from {}: {}",
+                        path.display(),
+                        e
+                    )
+                })?;
+                let client = kube::Client::try_from(config).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to connect to Kubernetes using kubeconfig {}: {}",
+                        path.display(),
+                        e
+                    )
+                })?;
+                info!(
+                    "Kubernetes client {} connected using kubeconfig {}",
+                    client_id,
+                    path.display()
+                );
+                client
+            }
+            None if remote_addr == "default" || remote_addr == "~/.kube/config" => {
+                // Use default kubeconfig ($KUBECONFIG, else ~/.kube/config)
+                match kube::Client::try_default().await {
+                    Ok(client) => {
+                        info!(
+                            "Kubernetes client {} connected using default kubeconfig",
+                            client_id
+                        );
+                        client
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to connect to Kubernetes using default kubeconfig: {}",
+                            e
+                        );
+                        return Err(anyhow::anyhow!(
+                            "Failed to connect to Kubernetes: {}. Make sure kubeconfig is configured.",
+                            e
+                        ));
+                    }
+                }
+            }
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Kubernetes address '{}' is not understood. Use 'default' to read \
+                     $KUBECONFIG (else ~/.kube/config), or pass the `kubeconfig` startup \
+                     parameter naming a kubeconfig file.",
+                    remote_addr
+                ));
+            }
+        };
+
+        // The `namespace` startup parameter is the default for every operation that does
+        // not name one itself.
+        let namespace = namespace.unwrap_or_else(|| "default".to_string());
 
         // Store client configuration in protocol_data
         app_state
@@ -104,6 +172,8 @@ impl KubernetesClient {
         let command_rx =
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
         let task_registrar = app_state.clone();
+        let conn_llm = _llm_client.clone();
+        let conn_k8s = k8s_client.clone();
         let task_handle = tokio::spawn(Self::command_loop(
             command_rx,
             k8s_client,
@@ -116,6 +186,83 @@ impl KubernetesClient {
             .register_client_task(client_id, task_handle)
             .await;
 
+        // Raise the connected event.
+        //
+        // K8S_CLIENT_CONNECTED_EVENT was declared and nothing raised it, so the model was
+        // never consulted when a Kubernetes client came up.
+        //
+        // From a registered task, not inline: a dashboard-created client defaults to a
+        // `*` -> manual rule and awaiting a parked answer would block creation. Operations
+        // go through run_operation_once, which raises no event.
+        let conn_state = app_state.clone();
+        let conn_status = status_tx.clone();
+        let conn_task = tokio::spawn(async move {
+            let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
+            let protocol = crate::client::kubernetes::actions::KubernetesClientProtocol::new();
+            let event = Event::new(
+                &crate::client::kubernetes::actions::K8S_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({}),
+            );
+            match crate::client::llm_budget::call_llm_for_client(
+                &conn_llm,
+                &conn_state,
+                client_id.to_string(),
+                &instruction,
+                "",
+                Some(&event),
+                &protocol,
+                &conn_status,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if let Some(mem) = result.memory_updates {
+                        conn_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in result.actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        if name != "k8s_operation" {
+                            continue;
+                        }
+                        let str_of =
+                            |k: &str| data.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+                        if let Err(e) = Self::run_operation_once(
+                            &conn_k8s,
+                            client_id,
+                            str_of("operation").unwrap_or_default(),
+                            str_of("resource_type").unwrap_or_default(),
+                            str_of("namespace"),
+                            str_of("name"),
+                            data.get("spec").cloned().filter(|v| !v.is_null()),
+                            str_of("label_selector"),
+                            &conn_state,
+                        )
+                        .await
+                        {
+                            error!(
+                                "Kubernetes client {} connect-time operation failed: {}",
+                                client_id, e
+                            );
+                        }
+                    }
+                }
+                Err(e) => error!(
+                    "Kubernetes client {} LLM error on connected event: {}",
+                    client_id, e
+                ),
+            }
+        });
+        task_registrar
+            .register_client_task(client_id, conn_task)
+            .await;
+
         // Return a dummy local address (Kubernetes API is HTTP-based, connectionless)
         Ok("0.0.0.0:0".parse().unwrap())
     }
@@ -125,7 +272,14 @@ impl KubernetesClient {
     /// Takes the `kube::Client` rather than calling `try_default()` itself, so the
     /// handle built once at connect time is the one every operation uses.
     #[allow(clippy::too_many_arguments)]
-    pub async fn execute_operation(
+    /// Run one operation. Raises no event, calls no LLM.
+    ///
+    /// Deliberately free of any path back into `notify_response`: that would make the async
+    /// type self-referential (notify -> operation -> notify), which rustc cannot prove
+    /// `Send`, so `tokio::spawn` refuses it. Follow-up actions the model returns for a
+    /// response event run through here, which breaks that cycle and bounds the loop.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_operation_once(
         k8s_client: &kube::Client,
         client_id: ClientId,
         operation: String,
@@ -134,9 +288,7 @@ impl KubernetesClient {
         name: Option<String>,
         data: Option<serde_json::Value>,
         label_selector: Option<String>,
-        app_state: Arc<AppState>,
-        llm_client: OllamaClient,
-        status_tx: mpsc::UnboundedSender<String>,
+        app_state: &Arc<AppState>,
     ) -> Result<serde_json::Value> {
         // Determine namespace
         let ns = if let Some(n) = namespace {
@@ -205,6 +357,52 @@ impl KubernetesClient {
             )),
         };
 
+        result
+    }
+
+    pub async fn execute_operation(
+        k8s_client: &kube::Client,
+        client_id: ClientId,
+        operation: String,
+        resource_type: String,
+        namespace: Option<String>,
+        name: Option<String>,
+        data: Option<serde_json::Value>,
+        label_selector: Option<String>,
+        app_state: Arc<AppState>,
+        llm_client: OllamaClient,
+        status_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<serde_json::Value> {
+        // Resolve the namespace here too: the notify payload below reports it, and
+        // `run_operation_once` takes ownership of the Option.
+        let ns = if let Some(n) = namespace.clone() {
+            n
+        } else {
+            app_state
+                .with_client_mut(client_id, |client| {
+                    client
+                        .get_protocol_field("namespace")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .await
+                .flatten()
+                .unwrap_or_else(|| "default".to_string())
+        };
+
+        let result = Self::run_operation_once(
+            k8s_client,
+            client_id,
+            operation.clone(),
+            resource_type.clone(),
+            namespace,
+            name,
+            data,
+            label_selector,
+            &app_state,
+        )
+        .await;
+
         match result {
             Ok(response) => {
                 info!("Kubernetes client {} operation successful", client_id);
@@ -222,6 +420,7 @@ impl KubernetesClient {
                 });
                 let notify = tokio::spawn(Self::notify_response(
                     client_id,
+                    k8s_client.clone(),
                     event_data,
                     app_state.clone(),
                     llm_client,
@@ -246,6 +445,7 @@ impl KubernetesClient {
     /// call for a human answer.
     async fn notify_response(
         client_id: ClientId,
+        k8s_client: kube::Client,
         event_data: serde_json::Value,
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
@@ -274,11 +474,55 @@ impl KubernetesClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
+                }
+
+                // Execute what the model asked for. These were discarded, so answering
+                // k8s_resource_received did nothing -- a model that listed pods and wanted
+                // to fetch the logs of one it had just seen was ignored.
+                //
+                // Dispatch goes through `run_operation_once`, which raises no event: that
+                // bounds the loop and keeps the async type non-recursive, which is what
+                // tokio::spawn's Send bound requires.
+                use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                for action in actions {
+                    let Ok(ClientActionResult::Custom { name, data }) =
+                        protocol.execute_action(action.clone())
+                    else {
+                        continue;
+                    };
+                    if name != "k8s_operation" {
+                        continue;
+                    }
+                    let str_of =
+                        |k: &str| data.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let outcome = Self::run_operation_once(
+                        &k8s_client,
+                        client_id,
+                        str_of("operation").unwrap_or_default(),
+                        str_of("resource_type").unwrap_or_default(),
+                        str_of("namespace"),
+                        str_of("name"),
+                        data.get("spec").cloned().filter(|v| !v.is_null()),
+                        str_of("label_selector"),
+                        &app_state,
+                    )
+                    .await;
+                    match outcome {
+                        Ok(v) => info!(
+                            "Kubernetes client {} follow-up -> {}",
+                            client_id,
+                            crate::utils::truncate_for_log(&v.to_string(), 120)
+                        ),
+                        Err(e) => error!(
+                            "Kubernetes client {} follow-up action failed: {}",
+                            client_id, e
+                        ),
+                    }
                 }
             }
             Err(e) => {

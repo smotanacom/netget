@@ -149,6 +149,10 @@ async fn test_xmlrpc_simple_method() -> E2EResult<()> {
     println!("✓ XML-RPC method call validated");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -215,6 +219,10 @@ async fn test_xmlrpc_introspection_list_methods() -> E2EResult<()> {
     assert!(response_xml.contains("add") || response_xml.contains("system.listMethods"));
 
     println!("✓ Introspection validated");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -286,6 +294,10 @@ async fn test_xmlrpc_fault_response() -> E2EResult<()> {
     );
 
     println!("✓ Fault response validated");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -347,6 +359,10 @@ async fn test_xmlrpc_string_parameter() -> E2EResult<()> {
     );
 
     println!("✓ String parameter validated");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -406,6 +422,10 @@ async fn test_xmlrpc_boolean_parameter() -> E2EResult<()> {
     );
 
     println!("✓ Boolean parameter validated");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -467,6 +487,10 @@ async fn test_xmlrpc_multiple_parameters() -> E2EResult<()> {
     );
 
     println!("✓ Multiple parameters validated");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -511,6 +535,10 @@ async fn test_xmlrpc_non_post_request() -> E2EResult<()> {
     );
 
     println!("✓ Non-POST rejection validated");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

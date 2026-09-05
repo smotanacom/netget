@@ -139,10 +139,38 @@ Hello, World!
 - `send_s3_bucket_list` — `buckets` (array of `{name, creation_date}`). Answers ListBuckets.
 - `send_s3_error` — `error_code`, `message`, `status_code`. Answers any failure.
 
-There is no dedicated success action for PutObject, CreateBucket, DeleteObject or
-HeadObject: they fall through to an empty `200 OK`, which real SDKs accept but which
-carries no `ETag` (PutObject), `Location` (CreateBucket) or `Content-Length`/`Last-Modified`
-(HeadObject). Use `send_s3_error` to reject them.
+- `send_s3_write_result` — `status_code` (200 default, 204 for DeleteObject), `etag`,
+  `location`, `content_length`, `content_type`, `last_modified`, all optional. Acknowledges the
+  body-less operations: PutObject, CreateBucket, DeleteObject, HeadObject.
+
+**Why `send_s3_write_result` exists.** Those four verbs return no body, and until this action
+was added the model had no way to say *yes* to them: the server answered them by falling
+through to an empty `200 OK` whenever the model's answer contained no S3 action. That is the
+fail-open pattern the root `CLAUDE.md` calls the most dangerous in this codebase — an empty 200
+is exactly what S3 returns on a successful PUT or DELETE, so a model that declined the operation
+was reported to the caller as having performed it.
+
+The fall-through could not simply be made to refuse, because doing so with no affirmative verb
+makes those four operations permanently impossible rather than merely fail-closed. (An attempt
+to change it in isolation was reverted for precisely that reason.) The vocabulary had to come
+first. With it in place the fall-through is gone: no S3 action now means **500 InternalError**,
+logged `decision=model_no_action`.
+
+Two traps this hit, both already described in the root `CLAUDE.md`, worth re-reading if you add
+an action here:
+
+- Registering it in `get_sync_actions()` is **not enough**. `call_llm` builds the model's tool
+  list from `event.event_type.actions`, so an action missing from `S3_REQUEST_EVENT`'s
+  `.with_actions(...)` is rejected at runtime as "Unknown action" no matter what the protocol
+  advertises elsewhere.
+- The E2E mocks answered these operations with `send_http_response`, which S3 cannot execute, so
+  `test_s3_comprehensive` and `test_s3_put_and_list` failed inside
+  `tests/helpers/mock_action_names.rs` before reaching the server at all. Both now use
+  `send_s3_write_result` and pass. The ListObjects rule's `expect_calls(15)` ("rust-s3 client may
+  paginate/retry") was an artefact of that breakage — every failed write sent the test's `retry`
+  helper back round — and is now 1.
+
+Use `send_s3_error` to reject any operation.
 
 The generic actions (`show_message`, memory operations, …) are supplied centrally by
 `get_network_event_common_actions()`.
@@ -362,11 +390,39 @@ Following NetGet's dual logging pattern (tracing macros + status_tx):
 - Server lifecycle: "S3 server listening on 0.0.0.0:9000"
 - Connection events: "S3 client connected from 127.0.0.1:54321"
 
+### WARN Level — the `decision=` tags
+
+Every request that does not produce a normal S3 response is logged with a stable
+`decision=` tag, so an operator can tell the three cases apart with `grep`:
+
+- `decision=model_answer` — the model produced `s3_object` / `s3_object_list` /
+  `s3_bucket_list` (DEBUG, alongside the normal response)
+- `decision=model_reject` — the model deliberately refused, via `send_s3_error` (DEBUG)
+- `decision=model_no_action` — the model answered nothing this protocol can turn into a
+  response, or every action it emitted failed to execute. WARN, because the wire answer is
+  the empty `200 OK` fall-through, which for PutObject/CreateBucket/DeleteObject/HeadObject
+  reads to the client as success. The line names how many actions failed
+- `decision=fail_closed_llm_error category=Overloaded|Unavailable` — netget could not reach
+  a decision at all (backend error, timeout, unusable output). WARN, and the **only** place
+  the full error text is written; it goes to `netget.log` and the TUI status stream and
+  never to the peer
+
+### The LLM-failure wire response
+
+On `Err` from `call_llm` the peer gets an S3 `<Error>` document carrying only a category
+from `crate::utils::WireFailure` — never the error, the backend URL, the model name or an
+`anyhow` chain:
+
+- `WireFailure::Overloaded` → `503` + `<Code>ServiceUnavailable</Code>` + `Retry-After: 5`,
+  so an SDK backs off and retries
+- `WireFailure::Unavailable` → `500` + `<Code>InternalError</Code>`, a permanent fault
+
+Keeping the two codes distinct is the point: collapsing both onto 500 makes a transient
+backend saturation look permanent to every S3 client.
+
 ### ERROR Level
 
-- Server failures: "Failed to bind S3 server to port 9000"
-- Internal errors: "Failed to generate XML response"
-- LLM errors: "LLM error handling S3 request"
+- Internal errors: "Dropping S3 {name} header: … is not a valid HTTP header value"
 
 ## Example Prompts
 

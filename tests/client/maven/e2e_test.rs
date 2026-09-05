@@ -38,6 +38,10 @@ mod maven_client_tests {
         println!("✅ Maven client downloaded artifact successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -75,6 +79,10 @@ mod maven_client_tests {
         println!("✅ Maven client downloaded POM successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -111,6 +119,10 @@ mod maven_client_tests {
         println!("✅ Maven client searched for versions successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -140,6 +152,10 @@ mod maven_client_tests {
         println!("✅ Maven client connected to custom repository");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -179,6 +195,10 @@ mod maven_client_tests {
         println!("✅ Maven client handled missing artifact gracefully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

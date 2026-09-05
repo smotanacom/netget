@@ -271,6 +271,10 @@ async fn test_nfs_server_start() -> E2EResult<()> {
     println!("✓ NFS server initialized successfully");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -322,6 +326,10 @@ async fn test_nfs_tcp_connection() -> E2EResult<()> {
     println!("✓ NFS NULL answered over {addr}");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -382,6 +390,10 @@ async fn test_nfs_multiple_connections() -> E2EResult<()> {
     }
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -436,6 +448,10 @@ async fn test_nfs_connection_lifecycle() -> E2EResult<()> {
     drop(stream2);
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -476,6 +492,10 @@ async fn test_nfs_port_configuration() -> E2EResult<()> {
     drop(stream);
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -515,6 +535,10 @@ async fn test_nfs_server_stop() -> E2EResult<()> {
     println!("✓ Connection established");
 
     // Verify mock expectations BEFORE stopping server
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Stop server
@@ -710,6 +734,10 @@ async fn test_nfs_mount_and_lookup() -> E2EResult<()> {
 
     println!("✓ LOOKUP resolved readme.txt to fileid 42");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

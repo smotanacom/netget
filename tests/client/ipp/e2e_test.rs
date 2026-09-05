@@ -101,6 +101,7 @@ mod ipp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected", "IPP"], 30).await;
         assert!(
             client.output_contains("connected").await || client.output_contains("IPP").await,
             "Client should show connection message. Output: {:?}",
@@ -110,6 +111,11 @@ mod ipp_client_tests {
         println!("✅ IPP client successfully queried printer attributes");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -218,6 +224,11 @@ mod ipp_client_tests {
         println!("✅ IPP client successfully submitted print job");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -321,6 +332,11 @@ mod ipp_client_tests {
         println!("✅ IPP client successfully queried job attributes");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

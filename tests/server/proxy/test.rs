@@ -193,6 +193,7 @@ async fn test_proxy_http_passthrough() -> E2EResult<()> {
     println!("Proxy configured");
 
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .proxy(proxy)
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
@@ -213,6 +214,10 @@ async fn test_proxy_http_passthrough() -> E2EResult<()> {
     assert!(body.contains("Test Server Root"));
 
     println!("✓ Request successfully proxied");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -262,7 +267,10 @@ async fn test_proxy_http_block() -> E2EResult<()> {
     // Configure HTTP client to use proxy
     let proxy_url = format!("http://127.0.0.1:{}", server.port);
     let proxy = reqwest::Proxy::http(&proxy_url)?;
-    let client = reqwest::Client::builder().proxy(proxy).build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .proxy(proxy)
+        .build()?;
 
     // Make request through proxy - should be blocked
     let target_url = format!("http://127.0.0.1:{}/", target_port);
@@ -279,6 +287,10 @@ async fn test_proxy_http_block() -> E2EResult<()> {
     );
 
     println!("✓ Request successfully blocked by proxy");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -329,6 +341,7 @@ async fn test_proxy_modify_request_headers() -> E2EResult<()> {
     let proxy_url = format!("http://127.0.0.1:{}", server.port);
     let proxy = reqwest::Proxy::http(&proxy_url)?;
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .proxy(proxy)
         .user_agent("TestClient/1.0")
         .build()?;
@@ -352,6 +365,10 @@ async fn test_proxy_modify_request_headers() -> E2EResult<()> {
         "handle_request_modify must strip the User-Agent named in remove_headers; target saw:\n{body}"
     );
     println!("✓ Request processed with header modifications");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -399,7 +416,10 @@ async fn test_proxy_modify_request_body() -> E2EResult<()> {
     // Configure HTTP client to use proxy
     let proxy_url = format!("http://127.0.0.1:{}", server.port);
     let proxy = reqwest::Proxy::http(&proxy_url)?;
-    let client = reqwest::Client::builder().proxy(proxy).build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .proxy(proxy)
+        .build()?;
 
     // Make POST request
     let target_url = format!("http://127.0.0.1:{}/post", target_port);
@@ -413,6 +433,10 @@ async fn test_proxy_modify_request_body() -> E2EResult<()> {
     assert_eq!(response.status(), 201);
 
     println!("✓ POST request successfully proxied");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -474,7 +498,10 @@ async fn test_proxy_filter_by_path() -> E2EResult<()> {
     // Configure HTTP client to use proxy
     let proxy_url = format!("http://127.0.0.1:{}", server.port);
     let proxy = reqwest::Proxy::http(&proxy_url)?;
-    let client = reqwest::Client::builder().proxy(proxy).build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .proxy(proxy)
+        .build()?;
 
     // Request to / should pass through
     let root_url = format!("http://127.0.0.1:{}/", target_port);
@@ -488,6 +515,10 @@ async fn test_proxy_filter_by_path() -> E2EResult<()> {
     assert_eq!(response.status(), 403);
     println!("✓ /json request blocked");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -539,6 +570,7 @@ async fn test_proxy_https_passthrough() -> E2EResult<()> {
     let proxy_url = format!("http://127.0.0.1:{}", server.port);
     let proxy = reqwest::Proxy::all(&proxy_url)?;
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .proxy(proxy)
         .danger_accept_invalid_certs(true) // Accept self-signed cert from test server
         .build()?;
@@ -552,6 +584,10 @@ async fn test_proxy_https_passthrough() -> E2EResult<()> {
     assert!(body.contains("HTTPS Test Server"));
 
     println!("✓ HTTPS request proxied successfully through pass-through mode");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -604,6 +640,7 @@ async fn test_proxy_https_block_by_sni() -> E2EResult<()> {
     let proxy_url = format!("http://127.0.0.1:{}", server.port);
     let proxy = reqwest::Proxy::all(&proxy_url)?;
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .proxy(proxy)
         .danger_accept_invalid_certs(true)
         .timeout(std::time::Duration::from_secs(5))
@@ -634,6 +671,10 @@ async fn test_proxy_https_block_by_sni() -> E2EResult<()> {
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -682,7 +723,10 @@ async fn test_proxy_url_rewrite() -> E2EResult<()> {
     // Configure HTTP client to use proxy
     let proxy_url = format!("http://127.0.0.1:{}", server.port);
     let proxy = reqwest::Proxy::http(&proxy_url)?;
-    let client = reqwest::Client::builder().proxy(proxy).build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .proxy(proxy)
+        .build()?;
 
     // Request to /api/something should be rewritten to /
     let target_url = format!("http://127.0.0.1:{}/api/something", target_port);
@@ -694,6 +738,10 @@ async fn test_proxy_url_rewrite() -> E2EResult<()> {
     assert!(body.contains("Test Server Root"));
 
     println!("✓ URL successfully rewritten");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

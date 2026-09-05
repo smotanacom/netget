@@ -483,13 +483,19 @@ impl Protocol for MqttProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("Hand-written MQTT 3.1.1 control-packet codec (no broker crate)")
             .llm_control(
                 "CONNACK return code, SUBACK granted QoS, PUBACK/PUBREC for QoS>0 publishes, \
                  and broker-originated PUBLISH to any named connected client",
             )
-            .e2e_testing("rumqttc")
+            .e2e_testing(
+                "rumqttc, in two tests that are not #[ignore]d: test_mqtt_basic_connect \
+                 (CONNECT/CONNACK) and test_mqtt_subscribe_and_receive_a_published_message, \
+                 where a real rumqttc client completes CONNECT -> SUBSCRIBE -> SUBACK -> \
+                 PUBLISH and then receives the broker's own PUBLISH back on the same \
+                 connection, with topic and payload asserted.",
+            )
             .notes(
                 "MQTT 3.1.1 only (no v5, no TLS, no WebSocket). PINGREQ/PINGRESP and \
                  PUBREL/PUBCOMP are answered by the broker without a model call. There is no \

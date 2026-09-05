@@ -37,6 +37,30 @@ struct StreamData {
     send_stream: Arc<Mutex<quinn::SendStream>>,
 }
 
+/// RFC 9114 `H3_INTERNAL_ERROR` — netget could not produce an answer.
+const H3_INTERNAL_ERROR: u32 = 0x0102;
+/// RFC 9114 `H3_EXCESSIVE_LOAD` — the backend is saturated; the peer should back off.
+const H3_EXCESSIVE_LOAD: u32 = 0x0107;
+
+/// The QUIC application error code a peer is given when netget itself cannot answer.
+///
+/// A raw QUIC stream has no error frame of its own, so the protocol-level signal is
+/// `RESET_STREAM` plus an application error code. This server negotiates ALPN `h3`, so the
+/// two RFC 9114 codes whose meaning matches are the honest choice, and they are deliberately
+/// **distinct**: `H3_EXCESSIVE_LOAD` is transient and invites a retry, `H3_INTERNAL_ERROR` is
+/// a permanent fault. A client can back off on one and give up on the other.
+///
+/// The error itself never travels: only this code does. Nothing derived from the
+/// `anyhow::Error` — the backend URL, the model name, a file path, a context chain — is
+/// allowed on the wire. It goes to the log and the status stream, where an operator looks.
+/// See `src/utils/wire_failure.rs`.
+fn wire_failure_code(failure: crate::utils::WireFailure) -> quinn::VarInt {
+    quinn::VarInt::from_u32(match failure {
+        crate::utils::WireFailure::Overloaded => H3_EXCESSIVE_LOAD,
+        crate::utils::WireFailure::Unavailable => H3_INTERNAL_ERROR,
+    })
+}
+
 /// QUIC server that listens for incoming connections
 pub struct QuicServer;
 
@@ -154,9 +178,16 @@ impl QuicServer {
                                     }
                                 }
                                 Err(e) => {
-                                    // Non-fatal: the connection carries on, so WARN.
-                                    Log::new(Some(&status_tx_clone))
-                                        .warn(format!("LLM error on connection opened: {}", e));
+                                    // Non-fatal, and correctly silent on the wire:
+                                    // `quic_connection_opened` carries `.with_no_actions()`
+                                    // because no stream exists yet, so the model could not
+                                    // have put a byte anywhere even on success. The peer is
+                                    // waiting for nothing and will open its own stream.
+                                    Log::new(Some(&status_tx_clone)).warn(format!(
+                                        "LLM error on connection opened (decision=llm_error, \
+                                         no wire response possible before a stream exists): {}",
+                                        e
+                                    ));
                                 }
                             }
 
@@ -321,8 +352,17 @@ impl QuicServer {
                 }
             }
             Err(e) => {
-                // Non-fatal: the read loop still runs, so WARN.
-                Log::new(Some(&status_tx)).warn(format!("LLM error on stream opened: {}", e));
+                // Non-fatal, and deliberately not a reset: whatever the model would have
+                // said here is an unsolicited greeting, not a reply the peer is blocked on
+                // — the client writes first on a raw QUIC stream. Killing the stream over a
+                // missing banner would be worse than not sending one, and the next
+                // `quic_data_received` gets its own chance (and its own reset on failure).
+                // Same shape as TCP's banner path.
+                Log::new(Some(&status_tx)).warn(format!(
+                    "LLM error on stream {} opened (decision=llm_error, no greeting sent, \
+                     stream left open): {}",
+                    stream_id, e
+                ));
             }
         }
 
@@ -525,6 +565,7 @@ impl QuicServer {
                     }
 
                     // Handle protocol results
+                    let action_count = execution_result.protocol_results.len();
                     let mut should_close = false;
                     let mut should_wait = false;
 
@@ -619,6 +660,18 @@ impl QuicServer {
                         return;
                     }
 
+                    // The model was reached and chose to say nothing. That is a real
+                    // answer for a stream protocol — the peer may simply not be owed a
+                    // reply yet — and it is NOT the same as the backend failing, so it is
+                    // tagged separately in the log and leaves the stream open.
+                    if action_count == 0 {
+                        Log::new(Some(&status_tx)).debug(format!(
+                            "No actions returned for QUIC data on stream {} \
+                             (decision=model_no_actions); stream left open",
+                            stream_id
+                        ));
+                    }
+
                     // Check for queued data
                     let has_queued = {
                         let streams_lock = streams.lock().await;
@@ -660,12 +713,39 @@ impl QuicServer {
                     }
                 }
                 Err(e) => {
-                    Log::new(Some(&status_tx)).warn(format!("LLM error for QUIC data: {}", e));
-                    streams
-                        .lock()
-                        .await
-                        .entry(stream_id)
-                        .and_modify(|s| s.state = StreamState::Idle);
+                    // Say *something* on the wire. This path used to reset the stream
+                    // state to Idle and write nothing, so a peer that had just sent a
+                    // request blocked until its own timeout with no indication anything
+                    // had gone wrong.
+                    //
+                    // The category, and only the category, reaches the peer: a
+                    // RESET_STREAM carrying an RFC 9114 error code. `e` is logged and
+                    // never rendered into anything the peer can read.
+                    let failure = crate::utils::WireFailure::classify(&e);
+                    let code = wire_failure_code(failure);
+                    let log = Log::new(Some(&status_tx));
+                    log.warn(format!(
+                        "LLM error for QUIC data on stream {} (decision=llm_error, category={}, \
+                         h3_error_code=0x{:x}): {}",
+                        stream_id,
+                        failure.text(),
+                        code.into_inner(),
+                        e
+                    ));
+
+                    // RESET_STREAM drops anything still buffered for this stream. In a
+                    // request/response exchange the peer has already consumed the previous
+                    // round's reply before sending the request we just failed on, so the
+                    // loss window is the reply we are not going to produce anyway.
+                    {
+                        let mut send = send_stream.lock().await;
+                        let _ = send.reset(code);
+                    }
+                    streams.lock().await.remove(&stream_id);
+                    log.info(format!(
+                        "Reset QUIC stream {} after LLM error (decision=llm_error)",
+                        stream_id
+                    ));
                     return;
                 }
             }

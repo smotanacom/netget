@@ -173,22 +173,48 @@ changed nothing.
 
 The OPEN handshake is mechanical (fully determined by the configured ASN/router-id/hold-time and a
 validated peer). So with **no operator policy** — no server instruction and no per-event handler
-(`should_call_llm` in `mod.rs` = `has_instruction || has_handler`) — the session completes on the
+(`operator_wants_dynamic` in `mod.rs` = `has_instruction || has_handler`) — the session completes on the
 configured OPEN with **no LLM round-trip at all**; `established`/`update` then advertise nothing,
 which is correct with no routing policy. KEEPALIVE cadence never consulted the LLM. The model is
 consulted **only when the operator opts in**.
 
-### The bgp_open fallback is deliberate
+### Three outcomes on `bgp_open`, and they are not interchangeable
 
-If the operator *has* opted in but the handler returns nothing usable — model outage,
-`wait_for_more`, a handler that produced no message — NetGet sends the OPEN configured at startup
-and the session proceeds.
+`SendOutcome` keeps them apart, because collapsing any two of them is a bug:
 
-This is not the fail-open pattern the root CLAUDE.md warns about. Peering is not an
-authorisation decision: the operator opened this port with this ASN, and the peer has already
-completed a TCP handshake. Refusing on silence would mean a model outage silently drops every
-BGP session. Crucially the model's **refusal is structurally distinct from its silence** —
-`send_bgp_notification` produces a NOTIFICATION and ends the session, and nothing else does.
+| Outcome | Wire | Log tag |
+|---|---|---|
+| `SentOpen` | the handler's OPEN, then KEEPALIVE -> OpenConfirm | — |
+| `Refused` — `send_bgp_notification` ran | that NOTIFICATION, session ends | `decision=model_reject` |
+| `Nothing` — policy ran, produced no message (`wait_for_more`, empty handler) | the **configured** OPEN, session proceeds | `decision=model_silent` |
+| `Failed(WireFailure)` — the policy could **not be run** (backend error/timeout/saturation) | NOTIFICATION Cease, session ends | `decision=fail_closed_llm_error` |
+
+The `Nothing` fallback is deliberate and is not the fail-open pattern: peering is not an
+authorisation decision when the policy was actually consulted and chose to say nothing. The
+operator opened this port with this ASN and the peer has already completed a TCP handshake, so
+refusing on silence would drop sessions the policy never objected to.
+
+`Failed` is a different matter and used to share the `Nothing` path, which *was* fail-open: with
+an admission policy in the instruction ("peer only with AS 65000-65535"), a backend outage
+admitted every neighbour the policy would have refused. It now refuses.
+
+**The refusal carries a category and nothing else.** A BGP NOTIFICATION has no free-text field,
+so there is structurally nowhere for an internal error to leak; the `data` octets are left empty
+and the category rides in the subcode, per RFC 4486:
+
+- `WireFailure::Overloaded` -> Cease / **8, Out of Resources** — a transient resource condition
+  a conforming peer damps and retries.
+- `WireFailure::Unavailable` -> Cease / **5, Connection Rejected**.
+
+The full error goes to `tracing::error!` and the operator's status stream, never to the peer.
+
+`bgp_established` and `bgp_update` answer **nothing** on any of the four outcomes, including
+`Failed`, and that is correct rather than an oversight: RFC 4271 defines no reply to a session
+coming up or to an inbound UPDATE, advertising no routes is already the fail-closed answer, and
+tearing down an Established session over one failed model call would be worse than advertising
+nothing. The keepalive ticker runs in its own task, so the peer never hangs. The three cases are
+still tagged in the log by `log_advertisement_outcome`. `bgp_notification` is never answered at
+all (RFC 4271), so its handler is pure observation.
 
 Protocol validity, by contrast, is decided in Rust and never delegated: a bad version, an
 unacceptable hold time, a zero BGP identifier or AS 0 earn a NOTIFICATION before the model is

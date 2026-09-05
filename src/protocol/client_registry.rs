@@ -357,6 +357,24 @@ impl ClientRegistry {
 
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::client::whois::WhoisClientProtocol::new()));
+        #[cfg(feature = "stomp")]
+        self.register(Arc::new(crate::client::stomp::StompClientProtocol::new()));
+        #[cfg(feature = "netbios-ns")]
+        self.register(Arc::new(
+            crate::client::netbios_ns::NetbiosNsClientProtocol::new(),
+        ));
+        #[cfg(feature = "nats")]
+        self.register(Arc::new(crate::client::nats::NatsClientProtocol::new()));
+        #[cfg(feature = "ssdp")]
+        self.register(Arc::new(crate::client::ssdp::SsdpClientProtocol::new()));
+        #[cfg(feature = "gopher")]
+        self.register(Arc::new(crate::client::gopher::GopherClientProtocol::new()));
+        #[cfg(feature = "finger")]
+        self.register(Arc::new(crate::client::finger::FingerClientProtocol::new()));
+        #[cfg(feature = "ident")]
+        self.register(Arc::new(crate::client::ident::IdentClientProtocol::new()));
+        #[cfg(feature = "llmnr")]
+        self.register(Arc::new(crate::client::llmnr::LlmnrClientProtocol::new()));
 
         #[cfg(feature = "wireguard")]
         self.register(Arc::new(
@@ -375,8 +393,13 @@ impl ClientRegistry {
         for (protocol_name, protocol) in &self.protocols {
             // Add all protocol keywords
             for keyword in protocol.keywords() {
-                self.keyword_map
-                    .insert(keyword.to_lowercase(), protocol_name.clone());
+                let lower = keyword.to_lowercase();
+                // Store the hyphen/space-normalized form too. Input is normalized
+                // before lookup, so a keyword declared as "ssh-agent" was previously
+                // unreachable: "ssh_agent" never contains "ssh-agent".
+                let normalized = lower.replace(['-', ' '], "_");
+                self.keyword_map.insert(lower, protocol_name.clone());
+                self.keyword_map.insert(normalized, protocol_name.clone());
             }
 
             // Also add the full stack name as a keyword
@@ -524,15 +547,41 @@ impl ClientRegistry {
             }
         }
 
-        // Then try keyword matching (case-insensitive substring search)
-        // This is a little greedy but works well in practice
-        for (keyword, protocol_name) in &self.keyword_map {
-            if input_lower.contains(keyword) || input_normalized.contains(keyword) {
-                return Some(protocol_name.clone());
-            }
+        // An exact keyword match wins outright, before any substring test.
+        if let Some(protocol_name) = self
+            .keyword_map
+            .get(&input_normalized)
+            .or_else(|| self.keyword_map.get(&input_lower))
+        {
+            return Some(protocol_name.clone());
         }
 
-        None
+        // Substring matching, longest keyword first.
+        //
+        // This used to return the first `contains()` hit while iterating a HashMap,
+        // whose order is unspecified. "ssh_agent" contains both "ssh" and "agent", so
+        // it resolved to SSH or to SSH Agent depending on hash order -- creating an
+        // ssh_agent client could silently produce an SSH client instead, and the same
+        // input could resolve differently between runs or between feature sets.
+        // Preferring the longest matching keyword makes the more specific protocol
+        // win, and the name tie-break makes the answer identical on every run.
+        let mut best: Option<(usize, &String)> = None;
+        for (keyword, protocol_name) in &self.keyword_map {
+            if !(input_lower.contains(keyword) || input_normalized.contains(keyword)) {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((best_len, best_name)) => {
+                    keyword.len() > best_len
+                        || (keyword.len() == best_len && protocol_name < best_name)
+                }
+            };
+            if better {
+                best = Some((keyword.len(), protocol_name));
+            }
+        }
+        best.map(|(_, name)| name.clone())
     }
 
     /// List all registered client protocol names
@@ -673,6 +722,14 @@ pub(crate) const ALL_KNOWN_CLIENT_PROTOCOLS: &[(&str, &str)] = &[
     ("TURN", "turn"),
     ("UDP", "udp"),
     ("WHOIS", "whois"),
+    ("STOMP", "stomp"),
+    ("NetBIOS-NS", "netbios-ns"),
+    ("NATS", "nats"),
+    ("SSDP", "ssdp"),
+    ("Gopher", "gopher"),
+    ("Finger", "finger"),
+    ("Ident", "ident"),
+    ("LLMNR", "llmnr"),
     ("wireguard", "wireguard"),
     ("XML-RPC", "xmlrpc"),
     ("XMPP", "xmpp"),

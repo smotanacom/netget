@@ -30,7 +30,9 @@ native-tls = "0.2"
 ### Connection Flow
 
 1. **Connect:** Establish TCP connection to IMAP server
-2. **TLS Upgrade:** Upgrade to TLS if port 993 or `use_tls=true`
+2. **TLS: NOT IMPLEMENTED.** This client speaks IMAP over a plain `TcpStream`; there is no
+   TLS path at all. `use_tls: true` is **refused** at connect with a reason rather than
+   silently downgraded — see below.
 3. **Authenticate:** Login with username/password
 4. **LLM Integration:** Call LLM with `imap_connected` event
 5. **Action Loop:** Execute LLM-generated actions (select, search, fetch, etc.)
@@ -54,9 +56,29 @@ This implementation handles state transitions automatically:
 **Events Triggered:**
 
 1. `imap_connected` - After successful authentication
-2. `imap_mailbox_selected` - After selecting a mailbox
-3. `imap_search_results` - After searching messages
-4. `imap_message_fetched` - After fetching a message
+2. `imap_mailbox_selected` - Mailbox name plus its `exists`/`recent` counts
+3. `imap_search_results` - The criteria and the matching sequence numbers
+4. `imap_message_fetched` - `subject`, `from` and `body` per message
+
+The last three were declared here and in `get_event_types()` for a long time while nothing
+raised them: each verb ran, logged, and told the model nothing, so the model got exactly one
+turn on connect and then went deaf. `select_mailbox` could never be followed by `search_messages`,
+and `fetch_message` read the body and dropped it on the floor. `get_event_types()` now returns
+clones of the same statics the client emits, so a declaration cannot drift from what is raised.
+
+**How the chaining is structured.** `apply_action` runs one verb and *returns* the event it
+produced -- it never calls the LLM. `report_event` makes the call and feeds the answer back
+through `execute_imap_action_at_depth`. That split is not stylistic: the recursion is real
+(action -> event -> action), so the future is self-referential and has to go through a
+`Pin<Box<dyn Future>>` or it fails to type-check with E0391. `MAX_FOLLOWUP_DEPTH` (8) bounds it,
+because a model that answers `fetch_message` with `fetch_message` would otherwise loop on the
+LLM forever. Bodies are capped with `truncate_for_llm` so one large message cannot dominate the
+prompt.
+
+On the injected path the follow-up event is reported from its own **registered** task rather
+than inline, for the same reason the connect call is: a dashboard-created client defaults to a
+`*` -> manual rule, and awaiting a parked call inside `command_loop` would wedge it far past the
+dashboard's 30s send timeout on an action that in fact succeeded.
 
 **Action Types:**
 
@@ -107,7 +129,11 @@ IMAP client requires authentication credentials:
 
 - `username` (required) - IMAP username
 - `password` (required) - IMAP password
-- `use_tls` (optional) - Enable TLS (default: true for port 993, false otherwise)
+- `use_tls` (optional) - **Only `false` is accepted.** `true` is refused: this client has no
+  TLS support, and connecting anyway would put the password on the wire in cleartext while
+  reporting an encrypted session. This parameter was declared and read by nothing for a long
+  time, and these docs claimed it worked; `tests/client/imap/use_tls_refusal_test.rs` pins the
+  refusal so the claim cannot come back without the mechanism.
 
 ## Example Prompts
 
@@ -253,7 +279,7 @@ select against: `async_imap` owns the socket and this client has no read loop. I
 keeps the session usable after the connected-event handler returns — previously the session
 was reachable only from inside that one task.
 
-Injected actions go through `handle_custom_action`, the same function the LLM path uses, so the
+Injected actions go through `apply_action`, the same function the LLM path uses, so the
 IMAP command encoding exists exactly once.
 
 **Outcome semantics.** `async_imap` writes and reads the tagged command itself, so this loop can

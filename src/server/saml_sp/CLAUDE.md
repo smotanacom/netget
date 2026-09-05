@@ -112,12 +112,41 @@ Deterministic equivalent — no LLM call per request:
 Note what that static handler means: it accepts every assertion unconditionally. That is fine
 for testing an IDP and is exactly what a honeypot wants; it is not authentication.
 
+## Failing closed
+
+Three outcomes on the request path are deliberately distinct, and each is tagged in the log so
+an operator can tell them apart with a grep for `decision=`:
+
+| Situation | `decision=` | Wire |
+|---|---|---|
+| The model answered, choosing a 4xx (`send_error_response`) | `model_reject` | the model's status and page |
+| The model answered normally | `model_answer` | the model's status and page |
+| The model produced no usable action output | `fail_closed_no_answer` | `500`, `WireFailure::Unavailable` category text |
+| The LLM call returned `Err` | `fail_closed_llm_error` | `503` + `Retry-After: 5` when overloaded, else `500`; category text |
+
+Two properties hold on both fail-closed rows and must keep holding: **never a 2xx** (a 2xx is
+the only thing a browser reads as a completed sign-in) and **never a `Set-Cookie`**.
+
+The status used to default to `200`, so a model that answered with only a common/memory action
+— or whose protocol result was an `ActionResult::Multiple` wrapping the real `Output`, or whose
+output bytes were not JSON — produced an empty `200 OK`. There is no default any more: a
+response is emitted only if a usable `Output` was actually parsed, and `Multiple` is flattened
+so a wrapped `Output` is not dropped.
+
+The body on both fail-closed rows is `WireFailure::prefixed_text()`, a `&'static str`. **Never
+interpolate the error** — it names the backend URL, the model and netget's own retry machinery,
+and the peer here is an untrusted browser. The full error goes to `tracing` and the status
+stream. `tests/wire_failure_test.rs` fails the build if the leaked idioms reappear.
+
 ## Tests
 
-**There is no `tests/server/saml_sp/` directory.** This protocol has no test coverage of any
-kind. Adding one means creating the directory, the `e2e_test.rs`, its `CLAUDE.md`, and a
-`pub mod saml_sp;` line in `tests/server/mod.rs` (a test directory not declared there is
-silently never compiled).
+`tests/server/saml_sp/` exists and is declared in `tests/server/mod.rs`; see
+`tests/server/saml_sp/CLAUDE.md` for the strategy, the call budget and the known gaps.
+
+```bash
+./cargo-isolated.sh test --no-default-features --features saml-sp --test server -- \
+    --test-threads=100 saml_sp
+```
 
 Pairs naturally with `saml_idp` on another port: point the IDP's `acs_url` at this server's
 `/acs`.

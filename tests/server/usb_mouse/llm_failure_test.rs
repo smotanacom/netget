@@ -27,6 +27,11 @@ mod usb_mouse_llm_failure {
     /// The dual-logged ERROR the LLM-failure path emits.
     const LLM_FAILURE_LOG: &str = "LLM call failed for USB mouse connection";
 
+    /// The tag that separates a backend outage from the model answering with nothing. Both
+    /// look identical on the wire (a pointer that does not move), so the log is the only place
+    /// an operator can tell them apart, and that makes the tag part of the contract.
+    const LLM_FAILURE_DECISION: &str = "decision=fail_closed_llm_error";
+
     /// A boot-protocol mouse report: buttons, dx, dy, wheel.
     const REPORT_LEN: u32 = 4;
 
@@ -60,6 +65,7 @@ mod usb_mouse_llm_failure {
         // The attach handler fails. This is the only event this protocol raises that a model
         // would answer with pointer movement.
         server.wait_for_log(LLM_FAILURE_LOG, 15).await?;
+        server.wait_for_log(LLM_FAILURE_DECISION, 5).await?;
 
         // Poll the interrupt IN endpoint the way a host does. Every URB must succeed and every
         // one must be empty — no movement, and above all no button press.
@@ -91,6 +97,10 @@ mod usb_mouse_llm_failure {
             "the interface must still advertise HID / boot / mouse"
         );
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
         Ok(())

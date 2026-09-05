@@ -70,6 +70,10 @@ async fn test_rip_stays_silent_without_policy_and_needs_no_llm() -> E2EResult<()
     }
 
     // Asserts the rip_request rule was hit 0 times: the request path took NO LLM call.
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

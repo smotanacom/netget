@@ -70,6 +70,10 @@ mod redis_server_tests {
         drop(client);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -153,6 +157,10 @@ mod redis_server_tests {
         drop(client);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -221,6 +229,10 @@ mod redis_server_tests {
         drop(client);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -290,6 +302,10 @@ mod redis_server_tests {
         drop(client);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -357,6 +373,10 @@ mod redis_server_tests {
         drop(client);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 
@@ -438,6 +458,10 @@ mod redis_server_tests {
         drop(client);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
 

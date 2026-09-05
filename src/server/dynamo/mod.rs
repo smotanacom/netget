@@ -17,7 +17,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ActionResult;
@@ -256,10 +256,31 @@ async fn handle_dynamo_request_with_llm(
                 }
             }
 
-            // No DynamoDB response found, return default OK with empty response
-            debug!("No DynamoDB response from LLM, returning 200 OK with empty object");
+            // The handler ran but produced no `dynamo_response` — a model that refused, a static
+            // handler with an empty action list, or an answer whose actions were all
+            // unrecognised.
+            //
+            // This used to answer 200 `{}`, which every AWS SDK reads as a successful call. For
+            // PutItem or DeleteItem an empty body IS the documented success response, so a model
+            // that declined the write was reported to the caller as having performed it; for
+            // GetItem it reads as "no such item", a claim about the data that nothing supports.
+            //
+            // Fail closed with the same AWS error envelope the backend-error arm below uses.
+            warn!(
+                "DynamoDB: no response action produced (decision=fail_closed_no_action); \
+                 answering 500 rather than an empty 200"
+            );
+            console_error!(
+                status_tx,
+                "DynamoDB answering 500 InternalServerError: no response action produced \
+                 (decision=fail_closed_no_action)"
+            );
+            let error_response = serde_json::json!({
+                "__type": "InternalServerError",
+                "message": crate::utils::WireFailure::Unavailable.prefixed_text(),
+            });
 
-            Ok(build_dynamo_response(200, "{}".to_string()))
+            Ok(build_dynamo_response(500, error_response.to_string()))
         }
         Err(e) => {
             console_error!(status_tx, "LLM error for DynamoDB request: {}", e);

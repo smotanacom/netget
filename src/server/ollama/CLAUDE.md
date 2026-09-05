@@ -138,10 +138,40 @@ Current implementation uses `"stream": false` and returns full response at once.
 - LLM generates chunks via actions
 - Stream chunks back to client
 
-### 2. Mock Model Management
+### 2. Model Management is a decision, not a rubber stamp
 
-Model management endpoints (`/api/pull`, `/api/create`, `/api/delete`) return success without actually doing anything.
-This is fine for a mock server but clients may expect model persistence.
+`/api/pull`, `/api/create`, `/api/copy` and `/api/delete` perform nothing — there is no model
+store here, by design. What changed in August 2026 is **who decides what to report**.
+
+They used to answer `{"status": "success"}` unconditionally, with no event and no `call_llm`
+anywhere in the path, and `/api/pull` invented a digest of `sha256:0000000000000000`. So a
+server instructed "this instance only serves llama2, refuse anything else" reported every pull
+as downloaded and every delete as removed: the instruction could not be wrong, it simply had no
+effect. That is the fail-open shape from the root `CLAUDE.md` in its purest form — the decision
+was never asked for.
+
+All four now raise **`ollama_admin_request`** (`operation`, `model`, `destination`) and require
+an explicit **`ollama_admin_ok`** to report success. `ollama_error_response` refuses with the
+model's own message and status. Three outcomes refuse, kept apart in the log:
+`decision=model_reject`, `decision=fail_closed_no_action`, `decision=fail_closed_llm_error` —
+the last two carry only a `WireFailure` category, never the backend error.
+
+`ollama_admin_ok` may carry `digest` and `total`, which `/api/pull` echoes. Nothing is invented:
+omit them and the reply is just `{"status": "success"}`.
+
+`/api/show` is now the model's answer too, via **`ollama_show_request`** / **`ollama_show_response`**
+(modelfile, parameters, template, details — all optional; no action means the request is
+refused). It used to reply with a fabricated Modelfile (`FROM {name}`), a hardcoded
+`temperature 0.7` and a `gguf`/`llama` details block, for any name at all — so a server told
+"this instance serves only llama2" cheerfully described every model a client asked about,
+including ones it had just refused to pull.
+
+**`/api/embeddings` is deliberately still canned**, and that is a judgement rather than an
+oversight. An embedding is a few hundred to a few thousand floats; asking a language model to
+emit them would produce plausible-looking noise at best, and it is the numeric equivalent of
+the raw-bytes-in-actions problem the root `CLAUDE.md` forbids — models cannot reliably produce
+or parse that shape. The sequential floats are an honest stub. If an operator ever needs real
+control here the answer is a script handler, not an action.
 
 ### 3. Static Embeddings
 

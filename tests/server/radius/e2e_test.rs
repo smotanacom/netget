@@ -402,6 +402,10 @@ async fn access_request_accepted_when_the_model_says_so() -> E2EResult<()> {
         server.get_output().await
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -479,6 +483,10 @@ async fn fails_closed_when_the_model_returns_nothing() -> E2EResult<()> {
         "silence must NOT be recorded as a model decision — that conflation is the OAuth2 bug"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -545,6 +553,10 @@ async fn model_denial_is_distinguishable_from_silence() -> E2EResult<()> {
         "an explicit denial must not be logged as a fail-closed one"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -630,6 +642,10 @@ async fn access_challenge_state_round_trips() -> E2EResult<()> {
     );
     assert_eq!(second.identifier, 9, "identifier of the second request");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

@@ -148,6 +148,10 @@ async fn test_mqtt_refuses_connect_when_llm_fails() -> E2EResult<()> {
             )),
         };
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     closed?;
@@ -214,6 +218,10 @@ async fn test_mqtt_refuses_subscribe_when_llm_fails() -> E2EResult<()> {
          access decision, and nothing decided it: {body:02x?}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

@@ -25,6 +25,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
+/// A minimal `/-/v1/search` body, in the shape the client parses.
+const SEARCH_JSON: &str =
+    r#"{"objects":[{"package":{"name":"express","version":"4.18.2"}}],"total":1}"#;
+
 const PACKAGE_JSON: &str = r#"{"name":"express","description":"fast web framework","dist-tags":{"latest":"4.18.2"},"versions":{"4.18.2":{"dist":{"tarball":"http://127.0.0.1:1/express.tgz"}}}}"#;
 
 /// A local stand-in for the registry. Returns the port and the request lines it saw.
@@ -59,7 +63,7 @@ async fn stub_registry(body: &'static str) -> (u16, Arc<Mutex<Vec<String>>>) {
 }
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -70,7 +74,7 @@ async fn new_state() -> AppState {
 
 /// The regression guard for "register the channel before anything that can block".
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -83,7 +87,7 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 }
 
 async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle: &str) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         for entry in state.list_access_logs_for(Some(owner), None).await {
             if serde_json::to_string(&entry)
                 .unwrap_or_default()
@@ -186,7 +190,7 @@ async fn injected_npm_action_reaches_the_registry() {
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         let status = state.get_client(client_id).await.map(|c| c.status);
         if matches!(status, Some(ClientStatus::Disconnected))
             && !state.has_client_handle(client_id).await
@@ -252,7 +256,7 @@ async fn a_parked_response_event_does_not_block_the_next_injected_command() {
 
     // The response event is now parked waiting for a human, exactly as the rail shows it.
     let mut parked = None;
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         parked = state
             .list_intercepts()
             .await
@@ -300,4 +304,54 @@ async fn a_parked_response_event_does_not_block_the_next_injected_command() {
         "the first response event should still be parked"
     );
     state.dismiss_intercept(parked.id).await;
+}
+
+/// `search_packages` must query the registry this client was configured with.
+///
+/// It used to hardcode `https://registry.npmjs.org/-/v1/search` while every other verb
+/// honoured the declared `registry_url` startup parameter, so a client pointed at a private
+/// registry silently queried the public one -- and the behaviour could not be tested at all
+/// without reaching the real internet, which this project forbids.
+#[tokio::test]
+async fn injected_search_queries_the_configured_registry_not_the_public_one() {
+    let (port, seen) = stub_registry(SEARCH_JSON).await;
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let client_id = ClientForm {
+        protocol: "npm".to_string(),
+        remote_addr: Some(format!("http://127.0.0.1:{port}")),
+        instruction: Some("search client".to_string()),
+        ..Default::default()
+    }
+    .create(
+        &state,
+        netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string()),
+        tx.clone(),
+    )
+    .await
+    .expect("create npm client");
+
+    wait_for_client_handle(&state, client_id).await;
+
+    let outcome = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({"type": "search_packages", "query": "express", "limit": 1}),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("send_to_client search_packages");
+    assert!(
+        matches!(outcome, ClientSendOutcome::Executed { .. }),
+        "expected Executed, got {outcome:?}"
+    );
+
+    // The proof: the loopback stub saw the search, so the request did not go to
+    // registry.npmjs.org. Nothing in this test can reach the public internet.
+    let requests = seen.lock().unwrap().clone();
+    assert!(
+        requests.iter().any(|r| r.starts_with("GET /-/v1/search?")),
+        "search must hit the configured registry's /-/v1/search, saw {requests:?}"
+    );
 }

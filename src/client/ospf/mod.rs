@@ -166,7 +166,7 @@ impl OspfClient {
         let task_registrar = app_state.clone();
         let task_handle = tokio::spawn(async move {
             if let Some(instruction) = app_state_clone.get_instruction_for_client(client_id).await {
-                if let Err(e) = call_llm_for_client(
+                match call_llm_for_client(
                     &llm_clone,
                     &app_state_clone,
                     client_id.to_string(),
@@ -178,9 +178,30 @@ impl OspfClient {
                 )
                 .await
                 {
-                    error!("OSPF client {} LLM call failed: {}", client_id, e);
-                    let _ = status_tx_clone
-                        .send(format!("✗ OSPF client {} LLM error: {}", client_id, e));
+                    Ok(result) => {
+                        if let Some(memory) = result.memory_updates {
+                            app_state_clone
+                                .set_memory_for_client(client_id, memory)
+                                .await;
+                        }
+                        // Executed, not counted. This is the model's one chance to act before
+                        // any packet arrives — `send_hello` to discover neighbours is the
+                        // protocol's own worked example — and the answer used to be dropped.
+                        Self::run_actions(
+                            result.actions,
+                            protocol.as_ref(),
+                            socket_fd,
+                            client_id,
+                            &app_state_clone,
+                            &status_tx_clone,
+                        )
+                        .await;
+                    }
+                    Err(e) => {
+                        error!("OSPF client {} LLM call failed: {}", client_id, e);
+                        let _ = status_tx_clone
+                            .send(format!("✗ OSPF client {} LLM error: {}", client_id, e));
+                    }
                 }
             }
         });
@@ -434,6 +455,58 @@ impl OspfClient {
 
     /// Apply one executed action. Shared by the receive loop and injected commands so the
     /// OSPF packet building and `sendto` exist exactly once.
+    /// Carry out what the model answered with. Returns `true` if it asked to disconnect.
+    ///
+    /// Shared by the connected-event task and the receive loop. The connected-event path used
+    /// to be an `if let Err(..) = call_llm_for_client(..)` with no success arm at all, so the
+    /// model's answer to "you are on the wire now" — the one moment it is asked what to do
+    /// before any packet arrives, and the moment its own docs show it choosing `send_hello` to
+    /// discover neighbours — was dropped entirely. Everything below already existed inline in
+    /// `process_ospf_packet`; extracting it is what lets the other caller reach it.
+    async fn run_actions(
+        actions: Vec<serde_json::Value>,
+        protocol: &OspfClientProtocol,
+        socket_fd: i32,
+        client_id: ClientId,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) -> bool {
+        for action in actions {
+            match protocol.execute_action(action) {
+                Ok(action_result) => {
+                    match Self::apply_action(client_id, action_result, socket_fd) {
+                        Ok(Applied::Disconnect) => {
+                            app_state.remove_client_handle(client_id).await;
+                            app_state
+                                .update_client_status(client_id, ClientStatus::Disconnected)
+                                .await;
+                            let _ = status_tx
+                                .send(format!("[CLIENT] OSPF client {} disconnected", client_id));
+                            let _ = status_tx.send("__UPDATE_UI__".to_string());
+                            return true;
+                        }
+                        Ok(Applied::Nothing(detail)) => {
+                            trace!("OSPF client {}: {}", client_id, detail);
+                        }
+                        Ok(Applied::Sent(_)) => {}
+                        Err(e) => {
+                            error!("Failed to execute OSPF action: {}", e);
+                            let _ = status_tx.send(format!("✗ OSPF action error: {}", e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to execute action: {}", e);
+                    let _ = status_tx.send(format!(
+                        "✗ OSPF client {} rejected action: {}",
+                        client_id, e
+                    ));
+                }
+            }
+        }
+        false
+    }
+
     fn apply_action(
         client_id: ClientId,
         result: ClientActionResult,
@@ -518,40 +591,17 @@ impl OspfClient {
                         }
 
                         // Execute actions
-                        for action in result.actions {
-                            match protocol.execute_action(action) {
-                                Ok(action_result) => {
-                                    match Self::apply_action(client_id, action_result, socket_fd) {
-                                        Ok(Applied::Disconnect) => {
-                                            app_state.remove_client_handle(client_id).await;
-                                            app_state
-                                                .update_client_status(
-                                                    client_id,
-                                                    ClientStatus::Disconnected,
-                                                )
-                                                .await;
-                                            let _ = status_tx.send(format!(
-                                                "[CLIENT] OSPF client {} disconnected",
-                                                client_id
-                                            ));
-                                            let _ = status_tx.send("__UPDATE_UI__".to_string());
-                                            return;
-                                        }
-                                        Ok(Applied::Nothing(detail)) => {
-                                            trace!("OSPF client {}: {}", client_id, detail);
-                                        }
-                                        Ok(Applied::Sent(_)) => {}
-                                        Err(e) => {
-                                            error!("Failed to execute OSPF action: {}", e);
-                                            let _ = status_tx
-                                                .send(format!("✗ OSPF action error: {}", e));
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Failed to execute action: {}", e);
-                                }
-                            }
+                        if Self::run_actions(
+                            result.actions,
+                            protocol.as_ref(),
+                            socket_fd,
+                            client_id,
+                            &app_state,
+                            &status_tx,
+                        )
+                        .await
+                        {
+                            return;
                         }
                     }
                     Err(e) => {

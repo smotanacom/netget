@@ -344,7 +344,7 @@ impl Protocol for EtcdProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation(
                 "hyper HTTP/2 + prost, hand-routed gRPC; etcd protobuf schemas compiled by \
                  build.rs. tonic is a dependency but this server does not use it.",
@@ -353,7 +353,7 @@ impl Protocol for EtcdProtocol {
                 "Range, Put, DeleteRange and Txn. Compact is answered without consulting the \
                  handler; a Txn's nested operations are not executed, only its outcome.",
             )
-            .e2e_testing("etcd-client (real tonic-based client) in tests/server/etcd")
+            .e2e_testing("etcd-client, the official Rust client, in tests/server/etcd/e2e_test.rs and not #[ignore]d: it completes put, get, prefix-get and delete against this server and asserts on the decoded key/value pairs it gets back.")
             .notes(
                 "KV service only: no Watch, Lease, Auth, Cluster or Maintenance. No storage - \
                  the handler answers every request; the server keeps only a revision counter. \

@@ -38,6 +38,7 @@ mod nfs_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client output shows mount and read
+        client.wait_for_any(&["mounted", "NFS"], 30).await;
         assert!(
             client.output_contains("mounted").await || client.output_contains("NFS").await,
             "Client should show NFS mount message. Output: {:?}",
@@ -47,8 +48,16 @@ mod nfs_client_tests {
         println!("✅ NFS client mounted export and read file successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -87,8 +96,16 @@ mod nfs_client_tests {
         println!("✅ NFS client listed directory contents successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -122,6 +139,7 @@ mod nfs_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client wrote the file
+        client.wait_for_any(&["NFS", "mounted"], 30).await;
         assert!(
             client.output_contains("NFS").await || client.output_contains("mounted").await,
             "Client should show NFS activity. Output: {:?}",
@@ -131,8 +149,16 @@ mod nfs_client_tests {
         println!("✅ NFS client wrote file successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -171,8 +197,16 @@ mod nfs_client_tests {
         println!("✅ NFS client created directory successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         server.stop().await?;
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

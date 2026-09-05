@@ -512,12 +512,18 @@ fn send_destination_unreachable_action() -> ActionDefinition {
                 required: true,
             },
         ],
+        // RFC 792 wants the original IP header plus the next 64 bits. The value
+        // here is exactly that and nothing is elided: a 20-byte IPv4 header
+        // (192.168.1.50 -> 203.0.113.5, proto 17, total length 28, header
+        // checksum 0x60ab) followed by the complete 8-byte UDP header
+        // (41234 -> 53, length 8, checksum 0x60b6). Both checksums are real, so
+        // the quoted datagram is one a client can actually match against.
         example: json!({
             "type": "send_destination_unreachable",
             "source_ip": "192.168.1.1",
             "destination_ip": "192.168.1.50",
             "code": 1,
-            "original_packet_hex": "4500003c..."
+            "original_packet_hex": "4500001c1c460000401160abc0a80132cb007105a1120035000860b6"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -559,12 +565,16 @@ fn send_time_exceeded_action() -> ActionDefinition {
                 required: true,
             },
         ],
+        // The original IP header plus the next 64 bits (RFC 792), complete and
+        // with real checksums: a classic UDP traceroute probe from 192.168.1.50
+        // to 203.0.113.5 with TTL 1 (header checksum 0x9faa), followed by the
+        // whole 8-byte UDP header (41234 -> 33434, length 8, checksum 0xde50).
         example: json!({
             "type": "send_time_exceeded",
             "source_ip": "10.0.0.1",
             "destination_ip": "192.168.1.50",
             "code": 0,
-            "original_packet_hex": "4500003c..."
+            "original_packet_hex": "4500001c1c47000001119faac0a80132cb007105a112829a0008de50"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -769,7 +779,7 @@ pub static ICMP_OTHER_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "source_ip": "192.168.1.1",
             "destination_ip": "192.168.1.50",
             "code": 1,
-            "original_packet_hex": "4500003c..."
+            "original_packet_hex": "4500001c1c460000401160abc0a80132cb007105a1120035000860b6"
         }),
     )
     .with_parameters(vec![

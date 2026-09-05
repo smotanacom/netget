@@ -151,6 +151,18 @@ impl Protocol for IppClientProtocol {
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![
             ActionDefinition {
+                name: "wait_for_more".to_string(),
+                description: "Do nothing and wait for the next IPP response. The correct answer \
+                    when what arrived needs no follow-up -- without it the model has to \
+                    invent an action it does not want."
+                    .to_string(),
+                parameters: vec![],
+                example: json!({
+                    "type": "wait_for_more"
+                }),
+                log_template: None,
+            },
+            ActionDefinition {
                 name: "get_printer_attributes".to_string(),
                 description: "Query printer capabilities in response to previous operation"
                     .to_string(),
@@ -379,6 +391,10 @@ impl Client for IppClientProtocol {
                 })
             }
             "disconnect" => Ok(ClientActionResult::Disconnect),
+            // Declared in get_sync_actions, so it has to be executable here too --
+            // advertising a name the executor rejects shows the model a tool it is
+            // then punished for using.
+            "wait_for_more" => Ok(ClientActionResult::WaitForMore),
             _ => Err(anyhow::anyhow!(
                 "Unknown IPP client action: {}",
                 action_type

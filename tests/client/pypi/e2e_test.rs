@@ -38,6 +38,10 @@ mod pypi_client_tests {
         println!("✅ PyPI client fetched package info successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -77,6 +81,10 @@ mod pypi_client_tests {
         println!("✅ PyPI client listed package files successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -113,6 +121,10 @@ mod pypi_client_tests {
         println!("✅ PyPI client handled non-existent package error");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -151,6 +163,10 @@ mod pypi_client_tests {
         println!("✅ PyPI client responded to LLM exploration instruction");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

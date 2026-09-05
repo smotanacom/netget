@@ -20,6 +20,10 @@ use tracing::{debug, error, info, trace, warn};
 /// TDS packet size we advertise in the login ENVCHANGE and honour when writing.
 const TDS_PACKET_SIZE: usize = 4096;
 
+/// SQL Server's own "Login failed for user '%.*ls'." error. Severity 14 is what a real
+/// instance sends, and every driver already maps it to an authentication failure.
+const LOGIN_FAILED_ERROR: u32 = 18456;
+
 /// Generic user-defined error number. Anything >= 50000 is a user error, which is what an
 /// LLM-driven server's failures actually are.
 const MSSQL_ERROR_GENERIC: u32 = 50000;
@@ -243,7 +247,11 @@ impl MssqlHandler {
                 0x10 => {
                     // TDS7/TDS8 Login
                     debug!("Received Login packet");
-                    self.send_login_response(&mut stream).await?;
+                    if !self.handle_login(&mut stream, &data).await? {
+                        // Refused. The ERROR token is already on the wire; TDS has no way to
+                        // continue a session whose login failed, so close.
+                        break;
+                    }
                 }
                 0x01 => {
                     // SQL Batch
@@ -352,14 +360,129 @@ impl MssqlHandler {
         self.send_tds_packet(stream, 0x04, &response).await
     }
 
-    /// Send Login response (accept all logins)
-    async fn send_login_response(&self, stream: &mut TcpStream) -> Result<()> {
-        Log::new(Some(&self.status_tx)).info("MSSQL \u{2192} Login accepted");
+    /// Ask the model whether to admit this login, and refuse unless it says yes.
+    ///
+    /// Every TDS Login used to be accepted unconditionally: there was no `mssql_login` event
+    /// and no action that could decline one, so an operator instruction like "only allow the
+    /// user `reporting`" could not be enforced and the model was never consulted. Authentication
+    /// decided by default is the pattern the root CLAUDE.md calls the most dangerous here.
+    ///
+    /// Returns `Ok(true)` when the session may proceed. Accept requires an explicit
+    /// `mssql_login_ack`; a model rejection (`mssql_error_response`), an answer containing
+    /// neither, and a backend failure all refuse — and are kept apart in the log, because the
+    /// wire cannot distinguish them beyond the error number.
+    async fn handle_login(&self, stream: &mut TcpStream, data: &[u8]) -> Result<bool> {
+        let (username, database, app_name) = parse_login7(data);
 
+        let event = Event::new(
+            &actions::MSSQL_LOGIN_EVENT,
+            serde_json::json!({
+                "username": username,
+                "database": database,
+                "app_name": app_name,
+            }),
+        );
+
+        let server_id = self
+            .server_id
+            .unwrap_or_else(|| crate::state::ServerId::new(0));
+
+        let llm_result = call_llm(
+            &self.llm_client,
+            &self.app_state,
+            server_id,
+            Some(self.connection_id),
+            &event,
+            self.protocol.as_ref(),
+        )
+        .await;
+
+        match llm_result {
+            Ok(result) => {
+                for r in &result.protocol_results {
+                    if let ActionResult::Custom { name, data } = r {
+                        match name.as_str() {
+                            "mssql_login_ack" => {
+                                let db = data
+                                    .get("database")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("master");
+                                Log::new(Some(&self.status_tx)).info(format!(
+                                    "MSSQL login accepted for user '{}' (decision=model_accept)",
+                                    username
+                                ));
+                                self.send_login_response_with_database(stream, db).await?;
+                                return Ok(true);
+                            }
+                            "mssql_error" => {
+                                let number = data
+                                    .get("error_number")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(LOGIN_FAILED_ERROR as u64)
+                                    as u32;
+                                let message = data
+                                    .get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Login failed.");
+                                Log::new(Some(&self.status_tx)).info(format!(
+                                    "MSSQL login refused for user '{}' (decision=model_reject): {}",
+                                    username, message
+                                ));
+                                self.send_error(stream, number, message, 14).await?;
+                                return Ok(false);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // The handler ran and produced neither verdict. Refuse: silence is not consent
+                // for an authentication decision.
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "MSSQL login refused for user '{}' (decision=fail_closed_no_action): the \
+                     handler produced no mssql_login_ack",
+                    username
+                ));
+                self.send_error(
+                    stream,
+                    LOGIN_FAILED_ERROR,
+                    &format!("Login failed for user '{}'.", username),
+                    14,
+                )
+                .await?;
+                Ok(false)
+            }
+            Err(e) => {
+                // netget could not reach a decision. Refuse, and tell the client only a
+                // category — never the backend error, which names the model and the URL.
+                let failure = crate::utils::WireFailure::classify(&e);
+                error!(
+                    "MSSQL login for user '{}' decision=fail_closed_llm_error category={:?}: {:#}",
+                    username, failure, e
+                );
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "MSSQL login refused for user '{}' (decision=fail_closed_llm_error)",
+                    username
+                ));
+                self.send_error(stream, LOGIN_FAILED_ERROR, failure.text(), 14)
+                    .await?;
+                Ok(false)
+            }
+        }
+    }
+
+    /// Send the LOGINACK/ENVCHANGE/DONE sequence that admits a session.
+    ///
+    /// Only reachable from `handle_login` once the model has explicitly accepted.
+    async fn send_login_response_with_database(
+        &self,
+        stream: &mut TcpStream,
+        db_name: &str,
+    ) -> Result<()> {
         let mut response = Vec::new();
 
         // ENVCHANGE: Database context
-        let db_name = "master";
+
         let db_name_utf16: Vec<u8> = db_name
             .encode_utf16()
             .flat_map(|c| c.to_le_bytes())
@@ -583,7 +706,16 @@ impl MssqlHandler {
                 // Process action results to find MSSQL responses
                 for result in execution_result.protocol_results {
                     if responded {
-                        break;
+                        // TDS is strictly one token stream per statement, so only the first
+                        // response-producing action can reach the wire. Say which ones were
+                        // dropped rather than discarding them silently.
+                        if let ActionResult::Custom { name, .. } = &result {
+                            warn!(
+                                "MSSQL: query already answered, ignoring extra action result '{}'",
+                                name
+                            );
+                        }
+                        continue;
                     }
                     match result {
                         ActionResult::Custom { name, data } => match name.as_str() {
@@ -616,6 +748,13 @@ impl MssqlHandler {
                                     data.get("severity").and_then(|v| v.as_u64()).unwrap_or(16)
                                         as u8;
 
+                                // The model chose to refuse this statement. Tagged so an
+                                // operator can tell a deliberate refusal from netget failing
+                                // to obtain one; the two are indistinguishable on the wire.
+                                Log::new(Some(&self.status_tx)).info(format!(
+                                    "MSSQL query decision=model_reject error={} severity={}",
+                                    error_number, severity
+                                ));
                                 self.send_error(stream, error_number, message, severity)
                                     .await?;
                                 responded = true;
@@ -641,12 +780,28 @@ impl MssqlHandler {
                 }
 
                 if !responded {
-                    // TDS clients block until a DONE arrives, so something must be sent.
-                    warn!(
-                        "MSSQL: no response action produced for query {:?}; sending empty DONE",
-                        query
-                    );
-                    self.send_done(stream, 0).await?;
+                    // TDS clients block until a DONE or an ERROR arrives, so something must be
+                    // sent. It must not be a bare DONE: in SQL that reads as "the statement ran
+                    // and matched nothing", which is a meaningful *successful* answer. Nobody
+                    // answered this query, so the fail-closed token is ERROR.
+                    //
+                    // An explicit `close_this_connection` is the one exception - that is the
+                    // model deciding, not the model going quiet - so it keeps the DONE it has
+                    // always produced and is tagged as its own decision.
+                    if close_requested {
+                        Log::new(Some(&self.status_tx))
+                            .info("MSSQL query decision=model_close (closing without a result)");
+                        self.send_done(stream, 0).await?;
+                    } else {
+                        let message = crate::utils::WireFailure::Unavailable.prefixed_text();
+                        Log::new(Some(&self.status_tx)).warn(format!(
+                            "MSSQL query decision=fail_closed_no_action; replying error {}: {}",
+                            MSSQL_ERROR_GENERIC, message
+                        ));
+                        warn!("MSSQL: no response action produced for query {:?}", query);
+                        self.send_error(stream, MSSQL_ERROR_GENERIC, message, 16)
+                            .await?;
+                    }
                 }
 
                 Ok(close_requested)
@@ -670,8 +825,13 @@ impl MssqlHandler {
                 let message = crate::utils::WireFailure::classify(&e).prefixed_text();
                 // Non-fatal: a wire fallback (TDS ERROR token) is still delivered and the
                 // connection stays open, so this is recovered rather than a hard failure.
-                Log::new(Some(&self.status_tx))
-                    .warn(format!("MSSQL replying error {number}: {message}"));
+                // `decision=fail_closed_llm_error` is never `model_reject`: the model said
+                // nothing at all here. The full error goes to the log only.
+                error!("MSSQL: LLM error answering query {:?}: {:#}", query, e);
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "MSSQL query decision=fail_closed_llm_error ({}); replying error {number}: {message}",
+                    if overloaded { "overloaded" } else { "unavailable" }
+                ));
                 self.send_error(stream, number, message, 16).await?;
                 Ok(false)
             }
@@ -719,11 +879,11 @@ impl MssqlHandler {
             let col_name = col.get("name").and_then(|v| v.as_str()).unwrap_or("column");
 
             response.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // UserType
-            // Flags is a little-endian USHORT and fNullable is bit 0, so the bytes are
-            // 01 00. This used to be `[0x00, 0x02]`, i.e. bit 9 - which no TDS flag
-            // occupies, so a real client (tiberius) rejected every result set with
-            // "column metadata: invalid flags". It went unnoticed because NetGet's own
-            // MSSQL client could not complete the handshake at all.
+                                                                   // Flags is a little-endian USHORT and fNullable is bit 0, so the bytes are
+                                                                   // 01 00. This used to be `[0x00, 0x02]`, i.e. bit 9 - which no TDS flag
+                                                                   // occupies, so a real client (tiberius) rejected every result set with
+                                                                   // "column metadata: invalid flags". It went unnoticed because NetGet's own
+                                                                   // MSSQL client could not complete the handshake at all.
             response.extend_from_slice(&[0x01, 0x00]); // Flags: fNullable
             col_type.write_type_info(&mut response);
 
@@ -1044,4 +1204,45 @@ fn json_to_string(value: &serde_json::Value) -> String {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => value.to_string(),
     }
+}
+
+/// Pull the username, database and application name out of a LOGIN7 packet body.
+///
+/// MS-TDS 2.2.6.4: a fixed 36-byte prelude, then a table of `(offset, length)` pairs in
+/// UTF-16 code units, each offset measured from the start of the LOGIN7 data. Only three of
+/// the fields matter for an access decision, and the password is deliberately *not* among
+/// them — it is not needed to decide, and putting a credential into an event would send it
+/// to the model and into the event log.
+///
+/// Everything is best-effort: a truncated or malformed packet yields empty strings rather
+/// than an error, because the caller's job is to refuse a login it cannot justify, and an
+/// unparseable login is exactly that. It must never be the reason a login is *granted*.
+#[cfg(feature = "mssql")]
+fn parse_login7(data: &[u8]) -> (String, String, String) {
+    /// Offsets of the (offset, length) pairs within the LOGIN7 body, per MS-TDS 2.2.6.4.
+    const IB_USERNAME: usize = 40;
+    const IB_APPNAME: usize = 48;
+    const IB_DATABASE: usize = 68;
+
+    let field = |pair_at: usize| -> String {
+        // Each pair is two little-endian u16s: offset, then length in UTF-16 characters.
+        let Some(bytes) = data.get(pair_at..pair_at + 4) else {
+            return String::new();
+        };
+        let offset = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
+        let chars = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
+        if chars == 0 {
+            return String::new();
+        }
+        let Some(raw) = data.get(offset..offset + chars * 2) else {
+            return String::new();
+        };
+        let units: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+
+    (field(IB_USERNAME), field(IB_DATABASE), field(IB_APPNAME))
 }

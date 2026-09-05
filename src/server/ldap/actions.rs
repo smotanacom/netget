@@ -236,7 +236,10 @@ impl Protocol for LdapProtocol {
         use crate::protocol::metadata::PrivilegeRequirement;
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — ldap3 —
+            // covering bind and search driven by a real LDAP client. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             // 389 is below 1024 and is the port every LDAP client defaults to, so the
             // preflight check in server_startup.rs should fire rather than letting the bind
             // fail later with a bare EPERM.

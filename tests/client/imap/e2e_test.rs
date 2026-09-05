@@ -31,8 +31,8 @@ mod imap_client_tests {
                     ]))
                     .expect_calls(1)
                     .and()
-                    // Mock 2: Server connection accepted (imap_connection_accepted event)
-                    .on_event("imap_connection_accepted")
+                    // Mock 2: Server connection accepted (imap_connection event)
+                    .on_event("imap_connection")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "send_imap_response",
@@ -41,13 +41,35 @@ mod imap_client_tests {
                     ]))
                     .expect_calls(1)
                     .and()
-                    // Mock 3: Server receives LOGIN command (imap_command_received event)
-                    .on_event("imap_command_received")
-                    .and_event_data_contains("command", "LOGIN")
-                    .respond_with_actions(serde_json::json!([
+                    // Mock 3: Server authenticates the LOGIN (imap_auth event)
+                    .on_event("imap_auth")
+                    // LOGIN raises imap_auth, not imap_command -- the server's own action
+                    // docs say so ("LOGIN is not delivered here - it raises imap_auth
+                    // instead"), so a rule on imap_command could never match and the
+                    // LOGIN fell through to the LLM, which refused it with NO [SERVERBUG].
+                    // async-imap picks its own tags (a1, a2, ...). A hardcoded "A001"
+                    // tags the reply to a command the client never sent, so async-imap
+                    // discards it as unsolicited and stays parked on LOGIN until the
+                    // test gives up -- reported as "the client never connected".
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "A001 OK LOGIN completed"
+                            "tag": e["tag"].as_str().unwrap_or_default(),
+                            "status": "OK",
+                            "message": "LOGIN completed"
+                        }
+                    ]))
+                    .expect_calls(1)
+                    .and()
+                    // Mock 4: Server SELECT response. The client's connected-event answer is
+                    // `select_mailbox INBOX`, so without this the server has nothing to say
+                    // to the SELECT and the client never reaches imap_mailbox_selected.
+                    .on_event("imap_command")
+                    .and_event_data_contains("command", "SELECT")
+                    .respond_with_actions_from_event(|e| serde_json::json!([
+                        {
+                            "type": "send_imap_response",
+                            "response": format!("* 5 EXISTS\r\n* 0 RECENT\r\n{} OK [READ-WRITE] SELECT completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
@@ -84,23 +106,24 @@ mod imap_client_tests {
                 ]))
                 .expect_calls(1)
                 .and()
-                // Mock 2: Client connected (imap_client_connected event)
-                .on_event("imap_client_connected")
+                // Mock 2: Client connected (imap_connected event)
+                .on_event("imap_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "authenticate_imap",
-                        "username": "testuser",
-                        "password": "testpass"
+                        // The client authenticates inside connect() from
+                        // startup_params; `authenticate_imap` is not one of its
+                        // verbs. Selecting INBOX is the next real step.
+                        "type": "select_mailbox",
+                        "mailbox": "INBOX"
                     }
                 ]))
                 .expect_calls(1)
                 .and()
-                // Mock 3: Client authenticated (imap_client_authenticated event)
-                .on_event("imap_client_authenticated")
+                // Mock 3: Client selected the mailbox (imap_mailbox_selected event)
+                .on_event("imap_mailbox_selected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "select_mailbox",
-                        "mailbox": "INBOX"
+                        "type": "wait_for_more"
                     }
                 ]))
                 .expect_calls(1)
@@ -113,6 +136,9 @@ mod imap_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
+        client
+            .wait_for_any(&["connected", "authenticated"], 30)
+            .await;
         assert!(
             client.output_contains("connected").await
                 || client.output_contains("authenticated").await,
@@ -123,6 +149,11 @@ mod imap_client_tests {
         println!("✅ IMAP client connected and authenticated successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -157,7 +188,7 @@ mod imap_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Server greeting
-                    .on_event("imap_connection_accepted")
+                    .on_event("imap_connection")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "send_imap_response",
@@ -167,23 +198,32 @@ mod imap_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: Server LOGIN response
-                    .on_event("imap_command_received")
-                    .and_event_data_contains("command", "LOGIN")
-                    .respond_with_actions(serde_json::json!([
+                    .on_event("imap_auth")
+                    // LOGIN raises imap_auth, not imap_command -- the server's own action
+                    // docs say so ("LOGIN is not delivered here - it raises imap_auth
+                    // instead"), so a rule on imap_command could never match and the
+                    // LOGIN fell through to the LLM, which refused it with NO [SERVERBUG].
+                    // async-imap picks its own tags (a1, a2, ...). A hardcoded "A001"
+                    // tags the reply to a command the client never sent, so async-imap
+                    // discards it as unsolicited and stays parked on LOGIN until the
+                    // test gives up -- reported as "the client never connected".
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "A001 OK LOGIN completed"
+                            "tag": e["tag"].as_str().unwrap_or_default(),
+                            "status": "OK",
+                            "message": "LOGIN completed"
                         }
                     ]))
                     .expect_calls(1)
                     .and()
                     // Mock 4: Server SELECT response
-                    .on_event("imap_command_received")
+                    .on_event("imap_command")
                     .and_event_data_contains("command", "SELECT")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* 5 EXISTS\r\n* 0 RECENT\r\nA002 OK [READ-WRITE] SELECT completed"
+                            "response": format!("* 5 EXISTS\r\n* 0 RECENT\r\n{} OK [READ-WRITE] SELECT completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
@@ -220,23 +260,24 @@ mod imap_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Client connected
-                    .on_event("imap_client_connected")
+                    .on_event("imap_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "authenticate_imap",
-                            "username": "testuser",
-                            "password": "testpass"
-                        }
+                        // The client authenticates inside connect() from
+                        // startup_params; `authenticate_imap` is not one of its
+                        // verbs. Selecting INBOX is the next real step.
+                        "type": "select_mailbox",
+                        "mailbox": "INBOX"
+                    }
                     ]))
                     .expect_calls(1)
                     .and()
                     // Mock 3: Client authenticated
-                    .on_event("imap_client_authenticated")
+                    .on_event("imap_mailbox_selected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "select_mailbox",
-                            "mailbox": "INBOX"
-                        }
+                        "type": "wait_for_more"
+                    }
                     ]))
                     .expect_calls(1)
                     .and()
@@ -252,6 +293,11 @@ mod imap_client_tests {
         println!("✅ IMAP client selected mailbox successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -286,7 +332,7 @@ mod imap_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Server greeting
-                    .on_event("imap_connection_accepted")
+                    .on_event("imap_connection")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "send_imap_response",
@@ -296,34 +342,43 @@ mod imap_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: Server LOGIN response
-                    .on_event("imap_command_received")
-                    .and_event_data_contains("command", "LOGIN")
-                    .respond_with_actions(serde_json::json!([
+                    .on_event("imap_auth")
+                    // LOGIN raises imap_auth, not imap_command -- the server's own action
+                    // docs say so ("LOGIN is not delivered here - it raises imap_auth
+                    // instead"), so a rule on imap_command could never match and the
+                    // LOGIN fell through to the LLM, which refused it with NO [SERVERBUG].
+                    // async-imap picks its own tags (a1, a2, ...). A hardcoded "A001"
+                    // tags the reply to a command the client never sent, so async-imap
+                    // discards it as unsolicited and stays parked on LOGIN until the
+                    // test gives up -- reported as "the client never connected".
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "A001 OK LOGIN completed"
+                            "tag": e["tag"].as_str().unwrap_or_default(),
+                            "status": "OK",
+                            "message": "LOGIN completed"
                         }
                     ]))
                     .expect_calls(1)
                     .and()
                     // Mock 4: Server SELECT response
-                    .on_event("imap_command_received")
+                    .on_event("imap_command")
                     .and_event_data_contains("command", "SELECT")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* 5 EXISTS\r\n* 3 RECENT\r\nA002 OK [READ-WRITE] SELECT completed"
+                            "response": format!("* 5 EXISTS\r\n* 3 RECENT\r\n{} OK [READ-WRITE] SELECT completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
                     .and()
                     // Mock 5: Server SEARCH response
-                    .on_event("imap_command_received")
+                    .on_event("imap_command")
                     .and_event_data_contains("command", "SEARCH")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* SEARCH 1 2 3\r\nA003 OK SEARCH completed"
+                            "response": format!("* SEARCH 1 2 3\r\n{} OK SEARCH completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
@@ -360,22 +415,23 @@ mod imap_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Client connected
-                .on_event("imap_client_connected")
+                .on_event("imap_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "authenticate_imap",
-                        "username": "testuser",
-                        "password": "testpass"
+                        // The client authenticates inside connect() from
+                        // startup_params; `authenticate_imap` is not one of its
+                        // verbs. Selecting INBOX is the next real step.
+                        "type": "select_mailbox",
+                        "mailbox": "INBOX"
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 3: Client authenticated
-                .on_event("imap_client_authenticated")
+                .on_event("imap_mailbox_selected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "select_mailbox",
-                        "mailbox": "INBOX"
+                        "type": "wait_for_more"
                     },
                     {
                         "type": "search_messages",
@@ -402,6 +458,11 @@ mod imap_client_tests {
         println!("✅ IMAP client searched messages successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -436,7 +497,7 @@ mod imap_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Server greeting
-                    .on_event("imap_connection_accepted")
+                    .on_event("imap_connection")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "send_imap_response",
@@ -446,45 +507,54 @@ mod imap_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: Server LOGIN response
-                    .on_event("imap_command_received")
-                    .and_event_data_contains("command", "LOGIN")
-                    .respond_with_actions(serde_json::json!([
+                    .on_event("imap_auth")
+                    // LOGIN raises imap_auth, not imap_command -- the server's own action
+                    // docs say so ("LOGIN is not delivered here - it raises imap_auth
+                    // instead"), so a rule on imap_command could never match and the
+                    // LOGIN fell through to the LLM, which refused it with NO [SERVERBUG].
+                    // async-imap picks its own tags (a1, a2, ...). A hardcoded "A001"
+                    // tags the reply to a command the client never sent, so async-imap
+                    // discards it as unsolicited and stays parked on LOGIN until the
+                    // test gives up -- reported as "the client never connected".
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "A001 OK LOGIN completed"
+                            "tag": e["tag"].as_str().unwrap_or_default(),
+                            "status": "OK",
+                            "message": "LOGIN completed"
                         }
                     ]))
                     .expect_calls(1)
                     .and()
                     // Mock 4: Server SELECT response
-                    .on_event("imap_command_received")
+                    .on_event("imap_command")
                     .and_event_data_contains("command", "SELECT")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* 1 EXISTS\r\n* 1 RECENT\r\nA002 OK [READ-WRITE] SELECT completed"
+                            "response": format!("* 1 EXISTS\r\n* 1 RECENT\r\n{} OK [READ-WRITE] SELECT completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
                     .and()
                     // Mock 5: Server SEARCH response
-                    .on_event("imap_command_received")
+                    .on_event("imap_command")
                     .and_event_data_contains("command", "SEARCH")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* SEARCH 1\r\nA003 OK SEARCH completed"
+                            "response": format!("* SEARCH 1\r\n{} OK SEARCH completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
                     .and()
                     // Mock 6: Server FETCH response
-                    .on_event("imap_command_received")
+                    .on_event("imap_command")
                     .and_event_data_contains("command", "FETCH")
-                    .respond_with_actions(serde_json::json!([
+                    .respond_with_actions_from_event(|e| serde_json::json!([
                         {
                             "type": "send_imap_response",
-                            "response": "* 1 FETCH (FLAGS (\\Seen) BODY[] {50}\r\nFrom: alice@example.com\r\nSubject: Test Message\r\n\r\nBody)\r\nA004 OK FETCH completed"
+                            "response": format!("* 1 FETCH (FLAGS (\\Seen) BODY[] {{54}}\r\nFrom: alice@example.com\r\nSubject: Test Message\r\n\r\nBody)\r\n{} OK FETCH completed", e["tag"].as_str().unwrap_or_default())
                         }
                     ]))
                     .expect_calls(1)
@@ -521,23 +591,24 @@ mod imap_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Client connected
-                    .on_event("imap_client_connected")
+                    .on_event("imap_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "authenticate_imap",
-                            "username": "testuser",
-                            "password": "testpass"
-                        }
+                        // The client authenticates inside connect() from
+                        // startup_params; `authenticate_imap` is not one of its
+                        // verbs. Selecting INBOX is the next real step.
+                        "type": "select_mailbox",
+                        "mailbox": "INBOX"
+                    }
                     ]))
                     .expect_calls(1)
                     .and()
                     // Mock 3: Client authenticated
-                    .on_event("imap_client_authenticated")
+                    .on_event("imap_mailbox_selected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "select_mailbox",
-                            "mailbox": "INBOX"
-                        },
+                        "type": "wait_for_more"
+                    },
                         {
                             "type": "search_messages",
                             "criteria": "ALL"
@@ -568,6 +639,11 @@ mod imap_client_tests {
         println!("✅ IMAP client fetched message successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

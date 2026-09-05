@@ -88,6 +88,7 @@ async fn concurrent_http_requests_are_all_answered_at_the_default_concurrency() 
             // A fresh client per peer: connection reuse would serialise them at
             // the socket and defeat the point of the test.
             let client = reqwest::Client::builder()
+                .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
                 .timeout(Duration::from_secs(60))
                 .build()
                 .expect("client");

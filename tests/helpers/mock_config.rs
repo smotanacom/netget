@@ -667,7 +667,20 @@ pub fn report_unverified_on_drop(kind: &str, mock_config: &MockLlmConfig) {
         message.push_str(&unmet.join("\n"));
     }
 
-    if has_expectations && !std::thread::panicking() {
+    // Panic only when something is actually unmet.
+    //
+    // A test that returns `Err` early -- typically because an EARLIER
+    // `verify_mocks()?` on the other end failed -- drops this config without
+    // reaching its own `verify_mocks`. That is not a panic, so the guard below
+    // does not see it, and panicking here replaces the real error with "you
+    // forgot to call verify_mocks". That is exactly backwards: the test did
+    // call it, on the half that failed. A cassandra client test lost its
+    // server-side failure message this way and read as a harness complaint.
+    //
+    // When every expectation is met, the mocks did assert what they were there
+    // to assert, so a missing `verify_mocks()` is worth a warning and nothing
+    // more. When something is unmet the panic still fires, carrying the list.
+    if has_expectations && !unmet.is_empty() && !std::thread::panicking() {
         panic!("{message}");
     }
 
@@ -709,5 +722,28 @@ impl MockCallRecord {
             self.rule_label(),
             self.rule_description
         )
+    }
+}
+
+/// Poll until every expectation in `config` is satisfied, or `timeout_secs` elapses.
+///
+/// "Satisfied" means each rule has reached its `expect_calls` / `expect_at_least` floor;
+/// `expect_at_most` needs no waiting, since exceeding it cannot be cured by waiting longer.
+/// Returns quietly either way — the caller's `verify_mocks` is what asserts, and it names
+/// the rule that fell short. This exists only so a test stops racing the exchange it is
+/// testing.
+pub async fn wait_for_mock_expectations(config: &MockLlmConfig, timeout_secs: u64) {
+    let start = std::time::Instant::now();
+    let deadline = std::time::Duration::from_secs(timeout_secs);
+    loop {
+        let satisfied = config.rules.iter().all(|rule| {
+            let actual = rule.actual_calls.load(std::sync::atomic::Ordering::SeqCst);
+            let floor = rule.expected_calls.or(rule.min_calls).unwrap_or(0);
+            actual >= floor
+        });
+        if satisfied || start.elapsed() >= deadline {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }

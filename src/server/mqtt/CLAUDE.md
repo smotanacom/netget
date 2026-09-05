@@ -3,8 +3,27 @@
 MQTT 3.1.1 broker. Control packets are parsed and built by hand in `mod.rs`; the LLM (or
 a script/static handler) decides every acknowledgement and every message delivery.
 
-**State**: Experimental — LLM-authored, not human-reviewed. Verified with a raw-socket
-MQTT client driving CONNECT / SUBSCRIBE / PUBLISH at QoS 0, 1 and 2, plus PINGREQ.
+**State**: **Beta** (August 2026) — works against a real third-party client. `rumqttc` drives
+CONNECT/CONNACK in `test_mqtt_basic_connect`, and
+`test_mqtt_subscribe_and_receive_a_published_message` takes it all the way through
+CONNECT → SUBSCRIBE → SUBACK → PUBLISH and back to the broker's own PUBLISH arriving on the
+same connection, with topic and payload asserted. Neither test is `#[ignore]`d. Also verified
+with a raw-socket MQTT client driving QoS 0, 1 and 2, plus PINGREQ.
+
+The promotion is *not* new implementation work — the broker already did all of this. What was
+missing was evidence, and the reason it looked missing is worth recording: the root CLAUDE.md
+listed mqtt as "`mqtt`, whose rumqttc tests are all `#[ignore]`d", and that was wrong twice
+over. The four pub/sub tests were inside a `/* … */` block, so nothing compiled them and
+`--include-ignored` could never have run them; and the rumqttc test that *does* run was never
+ignored at all. Their `#[ignore = "MQTT broker not yet implemented"]` markers were left over
+from the placeholder described below. The dead block is deleted and replaced by one real
+pub/sub test.
+
+Two things that will silently break a mock for this protocol, both of which this test
+encodes: `mqtt_suback` **must** echo `packet_id` from the event (rumqttc blocks until a SUBACK
+carrying the id it chose arrives, so a hardcoded id stalls the subscribe forever), and the
+event `mqtt_publish` and the action `mqtt_publish` share a name while pointing in opposite
+directions — the event is the client's PUBLISH arriving, the action is the broker sending one.
 **Port**: 1883 by default. **Privilege**: `None` (1883 > 1024).
 **Stack**: `ETH>IP>TCP>MQTT`. **Spec**: MQTT 3.1.1 (OASIS / ISO-IEC 20922).
 

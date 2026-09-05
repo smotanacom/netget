@@ -55,6 +55,26 @@ netget> OSPF client, passive monitoring
 LLM: "Listen for Hello packets. Log neighbor states. Don't respond."
 ```
 
+## The connected event is acted on (August 2026)
+
+`ospf_client_connected` was raised with an `if let Err(e) = call_llm_for_client(..)` that had
+**no success arm at all**. Nothing was named, so nothing read as discarded — it looked like
+error handling — and every action the model chose in reply was dropped.
+
+That is the one moment the model is asked what to do *before* any packet arrives, and the
+worked example in this very file ("Send Hello, discover neighbours, request LSDB") is exactly
+what it would answer with. So the documented flow could never have happened: nothing sent a
+Hello unless a packet arrived first, and on a quiet segment none would.
+
+The action-execution loop that already existed inline in `process_ospf_packet` is now
+`OspfClient::run_actions`, called by both the connected-event task and the receive loop, so
+packet building and `sendto` still exist exactly once. No depth bound is needed: the chain
+continues through the receive loop, one packet at a time, as in `datalink`.
+
+**Not proven on the wire.** Everything here needs the raw IP-89 socket, so the only test that
+actually multicasts a Hello is `#[ignore]`d behind root — see the injected-commands section
+below. The unprivileged tests cover wiring and refusal, not transmission.
+
 ## Architecture
 
 ### Raw Socket Implementation

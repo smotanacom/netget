@@ -90,13 +90,13 @@ impl Protocol for MdnsProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             // Announces on 224.0.0.251:5353 - an unprivileged port, and joining
             // a multicast group needs no elevated privileges.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation("mdns-sd ServiceDaemon (not hickory-proto); binds no listener of its own")
             .llm_control("Service registration at startup only - no query handling, no runtime updates")
-            .e2e_testing("tests/server/mdns/test.rs - mdns-sd browser, mock-driven")
+            .e2e_testing("mdns-sd, an independent mDNS implementation, in tests/server/mdns/test.rs and not #[ignore]d: its ServiceDaemon browses and resolves the services this server advertises, asserting on ServiceResolved.")
             .notes("Multicast service discovery; advertisement-only, incoming mDNS queries are handled by the library, not by the LLM")
             .build()
     }

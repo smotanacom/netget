@@ -109,6 +109,7 @@ When receiving BOOTREQUEST:
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Verify client output shows connection
+    client.wait_for_any(&["connected"], 30).await;
     assert!(
         client.output_contains("connected").await,
         "Client should show connection message. Output: {:?}",
@@ -118,6 +119,11 @@ When receiving BOOTREQUEST:
     println!("✓ BOOTP client connected to server and received IP assignment");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
+    client.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     client.verify_mocks().await?;
 
@@ -141,7 +147,10 @@ async fn test_bootp_broadcast_discovery() -> E2EResult<()> {
             // Mock 1: Client startup
             .on_instruction_containing("Connect to")
             .and_instruction_containing("BOOTP")
-            .and_instruction_containing("broadcast")
+            // Case-sensitive: the instruction says "Broadcast BOOTP request", with no
+            // lowercase "broadcast" anywhere in it, so this rule never matched and the
+            // client's own startup call got a 500.
+            .and_instruction_containing("Broadcast")
             .respond_with_actions(serde_json::json!([
                 {
                     "type": "open_client",
@@ -171,6 +180,7 @@ async fn test_bootp_broadcast_discovery() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Verify client started
+    client.wait_for_any(&["BOOTP", "connected"], 30).await;
     assert!(
         client.output_contains("BOOTP").await || client.output_contains("connected").await,
         "Client should show startup. Output: {:?}",
@@ -180,6 +190,10 @@ async fn test_bootp_broadcast_discovery() -> E2EResult<()> {
     println!("✓ BOOTP client broadcast discovery test completed");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(30).await;
     client.verify_mocks().await?;
 
     // Cleanup
@@ -231,6 +245,7 @@ async fn test_bootp_no_server() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Verify client started
+    client.wait_for_any(&["BOOTP", "connected"], 30).await;
     assert!(
         client.output_contains("BOOTP").await || client.output_contains("connected").await,
         "BOOTP client should start even without server. Output: {:?}",
@@ -240,6 +255,10 @@ async fn test_bootp_no_server() -> E2EResult<()> {
     println!("✓ BOOTP no-server test completed (timeout expected)");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(30).await;
     client.verify_mocks().await?;
 
     // Cleanup

@@ -31,6 +31,17 @@ impl Protocol for SmbProtocol {
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         vec![disconnect_client_action()]
     }
+    /// SMB raises exactly one event, and it must be declared here as well as emitted.
+    ///
+    /// This was missing, so the trait default applied and returned an empty vec: SMB_OPERATION_EVENT
+    /// was built and dispatched at runtime, but invisible to anything that walks the registry.
+    /// `tests/event_action_declarations_test.rs` audits every registered protocol's events and
+    /// therefore audited none of SMB's, and `tests/mock_event_ids_test.rs` reported all nineteen
+    /// of this protocol's own mock rules as naming an unknown event.
+    fn get_event_types(&self) -> Vec<crate::protocol::EventType> {
+        vec![SMB_OPERATION_EVENT.clone()]
+    }
+
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         // Every action listed here has an executor branch in src/server/smb/mod.rs and is
         // attached to SMB_OPERATION_EVENT below, so the model can both see it and have it

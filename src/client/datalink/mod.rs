@@ -10,7 +10,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{error, info, trace};
 
-use crate::client::datalink::actions::DATALINK_CLIENT_FRAME_CAPTURED_EVENT;
+use crate::client::datalink::actions::{
+    DATALINK_CLIENT_CONNECTED_EVENT, DATALINK_CLIENT_FRAME_CAPTURED_EVENT,
+    DATALINK_CLIENT_FRAME_INJECTED_EVENT,
+};
 use crate::client::llm_budget::call_llm_for_client;
 use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ClientLlmResult;
@@ -114,6 +117,10 @@ impl DataLinkClient {
         app_state.register_client_task(client_id, cmd_task).await;
 
         // Clone for the blocking task
+        let inject_tx_arc_thread = inject_tx_arc.clone();
+        // ...and for the connected-event task below, which is spawned after the blocking
+        // closure has taken ownership of `inject_tx_arc`.
+        let inject_tx_conn = inject_tx_arc.clone();
         let interface_clone = interface.clone();
         let status_tx_clone = status_tx.clone();
         let app_state_clone = app_state.clone();
@@ -178,6 +185,25 @@ impl DataLinkClient {
                                 client_id,
                                 cmd.frame.len()
                             ));
+
+                            // Tell the model the frame went out. `datalink_frame_injected`
+                            // was declared in get_event_types() and raised nowhere, so a
+                            // model that injected a frame was never told it had worked and
+                            // could not follow it with anything. Spawned onto the runtime
+                            // rather than awaited: this is the blocking pcap thread, and
+                            // the LLM call can park for minutes on a manual routing rule.
+                            let ev_state = app_state_clone.clone();
+                            let ev_llm = llm_client_clone.clone();
+                            let ev_status = status_tx_clone.clone();
+                            let ev_inject = inject_tx_arc_thread.clone();
+                            let ev_frame = cmd.frame.clone();
+                            runtime.spawn(async move {
+                                Self::report_injection(
+                                    client_id, ev_frame, ev_state, ev_llm, ev_status, ev_inject,
+                                )
+                                .await;
+                            });
+
                             Ok(cmd.frame.len())
                         }
                         Err(e) => {
@@ -326,8 +352,147 @@ impl DataLinkClient {
         });
 
         // For DataLink, we return a dummy socket address since we're not using TCP/UDP
+        // Ask the model what to do now that the interface is open.
+        //
+        // This client used to make no connected-event LLM call at all, so a client created
+        // with "inject an ARP request for 10.0.0.2" opened the capture and then sat there:
+        // nothing consulted the model, so nothing was ever injected. Run from a registered
+        // task rather than inline, because a dashboard-created client defaults to a
+        // `*` -> manual rule and that call can park for minutes -- `connect` must return.
+        let conn_state = app_state.clone();
+        let conn_llm = llm_client.clone();
+        let conn_status = status_tx.clone();
+        let conn_inject = inject_tx_conn;
+        let conn_interface = interface.clone();
+        let conn_task = tokio::spawn(async move {
+            let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
+            let event = Event::new(
+                &DATALINK_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({
+                    "interface": conn_interface,
+                    "promiscuous": promiscuous,
+                }),
+            );
+            Self::run_llm_turn(
+                client_id,
+                &instruction,
+                event,
+                &conn_state,
+                &conn_llm,
+                &conn_status,
+                &conn_inject,
+            )
+            .await;
+        });
+        app_state.register_client_task(client_id, conn_task).await;
+
         // The interface name is stored in the client metadata
         Ok(SocketAddr::from(([127, 0, 0, 1], 0)))
+    }
+
+    /// Report a frame that really went out, and queue whatever the model answers with.
+    async fn report_injection(
+        client_id: ClientId,
+        frame: Vec<u8>,
+        app_state: Arc<AppState>,
+        llm_client: OllamaClient,
+        status_tx: mpsc::UnboundedSender<String>,
+        inject_tx: Arc<Mutex<mpsc::UnboundedSender<InjectionCommand>>>,
+    ) {
+        let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
+            return;
+        };
+        let event = Event::new(
+            &DATALINK_CLIENT_FRAME_INJECTED_EVENT,
+            serde_json::json!({
+                "frame_length": frame.len(),
+                "frame_hex": hex::encode(&frame),
+            }),
+        );
+        Self::run_llm_turn(
+            client_id,
+            &instruction,
+            event,
+            &app_state,
+            &llm_client,
+            &status_tx,
+            &inject_tx,
+        )
+        .await;
+    }
+
+    /// One LLM turn: raise `event`, then queue any frames the model asks to inject.
+    ///
+    /// Deliberately does NOT recurse. Injecting a frame raises `datalink_frame_injected`
+    /// from the pcap loop, which comes back here, so the chain continues by itself through
+    /// the queue rather than through the stack -- and a model that answers every injection
+    /// with another injection is bounded by nothing else, which is why `run_llm_turn`
+    /// executes exactly one round and returns.
+    async fn run_llm_turn(
+        client_id: ClientId,
+        instruction: &str,
+        event: Event,
+        app_state: &Arc<AppState>,
+        llm_client: &OllamaClient,
+        status_tx: &mpsc::UnboundedSender<String>,
+        inject_tx: &Arc<Mutex<mpsc::UnboundedSender<InjectionCommand>>>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+
+        let protocol = crate::client::datalink::actions::DataLinkClientProtocol::new();
+        let memory = app_state
+            .get_memory_for_client(client_id)
+            .await
+            .unwrap_or_default();
+
+        match call_llm_for_client(
+            llm_client,
+            app_state,
+            client_id.to_string(),
+            instruction,
+            &memory,
+            Some(&event),
+            &protocol,
+            status_tx,
+        )
+        .await
+        {
+            Ok(ClientLlmResult {
+                actions,
+                memory_updates,
+            }) => {
+                if let Some(mem) = memory_updates {
+                    app_state.set_memory_for_client(client_id, mem).await;
+                }
+                for action in actions {
+                    match protocol.execute_action(action) {
+                        Ok(ClientActionResult::SendData(frame)) => {
+                            let _ = inject_tx
+                                .lock()
+                                .await
+                                .send(InjectionCommand { frame, ack: None });
+                        }
+                        Ok(ClientActionResult::Disconnect) => {
+                            info!("DataLink client {} disconnecting", client_id);
+                            app_state.remove_client_handle(client_id).await;
+                        }
+                        Ok(_) => {}
+                        Err(e) => error!("DataLink client {} rejected action: {}", client_id, e),
+                    }
+                }
+            }
+            Err(e) => {
+                // Nothing is written to the interface on failure. DataLink is one of the
+                // deliberately silent protocols: a fabricated frame on a real network is
+                // worse than no frame at all.
+                error!(
+                    "DataLink client {} LLM error on {}: {}",
+                    client_id, event.event_type.id, e
+                );
+            }
+        }
     }
 
     /// Drain injected commands until the channel closes (client removed, or the pcap loop

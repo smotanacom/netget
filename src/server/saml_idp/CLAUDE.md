@@ -87,6 +87,36 @@ panicked inside the connection task instead of answering. Local copy of
 `http_common::handler::build_safe_response`, which the `saml-idp` feature cannot reach because
 `http_common` is gated on `feature = "http"`.
 
+## Failure handling — the peer always gets an answer, and never a diagnosis
+
+`handle_saml_idp_request` has exactly one reply for everything it cannot turn into a SAML
+Response: `fail_closed_response`. It is never a 2xx and never a `SAMLResponse` form, because a
+2xx carrying an assertion is the only thing an SP accepts as a sign-in and no failure path can
+produce one.
+
+| Situation | Wire | Log |
+|---|---|---|
+| Model returns `send_saml_response` / `send_metadata` (status < 400) | its response | `decision=model_answer` |
+| Model returns `send_error_response` (status ≥ 400) | the model's status and page | `decision=model_reject` |
+| Model returns zero actions | 500 | `decision=fail_closed_no_action` |
+| Actions ran but none yielded a status/headers/body | 500 | `decision=fail_closed_unusable_output` |
+| LLM call errored or timed out | 503 + `Retry-After: 1` when overloaded, else 500 | `decision=fail_closed_llm_error category=overloaded\|unavailable` |
+
+The last row's split is deliberate: `WireFailure::Overloaded` is transient, so a client should
+back off and retry rather than record a permanent fault.
+
+The body on every fail-closed path is `WireFailure::prefixed_text()`, a `&'static str`. **The
+error itself never reaches the socket** — not the backend URL, the model name, a file path or
+an `anyhow` chain. It goes to `tracing::error!` and the status stream. `tests/wire_failure_test.rs`
+fails the build if the leaked idioms reappear; the E2E test
+`test_saml_idp_fails_closed_when_model_answers_nothing` additionally asserts the live response
+body carries none of those tokens.
+
+`fail_closed_unusable_output` is the row that used to be missing: the response loop defaulted
+to status 200 with an empty body, so a model whose output was not response-shaped JSON produced
+`200 OK` with nothing in it — read by an SP as a completed response with no assertion rather
+than as a server fault.
+
 ## Storage
 
 None, per the project rule. No sessions, no user directory, no issued-assertion log. If a
@@ -119,10 +149,11 @@ Deterministic equivalent — no LLM call per request:
 
 ## Tests
 
-**There is no `tests/server/saml_idp/` directory.** This protocol has no test coverage of any
-kind — no E2E suite, no mock expectations. Adding one means creating the directory, the
-`e2e_test.rs`, its `CLAUDE.md`, and a `pub mod saml_idp;` line in `tests/server/mod.rs` (a test
-directory not declared there is silently never compiled).
+`tests/server/saml_idp/e2e_test.rs`, declared in `tests/server/mod.rs`. Mocked LLM plus
+`reqwest` as a plain HTTP client — there is no SAML library anywhere in the suite, so the
+tests assert on the *binding* (base64 `SAMLResponse` posted to the caller's `acs_url`,
+`RelayState` echoed and escaped, metadata media type, model-chosen error status) and never on
+authenticity. See `tests/server/saml_idp/CLAUDE.md`.
 
 Pairs naturally with `saml_sp` on another port: point `acs_url` at the SP's `/acs`.
 

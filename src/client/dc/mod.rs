@@ -228,6 +228,72 @@ impl DcClient {
                 Err(e) => {
                     // Will reconnect
                     reconnect_attempt += 1;
+
+                    // Raise dc_client_disconnected.
+                    //
+                    // It was declared and nothing ever raised it, so the model was never
+                    // told the hub had dropped -- despite the event carrying `reason`,
+                    // `will_reconnect` and `reconnect_attempt` fields plainly written for
+                    // exactly this moment. Its own example answer is `wait_for_more`,
+                    // which the model could never have been asked for.
+                    if let Some(instruction) = app_state.get_instruction_for_client(client_id).await
+                    {
+                        let event = Event::new(
+                            &crate::client::dc::actions::DC_CLIENT_DISCONNECTED_EVENT,
+                            serde_json::json!({
+                                "reason": e.to_string(),
+                                "will_reconnect": true,
+                                "reconnect_attempt": reconnect_attempt,
+                            }),
+                        );
+                        let memory = app_state
+                            .get_memory_for_client(client_id)
+                            .await
+                            .unwrap_or_default();
+                        // Actions are deliberately not executed here: there is no open
+                        // connection to send on, which is the whole meaning of this event.
+                        // What the model *can* do is record what it learned, and that is
+                        // carried by the memory update.
+                        //
+                        // This used to be an `if let Err(..)` with no success arm, which
+                        // dropped the memory update too — so the comment above claimed a
+                        // mechanism the code did not have, and a model asked "you just lost
+                        // the hub, what should I remember?" was answered into a void.
+                        //
+                        // Actions are reported rather than silently discarded, so an operator
+                        // watching a reconnect can see that the model tried to act and why it
+                        // could not.
+                        match call_llm_for_client(
+                            &llm_client,
+                            &app_state,
+                            client_id.to_string(),
+                            &instruction,
+                            &memory,
+                            Some(&event),
+                            &DcClientProtocol::new(),
+                            &status_tx,
+                        )
+                        .await
+                        {
+                            Ok(result) => {
+                                if let Some(mem) = result.memory_updates {
+                                    app_state.set_memory_for_client(client_id, mem).await;
+                                }
+                                if !result.actions.is_empty() {
+                                    let _ = status_tx.send(format!(
+                                        "[CLIENT] DC client {} is disconnected; {} action(s) \
+                                         from dc_client_disconnected were not sent",
+                                        client_id,
+                                        result.actions.len()
+                                    ));
+                                }
+                            }
+                            Err(le) => error!(
+                                "DC client {} LLM error on dc_client_disconnected: {}",
+                                client_id, le
+                            ),
+                        }
+                    }
                     let delay_secs =
                         initial_reconnect_delay_secs * (2u64.pow(reconnect_attempt - 1));
                     let delay_secs = delay_secs.min(60); // Cap at 60 seconds
@@ -643,6 +709,7 @@ async fn process_dc_message(
         handle_hello_message(
             message,
             client_state,
+            write_half,
             llm_client,
             app_state,
             status_tx,
@@ -852,12 +919,36 @@ async fn handle_lock_message(
     .await
     {
         Ok(ClientLlmResult {
-            actions: _,
+            actions,
             memory_updates,
         }) => {
             // Update memory
             if let Some(mem) = memory_updates {
                 client_state.lock().await.memory = mem;
+            }
+
+            // Put what the model asked for on the wire. These were discarded, so a model
+            // told to announce itself or greet the hub as it joined was ignored -- the
+            // handshake events are precisely where a Direct Connect client is expected to
+            // speak.
+            //
+            // `apply_dc_action` is the shared NMDC encoder used by the LLM path and by
+            // injected commands, and it raises no event, so this cannot loop.
+            use crate::llm::actions::client_trait::Client;
+            for action in actions {
+                match DcClientProtocol::new().execute_action(action.clone()) {
+                    Ok(result) => {
+                        if let Err(e) =
+                            apply_dc_action(result, client_state, write_half, client_id).await
+                        {
+                            error!("DC client {} handshake action failed: {}", client_id, e);
+                        }
+                    }
+                    Err(e) => error!(
+                        "DC client {} rejected its own handshake action: {}",
+                        client_id, e
+                    ),
+                }
             }
         }
         Err(e) => {
@@ -900,6 +991,11 @@ async fn handle_lock_message(
 async fn handle_hello_message(
     message: &str,
     client_state: &Arc<Mutex<DcClientState>>,
+    // Needed so the model's answer to $Hello can actually be sent. It used to be
+    // discarded with a note saying post-auth actions "will be sent on subsequent events",
+    // which meant an instruction given at the one moment the hub expects a client to
+    // announce itself simply never happened.
+    write_half: &Arc<Mutex<DcWriteHalf>>,
     llm_client: &OllamaClient,
     app_state: &Arc<AppState>,
     status_tx: &mpsc::UnboundedSender<String>,
@@ -940,7 +1036,7 @@ async fn handle_hello_message(
     .await
     {
         Ok(ClientLlmResult {
-            actions: _,
+            actions,
             memory_updates,
         }) => {
             // Update memory
@@ -948,8 +1044,29 @@ async fn handle_hello_message(
                 client_state.lock().await.memory = mem;
             }
 
-            // Actions are not executed here since authentication is a state transition
-            // Any post-auth actions will be sent on subsequent events
+            // Put what the model asked for on the wire. These were discarded, so a model
+            // told to announce itself or greet the hub as it joined was ignored -- the
+            // handshake events are precisely where a Direct Connect client is expected to
+            // speak.
+            //
+            // `apply_dc_action` is the shared NMDC encoder used by the LLM path and by
+            // injected commands, and it raises no event, so this cannot loop.
+            use crate::llm::actions::client_trait::Client;
+            for action in actions {
+                match DcClientProtocol::new().execute_action(action.clone()) {
+                    Ok(result) => {
+                        if let Err(e) =
+                            apply_dc_action(result, client_state, write_half, client_id).await
+                        {
+                            error!("DC client {} handshake action failed: {}", client_id, e);
+                        }
+                    }
+                    Err(e) => error!(
+                        "DC client {} rejected its own handshake action: {}",
+                        client_id, e
+                    ),
+                }
+            }
         }
         Err(e) => {
             error!("LLM error on dc_authenticated event: {}", e);
@@ -1400,7 +1517,13 @@ async fn handle_kick(
         .await
         .unwrap_or_default();
 
-    let _ = call_llm_for_client(
+    // The model's answer used to be dropped here with `let _ =`. It is now applied.
+    //
+    // Its actions cannot be sent: being kicked means this connection is going away,
+    // which is the whole meaning of the event. What CAN be honoured is the memory the
+    // model sets -- carried into the next connection -- so a lesson learned here is not
+    // lost. Anything it tried to send is reported rather than vanishing.
+    match call_llm_for_client(
         llm_client,
         app_state,
         client_id.to_string(),
@@ -1410,7 +1533,23 @@ async fn handle_kick(
         &DcClientProtocol::new(),
         status_tx,
     )
-    .await;
+    .await
+    {
+        Ok(result) => {
+            if let Some(mem) = result.memory_updates {
+                app_state.set_memory_for_client(client_id, mem).await;
+            }
+            if !result.actions.is_empty() {
+                info!(
+                    "DC client {}: {} action(s) answered at kicked cannot be sent \
+                     -- the connection is closing",
+                    client_id,
+                    result.actions.len()
+                );
+            }
+        }
+        Err(e) => error!("DC client {} LLM error on kicked: {}", client_id, e),
+    }
 
     Ok(())
 }
@@ -1445,7 +1584,13 @@ async fn handle_redirect(
         .await
         .unwrap_or_default();
 
-    let _ = call_llm_for_client(
+    // The model's answer used to be dropped here with `let _ =`. It is now applied.
+    //
+    // Its actions cannot be sent: being redirect means this connection is going away,
+    // which is the whole meaning of the event. What CAN be honoured is the memory the
+    // model sets -- carried into the next connection -- so a lesson learned here is not
+    // lost. Anything it tried to send is reported rather than vanishing.
+    match call_llm_for_client(
         llm_client,
         app_state,
         client_id.to_string(),
@@ -1455,7 +1600,23 @@ async fn handle_redirect(
         &DcClientProtocol::new(),
         status_tx,
     )
-    .await;
+    .await
+    {
+        Ok(result) => {
+            if let Some(mem) = result.memory_updates {
+                app_state.set_memory_for_client(client_id, mem).await;
+            }
+            if !result.actions.is_empty() {
+                info!(
+                    "DC client {}: {} action(s) answered at redirect cannot be sent \
+                     -- the connection is closing",
+                    client_id,
+                    result.actions.len()
+                );
+            }
+        }
+        Err(e) => error!("DC client {} LLM error on redirect: {}", client_id, e),
+    }
 
     Ok(())
 }

@@ -55,7 +55,9 @@ mod tests {
                     ]))
                     .expect_calls(1)
                     .and()
-                    // Mock 2: ListObjects (may be called multiple times due to pagination)
+                    // Mock 2: ListObjects — exactly once. `is_truncated` is not set, so there
+                    // is no pagination, and the operations around it now succeed on the first
+                    // try, so nothing retries.
                     .on_event("s3_request")
                     .and_event_data_contains("operation", "ListObjects")
                     .respond_with_actions(serde_json::json!([
@@ -67,7 +69,13 @@ mod tests {
                             ]
                         }
                     ]))
-                    .expect_calls(15)  // rust-s3 client may paginate/retry
+                    // Was 15, with the comment "rust-s3 client may paginate/retry". That number
+                    // was calibrated against a broken run: PutObject/HeadObject/DeleteObject
+                    // were mocked with `send_http_response`, an action S3 cannot execute, so
+                    // every one of them failed and the test's `retry` helper hammered the
+                    // server. With those mocks answering `send_s3_write_result` the traffic is
+                    // deterministic.
+                    .expect_calls(1)
                     .and()
                     // Mock 3: GetObject hello.txt
                     .on_event("s3_request")
@@ -88,9 +96,9 @@ mod tests {
                     .and_event_data_contains("key", "test.txt")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_response",
-                            "status": 200,
-                            "body": ""
+                            "type": "send_s3_write_result",
+                            "status_code": 200,
+                            "etag": "\"9a0364b9e99bb480dd25e1f0284c8555\""
                         }
                     ]))
                     .expect_calls(1)
@@ -101,9 +109,10 @@ mod tests {
                     .and_event_data_contains("key", "hello.txt")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_response",
-                            "status": 200,
-                            "headers": {"Content-Length": "13", "Content-Type": "text/plain"}
+                            "type": "send_s3_write_result",
+                            "status_code": 200,
+                            "content_length": 13,
+                            "content_type": "text/plain"
                         }
                     ]))
                     .expect_calls(1)
@@ -114,9 +123,8 @@ mod tests {
                     .and_event_data_contains("key", "test.txt")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_response",
-                            "status": 204,
-                            "body": ""
+                            "type": "send_s3_write_result",
+                            "status_code": 204
                         }
                     ]))
                     .expect_calls(1)
@@ -233,6 +241,10 @@ mod tests {
         println!("but the test verifies the protocol works correctly.");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -311,6 +323,10 @@ mod tests {
         }
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;
@@ -345,9 +361,9 @@ mod tests {
                     .and_event_data_contains("key", "file.txt")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_response",
-                            "status": 200,
-                            "body": ""
+                            "type": "send_s3_write_result",
+                            "status_code": 200,
+                            "etag": "\"0cc175b9c0f1b6a831c399e269772661\""
                         }
                     ]))
                     .expect_calls(1)
@@ -413,6 +429,10 @@ mod tests {
         }
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         server.stop().await?;

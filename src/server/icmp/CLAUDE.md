@@ -237,6 +237,27 @@ console_error!(status_tx, "Failed to parse: {}", err);
 console_trace!(status_tx, "Packet hex: {}", hex::encode(data));
 ```
 
+### Decision tags (LLM-failure path)
+
+ICMP has no in-band failure reply. RFC 792 defines no "cannot answer" message for an echo
+request, and RFC 1122 §3.2.2 forbids generating an ICMP error in response to an ICMP error, so a
+synthesised Destination Unreachable would be a false statement about reachability rather than a
+service-unavailable signal. When the LLM call fails, the server therefore **stays silent on the
+wire on purpose** — but says so loudly in the log. Every packet ends with one `decision=` tag:
+
+| Tag | Meaning |
+|---|---|
+| `model_reply` | a reply packet was actually put on the wire |
+| `model_ignore` | the model answered with `ignore_icmp` only — deliberate silence |
+| `fail_closed_no_action` | the model answered nothing at all |
+| `fail_closed_action_error` | every action it produced failed to execute |
+| `fail_closed_llm_error` | the LLM call itself errored; carries `category=overloaded\|unavailable` from `WireFailure::classify` |
+
+Grep `decision=fail_closed_` to find every packet that went unanswered because no usable answer
+was produced, as distinct from one the model chose to ignore. The error itself goes to the log
+and the status stream only — nothing derived from it can reach a peer, because nothing is written
+to the socket on these paths at all.
+
 **Log Levels:**
 - **ERROR**: Socket creation failures, send errors
 - **INFO**: Server start, packet processing complete

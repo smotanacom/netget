@@ -40,7 +40,7 @@ async fn add_test_client(state: &AppState) -> ClientId {
 }
 
 async fn new_state() -> AppState {
-    AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string())
+    AppState::new_with_options(false, "http://127.0.0.1:1".to_string())
 }
 
 fn manual_config(timeout_secs: u64) -> EventHandlerConfig {

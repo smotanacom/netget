@@ -66,6 +66,30 @@ enum Dispatch {
 pub struct OpenApiClient;
 
 impl OpenApiClient {
+    /// The process-wide HTTP client, built once.
+    ///
+    /// Same reasoning as the HTTP and DoH clients: `Client::builder().build()` sets up the
+    /// rustls stack and loads the platform root store, which on macOS reads the system
+    /// keychain synchronously and serialises across processes. It runs on `spawn_blocking`
+    /// so it cannot park a tokio worker, and it is kept so operations after the first
+    /// reuse the connection pool rather than rebuilding a TLS stack each time.
+    async fn http_client() -> Result<reqwest::Client> {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        if let Some(client) = CLIENT.get() {
+            return Ok(client.clone());
+        }
+        let built = tokio::task::spawn_blocking(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .use_rustls_tls()
+                .build()
+                .context("Failed to build HTTP client")
+        })
+        .await
+        .context("OpenAPI HTTP client build task panicked")??;
+        Ok(CLIENT.get_or_init(|| built).clone())
+    }
+
     /// Connect to an OpenAPI server with integrated LLM actions
     pub async fn connect_with_llm_actions(
         remote_addr: String,
@@ -123,12 +147,10 @@ impl OpenApiClient {
 
         info!("OpenAPI client {} using base URL: {}", client_id, base_url);
 
-        // Build reqwest client
-        let _http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .use_rustls_tls()
-            .build()
-            .context("Failed to build HTTP client")?;
+        // Warm the shared client rather than building one and dropping it. This used to
+        // bind to `_http_client`: a full rustls stack built at connect time and discarded,
+        // while every operation built another one.
+        Self::http_client().await?;
 
         // Store spec and base URL in protocol_data
         app_state
@@ -605,11 +627,7 @@ impl OpenApiClient {
             client_id, operation_id, method, url
         );
 
-        // Build HTTP client
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .use_rustls_tls()
-            .build()?;
+        let http_client = Self::http_client().await?;
 
         // Build request
         let mut request = match method.to_uppercase().as_str() {
@@ -684,6 +702,65 @@ impl OpenApiClient {
     }
 
     /// Hand a completed exchange to the LLM as an `openapi_operation_response` event.
+    /// Run the actions the model returned for a response event.
+    ///
+    /// They were discarded (`actions: _`), so answering openapi_operation_response did
+    /// nothing -- the whole point of raising it. Dispatch goes through
+    /// `perform_operation`, which raises no event: that bounds the loop and avoids a
+    /// notify -> perform -> notify chain rustc cannot prove `Send`.
+    async fn run_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        app_state: &AppState,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        let protocol = crate::client::openapi::actions::OpenApiClientProtocol::new();
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            if name != "openapi_operation" {
+                info!(
+                    "OpenAPI client {} follow-up '{}' has no non-notifying path; skipped",
+                    client_id, name
+                );
+                continue;
+            }
+            let to_map = |v: &serde_json::Value| -> HashMap<String, String> {
+                v.as_object()
+                    .map(|o| {
+                        o.iter()
+                            .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let result = Self::perform_operation(
+                client_id,
+                data["operation_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                to_map(&data["path_params"]),
+                to_map(&data["query_params"]),
+                data["headers"].as_object().cloned(),
+                data.get("body").cloned().unwrap_or(serde_json::Value::Null),
+                app_state,
+                status_tx,
+            )
+            .await;
+            if let Err(e) = result {
+                error!(
+                    "OpenAPI client {} follow-up action failed: {}",
+                    client_id, e
+                );
+            }
+        }
+    }
+
     async fn notify_operation_response(
         client_id: ClientId,
         exchange: OpenApiExchange,
@@ -727,13 +804,14 @@ impl OpenApiClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state, &status_tx).await;
                 // Note: We don't execute follow-up actions here to avoid recursive async
                 // function issues. The LLM can handle follow-up operations by including
                 // them in the original response, or the operator can inject them.

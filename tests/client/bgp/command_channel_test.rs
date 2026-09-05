@@ -6,6 +6,15 @@
 //!
 //! Run with:
 //!   ./cargo-isolated.sh test --no-default-features --features bgp --test client -- bgp::command_channel --test-threads=100
+//!
+//! Condition waits here poll for up to ~30s (1_000 x 30ms).
+//!
+//! That budget is deliberately generous, and it is not a latency assertion: the loop exits
+//! the moment the condition holds, so a healthy run costs milliseconds. It was 3s, which is
+//! ample when this test runs alone and far too little at `--test-threads=100`, where the
+//! handshake it waits on competes with a hundred other tests for the runtime. The test then
+//! reported the condition as never happening when it simply had not happened *yet* -- a
+//! failure that pointed at the protocol instead of at the deadline.
 
 #![cfg(feature = "bgp")]
 
@@ -19,7 +28,7 @@ use netget::state::{AccessLogOwner, ClientId, ClientStatus, ServerId};
 use tokio::sync::mpsc;
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -29,7 +38,7 @@ async fn new_state() -> AppState {
 }
 
 async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if let Some(s) = state.get_server(id).await {
             if let Some(addr) = s.local_addr {
                 return addr.port();
@@ -41,7 +50,7 @@ async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -55,7 +64,7 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 
 /// Wait until the server's one connection reports Established and return its inbound byte count.
 async fn wait_for_established(state: &AppState, id: ServerId) -> u64 {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if let Some(s) = state.get_server(id).await {
             if let Some(conn) = s.connections.values().next() {
                 if conn.protocol_info.get("bgp_state") == Some(&serde_json::json!("Established")) {
@@ -72,7 +81,7 @@ async fn wait_for_established(state: &AppState, id: ServerId) -> u64 {
 }
 
 async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle: &str) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         for entry in state.list_access_logs_for(Some(owner), None).await {
             if serde_json::to_string(&entry)
                 .unwrap_or_default()
@@ -101,6 +110,24 @@ async fn injected_bgp_client_action_reaches_our_own_server() {
             "router_id": "10.0.0.1",
             "hold_time": 0,
         })),
+        // The server answers bgp_open through the LLM and fails CLOSED when it cannot
+        // reach one -- deliberately, so a peering policy that cannot be evaluated never
+        // admits a neighbour. This test points its LLM at an unreachable URL, so without
+        // a static handler here the handshake can never complete and the session never
+        // reaches Established. This is the shape the protocol's own
+        // `get_startup_examples()` documents.
+        event_handlers: Some(vec![serde_json::json!({
+            "event_pattern": "bgp_open",
+            "handler": {
+                "type": "static",
+                "actions": [{
+                    "type": "send_bgp_open",
+                    "my_as": 65001,
+                    "hold_time": 0,
+                    "router_id": "10.0.0.1"
+                }]
+            }
+        })]),
         ..Default::default()
     }
     .create(&state, tx.clone())
@@ -151,7 +178,7 @@ async fn injected_bgp_client_action_reaches_our_own_server() {
     )
     .await;
     let mut seen = false;
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         let server = state.get_server(server_id).await.expect("server");
         let conn = server.connections.values().next().expect("connection");
         if conn.bytes_received >= before + 19 {
@@ -178,7 +205,7 @@ async fn injected_bgp_client_action_reaches_our_own_server() {
 
     let mut client_down = false;
     let mut server_side_closed = false;
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if let Some(c) = state.get_client(client_id).await {
             client_down = c.status == ClientStatus::Disconnected;
         }

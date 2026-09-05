@@ -65,6 +65,7 @@ mod smtp_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows SMTP protocol or connection
+        client.wait_for_any(&["SMTP", "connected"], 30).await;
         assert!(
             client.output_contains("SMTP").await || client.output_contains("connected").await,
             "Client should show SMTP protocol or connection message. Output: {:?}",
@@ -74,6 +75,10 @@ mod smtp_client_tests {
         println!("✅ SMTP client connected successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
         smtp_server
@@ -112,6 +117,10 @@ mod smtp_client_tests {
         println!("✅ SMTP client prepared to send email based on LLM instruction");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
         smtp_server
@@ -143,6 +152,7 @@ mod smtp_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify connection
+        client.wait_for_any(&["SMTP", "ready"], 30).await;
         assert!(
             client.output_contains("SMTP").await || client.output_contains("ready").await,
             "Client should show SMTP readiness. Output: {:?}",
@@ -152,6 +162,10 @@ mod smtp_client_tests {
         println!("✅ SMTP client connected without authentication");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
         smtp_server

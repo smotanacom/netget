@@ -45,6 +45,7 @@ mod openai_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows OpenAI protocol
+        client.wait_for_any(&["OpenAI", "openai"], 30).await;
         assert!(
             client.output_contains("OpenAI").await || client.output_contains("openai").await,
             "Client should show OpenAI protocol. Output: {:?}",
@@ -59,6 +60,10 @@ mod openai_client_tests {
         // The test assertions above verify the client initialized correctly.
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -107,6 +112,10 @@ mod openai_client_tests {
         println!("✅ OpenAI client with model selection initialized");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -146,6 +155,7 @@ mod openai_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client is running
+        client.wait_for_any(&["OpenAI"], 30).await;
         assert!(
             client.output_contains("OpenAI").await,
             "Client should show OpenAI connection. Output: {:?}",
@@ -155,6 +165,10 @@ mod openai_client_tests {
         println!("✅ OpenAI client initialized for embeddings");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -196,6 +210,7 @@ mod openai_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client initialized
+        client.wait_for_any(&["OpenAI"], 30).await;
         assert!(
             client.output_contains("OpenAI").await,
             "Client should show OpenAI connection. Output: {:?}",
@@ -205,6 +220,10 @@ mod openai_client_tests {
         println!("✅ OpenAI client with custom parameters initialized");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

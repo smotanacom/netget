@@ -37,6 +37,21 @@ fn with_port_zero(example: &serde_json::Value) -> serde_json::Value {
 /// Keep this list short and specific. It is for *platform* impossibility only, never for a
 /// protocol that is merely flaky or unfinished.
 fn unsupported_on_this_platform(protocol_name: &str) -> Option<&'static str> {
+    // Privilege the host does not have is the same category as platform impossibility, and is
+    // asked of the existing machinery rather than kept as a name list, so it cannot go stale.
+    //
+    // `server_startup` refuses to spawn a protocol whose declared `privilege_requirement` is
+    // not met — deliberately, because a server sitting in `Running` having captured nothing is
+    // worse than one that refuses. Counting that refusal as a startup failure makes this sweep
+    // assert the opposite of what the privilege gate promises. OSPF (raw IP sockets) is the
+    // case that surfaced it on an unprivileged runner.
+    if let Some(meta) = registry().metadata(protocol_name) {
+        let caps = netget::privilege::SystemCapabilities::detect();
+        if !meta.privilege_requirement.is_met_by(&caps) {
+            return Some("the host lacks the privilege this protocol declares");
+        }
+    }
+
     match protocol_name {
         // A beacon is its advertising payload. Only BlueZ lets an application set
         // ManufacturerData/ServiceData; CoreBluetooth documents every advertising key other
@@ -300,14 +315,23 @@ async fn test_all_protocols_llm_mode_startup() -> E2EResult<()> {
         // Try to start the server
         match start_netget_server(config).await {
             Ok(server) => {
+                // A started server is the pass condition; the port is incidental.
+                //
+                // This used to require `port > 0`, which is false by design for around 25
+                // protocols: the BLE profiles advertise rather than listen, `ssh_agent` and
+                // `socket_file` bind a Unix socket, `isis` and `datalink` capture at layer 2.
+                // They report the `0.0.0.0:0` "no listening socket" placeholder, and this
+                // sweep counted each as a failure — asserting the opposite of what those
+                // protocols promise. `protocol_startup_smoke_test` is the test that
+                // classifies sockets properly (LISTENING / running-without-socket /
+                // refused-cleanly); this one only asks whether the documented startup example
+                // starts the protocol at all.
                 if server.port > 0 {
                     println!("  ✓ {} - started on port {}", name, server.port);
-                    passed += 1;
                 } else {
-                    println!("  ✗ {} - started but port is 0", name);
-                    failed += 1;
-                    errors.push((name.clone(), "Server started but port is 0".to_string()));
+                    println!("  ✓ {} - started (no listening socket)", name);
                 }
+                passed += 1;
                 // Stop the server
                 let _ = server.stop().await;
             }
@@ -395,14 +419,23 @@ async fn test_all_protocols_static_mode_startup() -> E2EResult<()> {
         // Try to start the server
         match start_netget_server(config).await {
             Ok(server) => {
+                // A started server is the pass condition; the port is incidental.
+                //
+                // This used to require `port > 0`, which is false by design for around 25
+                // protocols: the BLE profiles advertise rather than listen, `ssh_agent` and
+                // `socket_file` bind a Unix socket, `isis` and `datalink` capture at layer 2.
+                // They report the `0.0.0.0:0` "no listening socket" placeholder, and this
+                // sweep counted each as a failure — asserting the opposite of what those
+                // protocols promise. `protocol_startup_smoke_test` is the test that
+                // classifies sockets properly (LISTENING / running-without-socket /
+                // refused-cleanly); this one only asks whether the documented startup example
+                // starts the protocol at all.
                 if server.port > 0 {
                     println!("  ✓ {} - started on port {}", name, server.port);
-                    passed += 1;
                 } else {
-                    println!("  ✗ {} - started but port is 0", name);
-                    failed += 1;
-                    errors.push((name.clone(), "Server started but port is 0".to_string()));
+                    println!("  ✓ {} - started (no listening socket)", name);
                 }
+                passed += 1;
                 let _ = server.stop().await;
             }
             Err(e) => {

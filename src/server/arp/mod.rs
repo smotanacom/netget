@@ -114,10 +114,28 @@ impl ArpServer {
                         )
                     })?;
 
-                // Apply ARP filter to receiving capture
-                cap_rx
-                    .filter("arp", true)
-                    .context("failed to apply the 'arp' BPF filter")?;
+                // Apply ARP filter to receiving capture.
+                //
+                // Without the filter the capture hands *every* frame on the segment to the
+                // LLM, so a failure here has to refuse the start rather than fall through.
+                //
+                // The common failure is not a broken expression: `arp` is an Ethernet-only
+                // BPF keyword, and on a link type that cannot carry ARP at all — loopback
+                // (DLT_NULL/DLT_LOOP), a tunnel, a raw-IP device — libpcap compiles it to
+                // "expression rejects all packets" and returns an error. That message names
+                // the optimiser, not the problem, and an operator who asked for ARP on `lo0`
+                // deserves to be told that loopback has no link layer for ARP to live on.
+                // Same trap as `isis`, which `src/tui/wireshark.rs` already documents.
+                cap_rx.filter("arp", true).with_context(|| {
+                    format!(
+                        "failed to apply the 'arp' BPF filter on '{}'. ARP is an Ethernet-only \
+                         protocol, so this fails on any interface with no Ethernet link layer — \
+                         loopback (lo/lo0), tunnels and raw-IP devices carry no ARP and libpcap \
+                         rejects the filter outright. Point this server at a real Ethernet or \
+                         Wi-Fi interface.",
+                        interface_clone
+                    )
+                })?;
 
                 // Open capture for sending (separate instance)
                 let cap_tx = Capture::from_device(device)
@@ -261,11 +279,11 @@ impl ArpServer {
                             .await
                             {
                                 debug!(
-                                    "ARP ignoring {} packet: no operator policy configured (no instruction or handler), no MAC to advertise and no LLM call",
+                                    "ARP decision=no_policy: ignoring {} packet, no operator policy configured (no instruction or handler), no MAC to advertise and no LLM call",
                                     operation_to_string(operation)
                                 );
                                 let _ = status_clone.send(format!(
-                                    "ARP {} ignored: no policy configured (static default, no LLM)",
+                                    "ARP decision=no_policy: {} ignored, no policy configured (static default, no LLM)",
                                     operation_to_string(operation)
                                 ));
                                 return;
@@ -294,6 +312,43 @@ impl ArpServer {
                                     for message in &execution_result.messages {
                                         info!("{}", message);
                                         let _ = status_clone.send(format!("[INFO] {}", message));
+                                    }
+
+                                    // Three outcomes have to stay apart in the log, because on
+                                    // the wire they are indistinguishable: ARP has no error
+                                    // message, so every one of them is silence. An operator
+                                    // reading `decision=` is the only way to tell a deliberate
+                                    // `ignore_arp` from a model that said nothing at all, and
+                                    // both from a backend that failed (logged in the Err arm).
+                                    let model_rejected = execution_result.raw_actions.iter().any(
+                                        |a| a.get("type").and_then(|t| t.as_str()) == Some("ignore_arp"),
+                                    );
+                                    if model_rejected {
+                                        info!(
+                                            "ARP decision=model_reject: model chose ignore_arp for {} from {} for {}, no reply sent",
+                                            operation_to_string(operation),
+                                            sender_ip,
+                                            target_ip
+                                        );
+                                        let _ = status_clone.send(format!(
+                                            "ARP decision=model_reject: ignore_arp for {} {} -> {} (no reply)",
+                                            operation_to_string(operation),
+                                            sender_ip,
+                                            target_ip
+                                        ));
+                                    } else if execution_result.raw_actions.is_empty() {
+                                        info!(
+                                            "ARP decision=model_no_answer: model returned no actions for {} from {} for {}, no reply sent",
+                                            operation_to_string(operation),
+                                            sender_ip,
+                                            target_ip
+                                        );
+                                        let _ = status_clone.send(format!(
+                                            "ARP decision=model_no_answer: no actions for {} {} -> {} (no reply)",
+                                            operation_to_string(operation),
+                                            sender_ip,
+                                            target_ip
+                                        ));
                                     }
 
                                     debug!(
@@ -346,8 +401,38 @@ impl ArpServer {
                                     ));
                                 }
                                 Err(e) => {
-                                    error!("ARP LLM call failed: {}", e);
-                                    let _ = status_clone.send(format!("✗ ARP LLM error: {}", e));
+                                    // Fail closed, and closed for ARP means *silence*. There is
+                                    // no ARP error frame: the only thing this server could put
+                                    // on the wire is a reply claiming some MAC owns the queried
+                                    // IP, and the MAC is precisely what the failed call was
+                                    // supposed to decide. Inventing one would poison the
+                                    // requester's neighbour cache — far worse than the
+                                    // requester's own ARP timeout, which is the normal,
+                                    // spec-defined outcome for "nobody here owns that address".
+                                    // So the peer gets nothing, and the operator gets the error.
+                                    let category = crate::utils::WireFailure::classify(&e);
+                                    let decision = if category.is_overloaded() {
+                                        "fail_closed_overloaded"
+                                    } else {
+                                        "fail_closed_llm_error"
+                                    };
+                                    error!(
+                                        "ARP decision={}: LLM call failed for {} from {} for {}, no reply sent: {}",
+                                        decision,
+                                        operation_to_string(operation),
+                                        sender_ip,
+                                        target_ip,
+                                        e
+                                    );
+                                    let _ = status_clone.send(format!(
+                                        "✗ ARP decision={}: {} {} -> {} unanswered ({}): {}",
+                                        decision,
+                                        operation_to_string(operation),
+                                        sender_ip,
+                                        target_ip,
+                                        category.text(),
+                                        e
+                                    ));
                                 }
                             }
                         });

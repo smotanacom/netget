@@ -69,6 +69,38 @@ fn build_safe_response(
         })
 }
 
+/// The one reply this server sends when it cannot produce a SAML Response.
+///
+/// Never an assertion, never a 2xx: the only thing an SP accepts as a sign-in is a 2xx
+/// carrying a `SAMLResponse` form, so failing with anything else is failing closed. The two
+/// [`crate::utils::WireFailure`] categories map onto distinct HTTP codes — 503 + `Retry-After`
+/// for a saturated backend so the client backs off, 500 otherwise so it records a fault —
+/// and the body is `WireFailure`'s `&'static str`, which cannot carry the error.
+fn fail_closed_response(failure: crate::utils::WireFailure) -> Response<Full<Bytes>> {
+    let (status, headers): (u16, Vec<(String, String)>) = if failure.is_overloaded() {
+        (
+            503,
+            vec![
+                (
+                    "content-type".to_string(),
+                    "text/plain; charset=utf-8".to_string(),
+                ),
+                ("retry-after".to_string(), "1".to_string()),
+            ],
+        )
+    } else {
+        (
+            500,
+            vec![(
+                "content-type".to_string(),
+                "text/plain; charset=utf-8".to_string(),
+            )],
+        )
+    };
+
+    build_safe_response(status, headers, failure.prefixed_text().to_string())
+}
+
 /// SAML IDP server that delegates authentication and assertion generation to LLM
 pub struct SamlIdpServer;
 
@@ -291,8 +323,17 @@ async fn handle_saml_idp_request(
     let response = match action_result {
         Ok(result) => {
             if result.protocol_results.is_empty() {
-                warn!("LLM returned no actions for SAML IDP request");
-                build_safe_response(500, [], "No response generated".to_string())
+                // The model answered, but with nothing this handler can put on the wire.
+                // Distinct in the log from an LLM *error* and from an explicit rejection.
+                warn!(
+                    "SAML IDP {} {} decision=fail_closed_no_action: model produced no actions",
+                    method, path
+                );
+                Log::new(Some(&status_tx)).warn(format!(
+                    "SAML IDP {} {}: model produced no actions",
+                    method, path
+                ));
+                fail_closed_response(crate::utils::WireFailure::Unavailable)
             } else {
                 // Parse HTTP response from protocol results
                 use crate::llm::actions::protocol_trait::ActionResult;
@@ -300,6 +341,11 @@ async fn handle_saml_idp_request(
                 let mut status_code = 200u16;
                 let mut response_headers = std::collections::HashMap::new();
                 let mut response_body = String::new();
+                // Did any action actually yield a response-shaped Output? Without this the
+                // loop below silently left status 200 with an empty body whenever the model's
+                // output was not JSON, or was JSON without status/headers/body — an empty
+                // 200 is not a sign-in any SP accepts, so it is a fail-open in disguise.
+                let mut produced_response = false;
 
                 for protocol_result in result.protocol_results {
                     if let ActionResult::Output(output_data) = protocol_result {
@@ -310,6 +356,7 @@ async fn handle_saml_idp_request(
                             if let Some(status) = json_value.get("status").and_then(|v| v.as_u64())
                             {
                                 status_code = status as u16;
+                                produced_response = true;
                             }
                             if let Some(headers_obj) =
                                 json_value.get("headers").and_then(|v| v.as_object())
@@ -317,41 +364,70 @@ async fn handle_saml_idp_request(
                                 for (k, v) in headers_obj {
                                     if let Some(v_str) = v.as_str() {
                                         response_headers.insert(k.clone(), v_str.to_string());
+                                        produced_response = true;
                                     }
                                 }
                             }
                             if let Some(body) = json_value.get("body").and_then(|v| v.as_str()) {
                                 response_body = body.to_string();
+                                produced_response = true;
                             }
                         }
                     }
                 }
 
-                build_safe_response(status_code, response_headers, response_body)
+                if !produced_response {
+                    warn!(
+                        "SAML IDP {} {} decision=fail_closed_unusable_output: \
+                         actions ran but none yielded a response",
+                        method, path
+                    );
+                    Log::new(Some(&status_tx)).warn(format!(
+                        "SAML IDP {} {}: actions ran but none yielded a response",
+                        method, path
+                    ));
+                    fail_closed_response(crate::utils::WireFailure::Unavailable)
+                } else {
+                    // The model answered. A 4xx/5xx it chose itself is its own refusal
+                    // (`send_error_response`) and must stay distinguishable in the log from
+                    // the two fail-closed paths above.
+                    let decision = if status_code >= 400 {
+                        "model_reject"
+                    } else {
+                        "model_answer"
+                    };
+                    debug!(
+                        "SAML IDP {} {} decision={} status={}",
+                        method, path, decision, status_code
+                    );
+                    build_safe_response(status_code, response_headers, response_body)
+                }
             }
         }
         Err(e) => {
             // SAML rides on HTTP here, and the failure is ours rather than the peer's, so it
-            // is a 5xx: 503 while the backend is saturated so the peer retries, 500
-            // otherwise. Critically it is not a SAML Response at all - a 2xx carrying an
-            // assertion is the only thing an SP will accept as a sign-in, and no branch on
-            // this path can produce one.
-            let overloaded = crate::llm::is_overload_error(&e);
-            let status = if overloaded { 503 } else { 500 };
+            // is a 5xx: 503 + Retry-After while the backend is saturated so the peer backs
+            // off and retries, 500 otherwise. Critically it is not a SAML Response at all - a
+            // 2xx carrying an assertion is the only thing an SP will accept as a sign-in, and
+            // no branch on this path can produce one.
+            //
+            // Only the *category* reaches the socket; the error itself goes to the log and
+            // the status stream, where an operator looks.
+            let failure = crate::utils::WireFailure::classify(&e);
+            let category = if failure.is_overloaded() {
+                "overloaded"
+            } else {
+                "unavailable"
+            };
+            error!(
+                "SAML IDP {} {} decision=fail_closed_llm_error category={}: {}",
+                method, path, category, e
+            );
             Log::new(Some(&status_tx)).error(format!(
-                "LLM error for SAML IDP request (overload={}, status {}): {}",
-                overloaded, status, e
+                "LLM error for SAML IDP {} {} (category={}): {}",
+                method, path, category, e
             ));
-            build_safe_response(
-                status,
-                [(
-                    "content-type".to_string(),
-                    "text/plain; charset=utf-8".to_string(),
-                )],
-                crate::utils::WireFailure::classify(&e)
-                    .prefixed_text()
-                    .to_string(),
-            )
+            fail_closed_response(failure)
         }
     };
 

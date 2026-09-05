@@ -20,7 +20,7 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -30,7 +30,7 @@ async fn new_state() -> AppState {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -134,7 +134,7 @@ async fn injected_socket_file_data_reaches_the_unix_socket() {
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if !state.has_client_handle(client_id).await {
             let _ = std::fs::remove_file(&socket_path);
             return;

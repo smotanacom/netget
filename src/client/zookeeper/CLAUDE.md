@@ -106,3 +106,39 @@ Then list all children under /myapp to verify."
 ## Testing Strategy
 
 See `tests/client/zookeeper/CLAUDE.md` for E2E testing approach.
+
+## Command channel (the dashboard's `[ send ]`) — registered, but it cannot act
+
+`AppState::send_to_client` will accept an action for a running ZooKeeper client, and the
+handle is registered before anything that could park. **What it can do is bounded by the
+client itself, which does not connect.**
+
+Read `connect_with_llm_actions` before trusting anything above in this file: it parses the
+address, marks the client `Connected`, and returns. It creates no
+`zookeeper_async::ZooKeeper`, registers no watcher, raises no event and never calls the LLM —
+the read loop in the original file was commented out (`// loop {`). So none of
+`create_znode` / `get_data` / `set_data` / `delete_znode` / `get_children` has ever run
+against a server, and the events listed above have never fired.
+
+The command loop therefore reports:
+
+- `Rejected { error }` for an action the protocol itself refuses — this is real, and comes
+  from the client's own `execute_action`, so parameter validation genuinely works.
+- `Disconnected` for `disconnect`, which really does end the loop, set the status and drop
+  the handle.
+- `Executed { detail: "'create_znode' was validated but not performed: the ZooKeeper client
+  establishes no zookeeper-async session (connect_with_llm_actions is a placeholder), so
+  there is nothing to run it against" }` for every operation verb.
+
+That last one is the point of registering at all: the alternative — leaving the client
+without a channel — tells the operator only "this client has no command channel yet", which
+reads as "not implemented yet" rather than "this client is not connected to anything".
+A fabricated `Sent { bytes_sent: 0 }` would be worse than either.
+
+**When the session is implemented**, the loop is where injected actions should be applied,
+through the same `apply_action` the LLM path will use — copy `src/client/redis/mod.rs`. The
+session handle must live behind an `Arc<Mutex<_>>` reachable from both, exactly as
+`src/client/etcd/mod.rs` now does with its `etcd_client::Client`.
+
+There is no `tests/client/zookeeper/` directory and no `pub mod zookeeper;` in
+`tests/client/mod.rs`, so this behaviour is currently unguarded by any test.

@@ -95,6 +95,32 @@ one matters: events report `connection_id.to_string()`, which is `"conn-2"`, not
 - `usb_mouse_detached` — the USB/IP session ended. Declared `with_no_actions()`: there is no wire
   left to write to. This is emitted for the first time; see above for why it never could be.
 
+## When the LLM call fails
+
+A HID mouse owes the host no reply — the interrupt IN endpoint is NAKed whenever the pointer is
+not moving, which is most of the time — so the failure path writes nothing to the wire, on
+purpose. There is no HID way to say "the device's brain is unreachable": a STALL is a fault a
+host answers by resetting or unbinding the device, and `usbip` cannot express one anyway
+(an `Err` out of `handle_urb` tears down the whole session). What matters is that a failed call
+must never move the pointer or press a button, and it cannot: reports exist only where an
+executed action queued them.
+
+Because every outcome looks identical on the wire, the log is where they are separated. Both
+LLM call sites tag their outcome:
+
+| Tag | Meaning |
+|---|---|
+| `decision=fail_closed_llm_error` | the backend erred; dual-logged at ERROR with the full error |
+| `decision=no_action` | the model answered, and asked for nothing |
+| `decision=model_action` | the model queued one or more reports |
+
+There is no `decision=model_reject`: the protocol advertises no verb a model can refuse with
+(`wait_for_more` is deliberately holding still, and counts as an action). The error itself never
+leaves the log and the TUI status stream.
+
+`tests/server/usb_mouse/llm_failure_test.rs` pins the silence, the tag, and the fact that the
+device stays enumerable through an outage.
+
 ## What is and is not verified
 
 **Verified** by `tests/server/usb_mouse/e2e_test.rs`, which speaks USB/IP over TCP and decodes

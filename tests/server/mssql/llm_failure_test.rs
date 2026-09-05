@@ -31,6 +31,16 @@ async fn test_mssql_answers_error_token_when_llm_fails() -> E2EResult<()> {
                     "instruction": "Answer queries about a users table"
                 }
             ]))
+            .and()
+            // The login is a decision now; admit it so the test can reach the query path it
+            // is actually about.
+            .on_event("mssql_login")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "mssql_login_ack"
+                }
+            ]))
+            .expect_at_least(1)
             .expect_calls(1)
             .and()
         // No rule for `mssql_query`: every statement fails.
@@ -89,6 +99,111 @@ async fn test_mssql_answers_error_token_when_llm_fails() -> E2EResult<()> {
         ),
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    Ok(())
+}
+
+/// The model answering with *no* actions must not be reported to the client as success.
+///
+/// A bare DONE token means "the statement ran and matched nothing" — a meaningful, successful
+/// SQL answer. Producing one for a query nobody answered is a fail-open: the application sees
+/// an empty table rather than a failure. The server sends an ERROR token instead.
+#[tokio::test]
+async fn test_mssql_fails_closed_when_no_response_action_is_produced() -> E2EResult<()> {
+    let prompt = "Open MSSQL on port {AVAILABLE_PORT}. Answer queries about a users table.";
+
+    let config = NetGetConfig::new_no_scripts(prompt).with_mock(|mock| {
+        mock.on_instruction_containing("Open MSSQL")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "MSSQL",
+                    "instruction": "Answer queries about a users table"
+                }
+            ]))
+            .and()
+            // The login is a decision now; admit it so the test can reach the query path it
+            // is actually about.
+            .on_event("mssql_login")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "mssql_login_ack"
+                }
+            ]))
+            .expect_at_least(1)
+            .expect_calls(1)
+            .and()
+            // The call succeeds and the model answers with nothing usable.
+            .on_event("mssql_query")
+            .respond_with_actions(serde_json::json!([]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let server = start_netget_server(config).await?;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let mut config_tds = Config::new();
+    config_tds.host("127.0.0.1");
+    config_tds.port(server.port);
+    config_tds.authentication(AuthMethod::sql_server("sa", "password"));
+    config_tds.encryption(EncryptionLevel::NotSupported);
+    config_tds.trust_cert();
+
+    let tcp = TcpStream::connect(config_tds.get_addr()).await?;
+    tcp.set_nodelay(true)?;
+
+    let outcome = tokio::time::timeout(Duration::from_secs(25), async {
+        let mut client = Client::connect(config_tds, tcp.compat_write()).await?;
+        let stream = client.query("SELECT id FROM users", &[]).await?;
+        stream.into_results().await
+    })
+    .await
+    .map_err(|_| {
+        "MSSQL neither answered nor failed within 25s after an empty answer from the model"
+    })?;
+
+    match outcome {
+        Ok(rows) => panic!(
+            "MSSQL reported success ({} result set(s)) although no action answered the query - \
+             an empty result set is a meaningful SQL answer and must not stand in for silence",
+            rows.len()
+        ),
+        Err(tiberius::error::Error::Server(token)) => {
+            assert_eq!(
+                token.code(),
+                50000,
+                "an unanswered query is the generic user-defined error, not the transient one: \
+                 {token:?}"
+            );
+            assert!(
+                token.message().contains("netget"),
+                "the message should name the source of the failure: {token:?}"
+            );
+            // The category, never a diagnosis: nothing internal may reach the client.
+            for leaked in ["LLM", "ollama", "Ollama", "http://", "retries"] {
+                assert!(
+                    !token.message().contains(leaked),
+                    "error message leaked {leaked:?}: {token:?}"
+                );
+            }
+        }
+        Err(other) => panic!(
+            "expected a TDS ERROR token, got {other:?}. Anything else means the failure never \
+             reached the client as a protocol-level error."
+        ),
+    }
+
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

@@ -29,6 +29,9 @@ mod stun_client_tests {
         // Verify client output shows STUN protocol or external address discovery
         let output = client.get_output().await;
 
+        client
+            .wait_for_any(&["STUN", "external", "binding"], 30)
+            .await;
         assert!(
             client.output_contains("STUN").await
                 || client.output_contains("external").await
@@ -40,6 +43,10 @@ mod stun_client_tests {
         println!("✅ STUN client discovered external address successfully");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -67,6 +74,10 @@ mod stun_client_tests {
         println!("✅ STUN client connected to alternative server");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -105,6 +116,10 @@ mod stun_client_tests {
         println!("✅ STUN client processed binding response");
 
         // Cleanup
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

@@ -366,6 +366,32 @@ fn error_response(
     )
 }
 
+/// The fail-closed answer when the LLM call itself errored.
+///
+/// The peer gets a *category*, never the error: no backend URL, no model name, no
+/// `anyhow` chain. The two categories are mapped onto different HTTP statuses so a
+/// client backs off rather than recording a permanent fault — saturation is 503 +
+/// `Retry-After`, which `crane`/`docker` retry, and anything else is 500. The full
+/// error goes to the log and the status stream instead.
+fn llm_error_response(err: &anyhow::Error) -> Response<Full<Bytes>> {
+    let failure = crate::utils::WireFailure::classify(err);
+    if failure.is_overloaded() {
+        return build(
+            503,
+            vec![
+                ("Content-Type", "application/json".to_string()),
+                (
+                    "Docker-Distribution-Api-Version",
+                    "registry/2.0".to_string(),
+                ),
+                ("Retry-After", "1".to_string()),
+            ],
+            oci_error_body("UNKNOWN", failure.text(), None).into_bytes(),
+        );
+    }
+    error_response(500, "UNKNOWN", failure.text(), None)
+}
+
 /// The fail-closed answer when the model produced nothing usable.
 ///
 /// Deliberately not a plausible-looking empty catalog or a 404: an LLM outage and
@@ -625,13 +651,22 @@ async fn handle_oci_request(
     let execution = match llm_result {
         Ok(e) => e,
         Err(e) => {
-            Log::new(Some(&status_tx)).warn(format!("OCI registry LLM call failed: {}", e));
-            return Ok(error_response(
-                503,
-                "UNKNOWN",
-                crate::utils::WireFailure::classify(&e).text(),
-                None,
+            // Three outcomes must stay distinguishable in the log: the model
+            // refused (`decision=model_reject`, logged in `build_from_action`),
+            // the model answered nothing (`decision=fail_closed_no_action`), and
+            // the LLM call errored (here). The tag is stable so an operator can
+            // grep `decision=fail_closed_` for every request netget could not
+            // answer. The error text is logged; it never reaches the socket.
+            let failure = crate::utils::WireFailure::classify(&e);
+            error!(
+                "OCI registry {} {} decision=fail_closed_llm_error category={:?}: {}",
+                method, path, failure, e
+            );
+            Log::new(Some(&status_tx)).warn(format!(
+                "OCI registry {} {} decision=fail_closed_llm_error category={:?}",
+                method, path, failure
             ));
+            return Ok(llm_error_response(&e));
         }
     };
 
@@ -642,7 +677,7 @@ async fn handle_oci_request(
     }
 
     Log::new(Some(&status_tx)).warn(format!(
-        "OCI registry: no usable action for {} {} - refusing (fail-closed)",
+        "OCI registry {} {} decision=fail_closed_no_action - no usable action, refusing",
         method, path
     ));
     Ok(no_answer_response(route_label(&route)))
@@ -921,7 +956,10 @@ fn build_from_action(
                 .map(|s| s as u16)
                 .unwrap_or(500);
             let detail = data.get("detail").cloned().filter(|d| !d.is_null());
-            Log::new(Some(status_tx)).debug(format!("OCI -> {} {}: {}", status, code, message));
+            Log::new(Some(status_tx)).debug(format!(
+                "OCI -> {} {} decision=model_reject: {}",
+                status, code, message
+            ));
             Some(error_response(status, code, message, detail))
         }
 

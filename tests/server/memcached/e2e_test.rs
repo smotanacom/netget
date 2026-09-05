@@ -360,6 +360,10 @@ async fn get_returns_the_value_the_model_invents() -> E2EResult<()> {
         "a miss is END alone"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -428,6 +432,10 @@ async fn set_with_an_embedded_crlf_is_counted_not_scanned() -> E2EResult<()> {
         text
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -477,6 +485,10 @@ async fn arithmetic_delete_and_unknown_verbs() -> E2EResult<()> {
     let reply = exchange(server.port, b"frobnicate x\r\n", b"\r\n").await?;
     assert_eq!(String::from_utf8_lossy(&reply), "ERROR\r\n");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -523,6 +535,10 @@ async fn an_unanswered_command_becomes_server_error_not_a_fabricated_hit() -> E2
         text
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

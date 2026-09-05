@@ -170,6 +170,10 @@ async fn test_tracker_announce_and_scrape() -> E2EResult<()> {
     println!("✅ Scrape request successful");
 
     // Verify all mocks were called
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -251,6 +255,10 @@ async fn test_tracker_error_response() -> E2EResult<()> {
     println!("✅ Error response test successful");
 
     // Verify mocks
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
 
@@ -273,7 +281,7 @@ async fn tracker_connection_stats_are_recorded() {
     use tokio::sync::mpsc;
 
     // AppState whose LLM points nowhere; nothing here needs a model.
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(::netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),

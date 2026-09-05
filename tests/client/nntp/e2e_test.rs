@@ -103,6 +103,7 @@ mod nntp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection message. Output: {:?}",
@@ -112,6 +113,11 @@ mod nntp_client_tests {
         println!("✅ NNTP client connected and executed LIST command successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -222,6 +228,7 @@ mod nntp_client_tests {
         assert_eq!(client.protocol, "NNTP", "Client should be NNTP protocol");
 
         // Verify client shows connection
+        client.wait_for_any(&["connected", "NNTP"], 30).await;
         assert!(
             client.output_contains("connected").await || client.output_contains("NNTP").await,
             "Client should show NNTP connection. Output: {:?}",
@@ -231,6 +238,11 @@ mod nntp_client_tests {
         println!("✅ NNTP client selected newsgroup successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -343,6 +355,11 @@ mod nntp_client_tests {
         println!("✅ NNTP client retrieved article successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

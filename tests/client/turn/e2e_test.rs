@@ -25,7 +25,15 @@ mod turn_client_tests {
                 .expect_calls(1)
                 .and()
                 .on_event("turn_allocate_request")
-                .respond_with_actions(serde_json::json!([{"type": "turn_allocate_success", "relay_address": "127.0.0.1:50000", "lifetime": 600}]))
+                // The server's verb is send_turn_allocate_response; `turn_allocate_success`
+                // is not one it can execute. transaction_id must be echoed from the
+                // request or the client cannot correlate the reply.
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_allocate_response",
+                    "relay_address": "127.0.0.1:50000",
+                    "lifetime_seconds": 600,
+                    "transaction_id": e["transaction_id"]
+                }]))
                 .expect_calls(1)
                 .and()
         });
@@ -47,7 +55,12 @@ mod turn_client_tests {
                 .expect_calls(1)
                 .and()
                 .on_event("turn_connected")
-                .respond_with_actions(serde_json::json!([{"type": "turn_allocate", "lifetime": 600}]))
+                // The client's verb is allocate_turn_relay; `turn_allocate` is not one it
+                // can execute.
+                .respond_with_actions(serde_json::json!([{
+                    "type": "allocate_turn_relay",
+                    "lifetime_seconds": 600
+                }]))
                 .expect_calls(1)
                 .and()
         });
@@ -58,6 +71,7 @@ mod turn_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["TURN", "connected"], 30).await;
         assert!(
             client.output_contains("TURN").await || client.output_contains("connected").await,
             "Client should show TURN connection. Output: {:?}",
@@ -67,6 +81,11 @@ mod turn_client_tests {
         println!("✅ TURN client connected and allocated relay successfully");
 
         // Verify mocks
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -84,7 +103,44 @@ mod turn_client_tests {
         // Start TURN server
         let server_config = NetGetConfig::new(
             "Start TURN relay server on port {AVAILABLE_PORT}. Accept all allocation and permission requests."
-        );
+        )
+        .with_mock(|mock| {
+            mock
+                // These two tests configured no server mock at all, so the server's own
+                // startup instruction reached mock_ollama with nothing to match, got a
+                // 500, and no server ever started -- which surfaced as the client's rules
+                // reporting zero calls.
+                .on_instruction_containing("TURN relay server")
+                .respond_with_actions(serde_json::json!([{"type": "open_server", "port": 0, "base_stack": "TURN", "instruction": "TURN relay server"}]))
+                .expect_calls(1)
+                .and()
+                .on_event("turn_allocate_request")
+                // transaction_id must be echoed from the request or the client cannot
+                // correlate the reply.
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_allocate_response",
+                    "relay_address": "127.0.0.1:50000",
+                    "lifetime_seconds": 600,
+                    "transaction_id": e["transaction_id"]
+                }]))
+                .expect_at_least(1)
+                .and()
+                .on_event("turn_create_permission_request")
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_create_permission_response",
+                    "transaction_id": e["transaction_id"]
+                }]))
+                .expect_at_least(0)
+                .and()
+                .on_event("turn_refresh_request")
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_refresh_response",
+                    "transaction_id": e["transaction_id"],
+                    "lifetime_seconds": 600
+                }]))
+                .expect_at_least(0)
+                .and()
+        });
 
         let mut server = start_netget_server(server_config).await?;
 
@@ -102,7 +158,12 @@ mod turn_client_tests {
                 .expect_calls(1)
                 .and()
                 .on_event("turn_connected")
-                .respond_with_actions(serde_json::json!([{"type": "turn_allocate", "lifetime": 600}]))
+                // The client's verb is allocate_turn_relay; `turn_allocate` is not one it
+                // can execute.
+                .respond_with_actions(serde_json::json!([{
+                    "type": "allocate_turn_relay",
+                    "lifetime_seconds": 600
+                }]))
                 .expect_calls(1)
                 .and()
         });
@@ -117,6 +178,11 @@ mod turn_client_tests {
         println!("✅ TURN client created permission successfully");
 
         // Verify mocks
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -134,7 +200,44 @@ mod turn_client_tests {
         // Start TURN server
         let server_config = NetGetConfig::new(
             "Start TURN relay server on port {AVAILABLE_PORT}. Accept all allocation and refresh requests."
-        );
+        )
+        .with_mock(|mock| {
+            mock
+                // These two tests configured no server mock at all, so the server's own
+                // startup instruction reached mock_ollama with nothing to match, got a
+                // 500, and no server ever started -- which surfaced as the client's rules
+                // reporting zero calls.
+                .on_instruction_containing("TURN relay server")
+                .respond_with_actions(serde_json::json!([{"type": "open_server", "port": 0, "base_stack": "TURN", "instruction": "TURN relay server"}]))
+                .expect_calls(1)
+                .and()
+                .on_event("turn_allocate_request")
+                // transaction_id must be echoed from the request or the client cannot
+                // correlate the reply.
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_allocate_response",
+                    "relay_address": "127.0.0.1:50000",
+                    "lifetime_seconds": 600,
+                    "transaction_id": e["transaction_id"]
+                }]))
+                .expect_at_least(1)
+                .and()
+                .on_event("turn_create_permission_request")
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_create_permission_response",
+                    "transaction_id": e["transaction_id"]
+                }]))
+                .expect_at_least(0)
+                .and()
+                .on_event("turn_refresh_request")
+                .respond_with_actions_from_event(|e| serde_json::json!([{
+                    "type": "send_turn_refresh_response",
+                    "transaction_id": e["transaction_id"],
+                    "lifetime_seconds": 600
+                }]))
+                .expect_at_least(0)
+                .and()
+        });
 
         let mut server = start_netget_server(server_config).await?;
 
@@ -153,7 +256,12 @@ mod turn_client_tests {
                 .expect_calls(1)
                 .and()
                 .on_event("turn_connected")
-                .respond_with_actions(serde_json::json!([{"type": "turn_allocate", "lifetime": 600}]))
+                // The client's verb is allocate_turn_relay; `turn_allocate` is not one it
+                // can execute.
+                .respond_with_actions(serde_json::json!([{
+                    "type": "allocate_turn_relay",
+                    "lifetime_seconds": 600
+                }]))
                 .expect_calls(1)
                 .and()
         });
@@ -175,6 +283,11 @@ mod turn_client_tests {
         println!("✅ TURN client refreshed allocation successfully");
 
         // Verify mocks
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

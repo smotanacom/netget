@@ -69,25 +69,6 @@ pub static MQTT_MESSAGE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     ])
 });
 
-/// MQTT subscription confirmed event
-pub static MQTT_SUBSCRIBED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
-        "mqtt_subscribed",
-        "Successfully subscribed to MQTT topic(s)",
-        json!({
-            "type": "publish",
-            "topic": "sensors/response",
-            "payload": "subscription confirmed"
-        }),
-    )
-    .with_parameters(vec![Parameter {
-        name: "topics".to_string(),
-        type_hint: "array".to_string(),
-        description: "List of subscribed topics".to_string(),
-        required: true,
-    }])
-});
-
 /// MQTT client protocol action handler
 pub struct MqttClientProtocol;
 

@@ -102,7 +102,7 @@ impl From<&str> for EventPattern {
 
 /// Handler type for an event
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EventHandlerType {
     /// Handle with LLM (default behavior)
     Llm {
@@ -227,13 +227,35 @@ impl EventHandlerType {
                 }
                 Ok(())
             }
+            // A script's contract depends on `resident`, and getting it wrong fails
+            // silently: a resident script defines `handle(event_type, event, message)`
+            // while a non-resident one reads stdin and prints its own output. Define
+            // `handle` without `resident: true` and the script produces nothing, the
+            // handler yields no actions, and the server fails closed -- which the peer
+            // sees as a generic protocol error with no hint of the real cause.
+            EventHandlerType::Script {
+                language,
+                code,
+                resident,
+                ..
+            } if !*resident && defines_handle(language, code) => {
+                Err(InterpolationError::script_contract(language.clone()))
+            }
             _ => Ok(()),
         }
     }
 }
 
 /// Event handler configuration - maps event patterns to handlers
+///
+/// `deny_unknown_fields` is load-bearing. There are exactly two keys here, and there is no
+/// data-based matching: a rule matches on the event id alone. An `event_data_contains` key
+/// -- an entirely reasonable thing to assume exists, and something an LLM writing handlers
+/// will invent -- used to be accepted and silently ignored, so every rule registered
+/// against one event id matched every occurrence and first-match-wins picked the first.
+/// The config looked like it discriminated between requests and simply did not.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EventHandler {
     /// Pattern to match events
     pub event_pattern: EventPattern,
@@ -315,10 +337,22 @@ const REF_ROOT_DOT: &str = "event.";
 /// missing field and lists what the event actually offers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InterpolationError {
-    /// The reference exactly as it appeared, e.g. `{{event.headers.hsot}}`
+    /// The reference exactly as it appeared, e.g. `{{event.headers.hsot}}`, or the
+    /// script's language when `kind` is [`ErrorKind::ScriptContract`].
     pub reference: String,
     /// Why it could not be resolved, including the available alternatives
     pub detail: String,
+    /// Which validation failed, so the message reads correctly for each.
+    pub kind: ErrorKind,
+}
+
+/// What `EventHandlerType::validate` rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// A `{{event.…}}` reference in a static handler could not be resolved.
+    Interpolation,
+    /// A script's entry point contradicts its `resident` flag.
+    ScriptContract,
 }
 
 impl InterpolationError {
@@ -326,17 +360,39 @@ impl InterpolationError {
         Self {
             reference: reference.into(),
             detail: detail.into(),
+            kind: ErrorKind::Interpolation,
+        }
+    }
+
+    /// A script defines `handle(...)` but is not marked `resident` (or vice versa).
+    fn script_contract(language: impl Into<String>) -> Self {
+        Self {
+            reference: language.into(),
+            detail: String::new(),
+            kind: ErrorKind::ScriptContract,
         }
     }
 }
 
 impl std::fmt::Display for InterpolationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "static handler reference `{}` could not be resolved: {}",
-            self.reference, self.detail
-        )
+        match self.kind {
+            ErrorKind::Interpolation => write!(
+                f,
+                "static handler reference `{}` could not be resolved: {}",
+                self.reference, self.detail
+            ),
+            ErrorKind::ScriptContract => write!(
+                f,
+                "this {} script defines `handle(...)`, which is the RESIDENT entry point, \
+                 but the handler is not marked `resident: true`. As written the script \
+                 reads nothing from stdin and prints nothing, so the handler produces no \
+                 actions and the server fails closed -- with no hint of why. Add \
+                 `\"resident\": true`, or rewrite the script to read the event from stdin \
+                 and print its actions.",
+                self.reference
+            ),
+        }
     }
 }
 
@@ -580,6 +636,26 @@ pub fn contains_event_reference(value: &Value) -> bool {
             .any(|(k, v)| find_reference(k, 0).is_some() || contains_event_reference(v)),
         _ => false,
     }
+}
+
+/// Whether a script defines the resident entry point `handle(...)`.
+///
+/// Deliberately syntactic and conservative: it looks for a definition, not a call, so a
+/// script that merely mentions the word is not flagged.
+fn defines_handle(language: &str, code: &str) -> bool {
+    let needles: &[&str] = match language.to_ascii_lowercase().as_str() {
+        "python" => &["def handle("],
+        "javascript" | "js" | "node" => &["function handle(", "handle = function(", "handle = ("],
+        "go" => &["func handle("],
+        "perl" => &["sub handle "],
+        _ => return false,
+    };
+    let code = code
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    needles.iter().any(|n| code.contains(n))
 }
 
 /// Check every reference in a value tree for syntactic validity, without an event.

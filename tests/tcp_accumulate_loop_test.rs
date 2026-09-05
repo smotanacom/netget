@@ -36,7 +36,7 @@ async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
 /// on a current-thread runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn queued_data_is_consumed_rather_than_reprocessed_forever() {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -140,7 +140,7 @@ async fn queued_data_is_consumed_rather_than_reprocessed_forever() {
 /// blank exactly when the model is unreachable is the opposite of useful.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_event_is_still_recorded() {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),

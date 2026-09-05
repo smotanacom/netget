@@ -154,6 +154,10 @@ async fn test_webdav_propfind_listing() -> E2EResult<()> {
 
     println!("✓ PROPFIND listing round-tripped through a real WebDAV client");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -250,6 +254,10 @@ async fn test_webdav_put_then_get_round_trip() -> E2EResult<()> {
 
     println!("✓ PUT body reached the model and came back through GET");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -369,6 +377,10 @@ async fn test_webdav_write_statuses_refusal_and_options() -> E2EResult<()> {
     println!("✓ write statuses, refusal, fail-closed 503 and LLM-free OPTIONS all verified");
 
     // Passes only if OPTIONS made no LLM call: every rule's expect_calls(1) is exact.
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

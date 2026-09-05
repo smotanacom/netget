@@ -349,6 +349,23 @@ impl MockOllamaServer {
         format!("http://127.0.0.1:{}", self.port)
     }
 
+    /// Every call the model actually received, in order.
+    ///
+    /// `verify_calls` asserts against *rule expectations*; this answers the blunter question
+    /// "was the model consulted at all?", which is what a test of deterministic routing needs.
+    /// A handler that is supposed to answer without a round-trip is proven only by a zero here
+    /// — and only alongside a control that shows a non-zero, or the zero proves nothing.
+    pub async fn recorded_calls(&self) -> Vec<super::mock_config::MockCallRecord> {
+        let config = self.config.lock().await;
+        let history = config.call_history.lock().await;
+        history.clone()
+    }
+
+    /// How many LLM calls reached the model.
+    pub async fn call_count(&self) -> usize {
+        self.recorded_calls().await.len()
+    }
+
     /// Verify that all mock expectations were met
     pub async fn verify_calls(&self) -> E2EResult<()> {
         // Add timeout to prevent deadlock on lock acquisition
@@ -562,13 +579,20 @@ async fn handle_chat(
     let mock_response = match match_result {
         Some((idx, response, description)) => {
             eprintln!("✅ Using matched rule #{}", idx);
+            // Rendered ONCE and reused. `to_response_string` runs the rule's response
+            // generator, so rendering here for the diagnostics and again below for the
+            // reply invoked the closure twice per request. A generator carrying state
+            // between calls -- "the first GET finds the key, the one after the delete
+            // does not" -- advanced twice and answered the first request with the second
+            // answer.
+            let rendered = response.to_response_string(Some(&context.event_data));
             report_routing_inconsistencies(
                 &state,
                 &context,
                 idx,
                 &description,
                 matched_rule_event_type.as_deref(),
-                &response.to_response_string(Some(&context.event_data)),
+                &rendered,
             )
             .await;
             // Record call in separate lock acquisition
@@ -578,7 +602,7 @@ async fn handle_chat(
                 .await
                 .record_call(context.clone(), idx, description)
                 .await;
-            response
+            rendered
         }
         None => {
             eprintln!("❌ NO RULE MATCHED!");
@@ -613,7 +637,7 @@ async fn handle_chat(
         created_at: chrono::Utc::now().to_rfc3339(),
         message: OllamaResponseMessage {
             role: "assistant".to_string(),
-            content: mock_response.to_response_string(Some(&context.event_data)),
+            content: mock_response,
         },
         done: true,
     };
@@ -729,13 +753,20 @@ async fn handle_generate(
     let mock_response = match match_result {
         Some((idx, response, description)) => {
             eprintln!("✅ Using matched rule #{}", idx);
+            // Rendered ONCE and reused. `to_response_string` runs the rule's response
+            // generator, so rendering here for the diagnostics and again below for the
+            // reply invoked the closure twice per request. A generator carrying state
+            // between calls -- "the first GET finds the key, the one after the delete
+            // does not" -- advanced twice and answered the first request with the second
+            // answer.
+            let rendered = response.to_response_string(Some(&context.event_data));
             report_routing_inconsistencies(
                 &state,
                 &context,
                 idx,
                 &description,
                 matched_rule_event_type.as_deref(),
-                &response.to_response_string(Some(&context.event_data)),
+                &rendered,
             )
             .await;
             // Record call in separate lock acquisition
@@ -745,7 +776,7 @@ async fn handle_generate(
                 .await
                 .record_call(context.clone(), idx, description)
                 .await;
-            response
+            rendered
         }
         None => {
             eprintln!("❌ NO RULE MATCHED!");
@@ -778,7 +809,7 @@ async fn handle_generate(
     let response = OllamaGenerateResponse {
         model: request.model,
         created_at: chrono::Utc::now().to_rfc3339(),
-        response: mock_response.to_response_string(Some(&context.event_data)),
+        response: mock_response,
         done: true,
     };
 
@@ -1143,4 +1174,30 @@ fn extract_context_from_prompt(prompt: &str) -> LlmContext {
     }
 
     context
+}
+
+impl MockOllamaServer {
+    /// Wait until every expectation this server's rules declare is satisfied, or
+    /// `timeout_secs` elapses. Returns quietly either way; `verify_calls` asserts.
+    pub async fn wait_for_expectations(&self, timeout_secs: u64) {
+        let start = std::time::Instant::now();
+        let deadline = std::time::Duration::from_secs(timeout_secs);
+        loop {
+            {
+                let config = self.config.lock().await;
+                let satisfied = config.rules.iter().all(|rule| {
+                    let actual = rule.actual_calls.load(std::sync::atomic::Ordering::SeqCst);
+                    let floor = rule.expected_calls.or(rule.min_calls).unwrap_or(0);
+                    actual >= floor
+                });
+                if satisfied {
+                    return;
+                }
+            }
+            if start.elapsed() >= deadline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
 }

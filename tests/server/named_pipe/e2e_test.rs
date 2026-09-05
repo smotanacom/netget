@@ -14,6 +14,9 @@ use std::time::Duration;
 const IN_FIFO: &str = "./tmp/netget-test-fifo.in";
 const OUT_FIFO: &str = "./tmp/netget-test-fifo.out";
 
+const FAIL_IN_FIFO: &str = "./tmp/netget-test-fifo-fail.in";
+const FAIL_OUT_FIFO: &str = "./tmp/netget-test-fifo-fail.out";
+
 /// Round-trip: a real writer writes to the input FIFO, the mocked LLM answers with
 /// write_named_pipe_data, and a real reader reads the model's bytes off the response FIFO.
 #[tokio::test]
@@ -79,10 +82,99 @@ async fn test_named_pipe_request_response() -> E2EResult<()> {
         "Response FIFO should carry PONG, got: {response:?}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
 
     let _ = std::fs::remove_file(IN_FIFO);
     let _ = std::fs::remove_file(OUT_FIFO);
+    Ok(())
+}
+
+/// LLM failure: the reader gets a category, never a diagnosis, and never silence.
+///
+/// A reader parked in `read()` on the response FIFO has no timeout of its own, so a backend
+/// failure that writes nothing hangs it forever. The server writes one attributed line carrying
+/// only a `WireFailure` category; this asserts both halves — that something arrives, and that
+/// nothing from netget's internals (the backend URL, the model name, its retry text) is in it.
+#[tokio::test]
+async fn test_named_pipe_llm_failure_answers_with_a_category_only() -> E2EResult<()> {
+    let _ = std::fs::create_dir_all("./tmp");
+    let _ = std::fs::remove_file(FAIL_IN_FIFO);
+    let _ = std::fs::remove_file(FAIL_OUT_FIFO);
+
+    let prompt = "Create a named pipe FIFO server. Read from netget-test-fifo-fail.in and answer \
+                  on netget-test-fifo-fail.out";
+
+    // Only the startup instruction is mocked. The `named_pipe_data_received` event matches no
+    // rule, so the mock answers HTTP 500 and `call_llm` returns Err after its retries — the
+    // backend-failure path under test.
+    let server = helpers::start_netget_server(NetGetConfig::new(prompt).with_mock(|mock| {
+        mock.on_instruction_containing("named pipe")
+            .and_instruction_containing("netget-test-fifo-fail")
+            .respond_with_actions(serde_json::json!([{
+                "type": "open_server",
+                "port": 0,
+                "base_stack": "NAMED_PIPE",
+                "instruction": "Answer for each write",
+                "startup_params": {
+                    "pipe_path": FAIL_IN_FIFO,
+                    "response_pipe_path": FAIL_OUT_FIFO
+                }
+            }]))
+            .expect_calls(1)
+            .and()
+    }))
+    .await?;
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(60),
+        tokio::task::spawn_blocking(|| -> std::io::Result<String> {
+            let mut writer = std::fs::OpenOptions::new().write(true).open(FAIL_IN_FIFO)?;
+            writer.write_all(b"PING\n")?;
+            writer.flush()?;
+
+            let mut reader = std::fs::OpenOptions::new().read(true).open(FAIL_OUT_FIFO)?;
+            let mut buf = [0u8; 256];
+            let n = reader.read(&mut buf)?;
+            Ok(String::from_utf8_lossy(&buf[..n]).to_string())
+        }),
+    )
+    .await
+    .map_err(|_| "Timed out waiting for the failure notice on the response FIFO")???;
+
+    assert!(
+        response.starts_with("netget: "),
+        "the reader must get an attributed failure line, got: {response:?}"
+    );
+    // The categories WireFailure can produce; nothing else may be on the pipe.
+    assert!(
+        response.contains("request could not be processed")
+            || response.contains("backend at capacity"),
+        "the line must carry a WireFailure category, got: {response:?}"
+    );
+    for token in [
+        "✗", "retries", "http://", "11434", "LLM", "ollama", "Ollama", "/Users/",
+    ] {
+        assert!(
+            !response.contains(token),
+            "the failure notice leaked {token:?}: {response:?}"
+        );
+    }
+
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+
+    let _ = std::fs::remove_file(FAIL_IN_FIFO);
+    let _ = std::fs::remove_file(FAIL_OUT_FIFO);
     Ok(())
 }

@@ -1,4 +1,4 @@
-//! Tracking for OpenVPN peers seen by the control-plane responder.
+//! Tracking for OpenVPN peers seen by the control-channel server.
 //!
 //! A "peer" here is a source address that sent a session reset. It is transport
 //! state only — nothing is persisted, and the table is swept of idle entries so
@@ -25,7 +25,7 @@ pub enum PeerAdmission {
     Rejected,
 }
 
-/// A peer of the OpenVPN control-plane responder.
+/// A peer of the OpenVPN control-channel server.
 #[derive(Clone)]
 pub struct Peer {
     pub connection_id: ConnectionId,
@@ -36,12 +36,8 @@ pub struct Peer {
     pub key_id: u8,
     pub admission: PeerAdmission,
 
-    /// The exact reset reply sent to this peer, kept so a retransmitted reset
-    /// is answered identically instead of with a freshly built packet.
-    pub reset_reply: Option<Vec<u8>>,
-
-    /// Whether a non-empty control payload has been seen, so the "handshake
-    /// stops here" notice is logged once rather than per retransmission.
+    /// Whether a non-empty control payload has been seen, so the "feeding it to
+    /// the TLS session" notice is logged once rather than per retransmission.
     pub saw_control_payload: bool,
     /// Same, for undecryptable data packets.
     pub saw_data_packet: bool,
@@ -59,7 +55,6 @@ impl Peer {
             session_id,
             key_id,
             admission: PeerAdmission::Deciding,
-            reset_reply: None,
             saw_control_payload: false,
             saw_data_packet: false,
             bytes_sent: 0,

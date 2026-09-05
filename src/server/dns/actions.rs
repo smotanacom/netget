@@ -751,9 +751,15 @@ fn send_dns_response_action() -> ActionDefinition {
             description: "Complete DNS response message in RFC 1035 wire format, hex-encoded (at least 12 bytes / 24 hex characters). Not base64, not plain text - invalid hex is rejected.".to_string(),
             required: true,
         }],
+        // A complete RFC 1035 response: id=0x1234, flags 0x8180 (QR|RD|RA), one
+        // question (example.com A IN) and one answer (compressed name pointer
+        // 0xc00c, A IN, TTL 300, rdlength 4, 93.184.216.34). The previous example
+        // was abbreviated with an ellipsis and omitted the 2-byte id, so it was
+        // neither valid hex nor a DNS message.
         example: json!({
             "type": "send_dns_response",
-            "data": "81800001000100000000076578616d706c6503636f6d0000010001c00c00010001..."
+            "data": "123481800001000100000000076578616d706c6503636f6d0000010001\
+                     c00c000100010000012c00045db8d822"
         }),
         log_template: Some(
             LogTemplate::new()

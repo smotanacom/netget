@@ -110,7 +110,7 @@ This allows testing multiple scenarios with a single server startup.
 
 ### Ollama Lock
 
-Tests run with `--ollama-lock` flag to serialize LLM access when running concurrent tests.
+Tests use an in-process mock LLM, so concurrent runs share no model server.
 
 ## Known Issues
 

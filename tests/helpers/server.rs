@@ -109,6 +109,34 @@ impl NetGetServer {
 
     /// Check if output contains a specific string
     #[allow(dead_code)]
+    /// Wait until ANY of `needles` appears in the output, or the deadline passes.
+    ///
+    /// Returns quietly on timeout rather than erroring: callers use it immediately before
+    /// an `assert!` that already reports the condition and dumps the output, so failing
+    /// here would replace a good message with a worse one. Its job is to remove the race,
+    /// not to do the asserting.
+    ///
+    /// These suites used to wait with a fixed `sleep` and then assert. One second is enough
+    /// when a test runs alone and not when a hundred run together, so they reported a client
+    /// as never connecting when it simply had not connected yet.
+    #[allow(dead_code)]
+    pub async fn wait_for_any(&self, needles: &[&str], timeout_secs: u64) {
+        let start = std::time::Instant::now();
+        let deadline = std::time::Duration::from_secs(timeout_secs);
+        loop {
+            {
+                let lines = self.output_lines.lock().await;
+                if lines.iter().any(|l| needles.iter().any(|n| l.contains(n))) {
+                    return;
+                }
+            }
+            if start.elapsed() >= deadline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     pub async fn output_contains(&self, needle: &str) -> bool {
         let lines = self.output_lines.lock().await;
         lines.iter().any(|line| line.contains(needle))
@@ -217,6 +245,21 @@ impl NetGetServer {
     /// server.stop().await?;
     /// ```
     #[allow(dead_code)]
+    /// Wait until every mock expectation is satisfied, or `timeout_secs` elapses.
+    ///
+    /// See `NetGetClient::wait_for_mocks` -- same reasoning, server side. Returns quietly
+    /// on timeout; `verify_mocks` remains the thing that asserts.
+    #[allow(dead_code)]
+    pub async fn wait_for_mocks(&self, timeout_secs: u64) {
+        if let Some(ref server) = self.mock_ollama_server {
+            server.wait_for_expectations(timeout_secs).await;
+            return;
+        }
+        if let Some(ref mock_config) = self.mock_config {
+            super::mock_config::wait_for_mock_expectations(mock_config, timeout_secs).await;
+        }
+    }
+
     pub async fn verify_mocks(&self) -> E2EResult<()> {
         // Prefer mock Ollama server if available (new approach)
         if let Some(ref server) = self.mock_ollama_server {

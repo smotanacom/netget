@@ -1026,35 +1026,16 @@ pub static OSPF_LINK_STATE_ACK_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for OspfProtocol {
+    /// Deliberately empty.
+    ///
+    /// This used to advertise `list_neighbors` and `list_lsdb`, and `execute_action` had no arm
+    /// for either — so the model was offered two verbs and rejected with "Unknown OSPF action
+    /// type" whenever it chose one. They are removed rather than implemented because neither
+    /// can be answered honestly: NetGet keeps no neighbour table and no link-state database,
+    /// and the project rule is that protocols do not implement storage — the model tracks that
+    /// state in its own memory, where it already has everything these would report.
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
-        vec![
-            ActionDefinition {
-                name: "list_neighbors".to_string(),
-                description: "List all OSPF neighbors and their states".to_string(),
-                parameters: vec![],
-                example: json!({
-                    "type": "list_neighbors"
-                }),
-                log_template: Some(
-                    LogTemplate::new()
-                        .with_info("-> OSPF list neighbors")
-                        .with_debug("OSPF list_neighbors"),
-                ),
-            },
-            ActionDefinition {
-                name: "list_lsdb".to_string(),
-                description: "List Link State Database entries".to_string(),
-                parameters: vec![],
-                example: json!({
-                    "type": "list_lsdb"
-                }),
-                log_template: Some(
-                    LogTemplate::new()
-                        .with_info("-> OSPF list LSDB")
-                        .with_debug("OSPF list_lsdb"),
-                ),
-            },
-        ]
+        vec![]
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![
@@ -1098,7 +1079,7 @@ impl Protocol for OspfProtocol {
                 .implementation("Manual OSPFv2 (RFC 2328) over a raw IP-protocol-89 socket. Hello is parsed in full; DD/LSR/LSU/LSAck are parsed to their headers only. Outgoing DD carries no LSA headers and outgoing LSR/LSU/LSAck carry empty bodies - they are valid packets that advertise nothing.")
                 .llm_control("Optional: whether to engage with an OSPF speaker (respond to a Hello, claim DR/BDR, act as a honeypot) is a policy decision. With no operator policy (no instruction, no handler) the server observes passively and does NOT respond, with no LLM round-trip per packet. When the operator opts in, every received packet type raises an event carrying parsed fields and the LLM chooses the reply packet (it cannot yet put LSA contents into a reply). Fields the reply omits are filled from the interface configuration given at startup (router_id, area_id, network_mask, hello_interval, router_dead_interval, router_priority).")
                 .e2e_testing("None against a real router. The E2E suite runs the OSPF wire format over a plain UDP server and never exercises the raw-socket path, so it proves nothing about the raw-socket implementation. What IS verified at byte level (tests/server/ospf/e2e_test.rs): build_hello_packet writes the configured hello_interval, router_dead_interval, priority and network mask into the Hello body at RFC 2328 A.3.2 offsets when the action omits them, an action-supplied value overrides the configured one, and the RFC 2328 10.5 mismatch check fires on exactly the three fields the RFC names.")
-                .notes("Hello-level simulator, not a router. Whether to respond at all is policy, so with no operator policy the server is a passive listener (no response, no LLM call); the passive default is compile-verified since the raw-socket path needs root and the E2E suite never touches it. No LSDB, no SPF, no routing table, no LSA construction, no DR/BDR election, no periodic Hello timer and no dead-neighbor timeout. Adjacency cannot progress past 2-Way, and a Hello that fails the RFC 2328 10.5 interval/mask check does not advance it at all - the event still reaches the model, carrying the mismatch, so the refusal is visible rather than silent.")
+                .notes("Hello-level simulator, not a router. Whether to respond at all is policy, so with no operator policy the server is a passive listener (no response, no LLM call); the passive default is compile-verified since the raw-socket path needs root and the E2E suite never touches it. No LSDB, no SPF, no routing table, no LSA construction, no DR/BDR election, no periodic Hello timer and no dead-neighbor timeout. Adjacency cannot progress past 2-Way, and a Hello that fails the RFC 2328 10.5 interval/mask check does not advance it at all - the event still reaches the model, carrying the mismatch, so the refusal is visible rather than silent. On an LLM failure the server deliberately sends nothing: OSPF has no error or NAK packet, and every one of its five packet types is a positive routing assertion, so any fabricated reply would claim an adjacency, DR role or database state netget cannot back - the peer's own RouterDeadInterval covers a router that goes quiet. The failure is reported to the operator only, tagged decision=fail_closed_overloaded / fail_closed_unavailable and distinct from decision=model_wait / model_no_action.")
                 .build()
     }
     fn description(&self) -> &'static str {

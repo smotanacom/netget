@@ -53,6 +53,11 @@ attach event fires as soon as the TCP connection is accepted, well before `OP_RE
 `read_reports` then polls the IN endpoint the way a host does, with a 10s ceiling so a device
 that stops producing fails rather than hangs.
 
+`llm_failure_test.rs` waits on `"LLM call failed for USB mouse connection"` and then on
+`"decision=fail_closed_llm_error"`. The second wait is not redundant: the wire is silent in
+every failure mode, so the tag is the only thing distinguishing a backend outage from a model
+that answered with nothing, which makes it part of the contract rather than log decoration.
+
 ## Running
 
 ```bash

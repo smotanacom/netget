@@ -79,6 +79,7 @@ async fn test_proxy_blocks_rather_than_forwards_when_llm_fails() -> E2EResult<()
 
     let proxy = reqwest::Proxy::all(format!("http://127.0.0.1:{}", server.port))?;
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .proxy(proxy)
         .timeout(Duration::from_secs(25))
         .build()?;
@@ -124,6 +125,10 @@ async fn test_proxy_blocks_rather_than_forwards_when_llm_fails() -> E2EResult<()
         );
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

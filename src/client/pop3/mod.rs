@@ -24,15 +24,36 @@ pub struct Pop3Client;
 
 impl Pop3Client {
     /// Connect to POP3 server with LLM integration
+    ///
+    /// `use_tls: true` is **refused**, not ignored. This client speaks POP3 over a plain
+    /// `TcpStream` and has no TLS at all, and the very next thing a POP3 session does is
+    /// send `USER` and `PASS` in the clear. Connecting anyway would hand the password to a
+    /// cleartext socket while the parameter list, and this protocol's own CLAUDE.md, said
+    /// the session was encrypted. `imap` had the identical defect and takes the identical
+    /// exit; the project's rule is that declining out loud beats hiding a capability,
+    /// because the caller gets a reason they can act on.
+    ///
+    /// `use_tls: false` remains valid and means what it says.
     pub async fn connect_with_llm_actions(
         remote_addr: String,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
-        // TODO: Add TLS support when rustls API is stable
-        // For now, only plain POP3 is supported
+        if let Some(params) = &startup_params {
+            if params.get_optional_bool("use_tls")?.unwrap_or(false) {
+                return Err(anyhow::anyhow!(
+                    "POP3 client: `use_tls: true` was requested, but this client does not \
+                     implement TLS - it speaks POP3 over a plain TCP socket. Connecting \
+                     anyway would put the USER/PASS exchange for {remote_addr} on the wire \
+                     in cleartext while reporting an encrypted session. Pass \
+                     `use_tls: false` to accept a plaintext connection deliberately, or \
+                     terminate TLS in front of the server."
+                ));
+            }
+        }
         Self::connect_plain(remote_addr, llm_client, app_state, status_tx, client_id).await
     }
 

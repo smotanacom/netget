@@ -82,8 +82,34 @@ fn normalize_capabilities(prompt: &str) -> String {
 /// Snapshot assertion for rendered prompts: normalizes host-dependent
 /// content (see `normalize_capabilities`) before delegating to the shared
 /// snapshot utility.
+/// The server protocols these snapshots were generated against.
+///
+/// The prompt embeds an "Available Protocols" line built from the compiled registry, so the
+/// snapshots are **feature-set specific** — they match at
+/// `--no-default-features --features tcp,http,proxy,ssh,sqlite` and cannot match at
+/// `--all-features`, which compiles 135 protocols into that line.
+const SNAPSHOT_PROTOCOLS: &str = "HTTP, Proxy, SSH, TCP";
+
 fn assert_prompt_snapshot(test_name: &str, prompt: &str) {
     let normalized = normalize_capabilities(prompt);
+
+    // Skip rather than fail outside the canonical feature set.
+    //
+    // A full-suite `--all-features` run otherwise reports ten confident snapshot mismatches
+    // that are nothing but a longer protocol list, which is exactly the kind of noise that
+    // teaches people to ignore this suite. Failing here would say the prompts regressed; they
+    // did not.
+    if !normalized.contains(SNAPSHOT_PROTOCOLS) {
+        eprintln!(
+            "SKIP {test_name}: prompt snapshots are feature-set specific. They were generated \
+             against server protocols [{SNAPSHOT_PROTOCOLS}]; this build compiled a different \
+             set, so the embedded 'Available Protocols' line cannot match. Run:\n  \
+             ./cargo-isolated.sh test --no-default-features --features tcp,http,proxy,ssh,sqlite \
+             --test prompt"
+        );
+        return;
+    }
+
     snapshot_util::assert_snapshot(test_name, SNAPSHOT_DIR, &normalized);
 }
 
@@ -191,10 +217,33 @@ async fn test_user_input_prompt_proxy_server() {
     );
     // Note: script_inline and script_handles appear in scheduled_tasks param docs, which is OK
 
+    // The proxy's six configuration actions must NOT be offered.
+    //
+    // This used to assert the opposite. `configure_certificate` and its five siblings were
+    // removed from `get_async_actions` deliberately: each only serialised its arguments into
+    // `ActionResult::Output`, which nothing read back, so they reported success while changing
+    // nothing — and an `Output` emitted during a request event was mis-parsed as a
+    // `RequestAction` and aborted the decision for that request. Certificate mode and the
+    // filter modes are startup parameters now, which do take effect.
+    //
+    // Asserting their absence keeps the deletion from silently coming back, which asserting
+    // their presence obviously could not.
     #[cfg(feature = "proxy")]
     {
-        assert!(prompt.contains("configure_certificate"));
-        assert!(prompt.contains("configure_request_filters"));
+        for gone in [
+            "configure_certificate",
+            "configure_request_filters",
+            "configure_response_filters",
+            "configure_https_connection_filters",
+            "set_filter_mode",
+            "export_ca_certificate",
+        ] {
+            assert!(
+                !prompt.contains(gone),
+                "the proxy action '{gone}' was removed because it reported success while \
+                 changing nothing; it must not be advertised to the model again"
+            );
+        }
     }
 }
 

@@ -100,10 +100,22 @@ impl Protocol for RssProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("rss crate for RSS 2.0 XML generation, served over HTTP")
             .llm_control("Feed content generation (title, items, categories)")
-            .e2e_testing("reqwest HTTP client - planned <10 LLM calls")
+            .e2e_testing(
+                "feed-rs 2 is the independent reader: it parses the served feed, identifies it \
+                 as FeedType::RSS2, and the test asserts channel title, description and \
+                 language, three entries, the first entry's title and link, that its RFC 2822 \
+                 pub_date parsed into a real timestamp, and its categories \
+                 (tests/server/rss/e2e_test.rs, not #[ignore]d). The parser matters more than \
+                 usual here: this server builds its XML with the `rss` crate, so parsing it \
+                 back with the `rss` crate — which is what this test used to do — proved only \
+                 that one crate round-trips through itself. RSS has no session, so \
+                 fetch-and-parse is the whole protocol; reqwest does the GET, feed-rs is the \
+                 evidence. Not proven: conditional GET / If-Modified-Since, feed \
+                 autodiscovery, Atom.",
+            )
             .build()
     }
 

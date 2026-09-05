@@ -66,6 +66,10 @@ async fn test_http_simple_get() -> E2EResult<()> {
     assert!(body.contains("Hello World"));
 
     println!("✓ Response validated");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -132,6 +136,10 @@ async fn test_http_json_api() -> E2EResult<()> {
     assert_eq!(json["id"], 123);
 
     println!("✓ JSON response validated");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -231,6 +239,10 @@ async fn test_http_routing() -> E2EResult<()> {
     assert!(body.contains("Not Found") || body.contains("not found"));
     println!("✓ 404 response works");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -297,6 +309,10 @@ async fn test_http_headers() -> E2EResult<()> {
     assert!(body.contains("API Response") || body.contains("API"));
 
     println!("✓ Custom headers validated");
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -407,6 +423,10 @@ async fn test_http_methods() -> E2EResult<()> {
     assert!(body.contains("DELETE"));
     println!("✓ DELETE method works");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -477,6 +497,7 @@ async fn test_http_error_responses() -> E2EResult<()> {
 
     // Don't follow redirects for this test
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
 
@@ -513,6 +534,10 @@ async fn test_http_error_responses() -> E2EResult<()> {
     assert_eq!(location, Some("/home"));
     println!("✓ 301 redirect works");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
@@ -624,6 +649,10 @@ async fn test_http_simple_get_with_logging() -> E2EResult<()> {
     std::fs::remove_file(&log_path)?;
     println!("✓ Cleaned up access log file");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");

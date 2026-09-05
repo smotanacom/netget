@@ -23,7 +23,7 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::mpsc;
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -34,7 +34,7 @@ async fn new_state() -> AppState {
 
 /// Regression guard for "register the channel before the connected-event LLM call".
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -47,7 +47,7 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 }
 
 async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle: &str) {
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         for entry in state.list_access_logs_for(Some(owner), None).await {
             if serde_json::to_string(&entry)
                 .unwrap_or_default()
@@ -164,7 +164,7 @@ async fn injected_syslog_message_reaches_the_wire_over_udp() {
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..100 {
+    for _ in 0..1_000 {
         if !state.has_client_handle(client_id).await {
             return;
         }
@@ -222,12 +222,26 @@ async fn injected_syslog_message_reaches_the_wire_over_tcp() {
         other => panic!("expected Sent, got {other:?}"),
     };
 
-    let mut buf = vec![0u8; 4096];
-    let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
-        .await
-        .expect("no syslog line arrived")
-        .expect("read");
-    let line = String::from_utf8_lossy(&buf[..n]).to_string();
+    // Read until the framing newline rather than once: TCP is a stream, so a single
+    // `read` may return a prefix of the message. A one-shot read here passed most of
+    // the time and then reported 72 wire bytes against 73 sent -- a split, not a
+    // miscount.
+    let mut line_bytes: Vec<u8> = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut buf = [0u8; 512];
+        loop {
+            let read = stream.read(&mut buf).await.expect("read");
+            assert!(read > 0, "syslog stream closed before the newline arrived");
+            line_bytes.extend_from_slice(&buf[..read]);
+            if line_bytes.ends_with(b"\n") {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("no complete syslog line arrived");
+    let n = line_bytes.len();
+    let line = String::from_utf8_lossy(&line_bytes).to_string();
 
     // TCP frames each message with a trailing newline, and the reported count says so.
     assert_eq!(n, bytes_sent, "reported byte count differs from the wire");

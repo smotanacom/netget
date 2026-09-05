@@ -110,11 +110,28 @@ All PyPI operations use dual logging:
 
 ### 6. Error Handling
 
-LLM errors result in 500 Internal Server Error:
+Every failure answers the peer, and answers it with a *category* only — the error
+itself (backend URL, model name, anyhow chain) goes to the log and the status stream,
+never to the socket. See `crate::utils::wire_failure`.
 
-- If LLM call fails, return 500 with "Internal Server Error" body
-- If LLM response is invalid, return default 200 OK with empty body
-- Hyper connection errors close connection automatically
+- **LLM/backend call failed** — `WireFailure::classify` decides the code:
+  `Overloaded` → **503** with `Retry-After: 5` (pip backs off and retries),
+  anything else → **500**. Body is the static category string.
+  Logged as `decision=fail_closed_llm_error`.
+- **The answer contained no `send_pypi_response`** (model said nothing, or a handler
+  configured with `actions: []`) — **502**, logged as `decision=fail_closed_no_action`.
+- **The answer cannot be put on the wire** (status outside 100-599, `body_base64` that
+  does not decode, a header name hyper rejects) — **502**, logged as
+  `decision=fail_closed_bad_action`.
+- **The model answered** — its own status is sent as given, including a deliberate 404
+  or 403. Logged as `decision=model_response`, so a model's refusal is distinguishable
+  in the log from netget failing to get one.
+- Hyper connection errors close the connection automatically.
+
+There is deliberately **no permissive default**. This used to reply `200 OK` with an
+empty body whenever nothing usable came back, which pip reads as "the project exists
+and has zero distributions" — silence becoming a successful answer, the fail-open shape
+CLAUDE.md calls the most dangerous pattern in the codebase.
 
 ## LLM Integration
 
@@ -228,18 +245,15 @@ The `send_pypi_response` action returns structured data:
 A response using `body_base64` carries that field instead of `body`; the server
 decodes it before writing the HTTP body.
 
-### Default Response
+### When No Valid Response Is Produced
 
-If LLM doesn't provide a response or response parsing fails:
-
-- Status: 200 OK
-- Headers: empty
-- Body: empty string
-
-This ensures the server always responds (no hanging connections), though pip may fail if it receives invalid responses.
-
-A status outside 100-599 is rejected by the action executor. A header name hyper
-cannot parse produces a 502 for that request; the connection and server stay up.
+There is no default response. If the answer carries no `send_pypi_response`, or carries
+one that cannot be turned into an HTTP message, the request is answered **502** and the
+reason is logged with a `decision=fail_closed_*` tag (see Error Handling above). The
+connection and the server stay up. A status outside 100-599 is rejected by the action
+executor and again by the transport path; a `body_base64` that does not decode is a 502
+rather than a 0-byte body, because a truncated wheel fails pip's hash check far from
+the cause.
 
 ## Connection Management
 

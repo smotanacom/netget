@@ -17,7 +17,12 @@ pub struct ModelInfo {
 
 /// Query Ollama for available models and return detailed information
 pub async fn query_available_models(ollama_url: &str) -> Result<Vec<ModelInfo>> {
-    let client = reqwest::Client::new();
+    // Built through the shared helper, not `Client::new()`: this call has a 5-second timeout,
+    // and pointing it at a literal IP used to spend all five inside `getaddrinfo("127.0.0.1")`
+    // under load. It surfaced as `bluetooth_read_request` handlers "answering" in exactly
+    // 5.003s with zero calls reaching the backend — the read failed closed on a timeout that
+    // was pure name resolution. See `crate::llm::ollama_client::client_for_endpoint`.
+    let client = crate::llm::ollama_client::client_for_endpoint(ollama_url);
     let url = format!("{}/api/tags", ollama_url);
     let response = client
         .get(&url)

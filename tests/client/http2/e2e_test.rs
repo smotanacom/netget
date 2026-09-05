@@ -30,10 +30,10 @@ mod http2_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Server receives GET request
-                    .on_event("http_request_received")
+                    .on_event("http2_request")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_response",
+                            "type": "send_http2_response",
                             "status": 200,
                             "headers": {"Content-Type": "text/plain"},
                             "body": "Hello from HTTP/2 server"
@@ -69,10 +69,10 @@ mod http2_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 2: Client connected
-                    .on_event("http_connected")
+                    .on_event("http2_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "send_http_request",
+                            "type": "send_http2_request",
                             "method": "GET",
                             "path": "/",
                             "headers": {},
@@ -82,7 +82,7 @@ mod http2_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: Client receives response
-                    .on_event("http_response_received")
+                    .on_event("http2_response_received")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "wait_for_more"
@@ -98,6 +98,9 @@ mod http2_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection/response
+        client
+            .wait_for_any(&["HTTP2", "http2", "HTTP/2", "connected"], 30)
+            .await;
         assert!(
             client.output_contains("HTTP2").await
                 || client.output_contains("http2").await
@@ -110,6 +113,11 @@ mod http2_client_tests {
         println!("✅ HTTP/2 client made GET request successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -144,10 +152,10 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Server receives custom header request
-                .on_event("http_request_received")
+                .on_event("http2_request")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_response",
+                        "type": "send_http2_response",
                         "status": 200,
                         "headers": {},
                         "body": "Request logged"
@@ -183,10 +191,10 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Client connected - send request with custom headers
-                .on_event("http_connected")
+                .on_event("http2_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_request",
+                        "type": "send_http2_request",
                         "method": "GET",
                         "path": "/",
                         "headers": {"X-Custom-Header": "test-value"},
@@ -196,7 +204,7 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 3: Client receives response
-                .on_event("http_response_received")
+                .on_event("http2_response_received")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "wait_for_more"
@@ -216,6 +224,11 @@ mod http2_client_tests {
         println!("✅ HTTP/2 client responded to LLM instruction");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -250,11 +263,14 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Server receives /first request
-                .on_event("http_request_received")
-                .and_event_data_contains("path", "/first")
+                .on_event("http2_request")
+                // `uri`, not `path`: the http2_request event carries method/uri/version/
+                // headers/body. A constraint on a field that is not there can never
+                // match, so both requests fell through to a real LLM call.
+                .and_event_data_contains("uri", "/first")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_response",
+                        "type": "send_http2_response",
                         "status": 200,
                         "headers": {},
                         "body": "/first"
@@ -263,11 +279,14 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 3: Server receives /second request
-                .on_event("http_request_received")
-                .and_event_data_contains("path", "/second")
+                .on_event("http2_request")
+                // `uri`, not `path`: the http2_request event carries method/uri/version/
+                // headers/body. A constraint on a field that is not there can never
+                // match, so both requests fell through to a real LLM call.
+                .and_event_data_contains("uri", "/second")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_response",
+                        "type": "send_http2_response",
                         "status": 200,
                         "headers": {},
                         "body": "/second"
@@ -302,17 +321,17 @@ mod http2_client_tests {
                 .expect_calls(1)
                 .and()
                 // Mock 2: Client connected - send first request
-                .on_event("http_connected")
+                .on_event("http2_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_request",
+                        "type": "send_http2_request",
                         "method": "GET",
                         "path": "/first",
                         "headers": {},
                         "body": ""
                     },
                     {
-                        "type": "send_http_request",
+                        "type": "send_http2_request",
                         "method": "GET",
                         "path": "/second",
                         "headers": {},
@@ -328,6 +347,7 @@ mod http2_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client shows HTTP/2 protocol
+        client.wait_for_any(&["HTTP2", "http2", "HTTP/2"], 30).await;
         assert!(
             client.output_contains("HTTP2").await
                 || client.output_contains("http2").await
@@ -338,6 +358,11 @@ mod http2_client_tests {
         println!("✅ HTTP/2 client demonstrated multiplexing capability");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

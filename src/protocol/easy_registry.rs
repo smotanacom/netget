@@ -12,7 +12,7 @@ pub struct EasyRegistry {
     /// Maps easy protocol name (e.g., "http-easy") to easy protocol implementation
     protocols: HashMap<String, Arc<dyn Easy>>,
     /// Maps underlying protocol event type IDs to easy protocol name
-    /// Used for routing events: e.g., "http_request_received" -> "http-easy"
+    /// Used for routing events: e.g., "http_request" -> "http-easy"
     event_routing: HashMap<String, String>,
 }
 

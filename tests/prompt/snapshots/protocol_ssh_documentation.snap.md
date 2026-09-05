@@ -1,5 +1,5 @@
 Protocol: SSH
-State: Experimental
+State: Beta
 Implementation: russh v0.40, russh-sftp v2.0; ephemeral Ed25519 host key
 LLM Control: Auth decisions, shell banner and output, SFTP reads and listings
 E2E Testing: openssh client (ssh/sftp) by hand - no automated test exists

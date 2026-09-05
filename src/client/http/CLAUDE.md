@@ -113,6 +113,12 @@ LLMs can construct structured requests and interpret JSON/text responses.
 
 - `default_headers` (optional) - Headers included in all requests
     - Example: `{"User-Agent": "NetGet/1.0"}`
+    - Applied in `perform_request` **underneath** the headers the model puts on the request
+      itself: the two maps are merged on the lowercased header name (HTTP header names are
+      case-insensitive) before anything is applied, so `Accept` on the request replaces
+      `accept` from the defaults rather than being appended next to it. Merging first is
+      what makes that true — `reqwest::RequestBuilder::header` *appends*, so applying both
+      sets in turn would put two values on the wire.
 
 ### Dual Logging
 

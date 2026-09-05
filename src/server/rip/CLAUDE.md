@@ -210,6 +210,35 @@ ProtocolConnectionInfo::Rip {
 
 No persistent connections - each message is independent.
 
+### Backend failure: silence, deliberately (not the "goes quiet on LLM error" defect)
+
+RFC 2453 defines exactly two commands — Request (1) and Response (2). There is **no error
+message, no NAK, no status code**. The only thing this server could put on the wire after an
+LLM failure is a Response, and a Response is a *routing assertion*: an empty one claims "I have
+no routes", a metric-16 one poisons the destination in the peer's table. Both are fabricated
+policy that netget has no basis for when the backend that holds the policy is unreachable.
+
+So the LLM-error branch stays silent — the same static default this server already applies when
+no routing policy is configured. This is safe rather than a hang, because RIP is connectionless
+and unsolicited: a peer that gets no Response is not blocked on a socket, it re-requests on its
+own timer and otherwise relies on the 30-second periodic updates. Nothing is interpolated onto
+the wire, so there is nothing for `WireFailure` to render here.
+
+The distinction that would be carried by protocol error codes elsewhere is carried in the log
+instead. Grep `decision=` in `mod.rs`:
+
+| tag | meaning |
+|---|---|
+| `decision=static_default_silent` | no operator policy; no LLM call was made |
+| `decision=model_advertise` | the model produced route actions, which were sent |
+| `decision=model_ignore` | the model explicitly chose `ignore_request` — a routing decision |
+| `decision=no_answer_silent` | the model was asked and returned no actions |
+| `decision=fail_closed_llm_error` | the LLM call errored; also logs `category=overloaded` vs `category=unavailable` (`WireFailure::classify`) and the full error |
+
+Only the last is a fault. Keeping it apart from `model_ignore` is the point: a deliberate
+"advertise nothing" and a backend outage look identical on the wire and must not look identical
+in the log.
+
 ## Limitations
 
 ### Partial Implementation

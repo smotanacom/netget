@@ -1,7 +1,7 @@
 // Client-specific test helpers
 
 use super::common::*;
-use super::mock_config::MockLlmConfig;
+use super::mock_config::{wait_for_mock_expectations, MockLlmConfig};
 use super::netget::NetGetConfig;
 use std::time::Duration;
 use tokio::process::Child;
@@ -104,6 +104,34 @@ impl NetGetClient {
     }
 
     /// Check if output contains a specific string
+    /// Wait until ANY of `needles` appears in the output, or the deadline passes.
+    ///
+    /// Returns quietly on timeout rather than erroring: callers use it immediately before
+    /// an `assert!` that already reports the condition and dumps the output, so failing
+    /// here would replace a good message with a worse one. Its job is to remove the race,
+    /// not to do the asserting.
+    ///
+    /// These suites used to wait with a fixed `sleep` and then assert. One second is enough
+    /// when a test runs alone and not when a hundred run together, so they reported a client
+    /// as never connecting when it simply had not connected yet.
+    #[allow(dead_code)]
+    pub async fn wait_for_any(&self, needles: &[&str], timeout_secs: u64) {
+        let start = std::time::Instant::now();
+        let deadline = std::time::Duration::from_secs(timeout_secs);
+        loop {
+            {
+                let lines = self.output_lines.lock().await;
+                if lines.iter().any(|l| needles.iter().any(|n| l.contains(n))) {
+                    return;
+                }
+            }
+            if start.elapsed() >= deadline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     pub async fn output_contains(&self, needle: &str) -> bool {
         let lines = self.output_lines.lock().await;
         lines.iter().any(|line| line.contains(needle))
@@ -118,6 +146,24 @@ impl NetGetClient {
     /// Get all output lines
     pub async fn get_output(&self) -> Vec<String> {
         self.output_lines.lock().await.clone()
+    }
+
+    /// Wait until every mock expectation is satisfied, or `timeout_secs` elapses.
+    ///
+    /// The thing a protocol exchange actually finishes with is the last LLM call it
+    /// provokes, and that is what the expectations describe -- so this waits on the
+    /// exchange itself rather than on a sleep long enough to probably cover it. A test
+    /// that slept 2s and then verified was reporting "expected 1, got 0" for a step that
+    /// completed a few hundred milliseconds later.
+    ///
+    /// Returns quietly on timeout: `verify_mocks` is still the thing that asserts, and it
+    /// reports which rule fell short. This only removes the race.
+    #[allow(dead_code)]
+    pub async fn wait_for_mocks(&self, timeout_secs: u64) {
+        let Some(ref mock_config) = self.mock_config else {
+            return;
+        };
+        wait_for_mock_expectations(mock_config, timeout_secs).await;
     }
 
     /// Verify all mock expectations were met

@@ -7,6 +7,7 @@ use crate::logging::emit::Log;
 use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 use actions::{SVN_COMMAND_EVENT, SVN_GREETING_EVENT};
 use anyhow::Result;
 use std::net::SocketAddr;
@@ -169,51 +170,104 @@ async fn handle_svn_connection(
                 log.info(message);
             }
 
+            // Three outcomes have to stay apart in the log: the handler answered on the
+            // wire, it asked to hang up, or it answered nothing at all. Only the third
+            // shares a shape with an LLM error, and the `decision=` tags below keep even
+            // those two greppable apart.
+            let mut wrote_greeting = false;
+            let mut close_requested = false;
+
             // Send greeting responses
             for protocol_result in execution_result.protocol_results {
-                if let crate::llm::actions::protocol_trait::ActionResult::Output(output_data) =
-                    protocol_result
-                {
-                    {
-                        let mut writer = write_half.lock().await;
-                        if let Err(e) = writer.write_all(&output_data).await {
-                            log.error(format!("SVN write error: {}", e));
-                            drop(writer);
-                            app_state
-                                .remove_peer_handle(server_id, connection_id.as_u32())
-                                .await;
-                            return;
+                match protocol_result {
+                    crate::llm::actions::protocol_trait::ActionResult::Output(output_data) => {
+                        wrote_greeting = true;
+                        {
+                            let mut writer = write_half.lock().await;
+                            if let Err(e) = writer.write_all(&output_data).await {
+                                log.error(format!("SVN write error: {}", e));
+                                drop(writer);
+                                app_state
+                                    .remove_peer_handle(server_id, connection_id.as_u32())
+                                    .await;
+                                return;
+                            }
+                            let _ = writer.flush().await;
                         }
-                        let _ = writer.flush().await;
+
+                        // Update connection stats
+                        app_state
+                            .update_connection_stats(
+                                server_id,
+                                connection_id,
+                                None,
+                                Some(output_data.len() as u64),
+                                None,
+                                Some(1),
+                            )
+                            .await;
+
+                        // Full payload FileOnly: the send_svn_* action template already
+                        // reports the send to the TUI.
+                        log.trace(format!(
+                            "SVN sent greeting: {}",
+                            String::from_utf8_lossy(&output_data)
+                        ));
                     }
-
-                    // Update connection stats
-                    app_state
-                        .update_connection_stats(
-                            server_id,
-                            connection_id,
-                            None,
-                            Some(output_data.len() as u64),
-                            None,
-                            Some(1),
-                        )
-                        .await;
-
-                    // Full payload FileOnly: the send_svn_* action template already
-                    // reports the send to the TUI.
-                    log.trace(format!(
-                        "SVN sent greeting: {}",
-                        String::from_utf8_lossy(&output_data)
-                    ));
+                    crate::llm::actions::protocol_trait::ActionResult::CloseConnection => {
+                        close_requested = true;
+                    }
+                    _ => {}
                 }
+            }
+
+            if close_requested {
+                log.info(format!(
+                    "SVN greeting from {} decision=model_close",
+                    peer_addr
+                ));
+                close_svn_connection(&app_state, server_id, connection_id, &status_tx).await;
+                return;
+            }
+
+            if !wrote_greeting {
+                // The handler deliberately said nothing (a static handler with no actions,
+                // or a human answering "with nothing" at the dashboard before injecting
+                // bytes through `[ message this peer ]`). That is a real answer, so the
+                // connection stays open — but it is logged distinctly from the error path
+                // below so an operator can tell the two apart.
+                log.warn(format!(
+                    "SVN greeting from {} decision=no_action (nothing written; peer is \
+                     waiting for a greeting)",
+                    peer_addr
+                ));
             }
         }
         Err(e) => {
-            // Non-fatal: the greeting handler failed, connection is closed.
-            log.warn(format!("SVN LLM call failed during greeting: {}", e));
-            app_state
-                .remove_peer_handle(server_id, connection_id.as_u32())
-                .await;
+            // The backend failed. The peer gets an svn `failure` tuple carrying only a
+            // category — never the error, which names the backend, the model and our own
+            // retry machinery. The error itself goes to the log and the status stream.
+            let failure = WireFailure::classify(&e);
+            log.error(format!(
+                "SVN greeting for {} decision=fail_closed_llm_error category={} error: {}",
+                peer_addr,
+                if failure.is_overloaded() {
+                    "overloaded"
+                } else {
+                    "unavailable"
+                },
+                e
+            ));
+            write_svn_failure(
+                &write_half,
+                &app_state,
+                server_id,
+                connection_id,
+                &log,
+                failure,
+            )
+            .await;
+            close_svn_connection(&app_state, server_id, connection_id, &status_tx).await;
             return;
         }
     }
@@ -295,9 +349,11 @@ async fn handle_svn_connection(
 
                         // Send all outputs to client and check for close
                         let mut should_close = false;
+                        let mut wrote_reply = false;
                         for protocol_result in execution_result.protocol_results {
                             match protocol_result {
                                 crate::llm::actions::protocol_trait::ActionResult::Output(output_data) => {
+                                    wrote_reply = true;
                                     {
                                         let mut writer = write_half.lock().await;
                                         if let Err(e) = writer.write_all(&output_data).await {
@@ -348,12 +404,50 @@ async fn handle_svn_connection(
 
                         // Break loop if LLM requested connection close
                         if should_close {
+                            log.debug(format!(
+                                "SVN command '{}' from {} decision=model_close",
+                                parsed_command.command, peer_addr
+                            ));
                             break;
+                        }
+
+                        if !wrote_reply {
+                            // Answered with nothing: a real answer (static handler with no
+                            // actions, or a human choosing silence), kept distinct in the
+                            // log from the backend-failure path below.
+                            log.warn(format!(
+                                "SVN command '{}' from {} decision=no_action (nothing \
+                                 written)",
+                                parsed_command.command, peer_addr
+                            ));
                         }
                     }
                     Err(e) => {
-                        // Non-fatal: the command handler failed, connection is closed.
-                        log.warn(format!("SVN LLM call failed: {}", e));
+                        // Same rule as the greeting: category on the wire, error in the
+                        // log. Without this the peer sat blocked on a command it had
+                        // already sent until its own timeout expired.
+                        let failure = WireFailure::classify(&e);
+                        log.error(format!(
+                            "SVN command '{}' from {} decision=fail_closed_llm_error \
+                             category={} error: {}",
+                            parsed_command.command,
+                            peer_addr,
+                            if failure.is_overloaded() {
+                                "overloaded"
+                            } else {
+                                "unavailable"
+                            },
+                            e
+                        ));
+                        write_svn_failure(
+                            &write_half,
+                            &app_state,
+                            server_id,
+                            connection_id,
+                            &log,
+                            failure,
+                        )
+                        .await;
                         break;
                     }
                 }
@@ -369,6 +463,92 @@ async fn handle_svn_connection(
     // read error, close_connection, LLM failure), so this is the one place the
     // peer handle must be dropped — otherwise the rail keeps offering
     // "message this peer" on a dead connection.
+    use crate::state::server::ConnectionStatus;
+    app_state
+        .remove_peer_handle(server_id, connection_id.as_u32())
+        .await;
+    app_state
+        .update_connection_status(server_id, connection_id, ConnectionStatus::Closed)
+        .await;
+    let _ = status_tx.send("__UPDATE_UI__".to_string());
+}
+
+/// Encode an svn `failure` tuple that carries a failure **category** and nothing else.
+///
+/// ra_svn lets the server answer any command — and the greeting itself — with
+/// `( failure ( ( apr-err:number message:string file:string line:number ) ) )`, so this is
+/// the protocol's own error shape rather than something invented here.
+///
+/// The two [`WireFailure`] categories map onto different apr error numbers so a client can
+/// tell "come back later" from "this request is not going to work":
+///
+/// - `Overloaded` -> 210003 `SVN_ERR_RA_SVN_IO_ERROR`, the transient transport-side failure
+/// - `Unavailable` -> 210000 `SVN_ERR_RA_SVN_CMD_ERR`, the generic command failure
+///
+/// The message is [`WireFailure::text`], a `&'static str`: no part of the underlying error
+/// — backend URL, model name, file path, anyhow chain — can reach the wire through here.
+fn svn_failure_tuple(failure: WireFailure) -> Vec<u8> {
+    let error_code = if failure.is_overloaded() {
+        210003
+    } else {
+        210000
+    };
+    let message = failure.text();
+    // Counted strings (`<len>:<bytes>`); the file field is the empty string `0:`.
+    format!(
+        "( failure ( ( {} {}:{} 0: 0 ) ) )\n",
+        error_code,
+        message.len(),
+        message
+    )
+    .into_bytes()
+}
+
+/// Write the failure tuple to the peer, best effort, and count the bytes.
+async fn write_svn_failure(
+    write_half: &Arc<Mutex<tokio::io::WriteHalf<tokio::net::TcpStream>>>,
+    app_state: &Arc<AppState>,
+    server_id: crate::state::ServerId,
+    connection_id: ConnectionId,
+    log: &Log<'_>,
+    failure: WireFailure,
+) {
+    let payload = svn_failure_tuple(failure);
+    let written = {
+        let mut writer = write_half.lock().await;
+        match writer.write_all(&payload).await {
+            Ok(()) => {
+                let _ = writer.flush().await;
+                true
+            }
+            Err(e) => {
+                log.debug(format!("SVN could not write failure tuple: {}", e));
+                false
+            }
+        }
+    };
+    if written {
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                None,
+                Some(payload.len() as u64),
+                None,
+                Some(1),
+            )
+            .await;
+    }
+}
+
+/// Drop the peer handle and mark the connection closed (the greeting paths return before
+/// reaching the loop's shared teardown).
+async fn close_svn_connection(
+    app_state: &Arc<AppState>,
+    server_id: crate::state::ServerId,
+    connection_id: ConnectionId,
+    status_tx: &mpsc::UnboundedSender<String>,
+) {
     use crate::state::server::ConnectionStatus;
     app_state
         .remove_peer_handle(server_id, connection_id.as_u32())

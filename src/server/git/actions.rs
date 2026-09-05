@@ -88,10 +88,17 @@ impl Protocol for GitProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("Hand-rolled Git Smart HTTP v0 (pkt-line + pack v2) on hyper")
             .llm_control("Branch, commit metadata and file contents; object IDs are computed")
-            .e2e_testing("git clone / git ls-remote against the real git binary")
+            .e2e_testing(
+                "The real `git` binary is the client: `git clone http://127.0.0.1:PORT/test-repo` \
+                 completes a Smart HTTP v0 fetch, then `git fsck --full` validates the pack we \
+                 sent, `git log -1 --format=%s` and `git show HEAD:README.md` assert the commit \
+                 subject and exact blob bytes, `git branch --show-current` asserts the branch, \
+                 and the checked-out tree is compared byte-for-byte including a nested path and \
+                 the executable bit (tests/server/git/e2e_test.rs, not #[ignore]d)",
+            )
             .notes(
                 "Read-only (clone/fetch), single commit, no history, no push. A clone needs \
                  the same snapshot from both the info/refs and the git-upload-pack event; a \

@@ -132,9 +132,9 @@ ff ff ff ff ff ff  // Destination MAC (broadcast)
 
 `connect_with_llm_actions` registers a command channel
 (`client::command_support::register_command_channel`) before the pcap task starts and spawns
-a `command_loop` task (registered with `register_client_task`). This client makes no
-connected-event LLM call, so there is no park to race, but `[ send ]` is live from the moment
-the client exists.
+a `command_loop` task (registered with `register_client_task`), so `[ send ]` is live from
+the moment the client exists — including while the connected-event call below is parked on a
+manual routing rule.
 
 There is no `AsyncWrite` half here, so the generic `handle_stream_client_command` cannot be
 used. An injected `inject_frame` goes through the protocol's own `execute_action` and lands
@@ -223,3 +223,33 @@ ARP spoofing and MAC address manipulation can be malicious - use responsibly.
 - Frame timing control (scheduled injection)
 - VLAN tag support
 - Jumbo frame support
+
+
+## Events, and the chain between them
+
+Three, all raised by this client and all returned from `get_event_types()` as clones of the
+same statics, so a declaration cannot drift from what is emitted:
+
+- **`datalink_connected`** — the capture handle is open. This is what lets the model act on
+  its instruction; before it existed the client opened the interface and asked the model
+  nothing, so a client created with "inject an ARP request for 10.0.0.2" opened `lo0` and
+  then sat there having done nothing at all.
+- **`datalink_frame_injected`** — a frame really went out (`sendpacket` returned Ok). It was
+  declared and raised nowhere, so a model that injected a frame was never told it had worked
+  and could not follow it with anything.
+- **`datalink_frame_captured`** — promiscuous mode only.
+
+**The chain runs through the injection queue, not the stack.** `run_llm_turn` raises one
+event, queues whatever frames the model asks for, and returns. Injecting raises
+`datalink_frame_injected` from the pcap loop, which calls `run_llm_turn` again — so
+inject → report → inject continues without any recursion to bound, and each turn is a plain
+`async fn` with no boxing.
+
+The injected-frame event is raised with `runtime.spawn` from inside the blocking pcap thread
+rather than awaited there. That thread owns the libpcap handle and is the only thing that can
+call `sendpacket`; blocking it on an LLM call that a manual rule can park for minutes would
+stop every other injection, including the dashboard's.
+
+On an LLM failure nothing is written to the interface and the reason is logged. DataLink is
+one of the deliberately silent protocols — a fabricated frame on a real network is worse than
+no frame.

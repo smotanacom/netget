@@ -21,7 +21,7 @@ use netget::tui::projection;
 use tokio::sync::mpsc;
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -499,6 +499,47 @@ async fn editing_a_server_hot_applies_without_a_restart() {
     );
     let updated = state.get_server(server_id).await.unwrap();
     assert_eq!(updated.instruction, "answer politely");
+}
+
+/// A server created with `port: 0` must open its edit form showing the port it is **bound
+/// to**, not the `0` that was asked for.
+///
+/// The form showed `row.port` — the requested value — while the `host` field beside it
+/// already read `local_addr`, so an auto-assigned server presented a real host next to a
+/// literal `0`. That is not cosmetic: an edit form is a snapshot the operator changes in
+/// place, and submitting the `0` it displays is a request for *a different* random port. The
+/// field's own description says changing it restarts the server and drops every connection.
+#[tokio::test]
+async fn an_auto_assigned_server_edits_with_the_port_it_actually_bound() {
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let mut form = FormModel::for_create(Section::Servers, "TCP", None);
+    form.set_field_value(&FieldTarget::Port, "0".to_string());
+    form.apply(&state, llm(), &tx).await.expect("create");
+    let server_id = state.get_all_server_ids().await[0];
+    let bound = wait_for_port(&state, server_id).await;
+    assert_ne!(bound, 0, "the OS must have assigned a real port");
+
+    let snapshot = projection::build_snapshot(&state).await;
+    let edit = FormModel::for_edit_server(&snapshot.servers[0]);
+    let port = edit
+        .fields
+        .iter()
+        .find(|f| matches!(f.target, FieldTarget::Port))
+        .expect("port field");
+
+    assert_eq!(
+        port.value,
+        bound.to_string(),
+        "the edit form must show the bound port, not the requested one"
+    );
+    // `original` must match, or an untouched port field reads as an edit and restarts the
+    // server for no reason — the opposite failure, and a worse one.
+    assert_eq!(
+        port.original, port.value,
+        "an untouched port must not count as a change"
+    );
 }
 
 /// `[ + connect a … client ]` on a server pre-fills the remote address, but a

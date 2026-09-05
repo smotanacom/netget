@@ -33,14 +33,20 @@ mod doh_client_tests {
                         // Mock 2: Server receives query for example.com
                         .on_event("doh_query")
                         .and_event_data_contains("domain", "example.com")
-                        .respond_with_actions(serde_json::json!([
-                            {
-                                "type": "send_dns_a_response",
-                                "domain": "example.com",
-                                "ip": "93.184.216.34",
-                                "ttl": 300
-                            }
-                        ]))
+                        .respond_with_actions_from_event(|e| {
+                            serde_json::json!([
+                                {
+                                    "type": "send_dns_a_response",
+                                    // The client picks a random DNS id and drops any
+                                    // answer that does not carry it back. Omitted, it
+                                    // defaults to 0 and the response is discarded.
+                                    "query_id": e["query_id"].as_u64().unwrap_or(0),
+                                    "domain": "example.com",
+                                    "ip": "93.184.216.34",
+                                    "ttl": 300
+                                }
+                            ])
+                        })
                         .expect_calls(1)
                         .and()
                 });
@@ -65,7 +71,13 @@ mod doh_client_tests {
                         "type": "open_client",
                         "remote_addr": format!("https://127.0.0.1:{}/dns-query", server.port),
                         "protocol": "DoH",
-                        "instruction": "Query example.com A record"
+                        "instruction": "Query example.com A record",
+                        // NetGet's DoH server is TLS-only and serves a self-signed
+                        // certificate, so a client using the system roots cannot reach it
+                        // -- the two halves of this codebase could not talk to each other.
+                        // Opted into explicitly here rather than the client quietly
+                        // accepting any certificate.
+                        "startup_params": { "insecure_skip_verify": true }
                     }
                 ]))
                 .expect_calls(1)
@@ -99,6 +111,7 @@ mod doh_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection. Output: {:?}",
@@ -108,6 +121,11 @@ mod doh_client_tests {
         println!("✅ DoH client connected to local server and queried successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -144,14 +162,20 @@ mod doh_client_tests {
                         .on_event("doh_query")
                         .and_event_data_contains("domain", "example.com")
                         .and_event_data_contains("query_type", "AAAA")
-                        .respond_with_actions(serde_json::json!([
-                            {
-                                "type": "send_dns_aaaa_response",
-                                "domain": "example.com",
-                                "ip": "2001:db8::1",
-                                "ttl": 300
-                            }
-                        ]))
+                        .respond_with_actions_from_event(|e| {
+                            serde_json::json!([
+                                {
+                                    "type": "send_dns_aaaa_response",
+                                    // The client picks a random DNS id and drops any
+                                    // answer that does not carry it back. Omitted, it
+                                    // defaults to 0 and the response is discarded.
+                                    "query_id": e["query_id"].as_u64().unwrap_or(0),
+                                    "domain": "example.com",
+                                    "ip": "2001:db8::1",
+                                    "ttl": 300
+                                }
+                            ])
+                        })
                         .expect_calls(1)
                         .and()
                 });
@@ -176,7 +200,13 @@ mod doh_client_tests {
                         "type": "open_client",
                         "remote_addr": format!("https://127.0.0.1:{}/dns-query", server.port),
                         "protocol": "DoH",
-                        "instruction": "Query example.com AAAA record"
+                        "instruction": "Query example.com AAAA record",
+                        // NetGet's DoH server is TLS-only and serves a self-signed
+                        // certificate, so a client using the system roots cannot reach it
+                        // -- the two halves of this codebase could not talk to each other.
+                        // Opted into explicitly here rather than the client quietly
+                        // accepting any certificate.
+                        "startup_params": { "insecure_skip_verify": true }
                     }
                 ]))
                 .expect_calls(1)
@@ -210,14 +240,20 @@ mod doh_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client connected
-        assert_eq!(
-            client.protocol, "DNS-over-HTTPS",
-            "Client should be DoH protocol"
-        );
+        // `client.protocol` is the name the client was opened with, which is what the
+        // registry resolves and what the startup line reports. "DNS-over-HTTPS" is the
+        // separate display name `protocol_name()` gives the model; comparing the two can
+        // never hold.
+        assert_eq!(client.protocol, "DoH", "Client should be DoH protocol");
 
         println!("✅ DoH client AAAA query test passed");
 
         // Verify mock expectations
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -253,27 +289,39 @@ mod doh_client_tests {
                         // Mock 2: Server receives first query (example.com)
                         .on_event("doh_query")
                         .and_event_data_contains("domain", "example.com")
-                        .respond_with_actions(serde_json::json!([
-                            {
-                                "type": "send_dns_a_response",
-                                "domain": "example.com",
-                                "ip": "93.184.216.34",
-                                "ttl": 300
-                            }
-                        ]))
+                        .respond_with_actions_from_event(|e| {
+                            serde_json::json!([
+                                {
+                                    "type": "send_dns_a_response",
+                                    // The client picks a random DNS id and drops any
+                                    // answer that does not carry it back. Omitted, it
+                                    // defaults to 0 and the response is discarded.
+                                    "query_id": e["query_id"].as_u64().unwrap_or(0),
+                                    "domain": "example.com",
+                                    "ip": "93.184.216.34",
+                                    "ttl": 300
+                                }
+                            ])
+                        })
                         .expect_calls(1)
                         .and()
                         // Mock 3: Server receives second query (example.org)
                         .on_event("doh_query")
                         .and_event_data_contains("domain", "example.org")
-                        .respond_with_actions(serde_json::json!([
-                            {
-                                "type": "send_dns_a_response",
-                                "domain": "example.org",
-                                "ip": "93.184.216.35",
-                                "ttl": 300
-                            }
-                        ]))
+                        .respond_with_actions_from_event(|e| {
+                            serde_json::json!([
+                                {
+                                    "type": "send_dns_a_response",
+                                    // The client picks a random DNS id and drops any
+                                    // answer that does not carry it back. Omitted, it
+                                    // defaults to 0 and the response is discarded.
+                                    "query_id": e["query_id"].as_u64().unwrap_or(0),
+                                    "domain": "example.org",
+                                    "ip": "93.184.216.35",
+                                    "ttl": 300
+                                }
+                            ])
+                        })
                         .expect_calls(1)
                         .and()
                 });
@@ -298,7 +346,13 @@ mod doh_client_tests {
                         "type": "open_client",
                         "remote_addr": format!("https://127.0.0.1:{}/dns-query", server.port),
                         "protocol": "DoH",
-                        "instruction": "Query example.com then example.org"
+                        "instruction": "Query example.com then example.org",
+                        // NetGet's DoH server is TLS-only and serves a self-signed
+                        // certificate, so a client using the system roots cannot reach it
+                        // -- the two halves of this codebase could not talk to each other.
+                        // Opted into explicitly here rather than the client quietly
+                        // accepting any certificate.
+                        "startup_params": { "insecure_skip_verify": true }
                     }
                 ]))
                 .expect_calls(1)
@@ -344,14 +398,16 @@ mod doh_client_tests {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Verify client is using DNS-over-HTTPS protocol
-        assert_eq!(
-            client.protocol, "DNS-over-HTTPS",
-            "Client should be DNS-over-HTTPS protocol"
-        );
+        assert_eq!(client.protocol, "DoH", "Client should be DoH protocol");
 
         println!("✅ DoH client made multiple queries successfully");
 
         // Verify mock expectations
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -388,15 +444,25 @@ mod doh_client_tests {
                         .on_event("doh_query")
                         .and_event_data_contains("domain", "example.com")
                         .and_event_data_contains("query_type", "MX")
-                        .respond_with_actions(serde_json::json!([
-                            {
-                                "type": "send_dns_mx_response",
-                                "domain": "example.com",
-                                "mail_server": "mail.example.com",
-                                "priority": 10,
-                                "ttl": 300
-                            }
-                        ]))
+                        .respond_with_actions_from_event(|e| {
+                            serde_json::json!([
+                                {
+                                    "type": "send_dns_mx_response",
+                                    // The client picks a random DNS id and drops any
+                                    // answer that does not carry it back. Omitted, it
+                                    // defaults to 0 and the response is discarded.
+                                    "query_id": e["query_id"].as_u64().unwrap_or(0),
+                                    "domain": "example.com",
+                                    // `exchange`/`preference`, the names the action declares --
+                                    // not mail_server/priority. `exchange` is required, so the
+                                    // wrong name made the action fail and the server answered
+                                    // HTTP 500 "No response generated".
+                                    "exchange": "mail.example.com",
+                                    "preference": 10,
+                                    "ttl": 300
+                                }
+                            ])
+                        })
                         .expect_calls(1)
                         .and()
                 });
@@ -421,7 +487,13 @@ mod doh_client_tests {
                         "type": "open_client",
                         "remote_addr": format!("https://127.0.0.1:{}/dns-query", server.port),
                         "protocol": "DoH",
-                        "instruction": "Query example.com MX records"
+                        "instruction": "Query example.com MX records",
+                        // NetGet's DoH server is TLS-only and serves a self-signed
+                        // certificate, so a client using the system roots cannot reach it
+                        // -- the two halves of this codebase could not talk to each other.
+                        // Opted into explicitly here rather than the client quietly
+                        // accepting any certificate.
+                        "startup_params": { "insecure_skip_verify": true }
                     }
                 ]))
                 .expect_calls(1)
@@ -467,6 +539,11 @@ mod doh_client_tests {
         println!("✅ DoH client queried MX records successfully");
 
         // Verify mock expectations
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

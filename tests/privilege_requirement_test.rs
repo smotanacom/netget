@@ -205,3 +205,43 @@ fn detected_capabilities_are_self_consistent() {
     assert!(desc.contains("raw IP sockets"), "description: {}", desc);
     assert!(desc.contains("packet capture"), "description: {}", desc);
 }
+
+/// Capture detection must not depend on how busy the machine is.
+///
+/// A BPF device is **exclusive** — one open handle each — and the probe used to try only
+/// `/dev/bpf0..3`. Running the suite at `--test-threads=100`, or alongside another netget,
+/// occupies those, and the probe then answered "no capture access" on a host that plainly
+/// had it. `PrivilegeRequirement::is_met_by()` gates on that answer, so ARP, DataLink and
+/// IS-IS became un-startable whenever the machine was busy — a refusal caused by load, not
+/// by permissions.
+///
+/// It surfaced as `isis_spawn_outcome_matches_capture_privilege` failing with "spawn returned
+/// Ok without capture privilege": the capture had opened fine and only the probe disagreed.
+///
+/// This holds the first handful of BPF devices open and asserts the answer does not change.
+/// On a host with no capture access at all both answers are `false`, which is still the
+/// property under test: the probe must be *stable*, not permissive.
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+#[test]
+fn capture_detection_survives_the_first_bpf_devices_being_busy() {
+    let before = SystemCapabilities::detect().has_packet_capture_access;
+
+    // Hold whatever we can of the low-numbered devices, exactly the contention the old
+    // probe mistook for a permission failure.
+    let mut held = Vec::new();
+    for n in 0..6 {
+        if let Ok(f) = std::fs::File::open(format!("/dev/bpf{n}")) {
+            held.push(f);
+        }
+    }
+
+    let during = SystemCapabilities::detect().has_packet_capture_access;
+    drop(held);
+
+    assert_eq!(
+        before, during,
+        "capture detection changed while the low-numbered /dev/bpf* devices were held. \
+         A BPF device is exclusive, so 'busy' is not 'denied' — scan further up, and treat \
+         EBUSY as evidence that access exists."
+    );
+}

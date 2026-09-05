@@ -188,6 +188,10 @@ async fn test_xmpp_stream_header_and_features() -> E2EResult<()> {
         "the advertised SASL mechanisms must be the ones the model listed, in order"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -334,6 +338,10 @@ async fn test_xmpp_message_and_presence_round_trip() -> E2EResult<()> {
         "<status/> text"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

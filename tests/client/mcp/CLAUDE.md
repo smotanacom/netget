@@ -19,7 +19,7 @@ verify client connection, initialization, and MCP operations (tools, resources, 
 - **LLM Required**: Yes (all tests call Ollama)
 - **Network**: Localhost only (127.0.0.1)
 - **Ports**: Dynamic allocation via `{AVAILABLE_PORT}` placeholder
-- **Concurrency**: Tests use `--ollama-lock` for serialized LLM access
+- **Concurrency**: Tests use a per-test in-process mock LLM
 
 ## LLM Call Budget
 

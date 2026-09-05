@@ -386,6 +386,9 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
         let mut sent_tagged_completion = false;
         let mut sent_any_output = false;
         let mut deferred = false;
+        // Whether the tagged completion the model itself sent said OK. A SELECT the model
+        // refused must not still move the session into `Selected` (see `update_session_state`).
+        let mut tagged_completion_ok = false;
 
         // Execute actions returned by LLM
         for action_result in result.protocol_results {
@@ -399,6 +402,7 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
                             .starts_with(&format!("{} ", tag.to_uppercase()))
                     }) {
                         sent_tagged_completion = true;
+                        tagged_completion_ok = tagged_ok_for(&text, &tag);
                     }
                     self.send_response(&data).await?;
                 }
@@ -458,8 +462,24 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
             self.send_response(completion.as_bytes()).await?;
         }
 
-        // Handle state transitions based on command
-        self.update_session_state(&command, &args).await?;
+        // Handle state transitions based on command.
+        //
+        // Gated on the command having actually succeeded. This used to run unconditionally, so
+        // a SELECT the model refused with `tag NO` still moved the session to `Selected` and
+        // recorded the mailbox: the client was told no, the server believed yes, and every
+        // later FETCH/STORE operated against a mailbox the model had just declined. A command
+        // still awaiting more data (`deferred`) has not completed at all, so it transitions
+        // nothing either.
+        let command_ok = if deferred {
+            false
+        } else if sent_tagged_completion {
+            tagged_completion_ok
+        } else {
+            // The completion synthesised above: OK when untagged data went out, NO otherwise.
+            sent_any_output
+        };
+        self.update_session_state(&command, &args, command_ok)
+            .await?;
 
         Ok(())
     }
@@ -535,8 +555,28 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
         Ok(())
     }
 
-    async fn update_session_state(&mut self, command: &str, args: &str) -> Result<()> {
+    /// Apply the session-state transition a completed command implies.
+    ///
+    /// `command_ok` is whether the tagged completion the client received said OK. Only LOGOUT
+    /// transitions regardless: the client is leaving either way, and refusing to record that
+    /// would leave a dead session marked live. Everything else transitions only on success —
+    /// server-side state must never claim more than the client was told.
+    async fn update_session_state(
+        &mut self,
+        command: &str,
+        args: &str,
+        command_ok: bool,
+    ) -> Result<()> {
         let cmd_upper = command.to_uppercase();
+
+        if !command_ok && cmd_upper != "LOGOUT" {
+            debug!(
+                "IMAP {} on connection {} did not succeed (decision=no_state_change); \
+                 session state unchanged",
+                cmd_upper, self.connection_id
+            );
+            return Ok(());
+        }
 
         match cmd_upper.as_str() {
             "SELECT" => {

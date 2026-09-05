@@ -50,6 +50,24 @@ Silence is a design decision, not an omission:
 - It does not fingerprint itself to scanners via distinctive responses
 - It keeps the implementation small enough to be obviously correct
 
+This includes the LLM-failure path. Where a request/response protocol must answer its peer with a category on
+backend failure (`crate::utils::WireFailure`), IPSec has no response message to degrade: an error NOTIFY would be
+both a fingerprint and an answer for a negotiation that never runs. So a failed `call_llm` is silent on the wire,
+exactly like a successful classification.
+
+Because the wire cannot distinguish the outcomes, the **log** must. `handle_handshake_initiation` tags every
+outcome with a `decision=` field:
+
+| `decision=` | Meaning |
+|---|---|
+| `model_reject` | the handler/model returned `reject_connection` |
+| `model_answer` | the handler/model returned some other action |
+| `no_answer` | the handler/model returned zero actions |
+| `fail_closed_overloaded` | `call_llm` errored and the error classifies as `WireFailure::Overloaded` |
+| `fail_closed_unavailable` | `call_llm` errored otherwise |
+
+The error text goes to `tracing::error!` and the status stream only.
+
 ## LLM Integration
 
 ### Event flow

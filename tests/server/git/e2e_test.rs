@@ -657,22 +657,30 @@ print(json.dumps({"actions": [{
     let client = reqwest::Client::new();
 
     println!("\n--- Testing scripted responses (should be fast, no LLM call) ---");
+    // "The script answered, not the model" is asserted structurally rather than by the clock.
+    //
+    // There is deliberately no mock rule for git_info_refs or git_upload_pack, so a request
+    // that reached call_llm would find no matching rule, the mock would answer HTTP 500, and
+    // the status assertion below would fail. `verify_mocks` at the end additionally pins the
+    // startup rule at exactly one call, so an extra model round-trip cannot hide.
+    //
+    // This loop used to assert `elapsed < 100ms` as a proxy for the same property. It was a
+    // wall-clock bound in a suite that runs at --test-threads=100 on a 12-core machine, so it
+    // failed intermittently while proving nothing the two checks above do not already prove:
+    // a mocked model answers in single-digit milliseconds too, so the bound could not actually
+    // distinguish a script from a mock. Timing is not evidence here; the absent rule is.
     for i in 1..=3 {
-        let start = std::time::Instant::now();
-
         let url = format!(
             "http://127.0.0.1:{}/scripted-repo/info/refs?service=git-upload-pack",
             port
         );
         let response = client.get(&url).send().await?;
-        let elapsed = start.elapsed();
 
-        println!("Request {}: {} in {:?}", i, response.status(), elapsed);
-        assert_eq!(response.status(), 200, "scripted request {i} must succeed");
-        assert!(
-            elapsed.as_millis() < 100,
-            "scripted response should be near-instant (no LLM round trip), got {:?}",
-            elapsed
+        println!("Request {}: {}", i, response.status());
+        assert_eq!(
+            response.status(),
+            200,
+            "scripted request {i} must succeed; a 500 here means it fell through to the model,              which has no rule for this event"
         );
     }
 

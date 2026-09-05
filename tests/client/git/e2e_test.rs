@@ -48,8 +48,8 @@ async fn test_git_clone() -> E2EResult<()> {
             ]))
             .expect_calls(1)
             .and()
-            // Mock 3: Clone completed (git_operation_complete event)
-            .on_event("git_operation_complete")
+            // Mock 3: Clone completed (git_operation_completed event)
+            .on_event("git_operation_completed")
             .respond_with_actions(serde_json::json!([
                 {
                     "type": "wait_for_more"
@@ -65,6 +65,7 @@ async fn test_git_clone() -> E2EResult<()> {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Verify client output shows clone activity
+    client.wait_for_any(&["clone", "Git"], 30).await;
     assert!(
         client.output_contains("clone").await || client.output_contains("Git").await,
         "Client should show clone activity. Output: {:?}",
@@ -74,6 +75,10 @@ async fn test_git_clone() -> E2EResult<()> {
     println!("✅ Git client clone operation validated");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(30).await;
     client.verify_mocks().await?;
 
     // Cleanup
@@ -123,7 +128,7 @@ async fn test_git_log() -> E2EResult<()> {
             .expect_calls(1)
             .and()
             // Mock 3: Operation complete
-            .on_event("git_operation_complete")
+            .on_event("git_operation_completed")
             .respond_with_actions(serde_json::json!([
                 {
                     "type": "wait_for_more"
@@ -144,6 +149,10 @@ async fn test_git_log() -> E2EResult<()> {
     println!("✅ Git client log operation validated");
 
     // Verify mocks
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(30).await;
     client.verify_mocks().await?;
 
     // Cleanup

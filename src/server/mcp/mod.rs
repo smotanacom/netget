@@ -27,7 +27,7 @@ use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::console_error;
 #[cfg(feature = "mcp")]
@@ -131,27 +131,71 @@ fn mcp_error_from_action(data: &Value) -> JsonRpcError {
 /// Overload is reported separately because it is transient: `-32603` says the
 /// server is broken, while a server-defined `-32000` with a retry hint says it is
 /// merely full. The JSON-RPC 2.0 spec reserves -32000..=-32099 for exactly this.
+///
+/// The peer-visible `message` comes from [`WireFailure`], which returns `&'static str`
+/// precisely so nothing derived from the error can reach the wire: the backend URL, the
+/// model name and the `anyhow` context chain go to the log and the status stream only.
+///
+/// The log line carries a `decision=` tag so the three outcomes an operator has to tell
+/// apart stay greppable: `decision=fail_closed_llm_error_overloaded`,
+/// `decision=fail_closed_llm_error_unavailable` (here), `decision=model_reject`
+/// (the handler chose `mcp_error`) and `decision=model_no_answer` (the handler ran but
+/// produced no usable action).
 #[cfg(feature = "mcp")]
-fn llm_failure_error(state: &McpServerState, e: anyhow::Error) -> JsonRpcError {
-    let overloaded = crate::llm::is_overload_error(&e);
-    error!("MCP LLM call failed (overload={}): {}", overloaded, e);
-    Log::new(Some(&state.status_tx)).error(format!("MCP LLM call failed: {}", e));
+fn llm_failure_error(state: &McpServerState, method: &str, e: anyhow::Error) -> JsonRpcError {
+    let failure = crate::utils::WireFailure::classify(&e);
+    let decision = if failure.is_overloaded() {
+        "fail_closed_llm_error_overloaded"
+    } else {
+        "fail_closed_llm_error_unavailable"
+    };
+    error!("MCP {} decision={}: {}", method, decision, e);
+    Log::new(Some(&state.status_tx)).error(format!("MCP {} decision={}: {}", method, decision, e));
 
     // `data` reaches the client, so it carries the retry hint and nothing else - the error
     // itself was logged on both channels above. See `crate::utils::wire_failure`.
-    if overloaded {
+    if failure.is_overloaded() {
         return JsonRpcError {
             code: MCP_SERVER_BUSY_CODE,
-            message: "Server busy: request capacity exhausted, retry later".to_string(),
+            message: failure.text().to_string(),
             data: Some(serde_json::json!({"retryable": true})),
         };
     }
 
     JsonRpcError {
         code: ErrorCode::InternalError as i32,
-        message: "Internal server error".to_string(),
+        message: failure.text().to_string(),
         data: Some(serde_json::json!({"retryable": false})),
     }
+}
+
+/// Log that the handler explicitly chose to fail this request (`mcp_error`).
+///
+/// Distinct from a no-answer and from a backend failure: this one the model meant.
+#[cfg(feature = "mcp")]
+fn log_model_reject(state: &McpServerState, method: &str) {
+    warn!(
+        "MCP {} decision=model_reject: handler returned mcp_error",
+        method
+    );
+    Log::new(Some(&state.status_tx)).warn(format!(
+        "MCP {} decision=model_reject (handler returned mcp_error)",
+        method
+    ));
+}
+
+/// Log that the handler ran without erroring but produced no usable action, so the
+/// hardcoded default below is what the caller receives.
+#[cfg(feature = "mcp")]
+fn log_model_no_answer(state: &McpServerState, method: &str, fallback: &str) {
+    warn!(
+        "MCP {} decision=model_no_answer: replying with {}",
+        method, fallback
+    );
+    Log::new(Some(&state.status_tx)).warn(format!(
+        "MCP {} decision=model_no_answer (replying with {})",
+        method, fallback
+    ));
 }
 
 /// Recover a request id from a payload that failed to parse as a JSON-RPC request.
@@ -430,7 +474,7 @@ async fn handle_initialize_inner(
     {
         Ok(result) => result,
         Err(e) => {
-            return Err(llm_failure_error(state, e));
+            return Err(llm_failure_error(state, "initialize", e));
         }
     };
 
@@ -453,6 +497,7 @@ async fn handle_initialize_inner(
             // loop matched one name and fell through to the hardcoded default, so a chosen
             // JSON-RPC error was silently converted into a *success* reply. Honor it first.
             if name == "mcp_error" {
+                log_model_reject(state, "initialize");
                 return Err(mcp_error_from_action(data));
             }
             if name == "mcp_initialize" {
@@ -469,6 +514,7 @@ async fn handle_initialize_inner(
     // requested version if it can speak it, and otherwise offers its own. This used to answer
     // "2024-11-05" unconditionally, which tells a client on a newer revision that its request
     // was honored when it was not.
+    log_model_no_answer(state, "initialize", "the negotiated protocol version");
     let agreed_version = if SUPPORTED_PROTOCOL_VERSIONS.contains(&requested_version.as_str()) {
         requested_version.as_str()
     } else {
@@ -524,7 +570,7 @@ async fn handle_resources_list(state: &McpServerState) -> Result<Value, JsonRpcE
     {
         Ok(result) => result,
         Err(e) => {
-            return Err(llm_failure_error(state, e));
+            return Err(llm_failure_error(state, "resources/list", e));
         }
     };
 
@@ -536,6 +582,7 @@ async fn handle_resources_list(state: &McpServerState) -> Result<Value, JsonRpcE
             // loop matched one name and fell through to the hardcoded default, so a chosen
             // JSON-RPC error was silently converted into a *success* reply. Honor it first.
             if name == "mcp_error" {
+                log_model_reject(state, "resources/list");
                 return Err(mcp_error_from_action(data));
             }
             if name == "mcp_resources_list" {
@@ -547,6 +594,7 @@ async fn handle_resources_list(state: &McpServerState) -> Result<Value, JsonRpcE
     }
 
     // Default: empty resources list
+    log_model_no_answer(state, "resources/list", "an empty resources list");
     Ok(serde_json::json!({"resources": []}))
 }
 
@@ -589,7 +637,7 @@ async fn handle_resources_read(
     {
         Ok(result) => result,
         Err(e) => {
-            return Err(llm_failure_error(state, e));
+            return Err(llm_failure_error(state, "resources/read", e));
         }
     };
 
@@ -601,6 +649,7 @@ async fn handle_resources_read(
             // loop matched one name and fell through to the hardcoded default, so a chosen
             // JSON-RPC error was silently converted into a *success* reply. Honor it first.
             if name == "mcp_error" {
+                log_model_reject(state, "resources/read");
                 return Err(mcp_error_from_action(data));
             }
             if name == "mcp_resources_read" {
@@ -612,6 +661,7 @@ async fn handle_resources_read(
     }
 
     // Default: resource not found
+    log_model_no_answer(state, "resources/read", "a JSON-RPC error");
     Err(JsonRpcError::custom(
         ErrorCode::InternalError,
         format!("Resource not found: {}", uri),
@@ -692,7 +742,7 @@ async fn handle_tools_list(state: &McpServerState) -> Result<Value, JsonRpcError
     {
         Ok(result) => result,
         Err(e) => {
-            return Err(llm_failure_error(state, e));
+            return Err(llm_failure_error(state, "tools/list", e));
         }
     };
 
@@ -704,6 +754,7 @@ async fn handle_tools_list(state: &McpServerState) -> Result<Value, JsonRpcError
             // loop matched one name and fell through to the hardcoded default, so a chosen
             // JSON-RPC error was silently converted into a *success* reply. Honor it first.
             if name == "mcp_error" {
+                log_model_reject(state, "tools/list");
                 return Err(mcp_error_from_action(data));
             }
             if name == "mcp_tools_list" {
@@ -715,6 +766,7 @@ async fn handle_tools_list(state: &McpServerState) -> Result<Value, JsonRpcError
     }
 
     // Default: empty tools list
+    log_model_no_answer(state, "tools/list", "an empty tools list");
     Ok(serde_json::json!({"tools": []}))
 }
 
@@ -760,7 +812,7 @@ async fn handle_tools_call(
     {
         Ok(result) => result,
         Err(e) => {
-            return Err(llm_failure_error(state, e));
+            return Err(llm_failure_error(state, "tools/call", e));
         }
     };
 
@@ -772,6 +824,7 @@ async fn handle_tools_call(
             // loop matched one name and fell through to the hardcoded default, so a chosen
             // JSON-RPC error was silently converted into a *success* reply. Honor it first.
             if name == "mcp_error" {
+                log_model_reject(state, "tools/call");
                 return Err(mcp_error_from_action(data));
             }
             if name == "mcp_tools_call" {
@@ -783,6 +836,7 @@ async fn handle_tools_call(
     }
 
     // Default: tool execution failed
+    log_model_no_answer(state, "tools/call", "a JSON-RPC error");
     Err(JsonRpcError::custom(
         ErrorCode::InternalError,
         format!("Tool execution failed: {}", tool_name),
@@ -818,7 +872,7 @@ async fn handle_prompts_list(state: &McpServerState) -> Result<Value, JsonRpcErr
     {
         Ok(result) => result,
         Err(e) => {
-            return Err(llm_failure_error(state, e));
+            return Err(llm_failure_error(state, "prompts/list", e));
         }
     };
 
@@ -830,6 +884,7 @@ async fn handle_prompts_list(state: &McpServerState) -> Result<Value, JsonRpcErr
             // loop matched one name and fell through to the hardcoded default, so a chosen
             // JSON-RPC error was silently converted into a *success* reply. Honor it first.
             if name == "mcp_error" {
+                log_model_reject(state, "prompts/list");
                 return Err(mcp_error_from_action(data));
             }
             if name == "mcp_prompts_list" {
@@ -841,6 +896,7 @@ async fn handle_prompts_list(state: &McpServerState) -> Result<Value, JsonRpcErr
     }
 
     // Default: empty prompts list
+    log_model_no_answer(state, "prompts/list", "an empty prompts list");
     Ok(serde_json::json!({"prompts": []}))
 }
 
@@ -886,7 +942,7 @@ async fn handle_prompts_get(
     {
         Ok(result) => result,
         Err(e) => {
-            return Err(llm_failure_error(state, e));
+            return Err(llm_failure_error(state, "prompts/get", e));
         }
     };
 
@@ -898,6 +954,7 @@ async fn handle_prompts_get(
             // loop matched one name and fell through to the hardcoded default, so a chosen
             // JSON-RPC error was silently converted into a *success* reply. Honor it first.
             if name == "mcp_error" {
+                log_model_reject(state, "prompts/get");
                 return Err(mcp_error_from_action(data));
             }
             if name == "mcp_prompts_get" {
@@ -909,6 +966,7 @@ async fn handle_prompts_get(
     }
 
     // Default: prompt not found
+    log_model_no_answer(state, "prompts/get", "a JSON-RPC error");
     Err(JsonRpcError::custom(
         ErrorCode::InternalError,
         format!("Prompt not found: {}", prompt_name),

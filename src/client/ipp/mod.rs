@@ -475,6 +475,71 @@ impl IppClient {
     }
 
     /// Hand a completed exchange to the LLM as an `ipp_response_received` event.
+    /// Run the actions the model returned for a response event.
+    ///
+    /// They were discarded (`actions: _`), so answering ipp_response_received did nothing at all --
+    /// the whole point of raising the event.
+    ///
+    /// Everything goes through the `perform_*` round-trips, which raise no event. That
+    /// bounds the loop -- a follow-up cannot trigger another response event and drive the
+    /// model in circles -- and is the only shape that compiles, since routing back through
+    /// the notifying entry points makes notify -> perform -> notify a self-referential
+    /// async chain rustc cannot prove `Send`.
+    async fn run_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        app_state: &AppState,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        let protocol = crate::client::ipp::actions::IppClientProtocol::new();
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            let outcome: Result<()> = match name.as_str() {
+                "ipp_get_printer_attributes" => {
+                    Self::perform_get_printer_attributes(client_id, app_state, status_tx)
+                        .await
+                        .map(|_| ())
+                }
+                "ipp_print_job" => Self::perform_print_job(
+                    client_id,
+                    data["job_name"].as_str().unwrap_or("netget").to_string(),
+                    data["document_format"].as_str().map(|s| s.to_string()),
+                    data["document_data"]
+                        .as_str()
+                        .map(|s| s.as_bytes().to_vec())
+                        .unwrap_or_default(),
+                    app_state,
+                    status_tx,
+                )
+                .await
+                .map(|_| ()),
+                "ipp_get_job_attributes" => Self::perform_get_job_attributes(
+                    client_id,
+                    data["job_id"].as_i64().unwrap_or(0) as i32,
+                    app_state,
+                    status_tx,
+                )
+                .await
+                .map(|_| ()),
+                other => {
+                    info!(
+                        "IPP client {} follow-up '{}' has no non-notifying path; skipped",
+                        client_id, other
+                    );
+                    Ok(())
+                }
+            };
+            if let Err(e) = outcome {
+                error!("IPP client {} follow-up action failed: {}", client_id, e);
+            }
+        }
+    }
+
     async fn notify_response(
         client_id: ClientId,
         exchange: IppExchange,
@@ -514,13 +579,14 @@ impl IppClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state, &status_tx).await;
             }
             Err(e) => {
                 error!("LLM error for IPP client {}: {}", client_id, e);

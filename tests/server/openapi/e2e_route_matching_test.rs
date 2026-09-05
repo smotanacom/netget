@@ -56,6 +56,7 @@ async fn test_openapi_route_matching_comprehensive() -> E2EResult<()> {
 
     // Create HTTP client
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .timeout(Duration::from_secs(10))
         .build()?;
 
@@ -181,6 +182,10 @@ async fn test_openapi_route_matching_comprehensive() -> E2EResult<()> {
     println!("\n=== All route matching tests passed! ===");
 
     // Cleanup
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
 
@@ -235,6 +240,7 @@ async fn test_openapi_llm_on_invalid_override() -> E2EResult<()> {
     // REMOVED: assert_stack_name call
 
     let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .timeout(Duration::from_secs(10))
         .build()?;
 
@@ -261,6 +267,10 @@ async fn test_openapi_llm_on_invalid_override() -> E2EResult<()> {
 
     println!("\n=== LLM override test passed! ===");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
 

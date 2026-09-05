@@ -174,6 +174,10 @@ async fn test_smb_llm_allows_guest_auth() -> E2EResult<()> {
         println!("  [TEST] ✓ Server logged authentication event");
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -263,6 +267,10 @@ async fn test_smb_llm_denies_user() -> E2EResult<()> {
         println!("  [TEST] ✓ Server logged authentication decision");
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -320,6 +328,10 @@ async fn test_smb_llm_file_creation() -> E2EResult<()> {
     println!("  [TEST] ✓ Server configured with LLM-controlled file policies");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -372,6 +384,10 @@ async fn test_smb_llm_file_content() -> E2EResult<()> {
     println!("  [TEST] ✓ LLM will respond with smb_read_file action on READ requests");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -420,6 +436,10 @@ async fn test_smb_llm_directory_listing() -> E2EResult<()> {
         println!("  [TEST] ✓ LLM ready to serve directory listings");
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -481,6 +501,10 @@ async fn test_smb_llm_connection_tracking() -> E2EResult<()> {
 
     println!("  [TEST] ✓ Connection lifecycle managed by LLM");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("  [TEST] ✓ Test completed successfully\n");
@@ -525,6 +549,10 @@ async fn test_smb_llm_receives_events() -> E2EResult<()> {
     // This test verifies the setup is correct
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;

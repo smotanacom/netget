@@ -196,6 +196,10 @@ async fn test_mcp_initialize() -> E2EResult<()> {
 
     println!("✓ MCP Initialize test completed\n");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -246,6 +250,10 @@ async fn test_mcp_ping() -> E2EResult<()> {
         println!("✓ MCP Ping test completed\n");
 
         // Verify mocks
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         Ok(())
@@ -346,6 +354,10 @@ async fn test_mcp_resources_list() -> E2EResult<()> {
 
     println!("✓ MCP Resources List test completed\n");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -443,6 +455,10 @@ async fn test_mcp_resources_read() -> E2EResult<()> {
 
     println!("✓ MCP Resources Read test completed\n");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -557,6 +573,10 @@ async fn test_mcp_tools_list() -> E2EResult<()> {
 
     println!("✓ MCP Tools List test completed\n");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -657,6 +677,10 @@ async fn test_mcp_tools_call() -> E2EResult<()> {
 
     println!("✓ MCP Tools Call test completed\n");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -750,6 +774,10 @@ async fn test_mcp_prompts_list() -> E2EResult<()> {
 
     println!("✓ MCP Prompts List test completed\n");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -851,6 +879,10 @@ async fn test_mcp_prompts_get() -> E2EResult<()> {
 
     println!("✓ MCP Prompts Get test completed\n");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     Ok(())
@@ -912,6 +944,10 @@ async fn test_mcp_error_handling() -> E2EResult<()> {
         println!("✓ MCP Error Handling test completed\n");
 
         // Verify mocks
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         server.verify_mocks().await?;
 
         Ok(())

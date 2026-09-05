@@ -347,6 +347,7 @@ impl SocketFileServer {
                     }
 
                     // Handle protocol results (send banner)
+                    let mut wrote_banner = false;
                     for protocol_result in execution_result.protocol_results {
                         match protocol_result {
                             ActionResult::Output(output_data) => {
@@ -391,20 +392,55 @@ impl SocketFileServer {
                                     log.debug(format!(
                                         "Sent banner to socket file connection {connection_id}"
                                     ));
+                                    wrote_banner = true;
                                 }
                             }
                             ActionResult::CloseConnection => {
                                 connections.lock().await.remove(&connection_id);
                                 log.info(format!(
-                                    "Closed socket file connection {connection_id} after banner"
+                                    "Closed socket file connection {connection_id} after banner: decision=model_close"
                                 ));
                             }
                             _ => {}
                         }
                     }
+
+                    // Greeting with nothing is a legitimate answer, not a failure —
+                    // keep it distinguishable in the log from the two below.
+                    if !wrote_banner {
+                        log.debug(format!(
+                            "No banner bytes for socket file connection {connection_id}: decision=model_no_actions"
+                        ));
+                    }
                 }
                 Err(e) => {
-                    log.warn(format!("LLM error generating socket file banner: {e}"));
+                    let failure = crate::utils::WireFailure::classify(&e);
+                    let class = if failure.is_overloaded() {
+                        "overloaded"
+                    } else {
+                        "unavailable"
+                    };
+                    // The full error goes to the log and the status stream, where an
+                    // operator looks. Nothing derived from it reaches the peer.
+                    log.warn(format!(
+                        "Socket file banner failed for {connection_id}: decision=fail_closed_llm_error class={class} error={e}"
+                    ));
+
+                    // A send_first server owes this peer a greeting and now has none.
+                    // A raw byte stream has no error frame, so the only honest signal is
+                    // FIN: half-close so the peer's next read returns EOF immediately
+                    // instead of blocking until its own timeout. Same shape as `tcp`.
+                    {
+                        let mut write = write_half.lock().await;
+                        let _ = write.shutdown().await;
+                    }
+                    connections.lock().await.remove(&connection_id);
+                    app_state
+                        .close_connection_on_server(server_id, connection_id)
+                        .await;
+                    log.info(format!(
+                        "Closed socket file connection {connection_id} after banner LLM error"
+                    ));
                 }
             }
         }
@@ -545,6 +581,7 @@ impl SocketFileServer {
                     // Handle protocol results
                     let mut should_close = false;
                     let mut should_wait = false;
+                    let mut wrote_output = false;
 
                     for protocol_result in execution_result.protocol_results {
                         match protocol_result {
@@ -595,6 +632,7 @@ impl SocketFileServer {
                                         output_data.len(),
                                         connection_id
                                     ));
+                                    wrote_output = true;
                                 }
                             }
                             ActionResult::CloseConnection => {
@@ -623,8 +661,22 @@ impl SocketFileServer {
                     // Handle close_connection
                     if should_close {
                         connections.lock().await.remove(&connection_id);
-                        log.info(format!("Closed socket file connection {connection_id}"));
+                        // The model answered by hanging up — distinct in the log from
+                        // "answered nothing" and from an LLM failure.
+                        log.info(format!(
+                            "Closed socket file connection {connection_id}: decision=model_close"
+                        ));
                         return;
+                    }
+
+                    // The model answered, but with no bytes and no lifecycle action. On a
+                    // raw byte stream that is a legitimate answer ("say nothing, keep
+                    // listening"), so the connection stays open — but it must not be
+                    // confused with the backend having failed.
+                    if !wrote_output {
+                        log.debug(format!(
+                            "No response bytes for socket file connection {connection_id}: decision=model_no_actions"
+                        ));
                     }
 
                     // Check for queued data
@@ -668,12 +720,38 @@ impl SocketFileServer {
                     }
                 }
                 Err(e) => {
-                    log.warn(format!("LLM error for socket file data: {e}"));
-                    connections
-                        .lock()
-                        .await
-                        .entry(connection_id)
-                        .and_modify(|conn| conn.state = ConnectionState::Idle);
+                    let failure = crate::utils::WireFailure::classify(&e);
+                    let class = if failure.is_overloaded() {
+                        "overloaded"
+                    } else {
+                        "unavailable"
+                    };
+                    // Full error to the log/status stream only — never to the peer.
+                    log.warn(format!(
+                        "LLM error for socket file data on {connection_id}: decision=fail_closed_llm_error class={class} error={e}"
+                    ));
+                    if failure.is_overloaded() {
+                        log.warn(format!(
+                            "Socket file connection {connection_id} closed: LLM capacity exhausted"
+                        ));
+                    }
+
+                    // Say *something* on the wire. A raw byte stream has no error frame,
+                    // so the only honest signal is FIN: half-close the connection so the
+                    // peer's next read returns EOF immediately. This path used to reset
+                    // to Idle and write nothing, leaving the peer blocked until its own
+                    // timeout with no indication anything had gone wrong.
+                    {
+                        let mut write = write_half.lock().await;
+                        let _ = write.shutdown().await;
+                    }
+                    connections.lock().await.remove(&connection_id);
+                    app_state
+                        .close_connection_on_server(server_id, connection_id)
+                        .await;
+                    log.info(format!(
+                        "Closed socket file connection {connection_id} after LLM error"
+                    ));
                     return;
                 }
             }

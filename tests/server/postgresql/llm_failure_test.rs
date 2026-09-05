@@ -83,6 +83,10 @@ async fn test_postgresql_answers_error_response_when_llm_fails() -> E2EResult<()
         "the ErrorResponse message should name the source of the failure: {db_message:?}"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

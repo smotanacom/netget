@@ -28,7 +28,7 @@ pub enum EventTrigger {
     ServerStartup,
 
     /// Event triggered by opening a TCP connection
-    /// Use for: tcp_connection_opened, http_request_received, ssh_connection_opened
+    /// Use for: tcp_connection_opened, http_request, ssh_connection_opened
     TcpConnect,
 
     /// Event triggered by sending a TCP packet with specific data
@@ -50,7 +50,7 @@ pub enum EventTrigger {
     },
 
     /// Event triggered by making an HTTP request
-    /// Use for: http_request_received, webdav_request, s3_request, etc.
+    /// Use for: http_request, webdav_request, s3_request, etc.
     HttpRequest {
         /// HTTP method (GET, POST, PUT, DELETE, etc.)
         method: String,

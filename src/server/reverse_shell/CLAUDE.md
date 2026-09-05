@@ -110,12 +110,37 @@ or parse those, and a shell transcript is text by nature.
 
 ## Fail-closed behaviour
 
-The three outcomes are kept structurally distinct (`Outcome` in `mod.rs`):
+The four outcomes are kept structurally distinct (`Outcome` / `FailClosed` in `mod.rs`):
 
 - **output / close** — the model decided what to print and whether to end the session.
 - **`no_shell_output`** — the model explicitly decided to print nothing; the session stays open.
-- **no usable answer** — an LLM error, or a batch where every action failed / returned nothing.
-  The socket is **shut down** (FIN), with a WARN on the log and status stream.
+- **no usable answer** (`FailClosed::NoUsableAnswer`) — the call succeeded but every action
+  failed or produced nothing. Logged at WARN with `decision=fail_closed_no_answer`.
+- **LLM error** (`FailClosed::LlmError`) — the call itself returned `Err`. Logged at ERROR with
+  the full error and `decision=fail_closed_llm_error_overloaded` or
+  `…_llm_error_unavailable`, classified by `crate::utils::WireFailure`.
+
+These last two used to share one `no_answer` flag, which made a backend outage
+indistinguishable in the log from a model answering with junk. They are now separate variants
+with separate `decision=` tags, alongside `decision=model_end_session` for a deliberate
+`end_shell_session` — the same three-way separation `src/server/radius/` keeps.
+
+Both fail-closed cases write **one line** to the operator and then shut the socket down (FIN):
+
+```text
+\r\n[netget] backend at capacity, retry later\r\n     # Overloaded
+\r\n[netget] request could not be processed\r\n        # Unavailable / no usable answer
+```
+
+A bare FIN on a shell transcript is indistinguishable from the far-end implant dying, which
+sends the operator hunting the wrong problem; the category line removes that ambiguity, and the
+two wordings let a transient outage be told from a permanent one even though a raw shell stream
+has no status code.
+
+**The line is `WireFailure::text()` and nothing else.** No error text, no backend URL, no model
+name, no `anyhow` chain — those go to `tracing::error!` and the status stream. `text()` returns
+`&'static str` precisely so nothing derived from an error can be returned from it; see
+`src/utils/wire_failure.rs` and the guard in `tests/wire_failure_test.rs`.
 
 Equating "no answer" with "empty output but keep going" would be the fail-open shape that bit
 OAuth2: an LLM outage would look like a working, silent shell. Instead an outage drops the

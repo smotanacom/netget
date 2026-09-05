@@ -205,7 +205,63 @@ The three integration points fail in different directions, on purpose.
 |---|---|
 | `ssh_auth` | **Deny.** An unreachable backend is not consent; the client gets a real `SSH_MSG_USERAUTH_FAILURE` rather than a hung authentication. |
 | `ssh_banner` | No banner. Cosmetic — the shell still opens and the server writes its own `"$ "` prompt, so nothing waits. Logged on both channels. |
-| `ssh_shell_command` | **Disconnect.** A notice, `exit-status 1`, channel close, and `SSH_MSG_DISCONNECT` with reason 7 (`SSH_DISCONNECT_SERVICE_NOT_AVAILABLE`, RFC 4253 §11.1). |
+| `ssh_shell_command` (shell) | **Disconnect.** A notice, a non-zero exit status, channel close, and `SSH_MSG_DISCONNECT` with reason 7 (`SSH_DISCONNECT_SERVICE_NOT_AVAILABLE`, RFC 4253 §11.1). |
+| `ssh_shell_command` (exec) | **Non-zero exit.** A notice on **stderr**, a non-zero exit status, then eof/close. The session stays up — a one-shot exec owns only its channel. |
+| `sftp_operation` | **`SSH_FX_FAILURE`** for every operation. |
+
+### What the peer is told, and what it is not
+
+Never the error. `crate::utils::WireFailure` classifies it and the peer receives one of two
+`&'static str` categories; the error itself goes to `tracing` and the status stream. Nothing
+derived from it — backend URL, model name, file path, `anyhow` chain — can reach a terminal
+someone is logged into, and the `&'static str` return type is what makes that structural rather
+than a review habit.
+
+The two categories are kept distinct on the wire so a caller backs off instead of recording a
+permanent fault. SSH has no error-code field of its own for this, so the **exit status** carries
+it, using the `sysexits.h` values every shell tool already understands:
+
+| Category | Exit status | Text |
+|---|---|---|
+| `Overloaded` | 75 (`EX_TEMPFAIL`) | `netget: backend at capacity, retry later` |
+| `Unavailable` | 69 (`EX_UNAVAILABLE`) | `netget: request could not be processed` |
+
+SFTP v3 has no "busy, try again" status at all — the full set is OK, EOF, NO_SUCH_FILE,
+PERMISSION_DENIED, FAILURE, BAD_MESSAGE, NO_CONNECTION, CONNECTION_LOST, OP_UNSUPPORTED — so
+both categories map to FAILURE there and the distinction survives only in the log.
+
+### Three outcomes, three `decision=` tags
+
+An explicit refusal, silence, and a backend failure often reach the same code on the wire, so
+the log is the only place they can be told apart. Every integration point tags which happened,
+the way `src/server/radius/` does:
+
+- `decision=model_accept` / `decision=model_reject` — the handler answered, and said yes or no.
+- `decision=fail_closed_no_answer` — the handler ran and produced no reply action.
+- `decision=fail_closed_backend_error` — `call_llm` returned `Err`; the tag carries `category=`.
+
+### Fail-open shapes that were removed here
+
+Each of these answered *successfully* when nothing had actually decided anything:
+
+- **exec sent `exit-status 0` on every branch**, including a backend outage, so
+  `if ssh host cmd` and `$(ssh host cmd)` could not tell an outage from a command that printed
+  nothing. The exit status is the entire answer for a one-shot exec.
+- **SFTP `read` answered `SSH_FX_EOF` on backend error.** EOF is a *successful* end of file: at
+  offset 0 a client writes out a complete zero-byte file and exits 0, so every download was
+  silently truncated to nothing.
+- **`opendir` / `open` / `lstat` answered `NO_SUCH_FILE` on backend error.** "The handler is
+  unreachable" is a different statement from "this path does not exist", and the second is a
+  permanent lie a client may cache. Now FAILURE.
+- **A handler that returned zero actions was treated as an answer.** `llm_sftp_operation` falls
+  back to `{}`, and every reader then substituted a default — a handle equal to the requested
+  path, `0o100644` attributes, empty content — so silence *invented* a directory, a file or a
+  stat for any path at all. `sftp_no_answer()` now fails those closed. An empty directory is
+  still expressible: it arrives as `sftp_directory_listing` with no `entries`, which is a reply
+  with fields, not an empty object.
+- **`llm_sftp_operation` rebuilt the error** with `anyhow!("LLM error: {}", e)`, which discards
+  the concrete type. `is_overload_error` works by downcasting, so every SFTP failure classified
+  as generic and a saturated backend was invisible. The error now propagates unwrapped.
 
 The shell case is the one that changed shape. It used to return "no output, do not close", which
 the caller's `if let Ok(..)` accepted and then followed with the usual `"$ "` prompt — so a

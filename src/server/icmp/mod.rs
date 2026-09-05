@@ -354,6 +354,19 @@ impl IcmpServer {
                                         execution_result.protocol_results.len()
                                     ));
 
+                                    // An explicit `ignore_icmp` and an empty answer both put
+                                    // nothing on the wire, but only one of them is a decision.
+                                    // Keep them apart in the log so an operator can tell a
+                                    // deliberate silent honeypot from a model that said nothing.
+                                    let answered_nothing = execution_result.raw_actions.is_empty();
+                                    let explicit_ignore = !answered_nothing
+                                        && execution_result.raw_actions.iter().all(|a| {
+                                            a.get("type").and_then(|v| v.as_str())
+                                                == Some("ignore_icmp")
+                                        });
+                                    let action_failures = execution_result.failures.len();
+                                    let mut packets_sent = 0usize;
+
                                     // Send ICMP replies if any
                                     for protocol_result in execution_result.protocol_results {
                                         if let Some(output_data) =
@@ -371,6 +384,7 @@ impl IcmpServer {
                                                     .send_to(output_data, &dest_addr.into())
                                                 {
                                                     Ok(_) => {
+                                                        packets_sent += 1;
                                                         debug!(
                                                             "ICMP sent {} bytes to {}",
                                                             output_data.len(),
@@ -405,16 +419,71 @@ impl IcmpServer {
                                         }
                                     }
 
-                                    let _ = status_clone.send(format!(
-                                        "→ ICMP {} processed: {} -> {}",
+                                    // The token is stable so an operator can grep
+                                    // `decision=fail_closed_` and find every packet that went
+                                    // unanswered because no usable answer was produced, as
+                                    // distinct from one the model chose to ignore.
+                                    let decision = if packets_sent > 0 {
+                                        "model_reply"
+                                    } else if explicit_ignore {
+                                        "model_ignore"
+                                    } else if answered_nothing {
+                                        "fail_closed_no_action"
+                                    } else if action_failures > 0 {
+                                        "fail_closed_action_error"
+                                    } else {
+                                        "fail_closed_no_reply"
+                                    };
+                                    let summary = format!(
+                                        "ICMP {} {} -> {} decision={} sent={}",
                                         icmp_type_to_string(icmp_type),
                                         source_ip,
-                                        dest_ip
-                                    ));
+                                        dest_ip,
+                                        decision,
+                                        packets_sent
+                                    );
+                                    if decision.starts_with("fail_closed_") {
+                                        error!("{} (nothing put on the wire)", summary);
+                                        let _ = status_clone
+                                            .send(format!("✗ {} (nothing put on the wire)", summary));
+                                    } else {
+                                        info!("{}", summary);
+                                        let _ = status_clone.send(format!("→ {}", summary));
+                                    }
                                 }
                                 Err(e) => {
-                                    error!("ICMP LLM call failed: {}", e);
-                                    let _ = status_clone.send(format!("✗ ICMP LLM error: {}", e));
+                                    // ICMP has no in-band way to say "I cannot answer": RFC 792
+                                    // defines no failure reply for an echo request, and RFC 1122
+                                    // §3.2.2 forbids generating an ICMP error in response to an
+                                    // ICMP error — a synthesised Destination Unreachable would be
+                                    // a lie about reachability, not a service-unavailable signal.
+                                    // Silence is therefore the protocol-correct outcome here; what
+                                    // matters is that it is loud in the log and distinguishable
+                                    // from an `ignore_icmp` decision. The error text is logged,
+                                    // never derived into anything a peer could read.
+                                    let category = if crate::utils::WireFailure::classify(&e)
+                                        .is_overloaded()
+                                    {
+                                        "overloaded"
+                                    } else {
+                                        "unavailable"
+                                    };
+                                    error!(
+                                        "ICMP {} {} -> {} decision=fail_closed_llm_error category={} (no reply: ICMP has no failure message): {}",
+                                        icmp_type_to_string(icmp_type),
+                                        source_ip,
+                                        dest_ip,
+                                        category,
+                                        e
+                                    );
+                                    let _ = status_clone.send(format!(
+                                        "✗ ICMP {} {} -> {} decision=fail_closed_llm_error category={}: {}",
+                                        icmp_type_to_string(icmp_type),
+                                        source_ip,
+                                        dest_ip,
+                                        category,
+                                        e
+                                    ));
                                 }
                             }
                         });

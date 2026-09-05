@@ -125,6 +125,10 @@ async fn test_openapi_todo_list() -> E2EResult<()> {
     println!("✓ OpenAPI TODO List test completed\n");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -253,6 +257,10 @@ async fn test_openapi_create_todo() -> E2EResult<()> {
     println!("✓ OpenAPI Create TODO test completed\n");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -355,6 +363,10 @@ async fn test_openapi_method_validation() -> E2EResult<()> {
     println!("✓ OpenAPI Method Validation test completed\n");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -449,6 +461,10 @@ async fn test_openapi_spec_compliant_flag() -> E2EResult<()> {
     println!("✓ OpenAPI Spec Compliance Flag test completed\n");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
@@ -538,6 +554,10 @@ async fn test_openapi_404_not_found() -> E2EResult<()> {
     println!("✓ OpenAPI 404 Not Found test completed\n");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup

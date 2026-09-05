@@ -411,13 +411,49 @@ byte count, so a number would be invented. The command loop **awaits** the query
 `doh_response_received` event fires from its own registered task, so a manual rule parking
 that LLM call cannot wedge the command loop.
 
-### 7. Cannot talk to NetGet's own DoH server
+### 7. Talking to NetGet's own DoH server takes two deliberate choices
 
-This client builds a plain `reqwest::Client`, which does full certificate verification, while
-`src/server/doh/` is TLS-only with a self-signed certificate from
-`tls_cert_manager::generate_default_tls_config()`. So the two cannot interoperate, and
-`tests/client/doh/e2e_test.rs` — which points this client at a NetGet DoH server — fails for
-that reason, not for anything to do with the command channel. Fixing it means an explicit
-"trust this certificate" startup parameter, not `danger_accept_invalid_certs` by default.
-`tests/client/doh/command_channel_test.rs` therefore uses a plain-HTTP `application/dns-message`
-stub as its peer.
+`src/server/doh/` is TLS-only, serves a self-signed certificate, advertises **`h2` alone** in
+ALPN and answers with HTTP/2 frames regardless of what was negotiated. Reaching it needs both:
+
+- **Trust.** `ca_cert_pem` adds one certificate to the system roots — the right answer for a
+  private CA or a known self-signed peer. `insecure_skip_verify` accepts any certificate at
+  all and is opt-in per client, never a default, because a DoH connection made with it is
+  unauthenticated.
+- **ALPN offering `h2`.** `build_http_client` calls `.use_rustls_tls()` explicitly rather than
+  taking reqwest's default TLS backend. Without it no protocol is negotiated, the server sends
+  HTTP/2 frames anyway, and every request dies in the client's HTTP/1.1 parser with
+  `invalid HTTP version parsed` — before a single query reaches the server. That failure is
+  easy to misread as a certificate problem, because it also happens on the very first request.
+
+Related: query failures are logged with `{:#}`, not `{}`. `{}` prints only our own
+`"DoH POST request failed"` context and throws away reqwest's actual cause, which is the only
+part that says anything.
+
+### Building the HTTP client is a blocking operation — treat it as one
+
+`reqwest::Client::builder().build()` sets up the rustls stack, and that loads the platform
+root certificate store. On macOS this reads the system keychain through Security.framework,
+which is synchronous, syscall-heavy, and serialises across processes.
+
+Three things follow, all of which this client got wrong at some point:
+
+- **It must not run on the async runtime.** Called inline it parks a tokio worker for as long
+  as the load takes. Under a hundred concurrent netget processes it parked long enough to
+  stall the client's runtime entirely: the query logged `querying example.com` and then
+  nothing — no response, and no timeout either, because the request future had not been
+  created yet and so there was nothing for the timeout to apply to. It is on
+  `spawn_blocking` now.
+- **It must not run per query.** The client is cached by `(ca_cert_pem, insecure_skip_verify)`
+  for the life of the process, so queries after the first reuse the connection pool instead of
+  paying for a fresh TLS stack and a fresh handshake each time.
+- **It must not load the root store at all when nothing will be checked against it.** With
+  `insecure_skip_verify`, `tls_built_in_root_certs(false)` skips the keychain entirely. This
+  was the single largest cost, and it bought nothing.
+
+Together these are what took the four e2e tests from failing at `--test-threads=100` (while
+passing in isolation, which reads as flakiness and was not) to passing.
+
+`tests/client/doh/command_channel_test.rs` still uses a plain-HTTP `application/dns-message`
+stub as its peer — it is testing the command channel, not TLS, and a stub keeps that test
+free of certificate and ALPN concerns.

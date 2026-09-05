@@ -71,6 +71,9 @@ fn start_loop_with_unreachable_llm() -> (
         OllamaClient::new("http://127.0.0.1:1"),
         Arc::new(AppState::new()),
         status_tx,
+        // No seeded GATT table: these tests are about the backend failing, not about the
+        // stored-value fallback.
+        Vec::new(),
     ));
 
     (event_tx, status_rx)

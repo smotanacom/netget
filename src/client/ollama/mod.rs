@@ -36,6 +36,16 @@ impl OllamaClientImpl {
         client_id: ClientId,
         _startup_params: Option<StartupParams>,
     ) -> Result<SocketAddr> {
+        // The endpoint is later interpolated into `{endpoint}/api/generate` and handed to
+        // reqwest, which requires an absolute URL. A bare `127.0.0.1:11434` -- the form
+        // every other client protocol accepts -- failed every request with "builder error"
+        // (relative URL without a base). An explicit scheme is left as given.
+        let remote_addr = if remote_addr.contains("://") {
+            remote_addr
+        } else {
+            format!("http://{remote_addr}")
+        };
+
         info!(
             "Ollama client {} initializing with API endpoint: {}",
             client_id, remote_addr
@@ -591,6 +601,66 @@ impl OllamaClientImpl {
     }
 
     /// Fire one `ollama_response_received` event at the LLM and apply any memory update.
+    /// Run the actions the model returned for a response event.
+    ///
+    /// They were discarded (`actions: _`), so answering ollama_response_received did nothing at all --
+    /// the whole point of raising the event.
+    ///
+    /// Everything goes through the `perform_*` round-trips, which raise no event. That
+    /// bounds the loop -- a follow-up cannot trigger another response event and drive the
+    /// model in circles -- and is the only shape that compiles, since routing back through
+    /// the notifying entry points makes notify -> perform -> notify a self-referential
+    /// async chain rustc cannot prove `Send`.
+    async fn run_follow_ups(
+        client_id: ClientId,
+        actions: Vec<serde_json::Value>,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        let protocol = crate::client::ollama::actions::OllamaClientProtocol::new();
+        for action in actions {
+            let Ok(ClientActionResult::Custom { name, data }) =
+                protocol.execute_action(action.clone())
+            else {
+                continue;
+            };
+            let outcome: Result<()> = match name.as_str() {
+                "send_generate_request" => Self::perform_generate_request(
+                    client_id,
+                    data["prompt"].as_str().unwrap_or_default().to_string(),
+                    data["model"].as_str().unwrap_or_default().to_string(),
+                    app_state,
+                    status_tx,
+                )
+                .await
+                .map(|_| ()),
+                "send_chat_request" => Self::perform_chat_request(
+                    client_id,
+                    data["messages"].clone(),
+                    data["model"].as_str().unwrap_or_default().to_string(),
+                    app_state,
+                    status_tx,
+                )
+                .await
+                .map(|_| ()),
+                "list_models" => Self::perform_list_models(client_id, app_state, status_tx)
+                    .await
+                    .map(|_| ()),
+                other => {
+                    info!(
+                        "Ollama client {} follow-up '{}' has no non-notifying path; skipped",
+                        client_id, other
+                    );
+                    Ok(())
+                }
+            };
+            if let Err(e) = outcome {
+                error!("Ollama client {} follow-up action failed: {}", client_id, e);
+            }
+        }
+    }
+
     async fn notify_response(
         client_id: ClientId,
         event_data: serde_json::Value,
@@ -621,12 +691,13 @@ impl OllamaClientImpl {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                Self::run_follow_ups(client_id, actions, &app_state, &status_tx).await;
             }
             Err(e) => {
                 error!("LLM error for Ollama client {}: {}", client_id, e);

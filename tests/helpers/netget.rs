@@ -98,7 +98,6 @@ pub struct NetGetConfig {
     /// Include disabled protocols (default: false)
     pub include_disabled_protocols: bool,
     /// Enable Ollama lock for concurrent test execution (default: true)
-    pub ollama_lock: bool,
     /// Maximum concurrent LLM requests (default: None, uses netget's default of 1)
     pub llm_max_concurrent: Option<usize>,
     /// Mock LLM configuration (for testing without Ollama)
@@ -142,7 +141,6 @@ impl NetGetConfig {
             listen_addr: "127.0.0.1".to_string(),
             no_scripts: false,
             include_disabled_protocols: false,
-            ollama_lock: true, // Enable by default for concurrent testing
             llm_max_concurrent: Some(1000), // High concurrency for E2E tests (effectively unlimited)
             mock_config: None,
             force_ollama: false,
@@ -161,7 +159,6 @@ impl NetGetConfig {
             listen_addr: "127.0.0.1".to_string(),
             no_scripts: true,
             include_disabled_protocols: false,
-            ollama_lock: true,
             llm_max_concurrent: Some(1000), // High concurrency for E2E tests (effectively unlimited)
             mock_config: None,
             force_ollama: false,
@@ -187,7 +184,6 @@ impl NetGetConfig {
             listen_addr: "127.0.0.1".to_string(),
             no_scripts: false,
             include_disabled_protocols: false,
-            ollama_lock: true,
             llm_max_concurrent: None,
             mock_config: None,
             force_ollama: false,
@@ -233,11 +229,6 @@ impl NetGetConfig {
 
     /// Enable or disable Ollama lock for concurrent testing
     #[allow(dead_code)]
-    pub fn with_ollama_lock(mut self, enabled: bool) -> Self {
-        self.ollama_lock = enabled;
-        self
-    }
-
     /// Set maximum concurrent LLM requests (for testing concurrent request handling)
     #[allow(dead_code)]
     pub fn with_llm_max_concurrent(mut self, max_concurrent: usize) -> Self {
@@ -253,7 +244,7 @@ impl NetGetConfig {
     ///
     /// let config = NetGetConfig::new("Start TCP server on port 0")
     ///     .with_mock(|mock| {
-    ///         mock.on_event("tcp_connection_received")
+    ///         mock.on_event("tcp_connection_opened")
     ///             .respond_with_actions(json!([
     ///                 {"type": "send_tcp_data", "data": "48656c6c6f"}
     ///             ]))
@@ -398,10 +389,9 @@ pub async fn start_netget(config: NetGetConfig) -> E2EResult<NetGetInstance> {
         cmd.arg("--include-disabled-protocols");
     }
 
-    // Add --ollama-lock flag if enabled (default: true for concurrent testing)
-    if config.ollama_lock {
-        cmd.arg("--ollama-lock");
-    }
+    // `--ollama-lock` is deliberately NOT passed. It never locked anything, and passing it from
+    // every spawned binary is what made the whole e2e suite look as though it serialised LLM
+    // access across processes. `--llm-max-concurrent` is the real bound; this harness sets it.
 
     // Add --llm-max-concurrent flag if specified (for testing concurrent request handling)
     if let Some(max_concurrent) = config.llm_max_concurrent {
@@ -894,6 +884,21 @@ impl Drop for NetGetInstance {
 }
 
 impl NetGetInstance {
+    /// Wait until every mock expectation is satisfied, or `timeout_secs` elapses.
+    ///
+    /// See `NetGetClient::wait_for_mocks`. Returns quietly on timeout; `verify_mocks`
+    /// remains the thing that asserts.
+    #[allow(dead_code)]
+    pub async fn wait_for_mocks(&self, timeout_secs: u64) {
+        if let Some(ref server) = self.mock_ollama_server {
+            server.wait_for_expectations(timeout_secs).await;
+            return;
+        }
+        if let Some(ref mock_config) = self.mock_config {
+            super::mock_config::wait_for_mock_expectations(mock_config, timeout_secs).await;
+        }
+    }
+
     /// Verify all mock expectations were met
     #[allow(dead_code)]
     pub async fn verify_mocks(&self) -> E2EResult<()> {
@@ -984,6 +989,34 @@ impl NetGetInstance {
 
         println!("✅ All mock expectations verified successfully");
         Ok(())
+    }
+
+    /// Wait until ANY of `needles` appears in the output, or the deadline passes.
+    ///
+    /// Returns quietly on timeout rather than erroring: callers use it immediately before
+    /// an `assert!` that already reports the condition and dumps the output, so failing
+    /// here would replace a good message with a worse one. Its job is to remove the race,
+    /// not to do the asserting.
+    ///
+    /// This exists because the e2e suites waited with a fixed `sleep` and then asserted --
+    /// 1 second was enough when a test ran alone and not when a hundred run together, so
+    /// they reported a client as never connecting when it simply had not connected yet.
+    #[allow(dead_code)]
+    pub async fn wait_for_any(&self, needles: &[&str], timeout_secs: u64) {
+        let start = std::time::Instant::now();
+        let deadline = Duration::from_secs(timeout_secs);
+        loop {
+            {
+                let lines = self.output_lines.lock().await;
+                if lines.iter().any(|l| needles.iter().any(|n| l.contains(n))) {
+                    return;
+                }
+            }
+            if start.elapsed() >= deadline {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// Wait for a specific log pattern to appear in the output

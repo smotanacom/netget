@@ -333,7 +333,7 @@ impl Protocol for WebRtcProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation(
                 "webrtc-rs 0.11 peer connections with built-in WebSocket signalling \
                  (tokio-tungstenite): the server binds its port, answers SDP offers and runs \
@@ -344,12 +344,20 @@ impl Protocol for WebRtcProtocol {
                  (send_message / disconnect / wait_for_more). SDP and ICE stay in Rust.",
             )
             .e2e_testing(
-                "webrtc-rs used as the peer: real offer/answer, real ICE, data-channel message \
-                 asserted on both sides",
+                "webrtc-rs 0.11 is the peer, not a mock: an `RTCPeerConnection` creates a data \
+                 channel, gathers a real SDP offer, exchanges SDP over the server's signalling \
+                 WebSocket, completes ICE, DTLS and SCTP, and the test asserts the exact \
+                 messages that crossed the channel in both directions — the peer's send is what \
+                 provokes the server's reply, so receiving it proves both directions \
+                 (tests/server/webrtc/e2e_test.rs::test_webrtc_data_channel_message_round_trip, \
+                 not #[ignore]d)",
             )
             .notes(
-                "Data channels only — no audio or video, and a media m-line in an offer is \
-                 reported to the model but never served. ICE is not trickled: the peer must \
+                "Browser interoperability is still unverified — webrtc-rs is a real independent \
+                 peer, but it is not Chrome or Firefox, and that is the check a human should \
+                 make before this goes past Beta. Data channels only — no audio or video, and a \
+                 media m-line in an offer is reported to the model but never served. ICE is not \
+                 trickled: the peer must \
                  gather candidates before sending its offer. One peer per signalling \
                  WebSocket, and closing that socket closes the peer connection. Binary \
                  data-channel frames are surfaced to the model as lossy UTF-8; replies are \

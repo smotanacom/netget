@@ -53,6 +53,15 @@ pub const SW_NO_PRECISE_DIAGNOSIS: (u8, u8) = (0x6F, 0x00);
 /// Status word for an APDU that could not be parsed at all.
 pub const SW_WRONG_LENGTH: (u8, u8) = (0x67, 0x00);
 
+/// Status word returned when the backend is saturated and a retry may succeed.
+///
+/// `6400` is ISO 7816-4 "execution error, state of non-volatile memory unchanged":
+/// the card did not do anything, and the reader may send the command again. It is
+/// kept distinct from [`SW_NO_PRECISE_DIAGNOSIS`] so a transient overload is not
+/// recorded by the reader as a permanent card fault — the same reason HTTP answers
+/// 503 rather than 500.
+pub const SW_EXECUTION_ERROR_STATE_UNCHANGED: (u8, u8) = (0x64, 0x00);
+
 /// A parsed ISO 7816-4 command APDU.
 #[derive(Debug, Clone)]
 pub struct ApduCommand {
@@ -230,6 +239,21 @@ impl ApduResponse {
             SW_NO_PRECISE_DIAGNOSIS.0,
             SW_NO_PRECISE_DIAGNOSIS.1,
         )
+    }
+
+    /// The fail-closed response for an internal (backend) failure.
+    ///
+    /// The two [`crate::utils::WireFailure`] categories map onto two different status
+    /// words — `6400` for a saturated backend (retryable), `6F00` for everything else —
+    /// so the reader can tell "try again" from "this card is broken". Nothing derived
+    /// from the error itself reaches the wire: the status word is a category, and an
+    /// APDU response carries no free-text field to leak one into.
+    pub fn for_wire_failure(failure: crate::utils::WireFailure) -> Self {
+        let (sw1, sw2) = match failure {
+            crate::utils::WireFailure::Overloaded => SW_EXECUTION_ERROR_STATE_UNCHANGED,
+            crate::utils::WireFailure::Unavailable => SW_NO_PRECISE_DIAGNOSIS,
+        };
+        Self::new(Vec::new(), sw1, sw2)
     }
 
     pub fn status_word(&self) -> String {

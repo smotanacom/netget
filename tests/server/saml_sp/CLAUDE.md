@@ -1,6 +1,6 @@
 # saml_sp E2E tests
 
-Four mocked tests over `reqwest`. Feature gate `saml-sp`; declared in `tests/server/mod.rs` as
+Five mocked tests over `reqwest`. Feature gate `saml-sp`; declared in `tests/server/mod.rs` as
 `pub mod saml_sp;` (a test directory not declared there is silently never compiled).
 
 ```bash
@@ -29,8 +29,9 @@ stale claim behind.
 | `test_saml_sp_accepts_a_forged_assertion` | The documented absence of validation | 2 |
 | `test_saml_sp_escapes_hostile_user_id` | A `user_id` full of markup and cookie-attribute syntax is escaped in HTML and percent-encoded in `Set-Cookie` | 2 |
 | `test_saml_sp_builds_authn_request` | `/login` → HTTP-POST binding form; base64 round-trip of the AuthnRequest; RelayState carried | 2 |
+| `test_saml_sp_fails_closed_when_the_handler_answers_nothing` | A handler answer with no usable action output → 5xx, no `Set-Cookie`, body is a category and not netget's internals | 2 |
 
-**Total: 8 mocked LLM calls**, under the 10-call budget. All run against the mock LLM; no
+**Total: 10 mocked LLM calls**, under the 10-call budget. All run against the mock LLM; no
 Ollama is required. Every test calls `verify_mocks()`.
 
 ## Why these particular assertions
@@ -44,6 +45,12 @@ Ollama is required. Every test calls `verify_mocks()`.
 - **Escaped-form-present, not raw-form-absent.** Both injection tests assert the *escaped*
   string appears. Asserting only that `<script>` is missing would also pass if the value were
   silently dropped, which is a different (and also wrong) behaviour.
+- **Fail-closed is asserted three ways.** `test_saml_sp_fails_closed_when_the_handler_answers_nothing`
+  checks the status is a 5xx, that there is no `Set-Cookie`, and that the body contains none of
+  the strings that leaked in the past (a backend URL, a model name, `retries`, a source path,
+  an `anyhow` `Caused by` chain). Any one alone is weak: a permissive default status was the
+  original bug (an empty `200 OK` on a no-answer), and interpolating the error into the reply
+  was the bug introduced by fixing it. See `tests/wire_failure_test.rs`.
 - **Base64 round-trip on `/login`.** The handler supplies plain AuthnRequest XML and NetGet
   encodes it. Decoding and comparing byte-for-byte catches a double-encode, which is the
   failure a "contains SAMLRequest" check would miss.

@@ -206,6 +206,10 @@ async fn test_modbus_reads_writes_and_exceptions_against_tokio_modbus() -> E2ERe
         "the model's named exception must reach the client as exception 0x03"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -286,6 +290,10 @@ async fn test_modbus_spec_exceptions_and_mbap_framing() -> E2EResult<()> {
 
     drop(stream);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

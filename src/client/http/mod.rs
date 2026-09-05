@@ -67,6 +67,35 @@ enum Dispatch {
 pub struct HttpClient;
 
 impl HttpClient {
+    /// The process-wide HTTP client, built once.
+    ///
+    /// Two things this avoids, both of which cost real time on every request before:
+    /// `reqwest::Client::builder().build()` sets up the rustls stack and loads the
+    /// platform root store -- on macOS that reads the system keychain through
+    /// Security.framework, which is synchronous and serialises across processes -- so it
+    /// runs on `spawn_blocking` rather than parking a tokio worker. And it is kept, so
+    /// requests after the first reuse the connection pool instead of paying for a fresh
+    /// TLS stack and handshake each time.
+    ///
+    /// Protocol versions are negotiated via ALPN during the handshake, so one client
+    /// serves both HTTP/1.1 and HTTP/2.
+    async fn http_client() -> Result<reqwest::Client> {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        if let Some(client) = CLIENT.get() {
+            return Ok(client.clone());
+        }
+        let built = tokio::task::spawn_blocking(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .use_rustls_tls()
+                .build()
+                .context("Failed to build HTTP client")
+        })
+        .await
+        .context("HTTP client build task panicked")??;
+        Ok(CLIENT.get_or_init(|| built).clone())
+    }
+
     /// Connect to an HTTP server with integrated LLM actions
     pub async fn connect_with_llm_actions(
         remote_addr: String,
@@ -74,19 +103,17 @@ impl HttpClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         // For HTTP, "connection" is logical, not a persistent TCP connection
         // We'll create an HTTP client and store it in protocol_data
 
         info!("HTTP client {} initialized for {}", client_id, remote_addr);
 
-        // Build reqwest client with HTTPS and HTTP/2 support
-        // Protocol versions are automatically negotiated via ALPN during TLS handshake
-        let _http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .use_rustls_tls() // Use rustls for HTTPS (HTTP/1.1 and HTTP/2)
-            .build()
-            .context("Failed to build HTTP client")?;
+        // Warm the shared client here rather than building one and dropping it. This
+        // used to bind to `_http_client`: a full rustls stack constructed at connect time
+        // and immediately discarded, while every request built another one.
+        Self::http_client().await?;
 
         // Store client in protocol_data
         // Ensure base_url has http:// scheme
@@ -97,6 +124,15 @@ impl HttpClient {
             format!("http://{}", remote_addr)
         };
 
+        // `default_headers` is declared in `get_startup_parameters()` as "headers included
+        // in all requests". It was never read, so setting it changed nothing. It is stored
+        // here and merged in `perform_request`, where a header the model names on the
+        // request itself wins over the default of the same name.
+        let default_headers = match &startup_params {
+            Some(params) => params.get_optional_object("default_headers")?.cloned(),
+            None => None,
+        };
+
         app_state
             .with_client_mut(client_id, |client| {
                 client.set_protocol_field(
@@ -104,6 +140,12 @@ impl HttpClient {
                     serde_json::json!("initialized"),
                 );
                 client.set_protocol_field("base_url".to_string(), serde_json::json!(base_url));
+                if let Some(headers) = &default_headers {
+                    client.set_protocol_field(
+                        "default_headers".to_string(),
+                        serde_json::Value::Object(headers.clone()),
+                    );
+                }
             })
             .await;
 
@@ -474,17 +516,22 @@ impl HttpClient {
         app_state: &AppState,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<HttpExchange> {
-        // Get base URL from client
-        let base_url = app_state
+        // Base URL and the startup `default_headers`, read together under one guard.
+        let (base_url, default_headers) = app_state
             .with_client_mut(client_id, |client| {
-                client
-                    .get_protocol_field("base_url")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                (
+                    client
+                        .get_protocol_field("base_url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    client
+                        .get_protocol_field("default_headers")
+                        .and_then(|v| v.as_object().cloned()),
+                )
             })
             .await
-            .flatten()
-            .context("No base URL found")?;
+            .unwrap_or((None, None));
+        let base_url = base_url.context("No base URL found")?;
 
         let url = if path.starts_with("http://") || path.starts_with("https://") {
             path.clone()
@@ -497,11 +544,7 @@ impl HttpClient {
             client_id, method, url
         );
 
-        // Build request with HTTPS and HTTP/2 support
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .use_rustls_tls() // Use rustls for HTTPS (HTTP/1.1 and HTTP/2)
-            .build()?;
+        let http_client = Self::http_client().await?;
 
         let mut request = match method.to_uppercase().as_str() {
             "GET" => http_client.get(&url),
@@ -513,12 +556,23 @@ impl HttpClient {
             _ => return Err(anyhow::anyhow!("Unsupported HTTP method: {}", method)),
         };
 
-        // Add headers
+        // Startup defaults merged *underneath* the request's own headers. Merged into one
+        // map before anything is applied, because `RequestBuilder::header` appends: setting
+        // the same name twice would put both values on the wire instead of overriding.
+        // Keyed by lowercased name, because HTTP header names are case-insensitive and
+        // `Accept` from the request must replace `accept` from the defaults.
+        let mut merged = serde_json::Map::new();
+        for (key, value) in default_headers.unwrap_or_default() {
+            merged.insert(key.to_ascii_lowercase(), value);
+        }
         if let Some(hdrs) = headers {
             for (key, value) in hdrs {
-                if let Some(val_str) = value.as_str() {
-                    request = request.header(&key, val_str);
-                }
+                merged.insert(key.to_ascii_lowercase(), value);
+            }
+        }
+        for (key, value) in merged {
+            if let Some(val_str) = value.as_str() {
+                request = request.header(&key, val_str);
             }
         }
 
@@ -605,12 +659,47 @@ impl HttpClient {
         .await
         {
             Ok(ClientLlmResult {
-                actions: _,
+                actions,
                 memory_updates,
             }) => {
                 // Update memory
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
+                }
+
+                // Execute what the model asked for. These were discarded, so a model that
+                // read a response and wanted to follow it with another request was
+                // silently ignored -- the entire purpose of raising the event.
+                //
+                // They run through `perform_request`, which issues the exchange and raises
+                // no event. That bounds the loop (a follow-up cannot trigger another
+                // response event and drive the model in circles) and is also the only
+                // shape that compiles: routing them back through `make_request` would make
+                // notify -> apply -> make -> notify a self-referential async chain, which
+                // rustc cannot prove `Send` and `tokio::spawn` therefore rejects.
+                use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                for action in actions {
+                    let Ok(ClientActionResult::Custom { name, data }) =
+                        protocol.execute_action(action.clone())
+                    else {
+                        continue;
+                    };
+                    if name != "http_request" {
+                        continue;
+                    }
+                    let result = Self::perform_request(
+                        client_id,
+                        data["method"].as_str().unwrap_or("GET").to_string(),
+                        data["path"].as_str().unwrap_or("/").to_string(),
+                        data["headers"].as_object().cloned(),
+                        data["body"].as_str().map(|s| s.to_string()),
+                        &app_state,
+                        &status_tx,
+                    )
+                    .await;
+                    if let Err(e) = result {
+                        error!("HTTP client {} follow-up request failed: {}", client_id, e);
+                    }
                 }
             }
             Err(e) => {

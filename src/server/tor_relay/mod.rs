@@ -113,7 +113,16 @@ impl TorRelayServer {
         // Use aws-lc-rs crypto provider (required for rustls 0.23+)
         let crypto_provider = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider();
         let tls_config = ServerConfig::builder_with_provider(Arc::new(crypto_provider))
-            .with_protocol_versions(&[&tokio_rustls::rustls::version::TLS13])
+            // TLS 1.2 as well as 1.3. A real Tor relay accepts both -- the link
+            // specification's minimum is 1.2 -- and restricted to 1.3 alone this server
+            // rejected every peer that sent a 1.2 ClientHello with
+            // `SupportedVersionsExtensionRequired`, which is rustls saying "this hello has
+            // no supported_versions extension" and reads like a peer bug rather than our
+            // own configuration.
+            .with_protocol_versions(&[
+                &tokio_rustls::rustls::version::TLS13,
+                &tokio_rustls::rustls::version::TLS12,
+            ])
             .expect("Valid TLS protocol versions")
             .with_no_client_auth()
             .with_single_cert(vec![cert], key)

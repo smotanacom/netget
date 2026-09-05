@@ -192,13 +192,15 @@ IMPORTANT: Respond with the generate_rss_feed action containing all the feed dat
             // Mock 4: GET /nonexistent.xml (404) - MUST BE FOURTH (most specific)
             .on_event("rss_feed_requested")
             .and_event_data_contains("path", "/nonexistent.xml")
-            .respond_with_actions(serde_json::json!([
-                {
-                    "type": "send_http_response",
-                    "status": 404,
-                    "body": "Not Found"
-                }
-            ]))
+            // RSS has one verb, `generate_rss_feed`, and no error action — "not found" is
+            // expressed by producing no feed, which the server answers with 404. That fallback
+            // is the fail-closed direction (it withholds a feed rather than inventing one), so
+            // unlike the S3 empty-200 case it is the right answer rather than a gap.
+            //
+            // This used to answer `send_http_response`, which RSS cannot execute:
+            // tests/helpers/mock_action_names.rs rejects it, so the test failed before the
+            // server was ever reached.
+            .respond_with_actions(serde_json::json!([]))
             .expect_calls(1)
             .and()
             // Mock 5: Server startup - MUST BE LAST (less specific)
@@ -352,39 +354,72 @@ IMPORTANT: Respond with the generate_rss_feed action containing all the feed dat
     assert_eq!(response.status(), 404, "Expected 404 for non-existent feed");
     println!("✓ Non-existent feed returns 404");
 
-    // Test 5: Verify RSS can be parsed by rss crate
-    println!("\n[Test 5] Verify feeds can be parsed by rss crate");
+    // Test 5: Parse the served feed with an INDEPENDENT parser.
+    //
+    // This used to parse with `rss::Channel::read_from`, which proved nothing: the server
+    // builds the XML with that same crate's `ChannelBuilder`, so the assertion was that one
+    // crate round-trips through itself. Any RSS 2.0 element the server omits, mislabels or
+    // nests wrongly would survive such a round trip as long as `rss` was self-consistent.
+    //
+    // `feed-rs` is a separate implementation with its own normalised model (it reads RSS 0.9x,
+    // RSS 1.0/2.0, Atom and JSON Feed into one `Feed` type), so what it accepts is evidence
+    // about the bytes on the wire rather than about the `rss` crate.
+    println!("\n[Test 5] Verify feeds parse with feed-rs, an independent parser");
     let response = client
         .get(format!("{}/tech-news.xml", base_url))
         .send()
         .await?;
 
     let body = response.text().await?;
-    let channel = rss::Channel::read_from(body.as_bytes());
+    let feed = feed_rs::parser::parse(body.as_bytes())
+        .map_err(|e| format!("feed-rs rejected the served feed: {e}\n---\n{body}"))?;
 
-    assert!(channel.is_ok(), "Expected feed to parse successfully");
-    let channel = channel.unwrap();
-
-    assert_eq!(channel.title(), "Tech News Daily", "Expected correct title");
-    assert_eq!(channel.items().len(), 3, "Expected 3 items");
-    assert!(channel.language().is_some(), "Expected language field");
-    assert!(channel.ttl().is_some(), "Expected TTL field");
-
-    // Verify first item
-    let first_item = &channel.items()[0];
     assert_eq!(
-        first_item.title(),
+        feed.feed_type,
+        feed_rs::model::FeedType::RSS2,
+        "feed-rs must recognise this as RSS 2.0, not fall back to another dialect"
+    );
+    assert_eq!(
+        feed.title.as_ref().map(|t| t.content.as_str()),
+        Some("Tech News Daily"),
+        "channel title"
+    );
+    assert_eq!(
+        feed.description.as_ref().map(|t| t.content.as_str()),
+        Some("Latest technology news and updates"),
+        "channel description"
+    );
+    assert_eq!(
+        feed.language.as_deref(),
+        Some("en-us"),
+        "channel language must survive as an element feed-rs can read"
+    );
+    assert_eq!(feed.entries.len(), 3, "expected 3 items");
+
+    let first = &feed.entries[0];
+    assert_eq!(
+        first.title.as_ref().map(|t| t.content.as_str()),
         Some("New AI Model Released"),
-        "Expected first item title"
+        "first item title"
+    );
+    assert_eq!(
+        first.links.first().map(|l| l.href.as_str()),
+        Some("https://technews.example.com/ai-model"),
+        "first item link"
     );
     assert!(
-        first_item.categories().len() >= 2,
-        "Expected at least 2 categories"
+        first.published.is_some(),
+        "first item pub_date must be an RFC 2822 date a foreign parser can read; \
+         feed-rs drops dates it cannot parse rather than erroring"
+    );
+    let categories: Vec<&str> = first.categories.iter().map(|c| c.term.as_str()).collect();
+    assert!(
+        categories.contains(&"AI") && categories.contains(&"Machine Learning"),
+        "categories must be readable by an independent parser, got {categories:?}"
     );
 
-    println!("✓ Feed parsed successfully by rss crate");
-    println!("✓ Channel metadata valid");
-    println!("✓ Items contain expected data");
+    println!("✓ feed-rs parsed the served XML as RSS 2.0");
+    println!("✓ Channel metadata, item links, dates and categories all readable");
 
     println!("\n✅ All RSS tests passed!");
     println!("   Total LLM calls: ~6 (3 successful feeds + 1 404 + 2 repeat fetches)");
@@ -392,6 +427,10 @@ IMPORTANT: Respond with the generate_rss_feed action containing all the feed dat
     println!("   Categories properly rendered");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
 
     Ok(())

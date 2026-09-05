@@ -189,6 +189,10 @@ impl IgmpClient {
         let task_registrar = app_state.clone();
         let task_handle = tokio::spawn(async move {
             let mut buffer = vec![0u8; 65536];
+            // Lifecycle, at INFO: without it there is no way to tell "the datagram never
+            // arrived" from "nothing was ever listening for it", and the two have very
+            // different causes.
+            info!("IGMP client {} receive loop listening", client_id);
 
             loop {
                 match socket_clone.recv_from(&mut buffer).await {

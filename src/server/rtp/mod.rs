@@ -174,8 +174,18 @@ impl RtpServer {
             }
         };
 
+        let event_id = event.event_type.id.clone();
         match call_llm(llm, state, server_id, Some(connection_id), &event, protocol).await {
             Ok(result) => {
+                if result.raw_actions.is_empty() {
+                    // The model answered, and its answer was "stream nothing". For RTP that is a
+                    // legitimate answer — a receiver owes its sender no media — but on the wire it
+                    // is byte-identical to a backend outage, so the two must be separable here.
+                    Log::new(Some(status_tx)).info(format!(
+                        "RTP {} from {} decision=model_sent_nothing (no media requested)",
+                        event_id, peer_addr
+                    ));
+                }
                 for action in &result.raw_actions {
                     Self::execute_send_action(
                         action, peer_addr, socket, status_tx, state, server_id,
@@ -184,12 +194,26 @@ impl RtpServer {
                 }
             }
             Err(e) => {
-                // Fail closed: RTP has no error frame to send, so we emit nothing on the wire and
-                // record the failure on both channels rather than falling through to some default
-                // stream (which would fabricate media the model never authorized).
+                // Fail closed: RTP is a one-way media transport with no error frame and no
+                // request/response turn, so we emit nothing on the wire rather than falling
+                // through to some default stream (which would fabricate media the model never
+                // authorized) or inventing an RTCP BYE for a session we never joined. The peer is
+                // not blocked on us; the operator is the one who needs to know, so the whole
+                // error goes to the log and the status stream and nothing goes to the socket.
+                //
+                // `decision=` mirrors `src/server/radius/`: an operator greps `fail_closed_` to
+                // find every datagram the model did not actually answer, and the overloaded /
+                // errored split is kept even though RTP has no way to express it on the wire.
+                // There is no `model_reject` counterpart — RTP has no accept/deny semantics, so
+                // a model declining to stream is exactly the `model_sent_nothing` case above.
+                let decision = if crate::utils::WireFailure::classify(&e).is_overloaded() {
+                    "fail_closed_backend_overloaded"
+                } else {
+                    "fail_closed_backend_error"
+                };
                 Log::new(Some(status_tx)).error(format!(
-                    "RTP LLM failure for {}; no media sent (fail-closed): {}",
-                    peer_addr, e
+                    "RTP {} from {} decision={}; no media sent: {}",
+                    event_id, peer_addr, decision, e
                 ));
             }
         }
@@ -214,7 +238,21 @@ impl RtpServer {
             }
             // Common/no-op actions (set_memory, show_message, …) are executed by the shared
             // executor already; nothing to put on the wire here.
-            _ => {}
+            "" => {
+                Log::new(Some(status_tx)).warn(format!(
+                    "RTP action with no \"type\" field, ignored: {}",
+                    action
+                ));
+            }
+            other => {
+                // Not on the wire, but not silent either: a misspelled media action is
+                // otherwise indistinguishable from the model deciding to stream nothing.
+                Log::new(Some(status_tx)).debug(format!(
+                    "RTP no wire output for action type \"{}\" (handled by the shared executor \
+                     if it is a common action)",
+                    other
+                ));
+            }
         }
     }
 

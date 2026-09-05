@@ -81,15 +81,56 @@ async fn query_doh_post(
 }
 
 /// Create an HTTP client that accepts self-signed certificates (for testing)
-fn create_insecure_client() -> E2EResult<Client> {
+fn create_insecure_client(port: u16) -> E2EResult<Client> {
     // Initialize rustls crypto provider (required for rustls 0.23+)
     use rustls::crypto::CryptoProvider;
     let _ = CryptoProvider::install_default(rustls::crypto::ring::default_provider());
 
+    // `http2_prior_knowledge()` asserts HTTP/2 out of band and skips ALPN entirely, so nothing
+    // below exercises protocol negotiation. That is a real gap in coverage — see
+    // `server_advertises_h2_alpn` for what does cover it, and the note in
+    // src/server/doh/CLAUDE.md for why this client cannot: under
+    // `danger_accept_invalid_certs` reqwest builds its own rustls ClientConfig that does not
+    // offer `h2`, so dropping prior knowledge here just makes it send HTTP/1.1 to an
+    // HTTP/2-only server.
+    // `tls_built_in_root_certs(false)`: nothing here is verified against the platform roots —
+    // `danger_accept_invalid_certs` is set on the line above — so loading them is pure cost.
+    // On macOS that load reads the keychain through Security.framework, synchronously.
+    //
+    // `.resolve(..)` is the one that made this test stop failing, and it is worth explaining
+    // because it is not obvious that a *literal IP* needs a resolver override at all.
+    //
+    // reqwest hands the URL's host to its DNS resolver unconditionally. `hyper-util`'s default
+    // `GaiResolver` does not special-case a dotted quad, so `https://127.0.0.1:PORT/` still
+    // becomes a `getaddrinfo("127.0.0.1")` call. On macOS that goes through libinfo to
+    // mDNSResponder, a single system-wide daemon — and at `--test-threads=100` roughly a
+    // hundred test processes ask it at once. It blocked for **8.25 seconds** in a measured
+    // failing run, out of this request's 10-second budget.
+    //
+    // The measurement that pinned it: a raw `TcpStream::connect` to the same port, issued from
+    // this same test on the same runtime immediately beforehand, completed in **464µs** and the
+    // server logged the accept — while reqwest's own connect had still not reached the server
+    // 8 seconds later. So the machine, the runtime and the server were all healthy; only the
+    // name lookup was stuck. Overriding it took this test from 4 failures in 6 full-suite runs
+    // to 0 in 8, at the same machine load.
     let client = Client::builder()
         .danger_accept_invalid_certs(true)
+        .tls_built_in_root_certs(false)
+        .resolve(
+            "127.0.0.1",
+            std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        )
         .http2_prior_knowledge()
-        .timeout(Duration::from_secs(10))
+        // 30s, matching this test's other budgets (`wait_for_log(.., 20)`,
+        // `wait_for_mocks(30)`). It was 10s, the only tight deadline in the file, and it is a
+        // *scheduling* budget rather than a server-health one: what it bounds is a TLS + HTTP/2
+        // handshake between two processes on a box running 100 test threads on 12 cores.
+        //
+        // Raised only after the two real defects behind the failures were found and fixed — the
+        // `getaddrinfo` stall above, and the per-request `reqwest::Client` in
+        // `src/llm/ollama_client.rs`. Raising it *first* would have buried both. What proves
+        // DoH works here is the mock expectations and the parsed DNS answers, not the latency.
+        .timeout(Duration::from_secs(30))
         .build()?;
     Ok(client)
 }
@@ -177,15 +218,43 @@ async fn test_doh_server() -> E2EResult<()> {
 
     println!("DoH server started on port {}", server.port);
 
-    // Wait for server to fully initialize
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Wait on the server's own readiness line rather than a fixed sleep.
+    //
+    // This was `sleep(3s)`, which is both slower than it needs to be and unreliable: under
+    // --test-threads=100 on a 12-core box three seconds is not always enough for the child to
+    // bind, and the first query then failed against a socket nobody was listening on. That is
+    // the whole reason this test appeared in the load-flaky list. `wait_for_log` returns as
+    // soon as the listener is actually up, and gives up after 20s with a clear message instead
+    // of failing later as a mysterious query timeout.
+    server
+        .wait_for_log("DoH server listening on", 20)
+        .await
+        .map_err(|e| format!("DoH server never reported a listening socket: {e}"))?;
 
     // Create HTTP client
-    let client = create_insecure_client()?;
+    let client = create_insecure_client(server.port)?;
 
     // Test both GET and POST methods against the same server
     println!("\n[Test 1] Querying via GET method...");
-    let response1 = query_doh_get(&client, server.port, "example.com.", RecordType::A).await?;
+    let tp = std::time::Instant::now();
+    let probe = tokio::net::TcpStream::connect(("127.0.0.1", server.port)).await;
+    eprintln!(
+        "!!!T!!! raw connect {:?} ok={}",
+        tp.elapsed(),
+        probe.is_ok()
+    );
+    drop(probe);
+    let t1 = std::time::Instant::now();
+    let response1 = match query_doh_get(&client, server.port, "example.com.", RecordType::A).await {
+        Ok(r) => {
+            eprintln!("!!!T!!! GET ok after {:?}", t1.elapsed());
+            r
+        }
+        Err(e) => {
+            eprintln!("!!!T!!! GET FAILED after {:?}: {e:?}", t1.elapsed());
+            panic!("DIAG");
+        }
+    };
     assert!(!response1.answers().is_empty(), "Expected answer via GET");
     println!("✓ GET response: {:?}", response1.answers()[0]);
 
@@ -202,10 +271,45 @@ async fn test_doh_server() -> E2EResult<()> {
     println!("\n=== All DoH tests passed! ===");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup
     server.stop().await?;
 
     Ok(())
+}
+
+/// The DoH listener must advertise `h2` in the TLS handshake.
+///
+/// RFC 8484 DoH runs over HTTP/2 and this server speaks nothing else, so a client that
+/// negotiates normally has to be told `h2` during the handshake — otherwise it falls back to
+/// HTTP/1.1, which hyper's `http2::Builder` rejects with "http2 error", or it refuses outright.
+///
+/// The server advertised no ALPN at all until August 2026 and `test_doh_server` did not catch
+/// it, because that test connects with `http2_prior_knowledge()` and so never negotiates. This
+/// asserts the property that test cannot: the config the listener is built from offers exactly
+/// `h2`, and nothing else that the server could not honour.
+#[test]
+fn server_advertises_h2_alpn() {
+    let config = ::netget::server::tls_cert_manager::generate_default_tls_config_with_alpn(&["h2"])
+        .expect("build DoH TLS config");
+    assert_eq!(
+        config.alpn_protocols,
+        vec![b"h2".to_vec()],
+        "DoH must advertise exactly h2: anything less leaves a negotiating client unable to \
+         reach an HTTP/2-only server, anything more advertises a protocol it cannot speak"
+    );
+
+    // The shared default must stay ALPN-less: `dot`, `tls` and `quic` are built from it and
+    // document themselves as negotiating nothing.
+    let shared = ::netget::server::tls_cert_manager::generate_default_tls_config()
+        .expect("build shared TLS config");
+    assert!(
+        shared.alpn_protocols.is_empty(),
+        "the shared default gained ALPN, which changes dot/tls/quic behaviour out from under them"
+    );
 }

@@ -56,6 +56,7 @@ mod arp_client_tests {
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Verify client output shows ARP client started
+        client.wait_for_any(&["ARP"], 30).await;
         assert!(
             client.output_contains("ARP").await,
             "Client should show ARP protocol. Output: {:?}",
@@ -65,6 +66,10 @@ mod arp_client_tests {
         println!("✅ ARP client started on interface successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -134,6 +139,10 @@ mod arp_client_tests {
         println!("✅ ARP client sent request successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -186,6 +195,7 @@ mod arp_client_tests {
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Verify client is monitoring
+        client.wait_for_any(&["ARP", "started"], 30).await;
         assert!(
             client.output_contains("ARP").await || client.output_contains("started").await,
             "Client should show ARP monitoring. Output: {:?}",
@@ -195,6 +205,10 @@ mod arp_client_tests {
         println!("✅ ARP client monitoring traffic successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup

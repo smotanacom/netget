@@ -566,13 +566,9 @@ async fn handle_request(req: Request<Incoming>, ctx: RequestContext) -> Response
     let body_bytes = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
+            // The transport error names hyper internals; the peer gets the category only.
             error!("Failed to read Kubernetes request body: {}", e);
-            return status_response(
-                400,
-                "BadRequest",
-                &format!("failed to read request body: {e}"),
-                None,
-            );
+            return status_response(400, "BadRequest", "failed to read the request body", None);
         }
     };
 
@@ -634,15 +630,34 @@ async fn handle_request(req: Request<Incoming>, ctx: RequestContext) -> Response
     match llm_result {
         Ok(execution) => {
             for result in execution.protocol_results {
+                let action_name = match &result {
+                    crate::llm::ActionResult::Custom { name, .. } => name.clone(),
+                    _ => String::new(),
+                };
                 if let Some(response) =
                     build_response(result, &resource_route, as_table, &ctx.config)
                 {
+                    // A `k8s_status` is the model *choosing* to refuse (404, 403, 409…). It
+                    // must stay distinguishable in the log from netget refusing on the model's
+                    // behalf, which is what the two branches below do.
+                    if action_name == "k8s_status" {
+                        info!(
+                            "Kubernetes {} {}: decision=model_reject status={}",
+                            method,
+                            path,
+                            response.status().as_u16()
+                        );
+                    }
                     return response;
                 }
             }
             // No usable action. Refuse rather than inventing an empty list: an empty PodList
             // is a claim about the cluster, and "the model said nothing" must not be
             // indistinguishable from "the model said there are no pods".
+            error!(
+                "Kubernetes {} {}: decision=fail_closed_no_action (model returned no k8s_* action)",
+                method, path
+            );
             console_error!(
                 ctx.status_tx,
                 "Kubernetes: model returned no k8s action for {} {}",
@@ -657,13 +672,33 @@ async fn handle_request(req: Request<Incoming>, ctx: RequestContext) -> Response
             )
         }
         Err(e) => {
+            // The peer gets a category; the log gets the error. Never interpolate `e` into a
+            // `Status` message — it names the backend, the model and netget's own internals.
+            let failure = crate::utils::WireFailure::classify(&e);
+            error!(
+                "Kubernetes {} {}: decision=fail_closed_llm_error category={:?} error={}",
+                method, path, failure, e
+            );
             console_error!(ctx.status_tx, "Kubernetes LLM call failed: {}", e);
-            status_response(
-                503,
-                "ServiceUnavailable",
-                &format!("netget could not obtain a response for this request: {e}"),
-                None,
-            )
+            match failure {
+                // Saturated backend: 503 + Retry-After is what client-go backs off on, so the
+                // client retries instead of recording a permanent fault.
+                crate::utils::WireFailure::Overloaded => {
+                    let mut response = status_response(
+                        503,
+                        "ServiceUnavailable",
+                        failure.prefixed_text(),
+                        Some(json!({"retryAfterSeconds": 5})),
+                    );
+                    response
+                        .headers_mut()
+                        .insert(hyper::header::RETRY_AFTER, HeaderValue::from_static("5"));
+                    response
+                }
+                crate::utils::WireFailure::Unavailable => {
+                    status_response(500, "InternalError", failure.prefixed_text(), None)
+                }
+            }
         }
     }
 }
@@ -771,7 +806,20 @@ fn build_response(
             ))
         }
         "k8s_object_response" => {
-            let mut object = data.get("object").cloned().unwrap_or_else(|| json!({}));
+            // Defence in depth: `execute_object_response` already requires `object` and a
+            // 100..600 `status_code`. If either ever gets past it, refuse — serving `{}` with
+            // 200, or degrading an out-of-range code to 200, would be a claim about the
+            // cluster that nobody made.
+            let Some(object) = data.get("object").cloned() else {
+                error!("Kubernetes: decision=fail_closed_no_action (k8s_object_response without 'object')");
+                return Some(status_response(
+                    500,
+                    "InternalError",
+                    "the handler returned no object for this request",
+                    None,
+                ));
+            };
+            let mut object = object;
             if object.get("kind").is_none() {
                 object["kind"] = json!(kind_for_route(route, config));
             }
@@ -782,7 +830,15 @@ fn build_response(
                 .get("status_code")
                 .and_then(Value::as_u64)
                 .unwrap_or(200) as u16;
-            let status = StatusCode::from_u16(code).unwrap_or(StatusCode::OK);
+            let Ok(status) = StatusCode::from_u16(code) else {
+                error!("Kubernetes: k8s_object_response carried an unusable status_code {code}");
+                return Some(status_response(
+                    500,
+                    "InternalError",
+                    "the handler returned an unusable status code",
+                    None,
+                ));
+            };
             if as_table {
                 let kind = object
                     .get("kind")

@@ -30,8 +30,29 @@ mod cassandra_client_tests {
                     ]))
                     .expect_calls(1)
                     .and()
-                    // Mock 2: Query received from client
-                    .on_event("cassandra_query_received")
+                    // Mock 2: the CQL handshake. STARTUP must be answered with
+                    // cassandra_ready and OPTIONS with cassandra_supported, or the server
+                    // fails closed and the driver never finishes connecting -- so
+                    // cassandra_connected never fires and every later rule sees 0 calls.
+                    // The scylla driver opens more than one connection (a control
+                    // connection plus a data connection), so STARTUP arrives more than
+                    // once. Pinning this to exactly 1 fails on the driver's own behaviour.
+                    .on_event("cassandra_startup")
+                    .respond_with_actions(serde_json::json!([
+                        { "type": "cassandra_ready" }
+                    ]))
+                    .expect_at_least(1)
+                    .and()
+                    .on_event("cassandra_options")
+                    .respond_with_actions(serde_json::json!([
+                        { "type": "cassandra_supported" }
+                    ]))
+                    .expect_at_least(0)
+                    .and()
+                    // Mock 3: Query received from client. The event is `cassandra_query`;
+                    // `cassandra_query_received` was never an event this server raises, so
+                    // this rule could not match and the query went unanswered.
+                    .on_event("cassandra_query")
                     .and_event_data_contains("query", "SELECT * FROM system.local")
                     .respond_with_actions(serde_json::json!([
                         {
@@ -45,7 +66,25 @@ mod cassandra_client_tests {
                             ]
                         }
                     ]))
-                    .expect_calls(1)
+                    .expect_at_least(1)
+                    .and()
+                    // The scylla driver's control connection issues its own queries
+                    // before the test's -- system.local WHERE key='local', system.peers,
+                    // system_schema.types -- and they arrive as `cassandra_query` too.
+                    // With no rule to match, mock_ollama answers 500, the server replies
+                    // with a CQL ERROR frame, and the session never establishes: the
+                    // circuit breaker then opens and every later expectation reports 0.
+                    // Empty rows are enough for the driver, which is what the server-side
+                    // suite does. Unconstrained, so it must stay last.
+                    .on_event("cassandra_query")
+                    .respond_with_actions(serde_json::json!([
+                        {
+                            "type": "cassandra_result_rows",
+                            "columns": [],
+                            "rows": []
+                        }
+                    ]))
+                    .expect_at_least(0)
                     .and()
             });
 
@@ -78,14 +117,14 @@ mod cassandra_client_tests {
                 .on_event("cassandra_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "execute_cassandra_query",
+                        "type": "execute_cql_query",
                         "query": "SELECT * FROM system.local"
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 3: Response received
-                .on_event("cassandra_response_received")
+                .on_event("cassandra_result_received")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "wait_for_more"
@@ -101,6 +140,7 @@ mod cassandra_client_tests {
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection message. Output: {:?}",
@@ -110,6 +150,11 @@ mod cassandra_client_tests {
         println!("✅ Cassandra client connected and executed query successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -142,8 +187,24 @@ mod cassandra_client_tests {
                     ]))
                     .expect_calls(1)
                     .and()
+                    // Every CQL connection opens with OPTIONS then STARTUP. Without
+                    // rules for both, mock_ollama answers 500, the server sends a CQL
+                    // ERROR frame and the driver never gets a session -- so the client
+                    // fails to connect and `cassandra_connected` never fires.
+                    .on_event("cassandra_options")
+                    .respond_with_actions(serde_json::json!([
+                        { "type": "cassandra_supported" }
+                    ]))
+                    .expect_at_least(0)
+                    .and()
+                    .on_event("cassandra_startup")
+                    .respond_with_actions(serde_json::json!([
+                        { "type": "cassandra_ready" }
+                    ]))
+                    .expect_at_least(0)
+                    .and()
                     // Mock 2: Query received with consistency level
-                    .on_event("cassandra_query_received")
+                    .on_event("cassandra_query")
                     .and_event_data_contains("query", "SELECT * FROM system.local")
                     .respond_with_actions(serde_json::json!([
                         {
@@ -157,7 +218,25 @@ mod cassandra_client_tests {
                             ]
                         }
                     ]))
-                    .expect_calls(1)
+                    .expect_at_least(1)
+                    .and()
+                    // The scylla driver's control connection issues its own queries
+                    // before the test's -- system.local WHERE key='local', system.peers,
+                    // system_schema.types -- and they arrive as `cassandra_query` too.
+                    // With no rule to match, mock_ollama answers 500, the server replies
+                    // with a CQL ERROR frame, and the session never establishes: the
+                    // circuit breaker then opens and every later expectation reports 0.
+                    // Empty rows are enough for the driver, which is what the server-side
+                    // suite does. Unconstrained, so it must stay last.
+                    .on_event("cassandra_query")
+                    .respond_with_actions(serde_json::json!([
+                        {
+                            "type": "cassandra_result_rows",
+                            "columns": [],
+                            "rows": []
+                        }
+                    ]))
+                    .expect_at_least(0)
                     .and()
             });
 
@@ -190,7 +269,7 @@ mod cassandra_client_tests {
                     .on_event("cassandra_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "execute_cassandra_query",
+                            "type": "execute_cql_query",
                             "query": "SELECT * FROM system.local",
                             "consistency": "QUORUM"
                         }
@@ -198,7 +277,7 @@ mod cassandra_client_tests {
                     .expect_calls(1)
                     .and()
                     // Mock 3: Response received
-                    .on_event("cassandra_response_received")
+                    .on_event("cassandra_result_received")
                     .respond_with_actions(serde_json::json!([
                         {
                             "type": "wait_for_more"
@@ -221,6 +300,11 @@ mod cassandra_client_tests {
         println!("✅ Cassandra client executed query with consistency level");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -253,8 +337,24 @@ mod cassandra_client_tests {
                     ]))
                     .expect_calls(1)
                     .and()
+                    // Every CQL connection opens with OPTIONS then STARTUP. Without
+                    // rules for both, mock_ollama answers 500, the server sends a CQL
+                    // ERROR frame and the driver never gets a session -- so the client
+                    // fails to connect and `cassandra_connected` never fires.
+                    .on_event("cassandra_options")
+                    .respond_with_actions(serde_json::json!([
+                        { "type": "cassandra_supported" }
+                    ]))
+                    .expect_at_least(0)
+                    .and()
+                    .on_event("cassandra_startup")
+                    .respond_with_actions(serde_json::json!([
+                        { "type": "cassandra_ready" }
+                    ]))
+                    .expect_at_least(0)
+                    .and()
                     // Mock 2: First query (system.local)
-                    .on_event("cassandra_query_received")
+                    .on_event("cassandra_query")
                     .and_event_data_contains("query", "system.local")
                     .respond_with_actions(serde_json::json!([
                         {
@@ -267,10 +367,10 @@ mod cassandra_client_tests {
                             ]
                         }
                     ]))
-                    .expect_calls(1)
+                    .expect_at_least(1)
                     .and()
                     // Mock 3: Second query (system.peers)
-                    .on_event("cassandra_query_received")
+                    .on_event("cassandra_query")
                     .and_event_data_contains("query", "system.peers")
                     .respond_with_actions(serde_json::json!([
                         {
@@ -283,7 +383,25 @@ mod cassandra_client_tests {
                             ]
                         }
                     ]))
-                    .expect_calls(1)
+                    .expect_at_least(1)
+                    .and()
+                    // The scylla driver's control connection issues its own queries
+                    // before the test's -- system.local WHERE key='local', system.peers,
+                    // system_schema.types -- and they arrive as `cassandra_query` too.
+                    // With no rule to match, mock_ollama answers 500, the server replies
+                    // with a CQL ERROR frame, and the session never establishes: the
+                    // circuit breaker then opens and every later expectation reports 0.
+                    // Empty rows are enough for the driver, which is what the server-side
+                    // suite does. Unconstrained, so it must stay last.
+                    .on_event("cassandra_query")
+                    .respond_with_actions(serde_json::json!([
+                        {
+                            "type": "cassandra_result_rows",
+                            "columns": [],
+                            "rows": []
+                        }
+                    ]))
+                    .expect_at_least(0)
                     .and()
             });
 
@@ -315,30 +433,37 @@ mod cassandra_client_tests {
                     .on_event("cassandra_connected")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "execute_cassandra_query",
+                            "type": "execute_cql_query",
                             "query": "SELECT * FROM system.local"
                         }
                     ]))
                     .expect_calls(1)
                     .and()
-                    // Mock 3: First response received - send second query
-                    .on_event("cassandra_response_received")
-                    .respond_with_actions(serde_json::json!([
-                        {
-                            "type": "execute_cassandra_query",
-                            "query": "SELECT * FROM system.peers"
+                    // Mock 3: both responses, told apart by what came back.
+                    //
+                    // This was two rules on `cassandra_result_received` with nothing to
+                    // distinguish them. Rules are first-match-wins, so the first one won
+                    // every time: it answered each result with another query, which
+                    // produced another result, forever -- 99 calls before the test gave
+                    // up, and the second rule never matched at all. One rule that branches
+                    // on the event is the only way to express "then" here.
+                    .on_event("cassandra_result_received")
+                    .respond_with_actions_from_event(|e| {
+                        let rows = e["rows"].to_string();
+                        if rows.contains("127.0.0.2") {
+                            // system.peers came back: the chain is done.
+                            serde_json::json!([{ "type": "wait_for_more" }])
+                        } else {
+                            serde_json::json!([
+                                {
+                                    "type": "execute_cql_query",
+                                    "query": "SELECT * FROM system.peers"
+                                }
+                            ])
                         }
-                    ]))
-                    .expect_calls(1)
-                    .and()
-                    // Mock 4: Second response received - wait
-                    .on_event("cassandra_response_received")
-                    .respond_with_actions(serde_json::json!([
-                        {
-                            "type": "wait_for_more"
-                        }
-                    ]))
-                    .expect_calls(1)
+                    })
+                    // Two results: system.local, then system.peers.
+                    .expect_calls(2)
                     .and()
             });
 
@@ -347,6 +472,7 @@ mod cassandra_client_tests {
         tokio::time::sleep(Duration::from_millis(2000)).await;
 
         // Verify client connected
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection. Output: {:?}",
@@ -356,6 +482,11 @@ mod cassandra_client_tests {
         println!("✅ Cassandra client executed multiple queries");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

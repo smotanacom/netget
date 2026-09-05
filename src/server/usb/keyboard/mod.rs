@@ -19,7 +19,10 @@
 //! failed LLM call must never put a keystroke on the wire. Nothing below can synthesise a
 //! report; reports exist only where an action produced them.
 //!
-//! So the failure is dual-logged at ERROR and nothing is sent.
+//! So the failure is dual-logged at ERROR and nothing is sent. The log carries a `decision=`
+//! tag so the three outcomes an operator would otherwise see as one quiet keyboard stay apart:
+//! `decision=llm_error` (the backend failed), `decision=model_no_actions` (the model answered
+//! and asked for no keystrokes) and `decision=model_actions` (something was typed).
 //! `tests/server/usb_keyboard/llm_failure_test.rs` pins both halves.
 
 pub mod actions;
@@ -422,14 +425,25 @@ impl UsbKeyboardServer {
         )
         .await
         {
-            Ok(_) => info!(
-                "USB keyboard LLM call completed (led_status) for connection {}",
-                connection_id
-            ),
+            Ok(execution_result) => {
+                let acted =
+                    execution_result.protocol_results.len() + execution_result.raw_actions.len();
+                info!(
+                    "USB keyboard LLM call completed (led_status) for connection {} decision={} actions={}",
+                    connection_id,
+                    if acted == 0 {
+                        "model_no_actions"
+                    } else {
+                        "model_actions"
+                    },
+                    acted
+                );
+            }
             Err(e) => console_error!(
                 status_tx,
-                "LLM call failed for USB keyboard led_status on connection {}: {}; the keyboard \
-                 stays silent (see the module docs for why silence is the refusal here)",
+                "LLM call failed for USB keyboard led_status on connection {} decision=llm_error: \
+                 {}; the keyboard stays silent (see the module docs for why silence is the \
+                 refusal here)",
                 connection_id,
                 e
             ),
@@ -479,18 +493,27 @@ impl UsbKeyboardServer {
         )
         .await;
 
-        if let Err(e) = &result {
-            console_error!(
+        match &result {
+            Err(e) => console_error!(
                 status_tx,
-                "LLM call failed for USB keyboard detach on connection {}: {}",
+                "LLM call failed for USB keyboard detach on connection {} decision=llm_error: {}",
                 connection_id,
                 e
-            );
-        } else {
-            info!(
-                "USB keyboard detach LLM call completed for connection {}",
-                connection_id
-            );
+            ),
+            Ok(execution_result) => {
+                let acted =
+                    execution_result.protocol_results.len() + execution_result.raw_actions.len();
+                info!(
+                    "USB keyboard detach LLM call completed for connection {} decision={} actions={}",
+                    connection_id,
+                    if acted == 0 {
+                        "model_no_actions"
+                    } else {
+                        "model_actions"
+                    },
+                    acted
+                );
+            }
         }
 
         let mut conns = connections.lock().await;
@@ -568,12 +591,24 @@ impl UsbKeyboardServer {
 
         // Process result
         match result {
-            Ok(_execution_result) => {
-                // Actions have already been executed by call_llm
-                info!(
-                    "USB keyboard LLM call completed for connection {}",
-                    connection_id
-                );
+            Ok(execution_result) => {
+                // Actions have already been executed by call_llm. Whether the model actually
+                // asked for keystrokes is the distinction an operator needs in the log: a
+                // model that answered with nothing looks exactly like a working keyboard
+                // nobody is typing on, and so does a backend outage. Tag all three.
+                let acted =
+                    execution_result.protocol_results.len() + execution_result.raw_actions.len();
+                if acted == 0 {
+                    info!(
+                        "USB keyboard LLM call completed for connection {} decision=model_no_actions (nothing typed)",
+                        connection_id
+                    );
+                } else {
+                    info!(
+                        "USB keyboard LLM call completed for connection {} decision=model_actions actions={}",
+                        connection_id, acted
+                    );
+                }
 
                 // Set state back to idle
                 let mut conns = connections.lock().await;
@@ -587,8 +622,8 @@ impl UsbKeyboardServer {
                 // dual-logged at ERROR rather than only reaching `netget.log`.
                 console_error!(
                     status_tx,
-                    "LLM call failed for USB keyboard connection {}: {}; no HID report will be \
-                     sent, so the host sees a keyboard nobody is typing on",
+                    "LLM call failed for USB keyboard connection {} decision=llm_error: {}; no \
+                     HID report will be sent, so the host sees a keyboard nobody is typing on",
                     connection_id,
                     e
                 );

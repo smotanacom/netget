@@ -291,6 +291,15 @@ async fn handle_llm_response(
                         status_code = 200;
                     }
                     "send_error_response" => {
+                        // The model refusing is a real answer, and it is logged with its own
+                        // `decision=` token so an operator can tell a deliberate denial apart
+                        // from the model saying nothing and from the backend erroring.
+                        Log::new(Some(&status_tx)).info(format!(
+                            "OpenID {} {} decision=model_reject error={}",
+                            method,
+                            path,
+                            data.get("error").and_then(|v| v.as_str()).unwrap_or("?")
+                        ));
                         // Build OAuth error response
                         let error_response = json!({
                             "error": data["error"],
@@ -314,14 +323,24 @@ async fn handle_llm_response(
         }
     }
 
-    // Ensure we always have valid response
+    // The model produced nothing renderable — no action at all, or only actions this handler
+    // does not know. That is not a sign-in: fail closed with RFC 6749 §5.2 `server_error`,
+    // and describe it with a category only. The peer is a relying party and netget's
+    // internals (the backend, the model, the retry machinery) are not its business; the
+    // detail belongs in the log line below.
     if response_body.is_empty() && redirect_location.is_none() {
         response_body = json!({
             "error": "server_error",
-            "error_description": "OpenID server received request but LLM did not generate a response"
-        }).to_string();
+            "error_description": crate::utils::WireFailure::Unavailable.prefixed_text(),
+        })
+        .to_string();
         response_headers.insert("content-type".to_string(), "application/json".to_string());
         status_code = 500;
+        Log::new(Some(&status_tx)).error(format!(
+            "OpenID failing {} {} with 500 server_error decision=no_answer \
+             (the model returned no renderable OIDC response action)",
+            method, path
+        ));
     }
 
     // FileOnly: each send_*_response action's own log_template already reports the
@@ -621,8 +640,11 @@ async fn handle_openid_request(
             } else {
                 (500, "server_error")
             };
+            // `decision=llm_error` distinguishes this from `decision=no_answer` (the model
+            // answered, with nothing usable) and `decision=model_reject` (the model
+            // deliberately refused). The error itself goes here and nowhere else.
             Log::new(Some(&status_tx)).error(format!(
-                "OpenID failing {} {} with {} {} (overload={}): {}",
+                "OpenID failing {} {} with {} {} decision=llm_error overload={}: {}",
                 method, path, status, code, overloaded, e
             ));
 

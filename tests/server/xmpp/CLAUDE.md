@@ -2,6 +2,10 @@
 
 `tests/server/xmpp/test.rs`. Two tests, **6 LLM calls total**.
 
+`tests/server/xmpp/peer_inject_test.rs` and `tests/server/xmpp/llm_failure_test.rs` cost **zero**
+LLM calls: the first injects actions through the dashboard's peer handle, the second points the
+backend at a dead port so every `call_llm` errors.
+
 ## Strategy
 
 The peer parses everything the server writes with **`xmpp-parsers` 0.22** — already a
@@ -41,6 +45,19 @@ distinguished by `and_event_data_contains("xml_data", …)` on `stream:stream`, 
 `<presence`. The server hands the model raw text and clears its buffer only once the model has
 acted on it, so a rule that never matches leaves the buffer in place and every later event
 carries the earlier text too.
+
+## `llm_failure_test.rs` — the backend-failure path
+
+The LLM endpoint is `http://127.0.0.1:1`, where nothing listens, so `call_llm` errors on the very
+first `xmpp_data_received` event. The test asserts the peer is **answered rather than left
+hanging**: a fatal `<stream:error/>` (RFC 6120 §4.9) preceded by the synthesised opening stream
+tag §4.9.1.1 requires, carrying `<internal-server-error/>` for a `WireFailure::Unavailable`
+(`<resource-constraint/>` is the `Overloaded` counterpart), a `<text/>` equal to one of the two
+`WireFailure` categories verbatim, a closing `</stream:stream>`, and then EOF.
+
+It also scans the whole raw byte stream for the tokens that leaked in the original incident —
+`LLM`, `ollama`, `11434`, a backend URL, a filesystem path, `✗`, `retries`. That scan is the
+point of the test; the stanza assertions only prove the frame is one a real client can parse.
 
 ## Not covered
 

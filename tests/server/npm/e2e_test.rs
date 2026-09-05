@@ -13,6 +13,28 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
+/// Run an `npm` subcommand under a wall-clock bound.
+///
+/// `std::process::Command::output()` blocks the async worker and waits forever. npm
+/// retries an unresponsive registry with its own backoff, so a registry that answers
+/// wrongly does not fail the test -- it hangs it, and a hung test in a suite run with
+/// `--test-threads=100` takes the whole suite with it. This one could not be run to
+/// completion at all until it was skipped.
+///
+/// Bounded, a broken registry produces a failure that names the step and the timeout.
+async fn npm(args: &[&str], dir: &std::path::Path, what: &str) -> E2EResult<std::process::Output> {
+    let out = timeout(
+        Duration::from_secs(60),
+        tokio::process::Command::new("npm")
+            .args(args)
+            .current_dir(dir)
+            .output(),
+    )
+    .await
+    .map_err(|_| format!("npm {what} did not finish within 60s"))??;
+    Ok(out)
+}
+
 #[tokio::test]
 async fn test_npm_package_metadata() -> E2EResult<()> {
     println!("\n=== E2E Test: NPM Package Metadata ===");
@@ -43,21 +65,24 @@ For any other package, return a 404 error with: {"error": "Package not found"}"#
                 {
                     "type": "open_server",
                     "port": 0,
-                    "base_stack": "HTTP",
+                    "base_stack": "NPM",
                     "instruction": "NPM registry - serve package metadata"
                 }
             ]))
             .expect_calls(1)
             .and()
-            // Mock 2: HTTP request for express package
-            .on_event("http_request")
-            .and_event_data_contains("uri", "/express")
+            // Mock 2: package metadata request.
+            //
+            // The event id is NPM_PACKAGE_REQUEST and the field is `path`. These rules said
+            // `http_request` / `uri`, neither of which this protocol ever emits, so they never
+            // matched: the mock answered nothing, the request failed, and the failure surfaced
+            // as an assertion on the HTTP status rather than on the mock.
+            .on_event("NPM_PACKAGE_REQUEST")
+            .and_event_data_contains("path", "/express")
             .respond_with_actions(serde_json::json!([
                 {
-                    "type": "send_http_response",
-                    "status": 200,
-                    "headers": {"Content-Type": "application/json"},
-                    "body": json!({
+                    "type": "npm_package_metadata",
+                    "metadata": json!({
                         "name": "express",
                         "version": "4.18.2",
                         "description": "Fast, unopinionated, minimalist web framework",
@@ -67,7 +92,7 @@ For any other package, return a 404 error with: {"error": "Package not found"}"#
                         "dist": {
                             "tarball": "http://localhost:0/express/-/express-4.18.2.tgz"
                         }
-                    }).to_string()
+                    })
                 }
             ]))
             .expect_calls(1)
@@ -166,20 +191,19 @@ When a client requests any package, return a 404 error with JSON: {"error": "Pac
                 {
                     "type": "open_server",
                     "port": 0,
-                    "base_stack": "HTTP",
+                    "base_stack": "NPM",
                     "instruction": "NPM registry - return 404 for all packages"
                 }
             ]))
             .expect_calls(1)
             .and()
-            // Mock 2: HTTP request for non-existent package
-            .on_event("http_request")
+            // Mock 2: request for a non-existent package
+            .on_event("NPM_PACKAGE_REQUEST")
             .respond_with_actions(serde_json::json!([
                 {
-                    "type": "send_http_response",
-                    "status": 404,
-                    "headers": {"Content-Type": "application/json"},
-                    "body": json!({"error": "Package not found"}).to_string()
+                    "type": "npm_error",
+                    "error": "Package not found",
+                    "status_code": 404
                 }
             ]))
             .expect_calls(1)
@@ -245,10 +269,30 @@ When a client requests any package, return a 404 error with JSON: {"error": "Pac
 async fn test_npm_with_real_cli() -> E2EResult<()> {
     println!("\n=== E2E Test: NPM with Real npm CLI ===");
 
-    // Check if npm CLI is available
-    if Command::new("npm").arg("--version").output().is_err() {
-        println!("⚠️  npm CLI not available, skipping test");
-        return Ok(());
+    // The npm CLI *is* the evidence this test exists to produce - it is what makes NPM's
+    // Beta rating honest. A machine without it must say so, not report a silent pass: a
+    // vacuous green here is exactly how a maturity claim outlives the thing that justified
+    // it.
+    let npm_version = Command::new("npm").arg("--version").output();
+    match npm_version {
+        Ok(out) if out.status.success() => {
+            println!("npm CLI {}", String::from_utf8_lossy(&out.stdout).trim())
+        }
+        Ok(out) => {
+            return Err(format!(
+                "`npm --version` exited {}: this test's whole point is driving the real npm CLI",
+                out.status
+            )
+            .into())
+        }
+        Err(e) => {
+            return Err(format!(
+                "npm CLI not available ({e}): this test's whole point is driving the real npm \
+                 CLI against NetGet's registry, and skipping it would leave NPM's maturity \
+                 rating resting on nothing"
+            )
+            .into())
+        }
     }
 
     // Create a minimal valid npm tarball for testing
@@ -321,8 +365,14 @@ For any other package, return 404 error."#,
         tarball_base64
     );
 
+    // The tarball URL in the packument has to name the port the server actually bound,
+    // which is not known until it starts -- and the mocks are configured before that. The
+    // response closure captures this cell and the test fills it in once the port is known.
+    let served_port = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0));
+    let metadata_port = served_port.clone();
+
     let config = NetGetConfig::new(&prompt)
-        .with_mock(|mock| {
+        .with_mock(move |mock| {
             mock
                 // Mock 1: Server startup
                 .on_instruction_containing("Open NPM registry")
@@ -330,42 +380,56 @@ For any other package, return 404 error."#,
                     {
                         "type": "open_server",
                         "port": 0,
-                        "base_stack": "HTTP",
+                        "base_stack": "NPM",
                         "instruction": "NPM registry - serve package and tarball"
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 2: Package metadata request
-                .on_event("http_request")
-                .and_event_data_contains("uri", "/netget-test-pkg")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "send_http_response",
-                        "status": 200,
-                        "headers": {"Content-Type": "application/json"},
-                        "body": json!({
-                            "name": "netget-test-pkg",
-                            "version": "1.0.0",
-                            "description": "Test package for NetGet NPM registry",
-                            "main": "index.js",
-                            "dist": {
-                                "tarball": format!("http://127.0.0.1:0/netget-test-pkg/-/netget-test-pkg-1.0.0.tgz")
-                            }
-                        }).to_string()
-                    }
-                ]))
-                .expect_at_most(1)
+                .on_event("NPM_PACKAGE_REQUEST")
+                .and_event_data_contains("path", "/netget-test-pkg")
+                .respond_with_actions_from_event(move |_e| {
+                    // A registry packument, not a package.json.
+                    //
+                    // `GET /<pkg>` must return `dist-tags` and a `versions` map. This used
+                    // to return a flat {name, version, description, dist} object, which is
+                    // what a package.json looks like -- npm found no versions in it,
+                    // printed nothing, and exited 0. `npm view --json` then produced empty
+                    // stdout and the test failed inside serde with "EOF while parsing a
+                    // value", which names the parser rather than the problem.
+                    let port = metadata_port.load(std::sync::atomic::Ordering::SeqCst);
+                    serde_json::json!([
+                        {
+                            "type": "npm_package_metadata",
+                            "metadata": json!({
+                                "name": "netget-test-pkg",
+                                "dist-tags": { "latest": "1.0.0" },
+                                "versions": {
+                                    "1.0.0": {
+                                        "name": "netget-test-pkg",
+                                        "version": "1.0.0",
+                                        "description": "Test package for NetGet NPM registry",
+                                        "main": "index.js",
+                                        "dist": {
+                                            "tarball": format!("http://127.0.0.1:{port}/netget-test-pkg/-/netget-test-pkg-1.0.0.tgz")
+                                        }
+                                    }
+                                }
+                            })
+                        }
+                    ])
+                })
+                // npm fetches the packument once for `view` and again for `install`.
+                .expect_at_least(1)
                 .and()
                 // Mock 3: Tarball download request
-                .on_event("http_request")
-                .and_event_data_contains("uri", ".tgz")
+                .on_event("NPM_TARBALL_REQUEST")
+                .and_event_data_contains("path", ".tgz")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "send_http_response",
-                        "status": 200,
-                        "headers": {"Content-Type": "application/octet-stream"},
-                        "body": tarball_base64.clone()
+                        "type": "npm_package_tarball",
+                        "tarball_data": tarball_base64.clone()
                     }
                 ]))
                 .expect_at_most(1)
@@ -380,6 +444,9 @@ For any other package, return 404 error."#,
     .map_err(|_| "Server startup timeout")??;
     println!("NPM registry started on port {}", server.port);
 
+    // Now the packument's tarball URL can name a port that exists.
+    served_port.store(server.port, std::sync::atomic::Ordering::SeqCst);
+
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Create a temporary directory for npm install
@@ -390,14 +457,19 @@ For any other package, return 404 error."#,
     let npm_config = format!("http://127.0.0.1:{}", server.port);
     println!("Setting npm registry to: {}", npm_config);
 
-    let config_status = Command::new("npm")
-        .arg("config")
-        .arg("set")
-        .arg("registry")
-        .arg(&npm_config)
-        .arg("--location=project")
-        .current_dir(npm_test_dir.path())
-        .status()?;
+    let config_out = npm(
+        &[
+            "config",
+            "set",
+            "registry",
+            &npm_config,
+            "--location=project",
+        ],
+        npm_test_dir.path(),
+        "config set registry",
+    )
+    .await?;
+    let config_status = config_out.status;
 
     if !config_status.success() {
         println!("✗ Failed to configure npm registry");
@@ -406,75 +478,87 @@ For any other package, return 404 error."#,
 
     // Test: npm view (get package metadata)
     println!("\nTesting: npm view netget-test-pkg...");
-    let view_output = Command::new("npm")
-        .arg("view")
-        .arg("netget-test-pkg")
-        .arg("--json")
-        .arg("--registry")
-        .arg(&npm_config)
-        .current_dir(npm_test_dir.path())
-        .output()?;
+    let view_output = npm(
+        &[
+            "view",
+            "netget-test-pkg",
+            "--json",
+            "--registry",
+            &npm_config,
+        ],
+        npm_test_dir.path(),
+        "view netget-test-pkg",
+    )
+    .await?;
 
-    if view_output.status.success() {
-        let view_json: Value = serde_json::from_slice(&view_output.stdout)?;
-        println!("✓ npm view succeeded");
-        println!(
-            "  Package: {}",
-            view_json
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
-        println!(
-            "  Version: {}",
-            view_json
-                .get("version")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-        );
-    } else {
-        println!(
-            "✗ npm view failed: {}",
-            String::from_utf8_lossy(&view_output.stderr)
-        );
-    }
+    assert!(
+        view_output.status.success(),
+        "`npm view` failed against NetGet's registry ({}): {}",
+        view_output.status,
+        String::from_utf8_lossy(&view_output.stderr)
+    );
+    // Report what npm actually said before trying to parse it. `npm view --json` can
+    // exit 0 having written nothing to stdout, and `serde_json` then fails with
+    // "EOF while parsing a value" -- which names the parser and not the problem.
+    assert!(
+        !view_output.stdout.is_empty(),
+        "npm view exited {} with empty stdout. stderr: {}",
+        view_output.status,
+        String::from_utf8_lossy(&view_output.stderr)
+    );
+    let view_json: Value = serde_json::from_slice(&view_output.stdout)?;
+    assert_eq!(
+        view_json.get("name").and_then(|v| v.as_str()),
+        Some("netget-test-pkg"),
+        "npm resolved a different package than the registry served: {view_json}"
+    );
+    assert_eq!(
+        view_json.get("version").and_then(|v| v.as_str()),
+        Some("1.0.0"),
+        "npm resolved a different version than the packument's dist-tags named: {view_json}"
+    );
+    println!("✓ npm view resolved netget-test-pkg@1.0.0 from NetGet");
 
     // Test: npm install
     println!("\nTesting: npm install netget-test-pkg...");
-    let install_output = Command::new("npm")
-        .arg("install")
-        .arg("netget-test-pkg")
-        .arg("--registry")
-        .arg(&npm_config)
-        .current_dir(npm_test_dir.path())
-        .output()?;
+    let install_output = npm(
+        &["install", "netget-test-pkg", "--registry", &npm_config],
+        npm_test_dir.path(),
+        "install netget-test-pkg",
+    )
+    .await?;
 
-    if install_output.status.success() {
-        println!("✓ npm install succeeded");
+    assert!(
+        install_output.status.success(),
+        "`npm install` failed against NetGet's registry ({}): {}",
+        install_output.status,
+        String::from_utf8_lossy(&install_output.stderr)
+    );
 
-        // Verify package was installed
-        let node_modules = npm_test_dir
-            .path()
-            .join("node_modules")
-            .join("netget-test-pkg");
-        if node_modules.exists() {
-            println!("✓ Package installed to node_modules/");
-
-            // Verify package.json exists
-            let installed_pkg_json = node_modules.join("package.json");
-            if installed_pkg_json.exists() {
-                println!("✓ package.json exists in installed package");
-            }
-        } else {
-            println!("⚠️  Package directory not found in node_modules");
-        }
-    } else {
-        println!("⚠️  npm install failed (expected - tarball serving may need refinement)");
-        println!(
-            "   stderr: {}",
-            String::from_utf8_lossy(&install_output.stderr)
-        );
-    }
+    // Installing is the assertion that matters: it means npm fetched the packument, chose a
+    // version, downloaded the tarball NetGet served, verified its integrity and unpacked it.
+    // A `view` alone only proves the metadata endpoint answers.
+    let installed = npm_test_dir
+        .path()
+        .join("node_modules")
+        .join("netget-test-pkg");
+    assert!(
+        installed.is_dir(),
+        "npm install exited 0 but node_modules/netget-test-pkg does not exist. stderr: {}",
+        String::from_utf8_lossy(&install_output.stderr)
+    );
+    let installed_pkg_json = installed.join("package.json");
+    assert!(
+        installed_pkg_json.is_file(),
+        "the installed package has no package.json - the tarball NetGet served did not unpack"
+    );
+    let unpacked: Value = serde_json::from_slice(&fs::read(&installed_pkg_json)?)?;
+    assert_eq!(
+        unpacked.get("name").and_then(|v| v.as_str()),
+        Some("netget-test-pkg"),
+        "the unpacked package.json is not the one the test tarball contained: {unpacked}"
+    );
+    println!("✓ npm install unpacked NetGet's tarball into node_modules/");
 
     println!("✓ NPM with Real CLI test completed\n");
 
@@ -527,21 +611,21 @@ For any other search query, return empty results: {"objects": [], "total": 0}"#;
                 {
                     "type": "open_server",
                     "port": 0,
-                    "base_stack": "HTTP",
+                    "base_stack": "NPM",
                     "instruction": "NPM registry - handle search requests"
                 }
             ]))
             .expect_calls(1)
             .and()
             // Mock 2: Search request
-            .on_event("http_request")
-            .and_event_data_contains("uri", "/search")
+            .on_event("NPM_SEARCH_REQUEST")
+            .and_event_data_contains("path", "/search")
             .respond_with_actions(serde_json::json!([
                 {
-                    "type": "send_http_response",
-                    "status": 200,
-                    "headers": {"Content-Type": "application/json"},
-                    "body": json!({
+                    // NPM's own verb. `send_http_response` is not in this protocol's
+                    // vocabulary, so the server rejected it and answered its fallback.
+                    "type": "npm_package_search",
+                    "results": json!({
                         "objects": [
                             {
                                 "package": {
@@ -562,7 +646,7 @@ For any other search query, return empty results: {"objects": [], "total": 0}"#;
                         ],
                         "total": 1,
                         "time": "Mon Jan 01 2024 00:00:00 GMT+0000"
-                    }).to_string()
+                    })
                 }
             ]))
             .expect_calls(1)

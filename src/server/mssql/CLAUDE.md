@@ -63,9 +63,28 @@ entirely, which silently discarded the `rows_affected` the LLM supplied.
 
 ### Failure behavior
 
-- **No response action** → empty DONE, logged at WARN. TDS clients block until a
-  DONE arrives, so something must always be sent.
-- **LLM call fails** → ERROR 50000 severity 16 with the message.
+TDS clients block until a DONE or an ERROR token arrives, so every branch below
+writes one. What is written carries a *category*, never netget's own error text:
+the error itself goes to the log and the status stream only
+(`crate::utils::WireFailure`).
+
+The three outcomes are distinguishable in the log by a stable `decision=` tag, so
+a deliberate refusal is never confused with netget failing to obtain an answer:
+
+- **The model refused** (`mssql_error_response`) → its own ERROR token, logged
+  `decision=model_reject`.
+- **No response action** → ERROR 50000 severity 16, message
+  `netget: request could not be processed`, logged `decision=fail_closed_no_action`.
+  Not a bare DONE: in SQL that reads as "ran, matched nothing", which is a
+  successful answer to a query nobody answered. The one exception is an explicit
+  `close_this_connection` with no other action — a decision rather than silence —
+  which still sends DONE and logs `decision=model_close`.
+- **LLM call fails** → ERROR severity 16 logged `decision=fail_closed_llm_error`:
+  49918 ("not enough resources", on SqlClient's transient-retry list) when the
+  backend is overloaded, 50000 otherwise, with the fixed `netget: …` category
+  message for that class.
+- **A second response action after the first** → logged at WARN and dropped; TDS
+  allows only one token stream per statement.
 - **Action result the handler does not recognise** → logged at WARN and skipped.
 - **TDS packet length below 8** → connection closed.
 - **Bulk Load (0x0E) or an unknown packet type** → ERROR 40002.
@@ -107,8 +126,31 @@ does not begin with one of those keywords yields an empty DONE.
 
 ## Not implemented
 
-- **Authentication** — username, password and database are ignored. No NTLM, no
-  Windows auth, no Azure AD.
+- **Password verification** — no NTLM, no Windows auth, no Azure AD, and the password in the
+  LOGIN7 packet is never checked (or even parsed: it is deliberately not put into the event,
+  because that would send a credential to the model and into the event log).
+
+  The *decision*, however, is now the model's. Every TDS Login used to be accepted
+  unconditionally — there was no `mssql_login` event and no action that could decline one, so
+  an instruction like "only allow the user `reporting`" could not be enforced and the model was
+  never asked. Authentication decided by default is the pattern the root `CLAUDE.md` calls the
+  most dangerous in this codebase.
+
+  `mssql_login` now fires with `username`, `database` and `app_name` parsed from LOGIN7
+  (MS-TDS 2.2.6.4). Admission requires an explicit `mssql_login_ack`; `mssql_error_response`
+  refuses with the model's own error. Three things refuse, kept apart in the log because the
+  wire can only carry one error number: `decision=model_reject`,
+  `decision=fail_closed_no_action` (the handler ran and produced neither verdict) and
+  `decision=fail_closed_llm_error`. All three send SQL Server's own 18456 "Login failed for
+  user" at severity 14, which every driver already maps to an authentication failure, and then
+  close — TDS cannot continue a session whose login failed.
+
+  A malformed or truncated LOGIN7 yields empty strings rather than an error, so an unparseable
+  login still reaches the model and is refused on the same no-answer path. It must never be the
+  reason a login is *granted*.
+
+  Note for tests: a server that only mocks `mssql_query` no longer gets a session at all. Every
+  suite here answers `mssql_login` with `mssql_login_ack` explicitly.
 - **TLS** — pre-login advertises ENCRYPT_NOT_SUP.
 - **Prepared statements / RPC parameters** — see above.
 - **Transactions, MARS, cursors, bulk load, `nvarchar(max)`, VARBINARY, XML,

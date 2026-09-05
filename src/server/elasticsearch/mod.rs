@@ -16,7 +16,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ActionResult;
@@ -252,14 +252,42 @@ async fn handle_elasticsearch_request_with_llm(
                 }
             }
 
-            // No Elasticsearch response found, return default OK with minimal cluster info
-            debug!("No Elasticsearch response from LLM, returning 200 OK with default response");
-            let default_response = serde_json::json!({
-                "acknowledged": true
+            // The handler ran but produced no Elasticsearch response — a model that refused, a
+            // static handler with an empty action list, or an answer whose actions were all
+            // unrecognised.
+            //
+            // This used to answer 200 `{"acknowledged": true}`. That is the OAuth2 shape: the
+            // single most affirmative body in the Elasticsearch API, returned precisely when
+            // nothing affirmed anything. A client issuing a create-index, a mapping update or a
+            // delete-by-query reads `acknowledged: true` as "the cluster applied it", so a model
+            // that declined the operation was reported as having performed it.
+            //
+            // Fail closed with the same envelope the backend-error arm below builds, so the two
+            // are consistent and neither can be mistaken for a result.
+            warn!(
+                "Elasticsearch: no response action produced (decision=fail_closed_no_action); \
+                 answering 500 rather than acknowledged:true"
+            );
+            console_error!(
+                status_tx,
+                "Elasticsearch answering 500 server_error: no response action produced \
+                 (decision=fail_closed_no_action)"
+            );
+            let reason = crate::utils::WireFailure::Unavailable.prefixed_text();
+            let error_response = serde_json::json!({
+                "error": {
+                    "root_cause": [{
+                        "type": "server_error",
+                        "reason": reason,
+                    }],
+                    "type": "server_error",
+                    "reason": reason,
+                },
+                "status": 500,
             })
             .to_string();
 
-            Ok(build_es_response(200, default_response))
+            Ok(build_es_response(500, error_response))
         }
         Err(e) => {
             // Elasticsearch's error envelope is what every client parses, and `status` inside

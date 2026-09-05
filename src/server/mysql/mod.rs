@@ -263,16 +263,23 @@ impl<W: tokio::io::AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MysqlHandler
             // Treat as a regular query
             self.handle_query(&query, results).await
         } else {
+            // The handle is unknown or already closed. Answering OK told the driver its
+            // EXECUTE succeeded and affected zero rows, so a client reusing a stale handle —
+            // after a reconnect, or a double-close — saw a successful write that never ran.
+            // MySQL has a code for exactly this and drivers act on it.
+            warn!(
+                "MySQL EXECUTE for unknown or expired statement id {} (decision=unknown_handle)",
+                stmt_id
+            );
             results
-                .completed(OkResponse {
-                    header: 0,
-                    affected_rows: 0,
-                    last_insert_id: 0,
-                    status_flags: StatusFlags::empty(),
-                    warnings: 0,
-                    info: String::new(),
-                    session_state_info: String::new(),
-                })
+                .error(
+                    ErrorKind::ER_UNKNOWN_STMT_HANDLER,
+                    format!(
+                        "Unknown prepared statement handler ({}) given to EXECUTE",
+                        stmt_id
+                    )
+                    .as_bytes(),
+                )
                 .await
         }
     }
@@ -498,24 +505,30 @@ impl MysqlHandler {
                     }
                 }
 
-                // No response action matched. An empty OK is the least-bad answer, but it is
-                // indistinguishable from a successful no-op, so make it visible in the log.
+                // No response action matched: the handler ran but produced nothing this
+                // protocol can encode — a model that refused, a static handler with an empty
+                // action list, or an answer whose actions were all unrecognised.
+                //
+                // This used to reply with an empty OK, which a driver reads as a statement that
+                // executed successfully and affected zero rows. For an INSERT, UPDATE or DELETE
+                // that is a claim the write completed, and the caller carries on believing it
+                // landed. The log line admitted it was "indistinguishable from a successful
+                // no-op" — which is precisely why it cannot be the answer.
+                //
+                // Fail closed with an ERR packet instead, the same shape the backend-error arm
+                // below uses. 1105 (ER_UNKNOWN_ERROR) rather than 1205: nothing here timed out,
+                // so advertising a retryable condition would be wrong.
                 warn!(
-                    "MySQL: no response action produced for query {:?}; replying with an empty OK",
+                    "MySQL: no response action produced for query {:?} \
+                     (decision=fail_closed_no_action); replying with an ERR packet",
                     query
                 );
-                self.record_stats(None, Some(0), None, Some(1)).await;
+                let message = crate::utils::WireFailure::Unavailable.prefixed_text();
+                self.record_stats(None, Some(message.len() as u64), None, Some(1))
+                    .await;
                 finish_query(
                     results
-                        .completed(OkResponse {
-                            header: 0,
-                            affected_rows: 0,
-                            last_insert_id: 0,
-                            status_flags: StatusFlags::empty(),
-                            warnings: 0,
-                            info: String::new(),
-                            session_state_info: String::new(),
-                        })
+                        .error(ErrorKind::ER_UNKNOWN_ERROR, message.as_bytes())
                         .await,
                     close_requested,
                 )

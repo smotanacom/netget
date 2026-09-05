@@ -117,6 +117,72 @@ impl ServerRegistry {
         #[cfg(feature = "whois")]
         self.register(Arc::new(crate::server::WhoisProtocol::new()));
 
+        #[cfg(feature = "ndp")]
+        self.register(Arc::new(crate::server::NdpProtocol::new()));
+
+        #[cfg(feature = "dhcpv6")]
+        self.register(Arc::new(crate::server::Dhcpv6Protocol::new()));
+
+        #[cfg(feature = "tuntap")]
+        self.register(Arc::new(crate::server::TunTapProtocol::new()));
+
+        #[cfg(feature = "rawip")]
+        self.register(Arc::new(crate::server::RawIpProtocol::new()));
+
+        #[cfg(feature = "gtp")]
+        self.register(Arc::new(crate::server::GtpProtocol::new()));
+
+        #[cfg(feature = "m3ua")]
+        self.register(Arc::new(crate::server::M3uaProtocol::new()));
+
+        #[cfg(feature = "can")]
+        self.register(Arc::new(crate::server::CanProtocol::new()));
+
+        #[cfg(feature = "lldp")]
+        self.register(Arc::new(crate::server::LldpProtocol::new()));
+
+        #[cfg(feature = "cdp")]
+        self.register(Arc::new(crate::server::CdpProtocol::new()));
+
+        #[cfg(feature = "stp")]
+        self.register(Arc::new(crate::server::StpProtocol::new()));
+
+        #[cfg(feature = "vrrp")]
+        self.register(Arc::new(crate::server::VrrpProtocol::new()));
+
+        #[cfg(feature = "hsrp")]
+        self.register(Arc::new(crate::server::HsrpProtocol::new()));
+
+        #[cfg(feature = "eapol")]
+        self.register(Arc::new(crate::server::EapolProtocol::new()));
+
+        #[cfg(feature = "wol")]
+        self.register(Arc::new(crate::server::WolProtocol::new()));
+
+        #[cfg(feature = "nats")]
+        self.register(Arc::new(crate::server::NatsProtocol::new()));
+
+        #[cfg(feature = "stomp")]
+        self.register(Arc::new(crate::server::StompProtocol::new()));
+
+        #[cfg(feature = "ident")]
+        self.register(Arc::new(crate::server::IdentProtocol::new()));
+
+        #[cfg(feature = "gopher")]
+        self.register(Arc::new(crate::server::GopherProtocol::new()));
+
+        #[cfg(feature = "finger")]
+        self.register(Arc::new(crate::server::FingerProtocol::new()));
+
+        #[cfg(feature = "ssdp")]
+        self.register(Arc::new(crate::server::SsdpProtocol::new()));
+
+        #[cfg(feature = "llmnr")]
+        self.register(Arc::new(crate::server::LlmnrProtocol::new()));
+
+        #[cfg(feature = "netbios-ns")]
+        self.register(Arc::new(crate::server::NetbiosNsProtocol::new()));
+
         #[cfg(feature = "snmp")]
         self.register(Arc::new(crate::server::SnmpProtocol::new()));
 
@@ -544,8 +610,13 @@ impl ServerRegistry {
         for (protocol_name, protocol) in &self.protocols {
             // Add all protocol keywords
             for keyword in protocol.keywords() {
-                self.keyword_map
-                    .insert(keyword.to_lowercase(), protocol_name.clone());
+                let lower = keyword.to_lowercase();
+                // Store the hyphen/space-normalized form too; input is normalized
+                // before lookup, so a keyword declared as "ssh-agent" was otherwise
+                // unreachable from the input "ssh_agent".
+                let normalized = lower.replace(['-', ' '], "_");
+                self.keyword_map.insert(lower, protocol_name.clone());
+                self.keyword_map.insert(normalized, protocol_name.clone());
             }
 
             // Also add the full stack name as a keyword
@@ -814,13 +885,37 @@ impl ServerRegistry {
             }
         }
 
-        // For all other protocols, check ALL keywords from each protocol with word boundaries
+        // For all other protocols, check ALL keywords from each protocol with word
+        // boundaries -- longest matching keyword first.
+        //
+        // This used to return the first hit while iterating a HashMap, whose order is
+        // unspecified, so a input matching two protocols' keywords resolved to
+        // whichever the hash order yielded and could differ between runs or feature
+        // sets. That is what the hand-maintained priority ladder above exists to work
+        // around, one collision at a time. Preferring the longest keyword makes the
+        // more specific protocol win on its own, and the name tie-break makes the
+        // answer identical on every run.
+        let mut best: Option<(usize, &String)> = None;
         for (protocol_name, protocol) in &self.protocols {
             for keyword in protocol.keywords() {
-                if self.matches_with_word_boundary(&input_lower, &keyword.to_lowercase()) {
-                    return Some(protocol_name.clone());
+                let keyword = keyword.to_lowercase();
+                if !self.matches_with_word_boundary(&input_lower, &keyword) {
+                    continue;
+                }
+                let better = match best {
+                    None => true,
+                    Some((best_len, best_name)) => {
+                        keyword.len() > best_len
+                            || (keyword.len() == best_len && protocol_name < best_name)
+                    }
+                };
+                if better {
+                    best = Some((keyword.len(), protocol_name));
                 }
             }
+        }
+        if let Some((_, protocol_name)) = best {
+            return Some(protocol_name.clone());
         }
 
         // Default to TCP if "tcp", "raw", "ftp", "custom" found
@@ -1041,6 +1136,28 @@ pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("NTP", "ntp"),
     ("TFTP", "tftp"),
     ("WHOIS", "whois"),
+    ("NDP", "ndp"),
+    ("DHCPv6", "dhcpv6"),
+    ("TUN/TAP", "tuntap"),
+    ("Raw IP", "rawip"),
+    ("GTP", "gtp"),
+    ("M3UA", "m3ua"),
+    ("CAN", "can"),
+    ("LLDP", "lldp"),
+    ("CDP", "cdp"),
+    ("STP", "stp"),
+    ("VRRP", "vrrp"),
+    ("HSRP", "hsrp"),
+    ("EAPOL", "eapol"),
+    ("Wake-on-LAN", "wol"),
+    ("NATS", "nats"),
+    ("STOMP", "stomp"),
+    ("Ident", "ident"),
+    ("Gopher", "gopher"),
+    ("Finger", "finger"),
+    ("SSDP", "ssdp"),
+    ("LLMNR", "llmnr"),
+    ("NetBIOS-NS", "netbios-ns"),
     ("SNMP", "snmp"),
     ("IGMP", "igmp"),
     ("Syslog", "syslog"),

@@ -161,17 +161,46 @@ async fn arp_spawn_reports_unknown_device() {
     );
 }
 
+/// ARP on loopback must **refuse**, and say why.
+///
+/// This used to go through `assert_capture_outcome`, which asserts "capture access implies
+/// spawn succeeds". That holds for `datalink` and `isis` and is false for ARP: `arp` is an
+/// Ethernet-only BPF keyword, and on a link type that cannot carry ARP — loopback is
+/// DLT_NULL/DLT_LOOP — libpcap compiles it to "expression rejects all packets" and errors.
+/// So on a host that *does* have `/dev/bpf*` access the old expectation failed, and on a host
+/// without it the test passed for the unrelated reason that the open failed first. It was
+/// green in CI and red on any developer machine with capture access.
+///
+/// Refusing is the correct behaviour, not a defect to route around: an ARP server on loopback
+/// would sit in `ServerStatus::Running` having captured nothing, forever, which is the exact
+/// failure the rest of this file exists to prevent. What was wrong is that the refusal named
+/// libpcap's optimiser instead of the reason.
 #[cfg(feature = "arp")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn arp_spawn_outcome_matches_capture_privilege() {
+async fn arp_spawn_refuses_loopback_and_says_why() {
     use netget::server::ArpServer;
 
     let privileged = SystemCapabilities::detect().has_packet_capture_access;
     let (llm, state, status_tx, _rx, server_id) = harness();
-    let result =
-        ArpServer::spawn_with_llm(loopback().to_string(), llm, state, status_tx, server_id).await;
+    let err = ArpServer::spawn_with_llm(loopback().to_string(), llm, state, status_tx, server_id)
+        .await
+        .expect_err("ARP cannot run on loopback: there is no Ethernet link layer to carry it");
 
-    assert_capture_outcome("ARP", privileged, result);
+    let msg = format!("{:#}", err);
+    if privileged {
+        // The capture opened, so the failure is the filter — and the message must explain
+        // the link layer rather than quoting the optimiser.
+        assert!(
+            msg.contains("Ethernet-only") && msg.contains(loopback()),
+            "the refusal must name the interface and why ARP cannot live on it, got: {msg}"
+        );
+    } else {
+        // No capture access, so it never reached the filter.
+        assert!(
+            msg.contains("failed to open pcap capture"),
+            "without capture access the refusal must be about opening the handle, got: {msg}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

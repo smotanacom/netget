@@ -48,9 +48,16 @@ impl DohServer {
         server_id: ServerId,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<SocketAddr> {
-        // Generate TLS configuration (use default self-signed cert)
-        let tls_config = crate::server::tls_cert_manager::generate_default_tls_config()
-            .context("Failed to generate TLS configuration")?;
+        // Generate TLS configuration (default self-signed cert), advertising `h2`.
+        //
+        // RFC 8484 DoH runs over HTTP/2, and this server speaks nothing else. Without ALPN in
+        // the handshake a real client has no way to learn that: it either negotiates nothing
+        // and falls back to HTTP/1.1, which this server cannot answer, or refuses outright.
+        // The E2E test papered over it by connecting with `http2_prior_knowledge()`, which
+        // skips ALPN entirely — so the gap could not show up there.
+        let tls_config =
+            crate::server::tls_cert_manager::generate_default_tls_config_with_alpn(&["h2"])
+                .context("Failed to generate TLS configuration")?;
 
         Log::new(Some(&status_tx)).info(format!("Starting DoH server on {}", bind_addr));
 
@@ -111,7 +118,10 @@ impl DohServer {
                         )
                         .await
                         {
-                            error!("DoH connection error from {}: {}", peer_addr, e);
+                            // `{:#}`: the cause chain is where rustls says what actually
+                            // went wrong. `{}` prints only "TLS handshake failed", which
+                            // names the step and not the reason.
+                            error!("DoH connection error from {}: {:#}", peer_addr, e);
                         }
                     });
                 }

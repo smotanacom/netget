@@ -10,6 +10,20 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
+// Every test here runs at `--log-level debug`, and that is load-bearing rather than
+// preference.
+//
+// These servers are opened with `"port": 0`, so the port is ephemeral and the only way the
+// harness learns it is by scraping the "listening on ADDR:PORT" line out of the child's
+// output (`tests/helpers/netget.rs`). That line is not emitted below debug, so at
+// `with_log_level("off")` — and at "info" — `test_state.port` stays 0, the client sends its
+// binding request into the void, the server never raises `stun_binding_request`, and the test
+// fails with "Rule #1: expected exactly 1, got 0" pointing at the mock rather than at the port.
+//
+// Five of these tests were at "off" and one at "info" and all six failed that way for a long
+// time. If you add a test here, keep debug, or give the prompt an explicit
+// `{AVAILABLE_PORT}` so the port is known before the server starts.
+
 #[tokio::test]
 async fn test_stun_basic_binding_request() -> E2EResult<()> {
     println!("\n=== E2E Test: STUN Basic Binding Request with Mocks ===");
@@ -139,6 +153,10 @@ async fn test_stun_basic_binding_request() -> E2EResult<()> {
     println!("\n=== All STUN tests passed! ===");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
 
     // Cleanup
@@ -153,7 +171,7 @@ async fn test_stun_multiple_clients() -> E2EResult<()> {
     let config = NetGetConfig::new(
         "Start a STUN server on port {AVAILABLE_PORT} that returns the client's public address",
     )
-    .with_log_level("info")
+    .with_log_level("debug")
     .with_mock(|mock| {
         mock
             // Mock 1: Server startup
@@ -249,6 +267,10 @@ async fn test_stun_multiple_clients() -> E2EResult<()> {
     println!("✓ Multiple concurrent clients successful");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
 
     // Cleanup
@@ -259,7 +281,7 @@ async fn test_stun_multiple_clients() -> E2EResult<()> {
 #[tokio::test]
 async fn test_stun_xor_mapped_address() -> E2EResult<()> {
     let config = NetGetConfig::new("Start a STUN server on port 0 using XOR-MAPPED-ADDRESS")
-        .with_log_level("off")
+        .with_log_level("debug")
         .with_mock(|mock| {
             mock
                 .on_instruction_containing("STUN server")
@@ -349,6 +371,10 @@ async fn test_stun_xor_mapped_address() -> E2EResult<()> {
         Err(_) => panic!("Failed to receive: timeout after 5 seconds"),
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -359,7 +385,7 @@ async fn test_stun_invalid_magic_cookie() -> E2EResult<()> {
     let config = NetGetConfig::new(
         "Start a STUN server on port 0 that validates magic cookie and rejects invalid packets",
     )
-    .with_log_level("off")
+    .with_log_level("debug")
     .with_mock(|mock| {
         mock
             .on_instruction_containing("STUN server")
@@ -425,6 +451,10 @@ async fn test_stun_invalid_magic_cookie() -> E2EResult<()> {
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -433,7 +463,7 @@ async fn test_stun_invalid_magic_cookie() -> E2EResult<()> {
 #[tokio::test]
 async fn test_stun_malformed_short_packet() -> E2EResult<()> {
     let config = NetGetConfig::new("Start a STUN server on port 0 that validates packet length")
-        .with_log_level("off")
+        .with_log_level("debug")
         .with_mock(|mock| {
             mock
                 .on_instruction_containing("STUN server")
@@ -494,6 +524,10 @@ async fn test_stun_malformed_short_packet() -> E2EResult<()> {
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -503,7 +537,7 @@ async fn test_stun_malformed_short_packet() -> E2EResult<()> {
 async fn test_stun_request_with_attributes() -> E2EResult<()> {
     let config =
         NetGetConfig::new("Start a STUN server on port 0 that handles requests with attributes")
-            .with_log_level("off")
+            .with_log_level("debug")
             .with_mock(|mock| {
                 mock
                     .on_instruction_containing("STUN server")
@@ -576,6 +610,10 @@ async fn test_stun_request_with_attributes() -> E2EResult<()> {
         }
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())
@@ -584,7 +622,7 @@ async fn test_stun_request_with_attributes() -> E2EResult<()> {
 #[tokio::test]
 async fn test_stun_rapid_requests() -> E2EResult<()> {
     let config = NetGetConfig::new("Start a STUN server on port 0")
-        .with_log_level("off")
+        .with_log_level("debug")
         .with_mock(|mock| {
             mock
                 .on_instruction_containing("STUN server")
@@ -680,6 +718,10 @@ async fn test_stun_rapid_requests() -> E2EResult<()> {
         "Should receive at least one response"
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    test_state.wait_for_mocks(30).await;
     test_state.verify_mocks().await?;
     test_state.stop().await?;
     Ok(())

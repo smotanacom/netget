@@ -3,3 +3,6 @@ pub mod e2e_test;
 
 #[cfg(all(test, feature = "turn"))]
 mod static_default_test;
+
+#[cfg(all(test, feature = "turn"))]
+mod llm_failure_test;

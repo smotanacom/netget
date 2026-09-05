@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::client::elasticsearch::actions::{
     ELASTICSEARCH_CLIENT_CONNECTED_EVENT, ELASTICSEARCH_CLIENT_RESPONSE_RECEIVED_EVENT,
@@ -34,6 +34,7 @@ impl ElasticsearchClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         // For Elasticsearch, "connection" is logical (HTTP-based)
         // We'll create a reqwest client configured for Elasticsearch
@@ -57,6 +58,29 @@ impl ElasticsearchClient {
             .build()
             .context("Failed to build HTTP client for Elasticsearch")?;
 
+        // `username` / `password` / `default_index` were all declared and none was read:
+        // a secured cluster answered 401 with nothing in the parameter list to explain it,
+        // and an operation that omitted `index` built the URL `{cluster}//_search`.
+        //
+        // The credentials are resolved once here into the `Authorization: Basic ...` value
+        // every request now carries, rather than re-encoded per call. A username with no
+        // password is a valid Basic credential (`user:`), so only the username is required
+        // to switch authentication on.
+        let (username, password, default_index) = match &startup_params {
+            Some(params) => (
+                params.get_optional_string("username")?,
+                params.get_optional_string("password")?,
+                params.get_optional_string("default_index")?,
+            ),
+            None => (None, None, None),
+        };
+        let authorization = username.map(|user| {
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::STANDARD
+                .encode(format!("{}:{}", user, password.unwrap_or_default()).as_bytes());
+            format!("Basic {encoded}")
+        });
+
         // Store client configuration in protocol_data
         app_state
             .with_client_mut(client_id, |client| {
@@ -66,6 +90,14 @@ impl ElasticsearchClient {
                     "cluster_url".to_string(),
                     serde_json::json!(cluster_url.clone()),
                 );
+                if let Some(value) = &authorization {
+                    client
+                        .set_protocol_field("authorization".to_string(), serde_json::json!(value));
+                }
+                if let Some(index) = &default_index {
+                    client
+                        .set_protocol_field("default_index".to_string(), serde_json::json!(index));
+                }
             })
             .await;
 
@@ -189,7 +221,7 @@ impl ElasticsearchClient {
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<u16> {
-        let cluster_url = Self::get_cluster_url(&app_state, client_id).await?;
+        let (cluster_url, authorization) = Self::cluster_endpoint(&app_state, client_id).await?;
 
         let url = if let Some(doc_id) = &id {
             format!("{}/{}/_doc/{}", cluster_url, index, doc_id)
@@ -203,8 +235,7 @@ impl ElasticsearchClient {
         );
 
         let http_client = reqwest::Client::new();
-        let response = http_client
-            .post(&url)
+        let response = Self::authorize(http_client.post(&url), &authorization)
             .json(&document)
             .send()
             .await
@@ -249,7 +280,7 @@ impl ElasticsearchClient {
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<u16> {
-        let cluster_url = Self::get_cluster_url(&app_state, client_id).await?;
+        let (cluster_url, authorization) = Self::cluster_endpoint(&app_state, client_id).await?;
         let url = format!("{}/{}/_search", cluster_url, index);
 
         info!(
@@ -262,8 +293,7 @@ impl ElasticsearchClient {
         });
 
         let http_client = reqwest::Client::new();
-        let response = http_client
-            .post(&url)
+        let response = Self::authorize(http_client.post(&url), &authorization)
             .json(&search_body)
             .send()
             .await
@@ -314,7 +344,7 @@ impl ElasticsearchClient {
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<u16> {
-        let cluster_url = Self::get_cluster_url(&app_state, client_id).await?;
+        let (cluster_url, authorization) = Self::cluster_endpoint(&app_state, client_id).await?;
         let url = format!("{}/{}/_doc/{}", cluster_url, index, id);
 
         info!(
@@ -323,8 +353,7 @@ impl ElasticsearchClient {
         );
 
         let http_client = reqwest::Client::new();
-        let response = http_client
-            .get(&url)
+        let response = Self::authorize(http_client.get(&url), &authorization)
             .send()
             .await
             .context("Failed to send get request")?;
@@ -363,7 +392,7 @@ impl ElasticsearchClient {
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<u16> {
-        let cluster_url = Self::get_cluster_url(&app_state, client_id).await?;
+        let (cluster_url, authorization) = Self::cluster_endpoint(&app_state, client_id).await?;
         let url = format!("{}/{}/_doc/{}", cluster_url, index, id);
 
         info!(
@@ -372,8 +401,7 @@ impl ElasticsearchClient {
         );
 
         let http_client = reqwest::Client::new();
-        let response = http_client
-            .delete(&url)
+        let response = Self::authorize(http_client.delete(&url), &authorization)
             .send()
             .await
             .context("Failed to send delete request")?;
@@ -411,7 +439,7 @@ impl ElasticsearchClient {
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<u16> {
-        let cluster_url = Self::get_cluster_url(&app_state, client_id).await?;
+        let (cluster_url, authorization) = Self::cluster_endpoint(&app_state, client_id).await?;
         let url = format!("{}/_bulk", cluster_url);
 
         info!(
@@ -484,8 +512,7 @@ impl ElasticsearchClient {
         }
 
         let http_client = reqwest::Client::new();
-        let response = http_client
-            .post(&url)
+        let response = Self::authorize(http_client.post(&url), &authorization)
             .header("Content-Type", "application/x-ndjson")
             .body(bulk_body)
             .send()
@@ -563,11 +590,30 @@ impl ElasticsearchClient {
             }
         };
 
-        let index = data
-            .get("index")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        // An omitted `index` falls back to the `default_index` startup parameter. It used
+        // to become the empty string, which built `{cluster}//_search` and was refused by
+        // the cluster with nothing pointing at the cause.
+        //
+        // `bulk_operation` is exempt: it POSTs to the cluster-wide `/_bulk` and every
+        // operation in its array names its own index, so it never reads this value.
+        let index = if name == "bulk_operation" {
+            String::new()
+        } else {
+            match Self::resolve_index(
+                app_state,
+                client_id,
+                data.get("index").and_then(|v| v.as_str()).unwrap_or(""),
+            )
+            .await
+            {
+                Ok(index) => index,
+                Err(e) => {
+                    return ClientSendOutcome::Executed {
+                        detail: format!("{name} failed: {e}"),
+                    }
+                }
+            }
+        };
         let id = data
             .get("id")
             .and_then(|v| v.as_str())
@@ -731,23 +777,107 @@ impl ElasticsearchClient {
         let _ = status_tx.send("__UPDATE_UI__".to_string());
     }
 
-    /// Helper: Get cluster URL from client state
-    async fn get_cluster_url(app_state: &Arc<AppState>, client_id: ClientId) -> Result<String> {
+    /// Cluster URL plus the `Authorization` value resolved from the `username` / `password`
+    /// startup parameters, if any. Every request goes through here so authentication cannot
+    /// be applied to some operations and forgotten on others.
+    async fn cluster_endpoint(
+        app_state: &Arc<AppState>,
+        client_id: ClientId,
+    ) -> Result<(String, Option<String>)> {
+        let (url, authorization) = app_state
+            .with_client_mut(client_id, |client| {
+                (
+                    client
+                        .get_protocol_field("cluster_url")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    client
+                        .get_protocol_field("authorization")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                )
+            })
+            .await
+            .unwrap_or((None, None));
+        Ok((url.context("No cluster URL found")?, authorization))
+    }
+
+    /// The index an operation should act on: the one it named, or the `default_index`
+    /// startup parameter when it named none. Fails rather than building `{cluster}//_search`
+    /// out of an empty string, which is what an omitted index used to produce.
+    async fn resolve_index(
+        app_state: &Arc<AppState>,
+        client_id: ClientId,
+        requested: &str,
+    ) -> Result<String> {
+        if !requested.is_empty() {
+            return Ok(requested.to_string());
+        }
         app_state
             .with_client_mut(client_id, |client| {
                 client
-                    .get_protocol_field("cluster_url")
+                    .get_protocol_field("default_index")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             })
             .await
             .flatten()
-            .context("No cluster URL found")
+            .context(
+                "no index was given and no `default_index` startup parameter is set for this \
+                 client",
+            )
+    }
+
+    /// Apply the cluster's `Authorization` header, when one was configured.
+    fn authorize(
+        request: reqwest::RequestBuilder,
+        authorization: &Option<String>,
+    ) -> reqwest::RequestBuilder {
+        match authorization {
+            Some(value) => request.header("Authorization", value),
+            None => request,
+        }
     }
 
     /// Raise `elasticsearch_response_received` off the caller's task. Never awaited by a
     /// caller that holds the command loop: an event handler may park this call for a human
     /// answer.
+    /// Issue one Elasticsearch request and return `(status, body)`. Raises no event and
+    /// calls no LLM.
+    ///
+    /// Follow-up actions the model returns for `elasticsearch_response_received` run
+    /// through here. Calling `search`/`index_document`/... instead would be recursive --
+    /// each of those ends in `spawn_response_notification`, which calls
+    /// `call_llm_with_response`, which is where the follow-ups are executed -- and rustc
+    /// rejects the resulting async type. Raising nothing also bounds the chain: one search
+    /// cannot drive the model round in circles.
+    async fn run_request_once(
+        client_id: ClientId,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        app_state: &Arc<AppState>,
+    ) -> Result<(u16, serde_json::Value)> {
+        let (cluster_url, authorization) = Self::cluster_endpoint(app_state, client_id).await?;
+        let url = format!(
+            "{}/{}",
+            cluster_url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+        let http_client = reqwest::Client::new();
+        let mut req = Self::authorize(http_client.request(method, &url), &authorization);
+        if let Some(b) = body {
+            req = req.json(&b);
+        }
+        let response = req.send().await.context("Elasticsearch request failed")?;
+        let status_code = response.status().as_u16();
+        let response_body: serde_json::Value = response
+            .json()
+            .await
+            .unwrap_or(serde_json::json!({"error": "Failed to parse response"}));
+        Ok((status_code, response_body))
+    }
+
     fn spawn_response_notification(
         client_id: ClientId,
         operation: String,
@@ -766,6 +896,7 @@ impl ElasticsearchClient {
                 app_state,
                 llm_client,
                 status_tx,
+                0,
             )
             .await
             {
@@ -777,7 +908,13 @@ impl ElasticsearchClient {
         })
     }
 
+    /// How many follow-ups deep this client will keep reporting results to the model.
+    /// Each report can produce another request, which produces another report; without a
+    /// bound a model that answers `search` with `search` would loop on the LLM forever.
+    const MAX_FOLLOWUP_DEPTH: u8 = 4;
+
     /// Helper: Call LLM with response
+    #[allow(clippy::too_many_arguments)]
     async fn call_llm_with_response(
         client_id: ClientId,
         operation: String,
@@ -786,6 +923,7 @@ impl ElasticsearchClient {
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
+        depth: u8,
     ) -> Result<()> {
         if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
             let protocol = Arc::new(ElasticsearchClientProtocol::new());
@@ -816,16 +954,121 @@ impl ElasticsearchClient {
             .await
             {
                 Ok(ClientLlmResult {
-                    actions: _,
+                    actions,
                     memory_updates,
                 }) => {
                     // Update memory
                     if let Some(mem) = memory_updates {
                         app_state.set_memory_for_client(client_id, mem).await;
                     }
-                    // Note: Actions are intentionally not executed here to avoid recursion.
-                    // For HTTP-based clients like Elasticsearch, responses don't trigger new operations.
-                    // New operations are only triggered by the initial connection or explicit user actions.
+
+                    // Execute what the model asked for. These were discarded behind a note
+                    // saying it was "to avoid recursion" and that "responses don't trigger
+                    // new operations" -- the recursion was real, the claim was not. Reading
+                    // search hits and then fetching one of the documents, or refining the
+                    // query, is exactly what a search client is for, and none of it worked.
+                    //
+                    // `run_request_once` issues the request and raises no event, which both
+                    // breaks the cycle and bounds the chain.
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        // `default_index` before `_all`: an operator who named a default
+                        // index meant that one, and `_all` is a much wider blast radius
+                        // than either the model or the operator asked for.
+                        let index = match data.get("index").and_then(|v| v.as_str()) {
+                            Some(named) if !named.is_empty() => named.to_string(),
+                            _ => Self::resolve_index(&app_state, client_id, "")
+                                .await
+                                .unwrap_or_else(|_| "_all".to_string()),
+                        };
+                        let index = index.as_str();
+                        let plan = match name.as_str() {
+                            "search" => Some((
+                                reqwest::Method::POST,
+                                format!("{index}/_search"),
+                                Some(serde_json::json!({"query": data.get("query").cloned()
+                                    .unwrap_or(serde_json::json!({"match_all": {}}))})),
+                            )),
+                            "get_document" => data.get("id").and_then(|v| v.as_str()).map(|id| {
+                                (reqwest::Method::GET, format!("{index}/_doc/{id}"), None)
+                            }),
+                            "delete_document" => {
+                                data.get("id").and_then(|v| v.as_str()).map(|id| {
+                                    (reqwest::Method::DELETE, format!("{index}/_doc/{id}"), None)
+                                })
+                            }
+                            "index_document" => Some((
+                                reqwest::Method::POST,
+                                format!("{index}/_doc"),
+                                data.get("document").cloned(),
+                            )),
+                            other => {
+                                info!(
+                                    "Elasticsearch client {} follow-up '{}' has no \
+                                     non-notifying path; skipped",
+                                    client_id, other
+                                );
+                                None
+                            }
+                        };
+                        let Some((method, path, body)) = plan else {
+                            continue;
+                        };
+                        match Self::run_request_once(client_id, method, &path, body, &app_state)
+                            .await
+                        {
+                            Ok((code, body)) => {
+                                info!(
+                                    "Elasticsearch client {} follow-up {} -> HTTP {}",
+                                    client_id, name, code
+                                );
+                                // Tell the model what the follow-up returned. Without this
+                                // the chain was exactly one step deep: a `search` issued in
+                                // response to an index confirmation ran, and its hits went
+                                // nowhere -- so the model could never read the results of a
+                                // search it had asked for, which is what a search client is
+                                // for. Boxed because the cycle is real, bounded because it
+                                // would otherwise be endless.
+                                if depth + 1 < Self::MAX_FOLLOWUP_DEPTH {
+                                    if let Err(e) = Box::pin(Self::call_llm_with_response(
+                                        client_id,
+                                        name.clone(),
+                                        code,
+                                        body,
+                                        app_state.clone(),
+                                        llm_client.clone(),
+                                        status_tx.clone(),
+                                        depth + 1,
+                                    ))
+                                    .await
+                                    {
+                                        error!(
+                                            "Elasticsearch client {} follow-up notification \
+                                             failed: {}",
+                                            client_id, e
+                                        );
+                                    }
+                                } else {
+                                    warn!(
+                                        "Elasticsearch client {} reached the follow-up depth \
+                                         limit ({}); not reporting {} to the model",
+                                        client_id,
+                                        Self::MAX_FOLLOWUP_DEPTH,
+                                        name
+                                    );
+                                }
+                            }
+                            Err(e) => error!(
+                                "Elasticsearch client {} follow-up {} failed: {}",
+                                client_id, name, e
+                            ),
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("LLM error for Elasticsearch client {}: {}", client_id, e);

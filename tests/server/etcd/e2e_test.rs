@@ -307,6 +307,10 @@ Respond with appropriate etcd_range_response, etcd_put_response, etc. actions.
     println!("Total LLM calls: ~10 (1 startup + 9 operations)");
 
     // Verify all mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     // Cleanup

@@ -34,10 +34,14 @@ pub mod dynamodb;
 pub mod elasticsearch;
 #[cfg(feature = "etcd")]
 pub mod etcd;
+#[cfg(feature = "finger")]
+pub mod finger;
 #[cfg(feature = "ftp")]
 pub mod ftp;
 #[cfg(feature = "git")]
 pub mod git;
+#[cfg(feature = "gopher")]
+pub mod gopher;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(feature = "http")]
@@ -50,6 +54,8 @@ pub mod http3;
 pub mod http_proxy;
 #[cfg(feature = "icmp")]
 pub mod icmp;
+#[cfg(feature = "ident")]
+pub mod ident;
 #[cfg(feature = "igmp")]
 pub mod igmp;
 #[cfg(feature = "imap")]
@@ -68,6 +74,8 @@ pub mod kafka;
 pub mod kubernetes;
 #[cfg(feature = "ldap")]
 pub mod ldap;
+#[cfg(feature = "llmnr")]
+pub mod llmnr;
 #[cfg(feature = "maven")]
 pub mod maven;
 #[cfg(feature = "mcp")]
@@ -82,6 +90,10 @@ pub mod mqtt;
 pub mod mssql;
 #[cfg(feature = "mysql")]
 pub mod mysql;
+#[cfg(feature = "nats")]
+pub mod nats;
+#[cfg(feature = "netbios-ns")]
+pub mod netbios_ns;
 #[cfg(feature = "nfc-client")]
 pub mod nfc;
 #[cfg(feature = "nfs")]
@@ -134,10 +146,14 @@ pub mod socket_file;
 pub mod socks5;
 #[cfg(feature = "sqs")]
 pub mod sqs;
+#[cfg(feature = "ssdp")]
+pub mod ssdp;
 #[cfg(feature = "ssh")]
 pub mod ssh;
 #[cfg(all(feature = "ssh-agent", unix))]
 pub mod ssh_agent;
+#[cfg(feature = "stomp")]
+pub mod stomp;
 #[cfg(feature = "stun")]
 pub mod stun;
 #[cfg(feature = "syslog")]
@@ -156,6 +172,8 @@ pub mod tor;
 pub mod torrent_dht;
 #[cfg(feature = "torrent-peer")]
 pub mod torrent_peer;
+#[cfg(feature = "torrent-tracker")]
+pub mod torrent_tracker;
 #[cfg(feature = "turn")]
 pub mod turn;
 #[cfg(feature = "udp")]
@@ -178,3 +196,5 @@ pub mod wireguard;
 pub mod xmlrpc;
 #[cfg(feature = "xmpp")]
 pub mod xmpp;
+#[cfg(feature = "zookeeper")]
+pub mod zookeeper;

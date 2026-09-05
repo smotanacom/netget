@@ -262,7 +262,7 @@ async fn handle_saml_sp_request(
         &SAML_SP_REQUEST_EVENT,
         serde_json::json!({
             "method": method.to_string(),
-            "path": path,
+            "path": path.clone(),
             "query": query,
             "headers": headers,
             "body": if body_bytes.is_empty() {
@@ -292,44 +292,102 @@ async fn handle_saml_sp_request(
     // Execute actions and build response
     let response = match action_result {
         Ok(result) => {
-            if result.protocol_results.is_empty() {
-                warn!("LLM returned no actions for SAML SP request");
-                build_safe_response(500, [], "No response generated".to_string())
-            } else {
-                // Parse HTTP response from protocol results
-                use crate::llm::actions::protocol_trait::ActionResult;
+            // Three outcomes have to stay distinguishable in the log, because they mean very
+            // different things to an operator: the model refused (`decision=model_reject`),
+            // the model said nothing usable (`decision=fail_closed_no_answer`), and the
+            // backend erred (`decision=fail_closed_llm_error`, in the `Err` arm below).
+            //
+            // The default status used to be 200: a model that answered only with a
+            // common/memory action, or whose protocol result was not a parseable
+            // `Output`, produced an empty `200 OK`. For an SP that is a permissive
+            // default on a no-answer path — it is not a sign-in (no `Set-Cookie`), but it
+            // tells the browser the request succeeded. There is no default now; a
+            // response is emitted only if a usable `Output` was actually seen.
+            use crate::llm::actions::protocol_trait::ActionResult;
 
-                let mut status_code = 200u16;
-                let mut response_headers = std::collections::HashMap::new();
-                let mut response_body = String::new();
+            /// Flatten `Multiple` so an `Output` wrapped in one is not silently dropped.
+            fn collect_outputs(result: ActionResult, out: &mut Vec<Vec<u8>>) {
+                match result {
+                    ActionResult::Output(data) => out.push(data),
+                    ActionResult::Multiple(inner) => {
+                        for r in inner {
+                            collect_outputs(r, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
 
-                for protocol_result in result.protocol_results {
-                    if let ActionResult::Output(output_data) = protocol_result {
-                        // Parse JSON response data
-                        if let Ok(json_value) =
-                            serde_json::from_slice::<serde_json::Value>(&output_data)
-                        {
-                            if let Some(status) = json_value.get("status").and_then(|v| v.as_u64())
-                            {
-                                status_code = status as u16;
-                            }
-                            if let Some(headers_obj) =
-                                json_value.get("headers").and_then(|v| v.as_object())
-                            {
-                                for (k, v) in headers_obj {
-                                    if let Some(v_str) = v.as_str() {
-                                        response_headers.insert(k.clone(), v_str.to_string());
-                                    }
-                                }
-                            }
-                            if let Some(body) = json_value.get("body").and_then(|v| v.as_str()) {
-                                response_body = body.to_string();
-                            }
+            let mut outputs = Vec::new();
+            for protocol_result in result.protocol_results {
+                collect_outputs(protocol_result, &mut outputs);
+            }
+
+            let mut answer: Option<(u16, std::collections::HashMap<String, String>, String)> = None;
+            for output_data in outputs {
+                let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&output_data)
+                else {
+                    warn!(
+                        "SAML SP: ignoring non-JSON action output ({} bytes)",
+                        output_data.len()
+                    );
+                    continue;
+                };
+                let (status_code, response_headers, response_body) =
+                    answer.get_or_insert_with(|| {
+                        (200u16, std::collections::HashMap::new(), String::new())
+                    });
+                if let Some(status) = json_value.get("status").and_then(|v| v.as_u64()) {
+                    *status_code = status as u16;
+                }
+                if let Some(headers_obj) = json_value.get("headers").and_then(|v| v.as_object()) {
+                    for (k, v) in headers_obj {
+                        if let Some(v_str) = v.as_str() {
+                            response_headers.insert(k.clone(), v_str.to_string());
                         }
                     }
                 }
+                if let Some(body) = json_value.get("body").and_then(|v| v.as_str()) {
+                    *response_body = body.to_string();
+                }
+            }
 
-                build_safe_response(status_code, response_headers, response_body)
+            match answer {
+                Some((status_code, response_headers, response_body)) => {
+                    // A model-chosen 4xx is `send_error_response` — a real refusal, not a
+                    // netget failure. Tag it separately so an operator can tell a denial
+                    // from an outage.
+                    let decision = if status_code >= 400 {
+                        "model_reject"
+                    } else {
+                        "model_answer"
+                    };
+                    debug!(
+                        "SAML SP {} {} from {} decision={} status={}",
+                        method, path, remote_addr, decision, status_code
+                    );
+                    build_safe_response(status_code, response_headers, response_body)
+                }
+                None => {
+                    // Either no actions at all, or actions that carried no usable HTTP
+                    // response. Both are "the model answered nothing" — fail closed with a
+                    // 500 and a category, never a 2xx.
+                    Log::new(Some(&status_tx)).warn(format!(
+                        "SAML SP {} {} from {} decision=fail_closed_no_answer status=500 \
+                         (no usable action output)",
+                        method, path, remote_addr
+                    ));
+                    build_safe_response(
+                        500,
+                        [(
+                            "content-type".to_string(),
+                            "text/plain; charset=utf-8".to_string(),
+                        )],
+                        crate::utils::WireFailure::Unavailable
+                            .prefixed_text()
+                            .to_string(),
+                    )
+                }
             }
         }
         Err(e) => {
@@ -338,22 +396,26 @@ async fn handle_saml_sp_request(
             // otherwise. Critically it is not a SAML Response at all - a 2xx carrying an
             // assertion is the only thing an SP will accept as a sign-in, and no branch on
             // this path can produce one.
-            let overloaded = crate::llm::is_overload_error(&e);
+            //
+            // The body is `WireFailure`'s `&'static str` category, never the error: the peer
+            // is an untrusted browser and the error names the backend, the model and netget's
+            // own retry machinery. The full error goes to the log and the status stream.
+            let failure = crate::utils::WireFailure::classify(&e);
+            let overloaded = failure.is_overloaded();
             let status = if overloaded { 503 } else { 500 };
             Log::new(Some(&status_tx)).error(format!(
-                "LLM error for SAML SP request (overload={}, status {}): {}",
-                overloaded, status, e
+                "SAML SP {} {} from {} decision=fail_closed_llm_error status={} overload={}: {}",
+                method, path, remote_addr, status, overloaded, e
             ));
-            build_safe_response(
-                status,
-                [(
-                    "content-type".to_string(),
-                    "text/plain; charset=utf-8".to_string(),
-                )],
-                crate::utils::WireFailure::classify(&e)
-                    .prefixed_text()
-                    .to_string(),
-            )
+            let mut headers = vec![(
+                "content-type".to_string(),
+                "text/plain; charset=utf-8".to_string(),
+            )];
+            if overloaded {
+                // Tell the browser/IDP to back off rather than record a permanent fault.
+                headers.push(("retry-after".to_string(), "5".to_string()));
+            }
+            build_safe_response(status, headers, failure.prefixed_text().to_string())
         }
     };
 

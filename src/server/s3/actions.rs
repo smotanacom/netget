@@ -61,6 +61,7 @@ pub static S3_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         send_s3_object_action(),
         send_s3_object_list_action(),
         send_s3_bucket_list_action(),
+        send_s3_write_result_action(),
         send_s3_error_action(),
     ])
     .with_log_template(
@@ -181,6 +182,79 @@ fn send_s3_bucket_list_action() -> ActionDefinition {
             LogTemplate::new()
                 .with_info("-> S3 list buckets ({buckets_len} buckets)")
                 .with_debug("S3 send_s3_bucket_list: count={buckets_len}"),
+        ),
+    }
+}
+
+/// Acknowledge a write that produced no body: PutObject, CreateBucket, DeleteObject, HeadObject.
+///
+/// These four verbs have no content to return, so before this action existed the model had no
+/// way to say "yes" to them at all — the server fell through to an empty `200 OK` whenever the
+/// answer contained no S3 action. That made silence indistinguishable from approval on exactly
+/// the operations that mutate state, which is the fail-open pattern the root `CLAUDE.md` calls
+/// the most dangerous in this codebase. It could not be removed until there was an affirmative
+/// verb to replace it, which is what this is.
+fn send_s3_write_result_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "send_s3_write_result".to_string(),
+        description: "Acknowledge a successful write or metadata request that returns no body \
+                      (PutObject, CreateBucket, DeleteObject, HeadObject). Required: without it \
+                      these operations are refused."
+            .to_string(),
+        parameters: vec![
+            Parameter {
+                name: "status_code".to_string(),
+                type_hint: "number".to_string(),
+                description: "HTTP status: 200 for PutObject/CreateBucket/HeadObject, 204 for \
+                              DeleteObject. Defaults to 200."
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "etag".to_string(),
+                type_hint: "string".to_string(),
+                description: "ETag of the stored object (PutObject). Sent as the ETag header."
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "location".to_string(),
+                type_hint: "string".to_string(),
+                description: "Location of the created bucket (CreateBucket), e.g. \"/my-bucket\"."
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "content_length".to_string(),
+                type_hint: "number".to_string(),
+                description: "Size in bytes (HeadObject). Sent as the Content-Length header."
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "content_type".to_string(),
+                type_hint: "string".to_string(),
+                description: "MIME type (HeadObject).".to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "last_modified".to_string(),
+                type_hint: "string".to_string(),
+                description: "RFC 1123 timestamp (HeadObject), e.g. \"Mon, 01 Jan 2024 00:00:00 \
+                              GMT\"."
+                    .to_string(),
+                required: false,
+            },
+        ],
+        example: json!({
+            "type": "send_s3_write_result",
+            "status_code": 200,
+            "etag": "\"d41d8cd98f00b204e9800998ecf8427e\""
+        }),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("-> S3 write acknowledged (HTTP {status_code})")
+                .with_debug("S3 send_s3_write_result: status={status_code} etag={etag}"),
         ),
     }
 }
@@ -313,6 +387,7 @@ impl crate::llm::actions::protocol_trait::Protocol for S3Protocol {
             send_s3_object_action(),
             send_s3_object_list_action(),
             send_s3_bucket_list_action(),
+            send_s3_write_result_action(),
             send_s3_error_action(),
         ]
     }
@@ -337,10 +412,17 @@ impl crate::llm::actions::protocol_trait::Protocol for S3Protocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("hyper v1.5 HTTP with manual S3 REST API")
             .llm_control("All S3 operations (GetObject, PutObject, ListBuckets)")
-            .e2e_testing("aws-sdk-s3 / rust-s3 client")
+            .e2e_testing(
+                "rust-s3 0.37 (`Bucket` with path-style addressing) is the client: it completes \
+                 ListObjects, GetObject, PutObject, HeadObject and DeleteObject against the \
+                 server. Each retry-wrapped operation is pinned to `expect_calls(1)`, so the \
+                 test only passes if rust-s3 accepted the first response — including parsing our \
+                 ListObjects XML into `contents` (tests/server/s3/e2e_test.rs, not #[ignore]d). \
+                 Not proven: SigV4, multipart upload, versioning",
+            )
             .notes("Virtual objects (no persistence); no SigV4 auth; binary bodies via encoding=base64")
             .build()
     }
@@ -511,6 +593,35 @@ impl Server for S3Protocol {
                     data: json!({
                         "buckets": buckets
                     }),
+                })
+            }
+            "send_s3_write_result" => {
+                // Every field is optional: the four operations this answers differ in which
+                // headers they carry, and a model that supplies none still gets a valid 200.
+                // What is NOT optional is emitting the action at all — that is the point.
+                let status_code = action
+                    .get("status_code")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(200) as u16;
+                if !(100..=599).contains(&status_code) {
+                    anyhow::bail!(
+                        "send_s3_write_result status_code {} is outside 100-599",
+                        status_code
+                    );
+                }
+                let mut data = json!({ "status_code": status_code });
+                for field in ["etag", "location", "content_type", "last_modified"] {
+                    if let Some(v) = action.get(field).and_then(|v| v.as_str()) {
+                        data[field] = json!(v);
+                    }
+                }
+                if let Some(v) = action.get("content_length").and_then(|v| v.as_u64()) {
+                    data["content_length"] = json!(v);
+                }
+
+                Ok(ActionResult::Custom {
+                    name: "s3_write_result".to_string(),
+                    data,
                 })
             }
             "send_s3_error" => {

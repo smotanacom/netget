@@ -257,6 +257,10 @@ async fn test_ntp_basic_query() -> E2EResult<()> {
 
     println!("✓ rsntp synchronized against the server");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test completed ===\n");
@@ -337,6 +341,10 @@ async fn test_ntp_time_sync() -> E2EResult<()> {
 
     println!("✓ Stratum 1 reference identifier and time verified");
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test completed ===\n");
@@ -453,6 +461,10 @@ async fn test_ntp_stratum_levels() -> E2EResult<()> {
         Ok(Err(e)) => return Err(e.into()),
     }
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test completed ===\n");

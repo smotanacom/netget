@@ -38,7 +38,10 @@ mod openapi_client_tests {
                 .and()
                 // Mock 2: Server receives GET /users request
                 .on_event("http_request")
-                .and_event_data_contains("uri", "/users")
+                // `path`, not `uri`: the http_request event carries method/path/query/
+                // headers/body, and a constraint on a field that is not there can never
+                // match -- so every request fell through to a real LLM call.
+                .and_event_data_contains("path", "/users")
                 .respond_with_actions(json!([
                     {
                         "type": "send_http_response",
@@ -113,6 +116,11 @@ mod openapi_client_tests {
         tokio::time::sleep(Duration::from_secs(5)).await;
 
         // Verify all mocks were called
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
+        server.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         server.verify_mocks().await?;
 
@@ -146,7 +154,7 @@ mod openapi_client_tests {
                     .and()
                     // Verify path substitution worked - expect /users/123
                     .on_event("http_request")
-                    .and_event_data_contains("uri", "/users/123")
+                    .and_event_data_contains("path", "/users/123")
                     .respond_with_actions(json!([
                         {
                             "type": "send_http_response",
@@ -204,6 +212,11 @@ mod openapi_client_tests {
         let client = start_netget_client(client_config).await?;
         tokio::time::sleep(Duration::from_secs(5)).await;
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
+        server.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         server.verify_mocks().await?;
 

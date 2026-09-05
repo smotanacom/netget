@@ -140,6 +140,25 @@ pub fn generate_default_tls_config() -> Result<Arc<ServerConfig>> {
     create_rustls_server_config(&cert, &key_pair)
 }
 
+/// Like [`generate_default_tls_config`], but advertising `alpn` in the TLS handshake.
+///
+/// Deliberately a separate function rather than a change to the default: `dot`, `tls` and
+/// `quic` share that config and document themselves as ALPN-less, and advertising a protocol
+/// they do not speak would break clients that select on it.
+///
+/// A server that negotiates nothing forces every client to assume the protocol out of band.
+/// That is why `doh` needs this: RFC 8484 runs over HTTP/2, and an HTTP/2 client that is not
+/// told `h2` during the handshake will either fall back to HTTP/1.1 — which this server does
+/// not speak — or refuse the connection outright.
+pub fn generate_default_tls_config_with_alpn(alpn: &[&str]) -> Result<Arc<ServerConfig>> {
+    let config = generate_default_tls_config()?;
+    // Freshly built above, so this is the only reference and the unwrap cannot fire.
+    let mut config = Arc::try_unwrap(config)
+        .map_err(|_| anyhow::anyhow!("TLS config was unexpectedly shared before ALPN was set"))?;
+    config.alpn_protocols = alpn.iter().map(|p| p.as_bytes().to_vec()).collect();
+    Ok(Arc::new(config))
+}
+
 /// Generate a custom TLS configuration from LLM-specified parameters
 pub fn generate_custom_tls_config(
     common_name: Option<String>,

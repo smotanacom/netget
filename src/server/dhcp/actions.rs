@@ -79,7 +79,14 @@ impl Protocol for DhcpProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            .state(DevelopmentState::Beta)
+            // Experimental, not Beta. Beta means "works against real clients", and this
+            // protocol's own e2e_testing note below states that no real DHCP client can be
+            // pointed at it: dhclient/ipconfig bind UDP/68, need root, and cannot target an
+            // ephemeral loopback port. The test peer is an RFC 2131/2132 decoder written in the
+            // test file — a genuinely independent reading of the spec, and a good test, but not
+            // a third-party implementation. Promoting again means decoding the replies with an
+            // independent codec crate as well.
+            .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(67))
             .implementation("dhcproto v0.12 for parsing and encoding")
             .llm_control("Discover→Offer, Request→Ack flow + lease options")
@@ -703,9 +710,22 @@ fn send_dhcp_response_action() -> ActionDefinition {
             description: "The whole packet as hex, two digits per byte (spaces and ':' are allowed and ignored). Decoded strictly as hex - it is never sent as text - and must be at least 236 bytes".to_string(),
             required: true,
         }],
+        // A complete, decodable DHCPOFFER: the 236-byte BOOTP base (op=2 htype=1
+        // hlen=6, xid=0x3903f326, yiaddr=192.168.1.100, siaddr=192.168.1.1,
+        // chaddr=00:11:22:33:44:55), the RFC 2131 magic cookie 63825363, then
+        // options 53 (OFFER), 54 (server id), 1 (mask), 3 (router), 51 (lease) and
+        // 255 (end). Written out in full on purpose - the shortest packet this
+        // action accepts is 236 bytes, so an abbreviated example is one the
+        // executor rejects.
         example: json!({
             "type": "send_dhcp_response",
-            "data": "020106006395a3e300000000000000000c0a80164..."
+            "data": "020106003903f3260000000000000000c0a80164c0a80101000000000011223344550000000000\
+                     000000000000000000000000000000000000000000000000000000000000000000000000000000\
+                     000000000000000000000000000000000000000000000000000000000000000000000000000000\
+                     000000000000000000000000000000000000000000000000000000000000000000000000000000\
+                     000000000000000000000000000000000000000000000000000000000000000000000000000000\
+                     000000000000000000000000000000000000000000000000000000000000000000000000000000\
+                     0000638253633501023604c0a801010104ffffff000304c0a80101330400015180ff"
         }),
         log_template: Some(
             LogTemplate::new()

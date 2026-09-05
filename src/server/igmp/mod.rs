@@ -375,7 +375,7 @@ impl IgmpServer {
                             .await
                             {
                                 log.info(format!(
-                                    "IGMP {} from {} ignored: no membership policy configured (static default, no LLM)",
+                                    "IGMP {} from {} ignored: no membership policy configured (static default, no LLM) decision=static_no_policy",
                                     igmp_msg.msg_type.as_str(),
                                     peer_addr
                                 ));
@@ -401,6 +401,41 @@ impl IgmpServer {
                                 Ok(execution_result) => {
                                     for message in &execution_result.messages {
                                         log.info(message);
+                                    }
+
+                                    // Three outcomes have to stay apart in the log even though
+                                    // all three are silent on the wire (see the Err arm below
+                                    // for why silence is the only correct IGMP answer):
+                                    // the model explicitly declined (`ignore_message` ->
+                                    // NoAction), the model answered nothing at all, and the
+                                    // backend errored.
+                                    let model_declined = execution_result
+                                        .protocol_results
+                                        .iter()
+                                        .any(|r| {
+                                            matches!(
+                                                r,
+                                                crate::llm::actions::protocol_trait::ActionResult::NoAction
+                                            )
+                                        });
+                                    let has_output = execution_result
+                                        .protocol_results
+                                        .iter()
+                                        .any(|r| !r.get_all_output().is_empty());
+                                    if !has_output {
+                                        if model_declined {
+                                            log.info(format!(
+                                                "IGMP {} from {}: model chose to send nothing decision=model_ignore",
+                                                igmp_msg.msg_type.as_str(),
+                                                peer_addr
+                                            ));
+                                        } else {
+                                            log.warn(format!(
+                                                "IGMP {} from {}: model produced no usable action, staying silent decision=model_no_answer",
+                                                igmp_msg.msg_type.as_str(),
+                                                peer_addr
+                                            ));
+                                        }
                                     }
 
                                     log.debug(format!(
@@ -545,9 +580,29 @@ impl IgmpServer {
                                     }
                                 }
                                 Err(e) => {
-                                    // Non-fatal: IGMP's spec-safe answer to a failure is to
-                                    // stay silent, so this is WARN not ERROR.
-                                    log.warn(format!("IGMP LLM call failed: {}", e));
+                                    // IGMP has no error message and no way to answer without
+                                    // asserting a membership. A Membership Report is a positive
+                                    // claim ("this host is in group G") that makes the querier
+                                    // forward that group's traffic to this segment; emitting one
+                                    // we cannot substantiate is worse than not answering, and
+                                    // reports/leaves have no spec response at all. So the wire
+                                    // stays silent and the failure goes to the operator only —
+                                    // classified, so an overload reads differently from a hard
+                                    // backend fault, and never rendered onto the socket.
+                                    let category =
+                                        crate::utils::wire_failure::WireFailure::classify(&e);
+                                    let category_tag = if category.is_overloaded() {
+                                        "overloaded"
+                                    } else {
+                                        "unavailable"
+                                    };
+                                    log.error(format!(
+                                        "IGMP {} from {} unanswered: LLM call failed: {} decision=fail_closed_silent category={}",
+                                        igmp_msg.msg_type.as_str(),
+                                        peer_addr,
+                                        e,
+                                        category_tag
+                                    ));
                                 }
                             }
                         });

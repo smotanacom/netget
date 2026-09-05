@@ -332,6 +332,7 @@ impl MongodbClient {
                     client_id,
                     event,
                     &protocol,
+                    &db,
                     &app_state,
                     &llm_client,
                     &status_tx,
@@ -364,7 +365,7 @@ impl MongodbClient {
         {
             Applied::Ran { event, .. } => {
                 Self::raise_result_event(
-                    client_id, event, protocol, app_state, llm_client, status_tx,
+                    client_id, event, protocol, db, app_state, llm_client, status_tx,
                 )
                 .await?;
             }
@@ -612,6 +613,7 @@ impl MongodbClient {
         client_id: ClientId,
         event: Event,
         protocol: &Arc<MongodbClientProtocol>,
+        db: &Arc<Database>,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
@@ -646,15 +648,50 @@ impl MongodbClient {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
 
-                // Execute follow-up actions
+                // Execute the follow-up actions.
+                //
+                // These used to be logged and dropped ("we'd need to pass db_arc here"),
+                // so a model answering mongodb_result_received was silently ignored --
+                // the whole point of raising the event.
+                //
+                // They run through `apply_action` rather than `execute_llm_action`, so a
+                // follow-up does NOT raise another result event. That bound is deliberate:
+                // chaining would let one operation drive an unbounded LLM loop, and the
+                // model can always ask for more work on the next event it does see.
                 for action in actions {
-                    // Note: We'd need to pass db_arc here in a real implementation
-                    // For now, just log the actions
-                    trace!(
-                        "MongoDB client {} follow-up action: {:?}",
-                        client_id,
-                        action
-                    );
+                    let outcome = match protocol.execute_action(action.clone()) {
+                        Ok(result) => Self::apply_action(client_id, result, db, status_tx).await,
+                        Err(e) => Err(e),
+                    };
+                    match outcome {
+                        Ok(Applied::Ran { .. }) => {
+                            trace!(
+                                "MongoDB client {} ran follow-up action: {:?}",
+                                client_id,
+                                action
+                            );
+                        }
+                        Ok(Applied::Nothing(detail)) => {
+                            trace!(
+                                "MongoDB client {} follow-up produced no operation: {}",
+                                client_id,
+                                detail
+                            );
+                        }
+                        Ok(Applied::Disconnect) => {
+                            info!(
+                                "MongoDB client {} follow-up requested disconnect",
+                                client_id
+                            );
+                            break;
+                        }
+                        Err(e) => {
+                            error!(
+                                "MongoDB client {} follow-up action failed: {}",
+                                client_id, e
+                            );
+                        }
+                    }
                 }
             }
             Err(e) => {

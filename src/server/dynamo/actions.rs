@@ -145,10 +145,10 @@ impl Protocol for DynamoProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("hyper v1.5 HTTP with manual DynamoDB API")
             .llm_control("All DynamoDB operations (GetItem, PutItem, Query)")
-            .e2e_testing("aws-sdk-dynamodb client")
+            .e2e_testing("aws-sdk-dynamodb, the official AWS SDK, in tests/server/dynamo/e2e_aws_sdk_test.rs and not #[ignore]d: CreateTable, PutItem/GetItem and UpdateItem complete through the SDK, the same class of evidence that made sqs Beta.")
             .notes("Virtual data (no persistence)")
             .build()
     }

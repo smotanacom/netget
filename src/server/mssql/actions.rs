@@ -58,6 +58,7 @@ impl Protocol for MssqlProtocol {
             mssql_query_response_action(),
             mssql_error_response_action(),
             mssql_ok_response_action(),
+            MSSQL_LOGIN_ACK_ACTION.clone(),
             close_this_connection_action(),
         ]
     }
@@ -77,7 +78,10 @@ impl Protocol for MssqlProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta: exercised against a real, independent client — tiberius —
+            // covering login and queries driven by a real TDS client. Not Stable: Stable additionally wants spec
+            // compliance and scripting support reviewed, which has not been done here.
+            .state(DevelopmentState::Beta)
             .implementation("Manual TDS 7.4 implementation (pre-login, login, SQL batch, RPC)")
             .llm_control("Query responses (result sets, errors, completion)")
             .e2e_testing("tiberius client crate")
@@ -196,6 +200,17 @@ impl Server for MssqlProtocol {
             "mssql_query_response" => self.execute_mssql_query_response(action),
             "mssql_error_response" => self.execute_mssql_error_response(action),
             "mssql_ok_response" => self.execute_mssql_ok_response(action),
+            "mssql_login_ack" => {
+                let database = action
+                    .get("database")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("master")
+                    .to_string();
+                Ok(ActionResult::Custom {
+                    name: "mssql_login_ack".to_string(),
+                    data: json!({ "database": database }),
+                })
+            }
             "close_this_connection" => Ok(ActionResult::CloseConnection),
             _ => Err(anyhow::anyhow!("Unknown MSSQL action: {}", action_type)),
         }
@@ -549,7 +564,80 @@ pub static MSSQL_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     )
 });
 
+/// Accept a TDS login.
+///
+/// Deliberately a separate action from `mssql_error_response` rather than a boolean on one
+/// action: accept and reject then share no code path, which is the separation `src/server/radius/`
+/// established and the root CLAUDE.md asks for. A model that says nothing accepts nothing.
+pub static MSSQL_LOGIN_ACK_ACTION: LazyLock<ActionDefinition> =
+    LazyLock::new(|| ActionDefinition {
+        name: "mssql_login_ack".to_string(),
+        description: "Accept the TDS login and let the session proceed. Without this action the \
+                      login is refused - there is no implicit accept."
+            .to_string(),
+        parameters: vec![Parameter {
+            name: "database".to_string(),
+            type_hint: "string".to_string(),
+            description: "Database context to report in the ENVCHANGE token (default 'master')"
+                .to_string(),
+            required: false,
+        }],
+        example: json!({
+            "type": "mssql_login_ack",
+            "database": "master"
+        }),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("-> MSSQL login accepted (database {database})")
+                .with_debug("MSSQL mssql_login_ack: database={database}"),
+        ),
+    });
+
+/// MSSQL login event.
+///
+/// Until this existed there was no login event at all: `send_login_response` accepted every
+/// TDS Login packet unconditionally, so an operator instruction like "only allow the user
+/// `reporting`" could not be enforced and the model was never asked. Authentication is exactly
+/// the decision the root CLAUDE.md says must not be made by default.
+pub static MSSQL_LOGIN_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "mssql_login",
+        "MSSQL client is attempting to log in",
+        json!({"type": "placeholder", "event_id": "mssql_login"}),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "username".to_string(),
+            type_hint: "string".to_string(),
+            description: "Username from the LOGIN7 packet (empty when the client sent none)"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "database".to_string(),
+            type_hint: "string".to_string(),
+            description: "Database the client asked for, if any".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "app_name".to_string(),
+            type_hint: "string".to_string(),
+            description: "Application name the client reported, if any".to_string(),
+            required: false,
+        },
+    ])
+    .with_actions(vec![
+        MSSQL_LOGIN_ACK_ACTION.clone(),
+        MSSQL_ERROR_RESPONSE_ACTION.clone(),
+    ])
+    .with_log_template(
+        LogTemplate::new()
+            .with_info("{client_ip} MSSQL login attempt user={username} db={database}")
+            .with_debug("MSSQL login from {client_ip}: user={username} app={app_name}"),
+    )
+});
+
 /// Get MSSQL event types
 pub fn get_mssql_event_types() -> Vec<EventType> {
-    vec![MSSQL_QUERY_EVENT.clone()]
+    vec![MSSQL_QUERY_EVENT.clone(), MSSQL_LOGIN_EVENT.clone()]
 }

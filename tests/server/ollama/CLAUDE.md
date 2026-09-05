@@ -119,7 +119,6 @@ validate responses using HTTP clients.
 - **Ollama backend**: Tests require real Ollama running (usually on localhost:11434)
 - **Model**: `qwen2.5-coder:0.5b` must be pulled (`ollama pull qwen2.5-coder:0.5b`)
 - **Network**: Tests bind to 127.0.0.1 (localhost only)
-- **Ollama lock**: Uses `--ollama-lock` to serialize LLM calls
 
 ## Expected Output
 

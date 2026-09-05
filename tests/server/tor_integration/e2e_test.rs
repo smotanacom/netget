@@ -192,6 +192,7 @@ mod tests {
         // Use reqwest with SOCKS5 proxy
         let proxy = reqwest::Proxy::all(format!("socks5h://{}", tor_client.socks_addr()))?;
         let tor_http_client = reqwest::Client::builder()
+            .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
             .proxy(proxy)
             .timeout(Duration::from_secs(30))
             .build()?;

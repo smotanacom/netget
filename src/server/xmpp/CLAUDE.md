@@ -282,11 +282,45 @@ See `actions.rs` for complete action list including `send_iq_error`, `send_auth_
 - **Read buffer**: bytes accumulate in one `Vec<u8>` per connection. It is cleared once the
   model has acted on it, but **kept** when the model answers `wait_for_more` (that is the whole
   point of the action - clearing it unconditionally threw away the partial stanza the model
-  asked to hold) and kept when the LLM call fails, since the model never saw that data.
+  asked to hold). An LLM failure ends the connection (see below), so the buffer dies with it.
 - **Bounded**: `MAX_XMPP_BUFFER_BYTES` (256 KiB) caps it. Without a ceiling a peer that never
   completes a stanza grows it without limit and every subsequent event re-sends the whole thing
   to the model. Exceeding it logs an error and closes the connection.
 - Connection stays in ServerInstance until closed
+
+### Backend failure: the peer gets a stream error, never a diagnosis
+
+An LLM error used to be logged and swallowed, so a client that had just sent its stream header
+waited for a header that was never coming until its own timeout fired. RFC 6120 §4.9 defines the
+frame for exactly this, so `stream_error_frame` (`mod.rs`) now writes a fatal `<stream:error/>`
+and the connection closes.
+
+The two `crate::utils::WireFailure` categories map onto **distinct** defined stream conditions so
+a client can back off rather than record a permanent fault:
+
+| classification | stream condition | meaning |
+|---|---|---|
+| `Overloaded` | `<resource-constraint/>` (§4.9.3.17) | transient, retry later |
+| `Unavailable` | `<internal-server-error/>` (§4.9.3.10) | not retryable |
+
+The `<text/>` is `WireFailure::text()`, a `&'static str`. **Nothing derived from the error
+reaches the socket** - no backend URL, no model name, no `anyhow` chain; the full error goes to
+`Log::warn` (netget.log + status stream) only. `tests/wire_failure_test.rs` fails the build if
+that changes.
+
+If the failure lands on the very first event the model has never answered, so nothing has opened
+the stream. §4.9.1.1 requires an opening tag before the error, so one is synthesised from the
+`domain` startup parameter; otherwise a real client's parser rejects the error as a second root
+element.
+
+Three outcomes stay distinguishable **in the log**, the `radius` separation:
+
+- `decision=model_close` - the model sent `close_stream`
+- `decision=model_no_actions` - the model answered with nothing (silence on the wire is the
+  model's choice, and the stream stays open)
+- `decision=fail_closed_llm_error class=overloaded|unavailable` - netget could not ask the model
+
+Test: `tests/server/xmpp/llm_failure_test.rs` (zero LLM calls - the backend is a dead port).
 
 ## Known Limitations
 

@@ -189,7 +189,10 @@ When you receive GetUser requests, respond with a User message containing the re
     grpc_frame.extend_from_slice(&request_body);
 
     // Use reqwest with HTTP/2
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
     let url = format!("http://127.0.0.1:{}/test.UserService/GetUser", server.port);
 
     let response = client
@@ -217,6 +220,10 @@ When you receive GetUser requests, respond with a User message containing the re
     println!("✓ gRPC request successful");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -291,6 +298,10 @@ When you receive CreateUser requests, respond with a User message having id=456 
     println!("✓ Proto file loading test passed");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -361,6 +372,10 @@ When you receive GetUser requests, respond with a User message containing the re
     println!("✓ Proto text inline loading test passed");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -459,7 +474,10 @@ When you receive GetUser requests:
     grpc_frame.extend_from_slice(&(request_body.len() as u32).to_be_bytes());
     grpc_frame.extend_from_slice(&request_body);
 
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
     let uri = format!("http://127.0.0.1:{}/test.UserService/GetUser", server.port);
 
     let response = client
@@ -488,6 +506,10 @@ When you receive GetUser requests:
     println!("✓ Error handling test passed");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;
@@ -567,7 +589,10 @@ When you receive GetUser requests, respond with a User message where the id matc
     sleep(Duration::from_secs(2)).await;
 
     // Make 3 concurrent requests
-    let client = reqwest::Client::builder().http2_prior_knowledge().build()?;
+    let client = reqwest::Client::builder()
+        .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .http2_prior_knowledge()
+        .build()?;
     let mut handles = vec![];
 
     for id in 1..=3 {
@@ -627,6 +652,10 @@ When you receive GetUser requests, respond with a User message where the id matc
     );
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     server.stop().await?;

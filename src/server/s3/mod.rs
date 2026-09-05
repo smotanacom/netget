@@ -217,6 +217,28 @@ async fn handle_s3_request_with_llm(
     // Process LLM result and build HTTP response
     match llm_result {
         Ok(execution_result) => {
+            // Which of the three outcomes this was, for the log. `decision=` is a stable
+            // grep target: `model_reject` is the model deliberately refusing the request,
+            // `model_answer` is a real S3 response, `model_no_action` is the model saying
+            // nothing usable. None of them is `fail_closed_llm_error`, which only the `Err`
+            // arm below may write — an operator must be able to tell a model's refusal from
+            // netget failing to reach one.
+            let decision = execution_result
+                .protocol_results
+                .iter()
+                .find_map(|result| match result {
+                    ActionResult::Custom { name, .. } => match name.as_str() {
+                        "s3_error" => Some("model_reject"),
+                        "s3_object" | "s3_object_list" | "s3_bucket_list" | "s3_write_result" => {
+                            Some("model_answer")
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .unwrap_or("model_no_action");
+            let failures = execution_result.failures.len();
+
             // Scan for the first action that is actually an S3 response. This was a
             // `for` loop with an unconditional `return` inside it — so it examined
             // only the first result and, if that was something like `show_message`,
@@ -227,27 +249,67 @@ async fn handle_s3_request_with_llm(
                 .into_iter()
                 .find_map(|result| process_s3_action_result(result, bucket.as_deref(), &status_tx))
             {
+                log.debug(format!("S3 {} {} decision={}", operation, path, decision));
                 return Ok(response);
             }
 
-            // No S3 actions found, return empty 200 OK
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .body(Full::new(Bytes::new()))
-                .unwrap())
-        }
-        Err(e) => {
-            // Non-fatal: a wire fallback (500 response) is still delivered and the HTTP
-            // connection continues.
-            log.warn(format!("LLM error handling S3 request: {}", e));
-
-            // Return 500 error
+            // The model produced nothing this protocol can turn into a response.
+            //
+            // This used to answer an empty 200 OK, and for PutObject, CreateBucket,
+            // DeleteObject and HeadObject an empty 200 is exactly what S3 returns on success —
+            // so a model that declined the operation was reported to the caller as having
+            // performed it. It could not simply be made to refuse, because until
+            // `send_s3_write_result` existed those four verbs had no affirmative action at all
+            // and refusing would have made them permanently impossible. Now they have one, so
+            // silence can mean what it should.
+            log.warn(format!(
+                "S3 {} {} decision={} (no S3 response action; {} action(s) failed to \
+                 execute) — answering 500 InternalError",
+                operation, path, decision, failures
+            ));
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .header("Content-Type", "application/xml")
                 .body(Full::new(Bytes::from(build_error_xml(
                     "InternalError",
-                    crate::utils::WireFailure::classify(&e).text(),
+                    crate::utils::WireFailure::Unavailable.text(),
+                ))))
+                .unwrap())
+        }
+        Err(e) => {
+            // netget could not reach a decision at all. Fail closed with an S3 `<Error>`
+            // document carrying only a category — never the error itself, which names the
+            // backend, the model and netget's own retry machinery. The full error goes to
+            // the log and the status stream, which is where an operator looks.
+            let failure = crate::utils::WireFailure::classify(&e);
+            log.warn(format!(
+                "S3 {} {} decision=fail_closed_llm_error category={:?}: {}",
+                operation, path, failure, e
+            ));
+
+            // Distinct codes, so a client backs off rather than recording a permanent
+            // fault: an overloaded backend is 503 + Retry-After (the AWS SDKs and rust-s3
+            // treat 503 `ServiceUnavailable` as retryable), anything else is 500.
+            let (status, code) = match failure {
+                crate::utils::WireFailure::Overloaded => {
+                    (StatusCode::SERVICE_UNAVAILABLE, "ServiceUnavailable")
+                }
+                crate::utils::WireFailure::Unavailable => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "InternalError")
+                }
+            };
+
+            let mut builder = Response::builder()
+                .status(status)
+                .header("Content-Type", "application/xml");
+            if failure == crate::utils::WireFailure::Overloaded {
+                builder = builder.header("Retry-After", "5");
+            }
+
+            Ok(builder
+                .body(Full::new(Bytes::from(build_error_xml(
+                    code,
+                    failure.text(),
                 ))))
                 .unwrap())
         }
@@ -472,6 +534,41 @@ fn process_s3_action_result(
                             .header("Content-Type", "application/xml")
                             .body(Full::new(Bytes::from(xml)))
                             .unwrap(),
+                    )
+                }
+                "s3_write_result" => {
+                    // A body-less acknowledgement: PutObject/CreateBucket/HeadObject answer
+                    // 200, DeleteObject answers 204. Each header is attached only when the
+                    // model supplied it, so an unadorned acknowledgement is still valid.
+                    let status = data
+                        .get("status_code")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(200) as u16;
+                    let status =
+                        StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+                    Log::new(Some(status_tx))
+                        .debug(format!("Sending S3 write acknowledgement ({})", status));
+
+                    let mut builder = Response::builder().status(status);
+                    for (field, header) in [
+                        ("etag", "ETag"),
+                        ("location", "Location"),
+                        ("content_type", "Content-Type"),
+                        ("last_modified", "Last-Modified"),
+                    ] {
+                        if let Some(v) = data.get(field).and_then(|v| v.as_str()) {
+                            builder = builder.header(header, v);
+                        }
+                    }
+                    if let Some(v) = data.get("content_length").and_then(|v| v.as_u64()) {
+                        builder = builder.header("Content-Length", v.to_string());
+                    }
+
+                    Some(
+                        builder
+                            .body(Full::new(Bytes::new()))
+                            .unwrap_or_else(|_| Response::new(Full::new(Bytes::new()))),
                     )
                 }
                 "s3_error" => {

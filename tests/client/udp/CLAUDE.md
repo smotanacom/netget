@@ -97,7 +97,6 @@ Tests UDP client can change target address:
 ./cargo-isolated.sh build --release --no-default-features --features udp
 
 # Ensure Ollama is running
-# Tests use --ollama-lock to prevent concurrent LLM calls
 ```
 
 ### Run All UDP Client Tests
@@ -184,11 +183,11 @@ Tests create log files in `./tmp/netget-test-*` directories (if logging enabled)
 
 ```bash
 # Terminal 1: Start UDP server
-./target/release/netget --ollama-lock
+./target/release/netget
 > open_server 127.0.0.1:8080 "UDP echo server"
 
 # Terminal 2: Start UDP client
-./target/release/netget --ollama-lock
+./target/release/netget
 > open_client 127.0.0.1:8080 "Send HELLO via UDP"
 ```
 
@@ -198,7 +197,7 @@ Tests create log files in `./tmp/netget-test-*` directories (if logging enabled)
 **Without LLM:** ~2-3 seconds (if LLM calls were mocked)
 
 **Bottleneck:** LLM inference time (~2-3s per call)
-**Optimization:** Tests use `--ollama-lock` to serialize LLM calls, preventing concurrent load
+**Optimization:** Tests use an in-process mock LLM, so no real model is loaded at all
 
 ## Contribution Guidelines
 

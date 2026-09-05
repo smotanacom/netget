@@ -11,9 +11,12 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::compat::TokioAsyncReadCompatExt;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
-use crate::client::imap::actions::IMAP_CLIENT_CONNECTED_EVENT;
+use crate::client::imap::actions::{
+    IMAP_CLIENT_CONNECTED_EVENT, IMAP_MAILBOX_SELECTED_EVENT, IMAP_MESSAGE_FETCHED_EVENT,
+    IMAP_SEARCH_RESULTS_EVENT,
+};
 use crate::client::llm_budget::call_llm_for_client;
 use crate::llm::actions::client_trait::{Client, ClientActionResult};
 use crate::llm::ollama_client::OllamaClient;
@@ -42,6 +45,26 @@ impl ImapClient {
         let (username, password) = if let Some(params) = startup_params {
             let username = params.get_string("username")?;
             let password = params.get_string("password")?;
+
+            // `use_tls` is declared, and this protocol's CLAUDE.md described it as working
+            // ("Upgrade to TLS if port 993 or use_tls=true"). Nothing read it, and this client
+            // has no TLS support at all — `async_imap` is driven over a plain `TcpStream`. So
+            // asking for TLS produced a cleartext session carrying the password above, with
+            // both the parameter list and the documentation saying otherwise.
+            //
+            // Refusing is the fix, not silence. The project's rule is that hiding a capability
+            // is worse than declining it out loud: the caller gets a reason they can act on,
+            // and nobody hands credentials to a plaintext socket believing it is encrypted.
+            // `use_tls: false` remains valid and means what it says.
+            if params.get_optional_bool("use_tls")?.unwrap_or(false) {
+                return Err(anyhow::anyhow!(
+                    "IMAP client: `use_tls: true` was requested, but this client does not \
+                     implement TLS — it speaks IMAP over a plain TCP socket. Connecting anyway \
+                     would send the password for `{username}` in cleartext while reporting an \
+                     encrypted session. Pass `use_tls: false` to accept a plaintext connection \
+                     deliberately, or terminate TLS in front of the server."
+                ));
+            }
             (username, password)
         } else {
             return Err(anyhow::anyhow!(
@@ -195,8 +218,8 @@ impl ImapClient {
     /// select against: `async_imap` owns the socket and this client has no read loop. The
     /// task is also what keeps the session usable after the connected-event handler returns.
     ///
-    /// Injected actions go through [`Self::handle_custom_action`] - the same function the LLM
-    /// path uses - so the IMAP command encoding exists exactly once.
+    /// Injected actions go through [`Self::apply_action`] - the same function the LLM path
+    /// uses - so the IMAP command encoding exists exactly once.
     ///
     /// Outcome semantics: `async_imap` writes and reads the tagged commands itself, so this
     /// loop can honestly claim no byte count. A verb that ran reports `Executed` naming it;
@@ -234,24 +257,43 @@ impl ImapClient {
                     detail: "no_action".to_string(),
                 }),
                 Ok(ClientActionResult::Custom { name, data }) => {
-                    match Self::handle_custom_action(
-                        client_id,
-                        &session,
-                        &name,
-                        &data,
-                        &protocol,
-                        &llm_client,
-                        &app_state,
-                        &status_tx,
-                    )
-                    .await
-                    {
-                        Ok(()) => Ok(ClientSendOutcome::Executed {
-                            detail: format!(
-                                "{name} completed (async_imap frames the tagged command, so \
-                                 there is no byte count to report)"
-                            ),
-                        }),
+                    match Self::apply_action(client_id, &session, &name, &data, &status_tx).await {
+                        Ok(followup) => {
+                            // Report the result to the model from a task of its own. A
+                            // dashboard-created client defaults to a `*` -> manual rule, so
+                            // awaiting that call here would wedge this loop for the whole
+                            // park -- far past the dashboard's 30s send timeout, on an action
+                            // that in fact succeeded.
+                            if let Some(event) = followup {
+                                let (t_session, t_protocol, t_llm, t_state, t_status) = (
+                                    session.clone(),
+                                    protocol.clone(),
+                                    llm_client.clone(),
+                                    app_state.clone(),
+                                    status_tx.clone(),
+                                );
+                                let task = tokio::spawn(async move {
+                                    Self::report_event(
+                                        client_id,
+                                        &t_session,
+                                        &t_protocol,
+                                        &t_llm,
+                                        &t_state,
+                                        &t_status,
+                                        event,
+                                        0,
+                                    )
+                                    .await;
+                                });
+                                app_state.register_client_task(client_id, task).await;
+                            }
+                            Ok(ClientSendOutcome::Executed {
+                                detail: format!(
+                                    "{name} completed (async_imap frames the tagged command, so \
+                                     there is no byte count to report)"
+                                ),
+                            })
+                        }
                         Err(e) => Err(e.context(format!("injected IMAP action '{name}'"))),
                     }
                 }
@@ -308,6 +350,12 @@ impl ImapClient {
         let _ = status_tx.send("__UPDATE_UI__".to_string());
     }
 
+    /// How many times an action may be answered by an event that produces another action
+    /// before this client stops asking. Each IMAP verb reports its result back to the model,
+    /// and the model may reasonably chain SELECT -> SEARCH -> FETCH; without a bound, a model
+    /// that answers `fetch_message` with `fetch_message` would loop on the LLM forever.
+    const MAX_FOLLOWUP_DEPTH: u8 = 8;
+
     /// Execute a single IMAP action and potentially trigger more LLM calls
     async fn execute_imap_action(
         client_id: ClientId,
@@ -318,42 +366,160 @@ impl ImapClient {
         status_tx: &mpsc::UnboundedSender<String>,
         action: serde_json::Value,
     ) -> Result<()> {
-        match protocol.execute_action(action)? {
-            ClientActionResult::Custom { name, data } => {
-                Self::handle_custom_action(
-                    client_id, session, &name, &data, protocol, llm_client, app_state, status_tx,
-                )
-                .await?;
-            }
-            ClientActionResult::Disconnect => {
-                info!("IMAP client {} disconnecting", client_id);
-                // Stop offering [ send ] on a session that is going away.
-                app_state.remove_client_handle(client_id).await;
-                app_state
-                    .update_client_status(client_id, ClientStatus::Disconnected)
-                    .await;
-                let _ = status_tx.send("__UPDATE_UI__".to_string());
-            }
-            ClientActionResult::WaitForMore => {
-                debug!("IMAP client {} waiting for more events", client_id);
-            }
-            _ => {}
-        }
-
-        Ok(())
+        Self::execute_imap_action_at_depth(
+            client_id, session, protocol, llm_client, app_state, status_tx, action, 0,
+        )
+        .await
     }
 
-    /// Handle custom IMAP actions
-    async fn handle_custom_action(
+    /// The recursive half of [`Self::execute_imap_action`].
+    ///
+    /// Boxed because it is genuinely self-referential: running an action raises an event, the
+    /// event is answered by the model with more actions, and those actions come back here.
+    /// An `async fn` that awaits itself has an infinitely-sized future type (E0391), so the
+    /// recursion has to go through a `Pin<Box<dyn Future>>`.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_imap_action_at_depth<'a>(
+        client_id: ClientId,
+        session: &'a Arc<Mutex<ImapSession>>,
+        protocol: &'a Arc<ImapClientProtocol>,
+        llm_client: &'a OllamaClient,
+        app_state: &'a Arc<AppState>,
+        status_tx: &'a mpsc::UnboundedSender<String>,
+        action: serde_json::Value,
+        depth: u8,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            match protocol.execute_action(action)? {
+                ClientActionResult::Custom { name, data } => {
+                    let followup =
+                        Self::apply_action(client_id, session, &name, &data, status_tx).await?;
+
+                    // Tell the model what the verb produced, and run whatever it answers with.
+                    // Without this the client executed the action and said nothing, so the
+                    // model could never chain SELECT -> SEARCH -> FETCH.
+                    if let Some(event) = followup {
+                        if depth >= Self::MAX_FOLLOWUP_DEPTH {
+                            warn!(
+                                "IMAP client {} reached the follow-up depth limit ({}); not \
+                                 reporting {} to the model",
+                                client_id,
+                                Self::MAX_FOLLOWUP_DEPTH,
+                                event.event_type.id
+                            );
+                            return Ok(());
+                        }
+                        Self::report_event(
+                            client_id, session, protocol, llm_client, app_state, status_tx, event,
+                            depth,
+                        )
+                        .await;
+                    }
+                }
+                ClientActionResult::Disconnect => {
+                    info!("IMAP client {} disconnecting", client_id);
+                    // Stop offering [ send ] on a session that is going away.
+                    app_state.remove_client_handle(client_id).await;
+                    app_state
+                        .update_client_status(client_id, ClientStatus::Disconnected)
+                        .await;
+                    let _ = status_tx.send("__UPDATE_UI__".to_string());
+                }
+                ClientActionResult::WaitForMore => {
+                    debug!("IMAP client {} waiting for more events", client_id);
+                }
+                _ => {}
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Report an event to the model and run whatever it answers with.
+    ///
+    /// Kept out of [`Self::apply_action`] on purpose: the IMAP verbs must stay callable
+    /// without an LLM round-trip, both because the injected-command path has its own timing
+    /// and because a core that calls back into itself cannot be typed (see the boxing note
+    /// on `execute_imap_action_at_depth`).
+    #[allow(clippy::too_many_arguments)]
+    async fn report_event(
+        client_id: ClientId,
+        session: &Arc<Mutex<ImapSession>>,
+        protocol: &Arc<ImapClientProtocol>,
+        llm_client: &OllamaClient,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+        event: Event,
+        depth: u8,
+    ) {
+        let instruction = app_state
+            .get_instruction_for_client(client_id)
+            .await
+            .unwrap_or_default();
+        let memory = app_state
+            .get_memory_for_client(client_id)
+            .await
+            .unwrap_or_default();
+
+        match call_llm_for_client(
+            llm_client,
+            app_state,
+            client_id.to_string(),
+            &instruction,
+            &memory,
+            Some(&event),
+            protocol.as_ref(),
+            status_tx,
+        )
+        .await
+        {
+            Ok(ClientLlmResult {
+                actions,
+                memory_updates,
+            }) => {
+                if let Some(mem) = memory_updates {
+                    app_state.set_memory_for_client(client_id, mem).await;
+                }
+                for action in actions {
+                    if let Err(e) = Self::execute_imap_action_at_depth(
+                        client_id,
+                        session,
+                        protocol,
+                        llm_client,
+                        app_state,
+                        status_tx,
+                        action,
+                        depth + 1,
+                    )
+                    .await
+                    {
+                        error!("Failed to execute IMAP action: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                // Nothing is written to the wire here: IMAP is client-driven, so the peer is
+                // not waiting on a reply and silence costs it nothing. The log carries the
+                // reason.
+                error!(
+                    "LLM error for IMAP client {} on {}: {}",
+                    client_id, event.event_type.id, e
+                );
+            }
+        }
+    }
+
+    /// Run one IMAP verb against the session.
+    ///
+    /// Returns the event the verb produced, for the caller to report to the model — this
+    /// function never calls the LLM itself. Verbs with nothing to report return `None`.
+    async fn apply_action(
         client_id: ClientId,
         session: &Arc<Mutex<ImapSession>>,
         action_name: &str,
         action_data: &serde_json::Value,
-        _protocol: &Arc<ImapClientProtocol>,
-        _llm_client: &OllamaClient,
-        _app_state: &Arc<AppState>,
         _status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<()> {
+    ) -> Result<Option<Event>> {
         match action_name {
             "select_mailbox" => {
                 let mailbox = action_data
@@ -379,9 +545,14 @@ impl ImapClient {
 
                 drop(session_guard);
 
-                // Note: Follow-up LLM call with mailbox selected event could be added here
-                // but requires careful lifetime management with the session
-                debug!("IMAP client {} completed select_mailbox action", client_id);
+                Ok(Some(Event::new(
+                    &IMAP_MAILBOX_SELECTED_EVENT,
+                    serde_json::json!({
+                        "mailbox": mailbox,
+                        "exists": exists,
+                        "recent": recent,
+                    }),
+                )))
             }
             "search_messages" => {
                 let criteria = action_data
@@ -407,12 +578,13 @@ impl ImapClient {
 
                 drop(session_guard);
 
-                // Note: Follow-up LLM call with search results could be added here
-                debug!(
-                    "IMAP client {} completed search_messages action, found {} messages",
-                    client_id,
-                    id_list.len()
-                );
+                Ok(Some(Event::new(
+                    &IMAP_SEARCH_RESULTS_EVENT,
+                    serde_json::json!({
+                        "criteria": criteria,
+                        "message_ids": id_list,
+                    }),
+                )))
             }
             "fetch_message" => {
                 let message_id = action_data
@@ -450,8 +622,9 @@ impl ImapClient {
                 drop(session_guard);
 
                 // Process fetched messages
+                let mut messages = Vec::with_capacity(message_list.len());
                 for fetch in message_list {
-                    let _body = fetch
+                    let body = fetch
                         .body()
                         .map(|b| String::from_utf8_lossy(b).to_string())
                         .unwrap_or_default();
@@ -474,9 +647,22 @@ impl ImapClient {
                         client_id, message_id, subject, from
                     );
 
-                    // Note: Follow-up LLM call with fetched message could be added here
-                    debug!("IMAP client {} completed fetch_message action", client_id);
+                    messages.push(serde_json::json!({
+                        "subject": subject,
+                        "from": from,
+                        // The body used to be read and dropped on the floor. It is capped
+                        // because a large message would otherwise dominate the prompt.
+                        "body": crate::utils::truncate_for_llm(&body, 8192),
+                    }));
                 }
+
+                Ok(Some(Event::new(
+                    &IMAP_MESSAGE_FETCHED_EVENT,
+                    serde_json::json!({
+                        "message_id": message_id,
+                        "messages": messages,
+                    }),
+                )))
             }
             "mark_as_read" => {
                 let message_id = action_data
@@ -500,6 +686,7 @@ impl ImapClient {
                     "IMAP client {} marked message {} as read",
                     client_id, message_id
                 );
+                Ok(None)
             }
             "mark_as_unread" => {
                 let message_id = action_data
@@ -523,6 +710,7 @@ impl ImapClient {
                     "IMAP client {} marked message {} as unread",
                     client_id, message_id
                 );
+                Ok(None)
             }
             "delete_message" => {
                 let message_id = action_data
@@ -546,6 +734,7 @@ impl ImapClient {
                     .context("Failed to expunge deleted messages")?;
 
                 info!("IMAP client {} deleted message {}", client_id, message_id);
+                Ok(None)
             }
             "list_mailboxes" => {
                 trace!("IMAP client {} listing mailboxes", client_id);
@@ -575,12 +764,12 @@ impl ImapClient {
                 );
 
                 debug!("Mailboxes: {:?}", mailbox_names);
+                Ok(None)
             }
             _ => {
                 debug!("Unknown IMAP action: {}", action_name);
+                Ok(None)
             }
         }
-
-        Ok(())
     }
 }

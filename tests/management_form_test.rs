@@ -40,7 +40,7 @@ fn static_http_handler(body: &str) -> Vec<serde_json::Value> {
 }
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -96,20 +96,11 @@ fn http_get(port: u16) -> String {
 
 /// Snapshot a running server into a `ServerPrefill`, exactly as the TUI's
 /// `start_form` does when it opens an `/edit` form.
+/// Exactly what the TUI's edit path does, via the one shared constructor. Rebuilding this
+/// by hand here is how the test stopped testing the real thing.
 async fn prefill_from(state: &AppState, id: ServerId) -> ServerPrefill {
     let s = state.get_server(id).await.expect("server exists");
-    ServerPrefill {
-        instruction: s.instruction.clone(),
-        memory: s.memory.clone(),
-        port: s.port,
-        startup_params: s.startup_params.clone(),
-        event_handlers: s.event_handler_config.as_ref().and_then(|c| {
-            serde_json::to_value(&c.handlers)
-                .ok()
-                .and_then(|v| v.as_array().cloned())
-        }),
-        feedback_instructions: s.feedback_instructions.clone(),
-    }
+    ServerPrefill::from_server(&s)
 }
 
 fn field_names(form: &InteractiveForm) -> Vec<String> {

@@ -41,6 +41,14 @@ portable-base = [
     "bootp",
     "ntp",
     "whois",
+    "nats",
+    "stomp",
+    "ident",
+    "gopher",
+    "finger",
+    "ssdp",
+    "llmnr",
+    "netbios-ns",
     "snmp",
     "igmp",
     "syslog",
@@ -145,6 +153,20 @@ udp = []
 datalink = ["dep:pcap"]  # DataLink sniffs L2 frames via libpcap
 arp = ["pnet", "dep:pcap"]  # ARP (Address Resolution Protocol) uses pnet for packet handling + libpcap for capture
 icmp = ["pnet", "socket2/all"]  # ICMP (Internet Control Message Protocol) uses pnet for packet handling + raw sockets (requires socket2 'all' feature for Type::RAW)
+ndp = ["pnet", "socket2/all"]  # IPv6 Neighbor Discovery (ICMPv6) - raw socket via pnet + socket2
+dhcpv6 = ["dhcproto"]  # DHCPv6 (RFC 8415) server on UDP 547 - reuses dhcproto
+tuntap = ["dep:tun"]  # TUN/TAP interface endpoint - every routed IP packet becomes an event
+rawip = ["pnet", "socket2/all"]  # Generic raw IP protocol-N listener (GRE 47, ESP 50, ...)
+gtp = []  # GTP-C / GTP-U mobile core (UDP 2123/2152) - hand-rolled, no extra deps
+m3ua = []  # M3UA/SIGTRAN - SCTP where available, refuses elsewhere; no extra deps
+can = ["dep:socketcan"]  # CAN bus via SocketCAN - Linux only, target-gated like bluetooth-ble-beacon
+lldp = ["pnet", "dep:pcap"]  # LLDP link-layer discovery - raw Ethernet via pnet, capture via libpcap
+cdp = ["pnet", "dep:pcap"]  # Cisco Discovery Protocol - raw Ethernet SNAP via pnet, capture via libpcap
+stp = ["dep:pcap"]  # STP/RSTP bridge protocol data units - raw 802.3 LLC via libpcap (codec is hand-written; pnet is not used)
+vrrp = ["socket2/all", "dep:sha1"]  # VRRP v2/v3 and CARP - IP protocol 112 raw socket; sha1 for CARP's HMAC-SHA1 auth field
+hsrp = []  # HSRP v1/v2 gateway redundancy over UDP 1985 - no extra deps
+eapol = ["pnet", "dep:pcap", "dep:md-5"]  # EAPOL / 802.1X authenticator - libpcap capture; md-5 for the RFC 1994 MD5-Challenge digest
+wol = []  # Wake-on-LAN magic packet listener (UDP 9) - no extra deps
 dc = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots"]  # DC (Direct Connect) - supports TLS (DCCS)
 dns = ["hickory-server", "hickory-proto", "dep:hickory-client"]
 dot = ["dns", "hickory-server/dns-over-rustls", "hickory-proto/dns-over-rustls", "dep:rustls", "dep:tokio-rustls", "dep:rustls-pemfile", "dep:rcgen", "dep:webpki-roots"]  # DNS-over-TLS server
@@ -174,6 +196,14 @@ bluetooth-ble-cycling = ["bluetooth-ble"]  # BLE Cycling Speed and Cadence
 bluetooth-ble-running = ["bluetooth-ble"]  # BLE Running Speed and Cadence
 bluetooth-ble-weight-scale = ["bluetooth-ble"]  # BLE Weight Scale
 whois = []  # WHOIS uses only TCP, no extra deps
+nats = []  # NATS text-protocol pub/sub server - hand-rolled, no extra deps
+stomp = []  # STOMP 1.2 text-frame messaging server - hand-rolled, no extra deps
+ident = []  # Ident (RFC 1413) identification server - hand-rolled, no extra deps
+gopher = []  # Gopher (RFC 1436) menu/document server - hand-rolled, no extra deps
+finger = []  # Finger (RFC 1288) user information server - hand-rolled, no extra deps
+ssdp = []  # SSDP/UPnP discovery (HTTPU over UDP multicast) - hand-rolled, no extra deps
+llmnr = ["hickory-proto"]  # LLMNR (RFC 4795) - DNS wire format via hickory-proto
+netbios-ns = []  # NetBIOS Name Service (RFC 1002) - hand-rolled name encoding
 snmp = ["rasn-snmp", "rasn", "rasn-smi", "dep:snmp"]
 igmp = []  # IGMP multicast group management, no extra deps
 syslog = ["syslog_loose"]
@@ -207,7 +237,11 @@ smb = ["smb-msg"]
 stun = ["dep:webrtc-stun", "dep:stunclient"]
 smb-client = ["smb", "pavao"]  # SMB client requires native libsmbclient library
 turn = ["dep:webrtc-turn"]
-webrtc = ["dep:webrtc", "dep:tokio-tungstenite"]  # WebRTC client + server for peer-to-peer data channels
+# `dep:rustls` is not decoration: webrtc-dtls builds its DTLS config through rustls 0.23, which
+# panics unless a process-level CryptoProvider is installed. Naming rustls here is what makes
+# `src/bin/netget.rs` install one for a webrtc-only build (and what makes
+# `tests/rustls_provider_gate_test.rs` enforce it).
+webrtc = ["dep:webrtc", "dep:tokio-tungstenite", "dep:rustls"]  # WebRTC client + server for peer-to-peer data channels
 # Generic WebSocket (RFC 6455) server + client. Reuses the tokio-tungstenite 0.21 already in
 # the tree for `webrtc`: framing, masking, fragmentation, ping/pong and the close handshake.
 # Bumping that crate is a webrtc-wide decision, so this feature deliberately does not force one.
@@ -230,8 +264,8 @@ elasticsearch = []  # Elasticsearch uses only HTTP, no extra deps
 couchdb = ["dep:couch_rs", "dep:form_urlencoded"]  # CouchDB server and client (server uses HTTP, client uses couch_rs)
 yarn = []  # Hadoop YARN ResourceManager REST server - HTTP only, no extra deps
 spark = []  # Apache Spark monitoring REST server - HTTP only, no extra deps
-dynamo = ["aws-config", "aws-sdk-dynamodb", "aws-smithy-types"]  # DynamoDB client
-dynamodb = ["aws-config", "aws-sdk-dynamodb", "aws-smithy-types"]  # DynamoDB client (alternate name)
+dynamo = ["aws-config", "aws-sdk-dynamodb", "aws-smithy-types", "dep:aws-credential-types"]  # DynamoDB client
+dynamodb = ["aws-config", "aws-sdk-dynamodb", "aws-smithy-types", "dep:aws-credential-types"]  # DynamoDB client (alternate name)
 s3 = ["aws-config", "dep:aws-sdk-s3", "dep:aws-credential-types", "dep:rust-s3"]  # S3 client
 sqs = ["aws-config", "aws-sdk-sqs"]  # AWS SQS queue
 npm = ["http", "urlencoding"]  # NPM registry server and client (built on HTTP, uses urlencoding for search queries)
@@ -244,7 +278,7 @@ saml-idp = []  # SAML Identity Provider (authentication, assertion generation)
 saml-sp = ["urlencoding"]  # SAML Service Provider (assertion validation, session management)
 saml = ["quick-xml", "urlencoding", "dep:flate2"]  # SAML client (SP-initiated SSO, assertion validation)
 wireguard = ["dep:defguard_wireguard_rs", "dep:x25519-dalek"]  # Full WireGuard VPN server with LLM control
-openvpn = ["dep:tun", "dep:aes-gcm", "dep:chacha20poly1305", "dep:rustls", "dep:tokio-rustls", "dep:rcgen", "dep:sha2", "dep:hmac", "dep:hkdf"]  # Full OpenVPN VPN server with TLS control channel and data channel encryption
+openvpn = ["dep:rustls", "dep:tokio-rustls", "dep:rcgen", "dep:sha2"]  # OpenVPN control-plane responder: real TLS control channel, key method 2. No data channel and no TUN - see src/server/openvpn/mod.rs
 ipsec = []  # IPSec/IKEv2 honeypot (packet detection only, no full crypto)
 bgp = ["netgauze-bgp-pkt"]  # BGP routing protocol
 ospf = ["udp"]  # OSPF routing protocol (IP protocol 89, raw sockets, requires root/CAP_NET_RAW, tests use UDP)
@@ -275,7 +309,7 @@ usb-fido2 = ["usb-common", "ring", "ring/std", "serde_cbor"]  # USB FIDO2/U2F Se
 usb-smartcard = ["usb-common"]  # Virtual USB CCID smart card reader over USB/IP. rsa/sha2 dropped with crypto.rs: the handler owns every response APDU, so the protocol holds no keys
 usb = ["dep:nusb"]  # USB client for connecting to USB devices
 openidconnect = ["dep:openidconnect", "urlencoding"]  # OpenID Connect client for authentication flows
-kubernetes = ["dep:kube", "dep:k8s-openapi"]  # Kubernetes client protocol with v1.30 API support
+kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:rustls"]  # Kubernetes client protocol with v1.30 API support
 # Kubernetes API *server*. Deliberately independent of the `kubernetes` client feature: kubectl
 # speaks JSON to an apiserver by default, so this needs neither kube nor k8s-openapi - just the
 # HTTP stack and rustls for the optional TLS listener. Pure Rust, no system library.
@@ -384,6 +418,14 @@ dist-windows = [
     "tftp",
     "ftp",
     "whois",
+    "nats",
+    "stomp",
+    "ident",
+    "gopher",
+    "finger",
+    "ssdp",
+    "llmnr",
+    "netbios-ns",
     "snmp",
     # igmp excluded: raw libc sockets (AF_INET/SOCK_RAW), unix-only
     "syslog",
@@ -492,6 +534,28 @@ all-protocols = [
     "tftp",
     "bluetooth-ble-client",
     "whois",
+    "ndp",
+    "dhcpv6",
+    "tuntap",
+    "rawip",
+    "gtp",
+    "m3ua",
+    "can",
+    "lldp",
+    "cdp",
+    "stp",
+    "vrrp",
+    "hsrp",
+    "eapol",
+    "wol",
+    "nats",
+    "stomp",
+    "ident",
+    "gopher",
+    "finger",
+    "ssdp",
+    "llmnr",
+    "netbios-ns",
     "snmp",
     "igmp",
     "syslog",
@@ -615,6 +679,8 @@ all-protocols = [
     "saml",
     "smb-client",
 ]
+tun = ["dep:tun"]
+sha1 = ["dep:sha1"]
 
 [dependencies]
 # Async runtime
@@ -827,9 +893,6 @@ defguard_wireguard_rs = { version = "0.7", optional = true, features = ["serde"]
 x25519-dalek = { version = "2.0", optional = true }  # For WireGuard key generation
 
 # OpenVPN VPN server (full implementation with TLS control channel)
-tun = { version = "0.7", optional = true, features = ["async"] }  # TUN/TAP interface for VPN tunnels
-aes-gcm = { version = "0.10", optional = true }  # AES-GCM encryption for OpenVPN data channel
-chacha20poly1305 = { version = "0.10", optional = true }  # ChaCha20-Poly1305 encryption for OpenVPN data channel
 # rustls, tokio-rustls, sha2, hmac, hkdf, rand already declared above
 
 # MCP (Model Context Protocol) server
@@ -1004,6 +1067,8 @@ hf-hub = { version = "0.3", optional = true, features = ["tokio"] }  # Hugging F
 
 # SQLite database support (in-memory or file-based)
 rusqlite = { version = "0.37", optional = true, features = ["bundled"] }  # SQLite library with bundled SQLite (matches tor-dirmgr dependency)
+tun = { version = "0.8.14", optional = true }
+sha1 = { version = "0.10", optional = true }
 
 # Linux-only dependencies
 #
@@ -1014,6 +1079,10 @@ rusqlite = { version = "0.37", optional = true, features = ["bundled"] }  # SQLi
 # feature on macOS/Windows is a no-op and the protocol refuses to start there.
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
+# SocketCAN is an AF_CAN socket family that exists only in the Linux kernel. Target-gated for the
+# same reason as bluer above: the `can` feature compiles everywhere, and the protocol returns a
+# clear Err naming the platform rather than being hidden, on every other OS.
+socketcan = { version = "3.5", optional = true }
 
 [dev-dependencies]
 # For async tests
@@ -1051,6 +1120,14 @@ coap = "0.27"
 # BitTorrent client for e2e integration tests
 # Using cratetorrent library for programmatic testing, also supports transmission-cli/aria2
 sha1 = "0.10"  # For info_hash calculation
+# Independent feed parser for the rss server e2e test, for the same reason as tokio-modbus and
+# coap-lite above. `src/server/rss` builds its XML with the `rss` crate's ChannelBuilder, so
+# parsing the result back with the `rss` crate would only prove that one crate round-trips
+# through itself. feed-rs is a separate implementation with its own model, so it is the thing
+# that makes the test evidence.
+feed-rs = "2"
+async-nats = "0.50.0"
+async-stomp = "0.6.3"
 
 [build-dependencies]
 # Protocol buffer compiler for etcd gRPC service

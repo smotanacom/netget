@@ -35,7 +35,7 @@ mod ntp_client_tests {
                 .on_event("ntp_response_received")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "wait_for_more"
+                        "type": "analyze_response"
                     }
                 ]))
                 .expect_at_most(1)
@@ -48,6 +48,7 @@ mod ntp_client_tests {
         tokio::time::sleep(Duration::from_secs(6)).await;
 
         // Verify client output shows NTP response
+        client.wait_for_any(&["ntp", "time"], 30).await;
         assert!(
             client.output_contains("ntp").await || client.output_contains("time").await,
             "Client should show NTP response. Output: {:?}",
@@ -57,6 +58,10 @@ mod ntp_client_tests {
         println!("✅ NTP client queried time server successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -91,7 +96,7 @@ mod ntp_client_tests {
                 .on_event("ntp_response_received")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "wait_for_more"
+                        "type": "analyze_response"
                     }
                 ]))
                 .expect_at_most(1)
@@ -109,6 +114,10 @@ mod ntp_client_tests {
         println!("✅ NTP client analyzed stratum level");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -141,7 +150,7 @@ mod ntp_client_tests {
                     .on_event("ntp_response_received")
                     .respond_with_actions(serde_json::json!([
                         {
-                            "type": "wait_for_more"
+                            "type": "analyze_response"
                         }
                     ]))
                     .expect_at_most(1)
@@ -161,6 +170,10 @@ mod ntp_client_tests {
         println!("✅ NTP client completed single query");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup

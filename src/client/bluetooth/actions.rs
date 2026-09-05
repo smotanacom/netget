@@ -134,21 +134,6 @@ pub static BLUETOOTH_NOTIFICATION_RECEIVED_EVENT: LazyLock<EventType> = LazyLock
     ])
 });
 
-/// Bluetooth client disconnected event
-pub static BLUETOOTH_DISCONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new(
-        "bluetooth_disconnected",
-        "Disconnected from BLE device",
-        json!({"type": "placeholder", "event_id": "bluetooth_disconnected"}),
-    )
-    .with_parameters(vec![Parameter {
-        name: "device_address".to_string(),
-        type_hint: "string".to_string(),
-        description: "MAC address of disconnected device".to_string(),
-        required: true,
-    }])
-});
-
 /// Bluetooth client protocol action handler
 pub struct BluetoothClientProtocol;
 

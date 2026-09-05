@@ -16,7 +16,12 @@ mod igmp_client_tests {
     async fn test_igmp_client_join_and_receive() -> E2EResult<()> {
         // Start IGMP client and instruct it to join a multicast group
         let multicast_group = "239.255.1.1";
-        let multicast_port = 15000;
+        // Allocated, not hardcoded. A fixed port in a suite that runs in parallel is
+        // shared with whatever else happens to be bound to it -- and a multicast socket
+        // sets SO_REUSEPORT, so a second listener does not fail to bind, it silently
+        // competes for the datagrams. The client here bound :15000 and its receive loop
+        // logged that it was listening, and the packet still went somewhere else.
+        let multicast_port = get_available_port().await?;
 
         let client_config = NetGetConfig::new(format!(
             "Start IGMP client on port {}. Join multicast group {} and log all received data.",
@@ -30,7 +35,11 @@ mod igmp_client_tests {
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "open_client",
-                        "remote_addr": "igmp",
+                        // The IGMP client binds whatever address it is opened with, and
+                        // maps the placeholder "igmp" to 0.0.0.0:0 -- an ephemeral port.
+                        // The test then sent its packet to :15000, where nothing was
+                        // listening, so `igmp_data_received` could never fire.
+                        "remote_addr": format!("0.0.0.0:{}", multicast_port),
                         "protocol": "igmp",
                         "instruction": "Join multicast group 239.255.1.1 and listen"
                     }
@@ -65,6 +74,7 @@ mod igmp_client_tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client shows it's ready
+        client.wait_for_any(&["IGMP"], 30).await;
         assert!(
             client.output_contains("IGMP").await,
             "Client should show IGMP initialization. Output: {:?}",
@@ -85,6 +95,10 @@ mod igmp_client_tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -147,6 +161,10 @@ mod igmp_client_tests {
         println!("✅ IGMP client joined and left multicast group");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup
@@ -206,6 +224,10 @@ mod igmp_client_tests {
         println!("✅ IGMP client sent multicast data");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
 
         // Cleanup

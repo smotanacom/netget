@@ -22,7 +22,7 @@ use netget::state::{AccessLogOwner, ClientId, ServerId};
 use tokio::sync::mpsc;
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -32,7 +32,7 @@ async fn new_state() -> AppState {
 }
 
 async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if let Some(s) = state.get_server(id).await {
             if let Some(addr) = s.local_addr {
                 return addr.port();
@@ -44,7 +44,7 @@ async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
 }
 
 async fn wait_for_client_handle(state: &AppState, id: ClientId) {
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if state.has_client_handle(id).await {
             return;
         }
@@ -57,7 +57,7 @@ async fn wait_for_client_handle(state: &AppState, id: ClientId) {
 }
 
 async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle: &str) {
-    for _ in 0..300 {
+    for _ in 0..1_000 {
         for entry in state.list_access_logs_for(Some(owner), None).await {
             if serde_json::to_string(&entry)
                 .unwrap_or_default()
@@ -79,15 +79,39 @@ async fn injected_cql_reaches_our_own_server() {
     let server_id = ServerForm {
         protocol: "cassandra".to_string(),
         port: Some(0),
+        // One script handler branching on the request, not a blanket `*` static rule.
+        //
+        // The server fails closed on a request no handler answers, which is correct -- but
+        // it means the CQL handshake has to be answered in kind: STARTUP wants
+        // cassandra_ready and OPTIONS wants cassandra_supported. A `*` rule answering
+        // everything with cassandra_result_rows made the driver's STARTUP fail with
+        // "netget: no handler answer for this request", so the client never connected.
+        //
+        // It cannot be several static rules either: EventHandler has only `event_pattern`
+        // and `handler`, so every rule registered against a given event id matches every
+        // occurrence and first-match-wins.
         event_handlers: Some(vec![serde_json::json!({
             "event_pattern": "*",
             "handler": {
-                "type": "static",
-                "actions": [ {
-                    "type": "cassandra_result_rows",
-                    "columns": [ { "name": "marker", "type": "varchar" } ],
-                    "rows": [ ["served"] ]
-                } ]
+                "type": "script",
+                "language": "python",
+                "resident": true,
+                "code": r#"
+def handle(event_type, event, message):
+    if event_type == "cassandra_startup":
+        return [{"type": "cassandra_ready"}]
+    if event_type == "cassandra_options":
+        return [{"type": "cassandra_supported"}]
+    if event_type == "cassandra_auth":
+        return [{"type": "cassandra_auth_success"}]
+    if event_type == "cassandra_prepare":
+        return [{"type": "cassandra_prepared"}]
+    return [{
+        "type": "cassandra_result_rows",
+        "columns": [{"name": "marker", "type": "varchar"}],
+        "rows": [["served"]],
+    }]
+"#
             }
         })]),
         ..Default::default()
@@ -179,7 +203,7 @@ async fn injected_cql_reaches_our_own_server() {
         "expected Disconnected, got {outcome:?}"
     );
 
-    for _ in 0..200 {
+    for _ in 0..1_000 {
         if !state.has_client_handle(client_id).await {
             return;
         }

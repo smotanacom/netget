@@ -177,6 +177,10 @@ async fn freeradius_radclient_accepts_our_access_accept() -> E2EResult<()> {
     );
     assert!(ok, "radclient exited non-zero.\n{}", output);
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())
@@ -257,6 +261,10 @@ async fn freeradius_radclient_sees_a_valid_reject_when_the_model_is_silent() -> 
         server.get_output().await
     );
 
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     Ok(())

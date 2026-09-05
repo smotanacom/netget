@@ -70,11 +70,38 @@ a decision. The SDP never leaves Rust.
 ### The admission path is fail-closed
 
 `decide_offer` (in `mod.rs`) accepts **only** on an explicit `accept_offer`. An LLM error, a
-timeout, an empty reply, or a reply containing other actions but no decision all reject, and
-the reason string says which. `reject_offer` carries the model's own reason, so a refusal and
-a silence are distinguishable in the frame the peer receives — the structural distinction the
-OAuth2 defect lacked. `tests/server/webrtc/e2e_test.rs::test_webrtc_offer_without_decision_is_refused`
-pins this.
+timeout, an empty reply, or a reply containing other actions but no decision all reject.
+`reject_offer` carries the model's own reason, so a refusal and a silence are distinguishable
+in the frame the peer receives — the structural distinction the OAuth2 defect lacked.
+`tests/server/webrtc/e2e_test.rs::test_webrtc_offer_without_decision_is_refused` pins this.
+
+### Failure reaches the peer as a category, never as an error string
+
+The `rejected` reason and the signalling `error` message are peer-visible free text, so
+nothing derived from an internal error may be put in them — that is the repo-wide rule in
+`src/utils/wire_failure.rs`, and this protocol used to break it in two places (the LLM-error
+reason interpolated the `anyhow` chain; the negotiation-failure message interpolated
+webrtc-rs internals). Both now send a fixed string and log the error.
+
+The data-channel path used to be the other systemic defect: an LLM error on
+`webrtc_peer_connected` / `webrtc_message_received` returned silently, leaving the peer
+waiting on a channel that would never answer. It now writes
+`WireFailure::prefixed_text()` on the channel — the peer connection stays up, because a
+transient overload is not a reason to tear down a negotiated session.
+
+`decision=` tags keep the three outcomes apart in the log, the way `radius` does it:
+
+| tag | meaning |
+|---|---|
+| `model_reject` | the model explicitly refused |
+| `fail_closed_no_decision` | the model answered, with nothing usable in it |
+| `fail_closed_backend_overloaded` | the call failed and the backend is saturated (retryable) |
+| `fail_closed_backend_error` | the call failed for anything else |
+
+The overloaded/error split is what a protocol with status codes would express as 503 vs 500;
+the signalling protocol has no codes, so it survives in the log and in the two distinct
+`WireFailure` texts.
+`test_webrtc_offer_backend_failure_rejects_without_leaking` pins the no-leak guarantee.
 
 The SDP is also parsed (`RTCSessionDescription::offer`, which unmarshals) *before* the model
 is consulted, so an offer webrtc-rs cannot read costs no LLM round-trip and never reaches a

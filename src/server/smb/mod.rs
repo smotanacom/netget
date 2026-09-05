@@ -536,13 +536,43 @@ impl SmbServer {
                     }
                 };
 
-                // The model decides whether this handle is a file or a directory. That
-                // choice reaches the wire: FILE_ATTRIBUTE_DIRECTORY in the CREATE response
-                // is what makes a client issue QUERY_DIRECTORY instead of READ. Returning
-                // neither action means "regular file", which is the historical behaviour.
-                let is_directory = actions.iter().any(|a| {
-                    a.get("type").and_then(|t| t.as_str()) == Some("smb_create_directory")
-                });
+                // Opening a handle is an access decision, so it takes an affirmative answer.
+                // The model's vocabulary for CREATE is exactly `smb_create_file` and
+                // `smb_create_directory` (see the prompt in actions.rs); which one it picks
+                // also reaches the wire, because FILE_ATTRIBUTE_DIRECTORY in the CREATE
+                // response is what makes a client issue QUERY_DIRECTORY instead of READ.
+                //
+                // Neither action present used to mean "regular file", so an answer carrying
+                // no create action at all — a model that refused, a static handler with an
+                // empty list, an unparseable reply that still deserialised — handed the peer
+                // STATUS_SUCCESS and a live file handle. That is the fail-open shape: silence
+                // became consent for an admission decision. Refuse instead.
+                let action_type = |a: &serde_json::Value| {
+                    a.get("type").and_then(|t| t.as_str()).map(String::from)
+                };
+                let is_directory = actions
+                    .iter()
+                    .any(|a| action_type(a).as_deref() == Some("smb_create_directory"));
+                let is_file = actions
+                    .iter()
+                    .any(|a| action_type(a).as_deref() == Some("smb_create_file"));
+                if !is_directory && !is_file {
+                    // Kept apart in the log because the wire cannot carry the difference:
+                    // both answers deny the handle, but only one of them is a decision.
+                    let decision = if actions.is_empty() {
+                        "fail_closed_no_action"
+                    } else {
+                        "model_reject"
+                    };
+                    Log::new(Some(status_tx)).warn(format!(
+                        "SMB2 CREATE refused for {} (decision={}): no smb_create_file or \
+                         smb_create_directory in the answer; replying STATUS_ACCESS_DENIED",
+                        path, decision
+                    ));
+                    let response =
+                        Self::build_error_response(_header, SMB2_CREATE, STATUS_ACCESS_DENIED)?;
+                    return Ok(Some(response));
+                }
 
                 // Generate file handle (16-byte GUID)
                 let file_id = Self::generate_file_handle();
@@ -678,7 +708,27 @@ impl SmbServer {
                             }
                         }
                     }
-                    None => b"File not found or empty".to_vec(),
+                    None => {
+                        // No `smb_read_file` in the answer. Returning STATUS_SUCCESS with the
+                        // literal bytes "File not found or empty" told the client the read
+                        // succeeded and that those 23 bytes are the file's contents — a
+                        // successful read of fabricated data, and indistinguishable from a
+                        // file that genuinely holds that text. Refuse instead; the client can
+                        // tell a refusal from content.
+                        let decision = if actions.is_empty() {
+                            "fail_closed_no_action"
+                        } else {
+                            "model_reject"
+                        };
+                        Log::new(Some(status_tx)).warn(format!(
+                            "SMB2 READ refused for {} (decision={}): no smb_read_file in the \
+                             answer; replying STATUS_ACCESS_DENIED",
+                            path, decision
+                        ));
+                        let response =
+                            Self::build_error_response(_header, SMB2_READ, STATUS_ACCESS_DENIED)?;
+                        return Ok(Some(response));
+                    }
                 };
 
                 debug!("SMB2 READ: returning {} bytes for {}", content.len(), path);

@@ -168,9 +168,17 @@ HTTP/3 supports stream priorities (0-7, higher = more urgent):
 
 - `default_headers` (optional) - Headers included in all requests
     - Example: `{"User-Agent": "NetGet-HTTP3/1.0"}`
-- `enable_0rtt` (optional) - Enable 0-RTT for faster resumption
-    - Example: `true`
-    - Currently not implemented (TODO)
+    - `perform_request` merges them **underneath** the headers the model puts on the request
+      itself, keyed by the lowercased header name, so a request header replaces a default of
+      the same name. The merge happens before any header is applied, because
+      `http::request::Builder::header` *appends* — applying both sets in turn would send the
+      same header twice.
+
+`enable_0rtt` **is not a parameter**, and was removed rather than left declared. This client
+opens a fresh `quinn::Endpoint` for each request and closes it before returning, and keeps no
+session-ticket cache; 0-RTT is purely session *resumption*, so there is never a previous
+session to resume from. The knob could not have changed a single request whatever it was set
+to. Restoring it means building the connection pool listed under Future Enhancements first.
 
 ### Dual Logging
 
@@ -218,9 +226,9 @@ status_tx.send("[CLIENT] HTTP/3 request sent");                           // →
     - Future optimization: persistent connection pool
     - Current approach simpler for LLM control
 
-- **No 0-RTT Yet** - Not implemented despite QUIC support
-    - Requires session ticket storage
-    - Future enhancement
+- **No 0-RTT** - Not implemented despite QUIC support
+    - Requires session ticket storage, which requires connection reuse
+    - There is no startup parameter for it: see Startup Parameters
 
 - **No Streaming** - Full response buffered in memory
     - Same limitation as HTTP/1.1 client

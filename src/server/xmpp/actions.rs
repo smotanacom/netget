@@ -24,7 +24,7 @@ pub const DEFAULT_XMPP_DOMAIN: &str = "localhost";
 ///
 /// `send_raw_xml` and `send_iq_result`'s `payload` are deliberately *not* escaped: they exist
 /// precisely so the model can emit markup, and both say so in their descriptions.
-fn xml_escape(text: &str) -> String {
+pub(crate) fn xml_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {

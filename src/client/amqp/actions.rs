@@ -140,6 +140,24 @@ impl Protocol for AmqpClientProtocol {
                 }),
                 log_template: None,
             },
+            ActionDefinition {
+                name: "consume".to_string(),
+                description: "Subscribe to a queue. Each delivery raises \
+                    `amqp_message_received`, which is otherwise unreachable: without a \
+                    consumer nothing can ever arrive."
+                    .to_string(),
+                parameters: vec![Parameter {
+                    name: "queue_name".to_string(),
+                    type_hint: "string".to_string(),
+                    description: "Queue to consume from".to_string(),
+                    required: true,
+                }],
+                example: json!({
+                    "type": "consume",
+                    "queue_name": "task_queue"
+                }),
+                log_template: None,
+            },
         ]
     }
 
@@ -285,6 +303,15 @@ impl Client for AmqpClientProtocol {
                 name: "open_channel".to_string(),
                 data: json!({}),
             }),
+            "consume" => {
+                let queue = action["queue_name"]
+                    .as_str()
+                    .context("Missing 'queue_name' for consume")?;
+                Ok(ClientActionResult::Custom {
+                    name: "consume".to_string(),
+                    data: json!({ "queue_name": queue }),
+                })
+            }
             "publish" => {
                 let routing_key = action["routing_key"]
                     .as_str()

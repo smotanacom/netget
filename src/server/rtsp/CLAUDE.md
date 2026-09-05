@@ -32,6 +32,29 @@ ffprobe (`-rtsp_transport udp`) completes OPTIONS→DESCRIBE→SETUP→PLAY and 
 `Audio: pcm_mulaw, 8000 Hz, mono`. Mocked E2E asserts status lines, the DESCRIBE SDP, and that RTP
 actually arrives on the negotiated UDP port.
 
+## Backend failure (fail-closed contract)
+
+When `call_llm` returns `Err`, the request is answered rather than dropped, and the answer
+carries a **category only** — `crate::utils::WireFailure` classifies the error and nothing
+derived from it reaches the socket (no backend URL, model name, path or `anyhow` chain; those
+go to the log and the status stream). `Overloaded` → `503 Service Unavailable` with
+`Retry-After: 5` so a client backs off; anything else → `500 Internal Server Error`.
+
+Three outcomes are separated in the log by a `decision=` tag, the `radius` shape:
+
+- `decision=model_reject` — the model set a non-2xx `status_code`.
+- `decision=model_no_answer` — the model was reachable and returned no action.
+- `decision=fail_closed_llm_overloaded` / `decision=fail_closed_llm_error` — the call errored.
+
+`reason_phrase` returns a category phrase for any code it does not name (4xx → `Client Error`,
+5xx → `Server Error`), so a refusal cannot go out as the self-contradicting `RTSP/1.0 403 OK`.
+
+**Known fail-open, not addressed here:** on `decision=model_no_answer` the RTSP defaults still
+apply — OPTIONS advertises the built-in method list, DESCRIBE serves `default_sdp()`, SETUP mints
+a session and PLAY streams a 440 Hz tone. Silence from the model is therefore indistinguishable
+on the wire from approval. That is a separate fail-open defect from the backend-failure path
+above; it is logged but not yet refused.
+
 ## Dashboard injection (`[ message this peer ]` / `[ disconnect this peer ]`)
 
 Every accepted connection registers a peer handle (`server::peer_support`) as soon as its task

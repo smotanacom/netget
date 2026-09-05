@@ -111,6 +111,7 @@ impl DynamoDbClient {
         let command_rx =
             crate::client::command_support::register_command_channel(&app_state, client_id).await;
         let task_registrar = app_state.clone();
+        let conn_llm = _llm_client.clone();
         let task_handle = tokio::spawn(Self::command_loop(
             command_rx,
             client_id,
@@ -120,6 +121,70 @@ impl DynamoDbClient {
         ));
         task_registrar
             .register_client_task(client_id, task_handle)
+            .await;
+
+        // Raise the connected event.
+        //
+        // DYNAMODB_CLIENT_CONNECTED_EVENT was declared and nothing raised it, and this
+        // client never called the LLM at all -- so the model was never consulted when a
+        // DynamoDB client came up, and the injected-command path was the only way an
+        // action could reach the wire.
+        //
+        // From a registered task, not inline: a dashboard-created client defaults to a
+        // `*` -> manual rule and awaiting a parked answer would block creation. Operations
+        // go through run_operation_once, which raises no event.
+        let conn_state = app_state.clone();
+        let conn_status = status_tx.clone();
+        let conn_task = tokio::spawn(async move {
+            let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
+            let protocol = crate::client::dynamodb::actions::DynamoDbClientProtocol::new();
+            let event = Event::new(
+                &crate::client::dynamodb::actions::DYNAMODB_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({}),
+            );
+            match crate::client::llm_budget::call_llm_for_client(
+                &conn_llm,
+                &conn_state,
+                client_id.to_string(),
+                &instruction,
+                "",
+                Some(&event),
+                &protocol,
+                &conn_status,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if let Some(mem) = result.memory_updates {
+                        conn_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in result.actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        if let Err(e) =
+                            Self::run_operation_once(client_id, &name, &data, &conn_state).await
+                        {
+                            error!(
+                                "DynamoDB client {} connect-time {} failed: {}",
+                                client_id, name, e
+                            );
+                        }
+                    }
+                }
+                Err(e) => error!(
+                    "DynamoDB client {} LLM error on connected event: {}",
+                    client_id, e
+                ),
+            }
+        });
+        task_registrar
+            .register_client_task(client_id, conn_task)
             .await;
 
         // Return a dummy local address (DynamoDB is HTTP-based)
@@ -139,6 +204,29 @@ impl DynamoDbClient {
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<serde_json::Value> {
+        Self::execute_operation_inner(
+            client_id, operation, data, app_state, llm_client, status_tx, true,
+        )
+        .await
+    }
+
+    /// `notify == false` runs the operation without raising
+    /// `dynamodb_response_received`.
+    ///
+    /// Two reasons, and both matter. It bounds the loop: a follow-up action the model
+    /// returned for a response event must not raise another response event, or one
+    /// operation could drive the model round and round. And it breaks a genuine type
+    /// cycle -- notify -> apply_action -> execute_operation -> notify is a recursive
+    /// async chain rustc cannot prove `Send`, so `tokio::spawn` rejects it.
+    async fn execute_operation_inner(
+        client_id: ClientId,
+        operation: String,
+        data: serde_json::Value,
+        app_state: Arc<AppState>,
+        llm_client: OllamaClient,
+        status_tx: mpsc::UnboundedSender<String>,
+        notify: bool,
     ) -> Result<serde_json::Value> {
         info!(
             "DynamoDB client {} executing operation: {}",
@@ -184,6 +272,10 @@ impl DynamoDbClient {
         // call can park for minutes waiting for a human; awaiting it here would wedge the
         // command loop and make an injected action that in fact succeeded look to the
         // dashboard like a timeout.
+        if !notify {
+            return result;
+        }
+
         let notify_state = app_state.clone();
         let notify = tokio::spawn(async move {
             if let Err(e) = Self::call_llm_with_response(
@@ -207,6 +299,43 @@ impl DynamoDbClient {
         notify_state.register_client_task(client_id, notify).await;
 
         result
+    }
+
+    /// Build a client and run one operation. Raises no event, calls no LLM.
+    ///
+    /// Deliberately free of any path back into `call_llm_with_response`. That would make
+    /// the async type self-referential -- notify -> apply -> operation -> notify -- which
+    /// rustc cannot prove `Send`, so `tokio::spawn` refuses it outright. Follow-up actions
+    /// the model returns for a response event run through here, which both breaks that
+    /// cycle and bounds the loop: a follow-up cannot raise another response event.
+    async fn run_operation_once(
+        client_id: ClientId,
+        operation: &str,
+        data: &serde_json::Value,
+        app_state: &Arc<AppState>,
+    ) -> Result<serde_json::Value> {
+        let (region, endpoint_url, access_key_id, secret_access_key) =
+            Self::get_config(app_state, client_id).await?;
+
+        let config = Self::build_aws_config(
+            &region,
+            endpoint_url.as_deref(),
+            access_key_id.as_deref(),
+            secret_access_key.as_deref(),
+        )
+        .await?;
+
+        let ddb = aws_sdk_dynamodb::Client::new(&config);
+
+        match operation {
+            "put_item" => Self::put_item(&ddb, data).await,
+            "get_item" => Self::get_item(&ddb, data).await,
+            "query" => Self::query(&ddb, data).await,
+            "scan" => Self::scan(&ddb, data).await,
+            "update_item" => Self::update_item(&ddb, data).await,
+            "delete_item" => Self::delete_item(&ddb, data).await,
+            other => Err(anyhow::anyhow!("Unknown DynamoDB operation: {}", other)),
+        }
     }
 
     /// Read an `{":v": {"S": "x"}}` map from action data into AttributeValues.
@@ -702,7 +831,9 @@ impl DynamoDbClient {
         success: bool,
         data: Option<serde_json::Value>,
         error: Option<String>,
-        app_state: &AppState,
+        // `&Arc<AppState>` rather than `&AppState`: the follow-up actions below run
+        // through `apply_action`, which needs the Arc to hand on to `execute_operation`.
+        app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
@@ -742,12 +873,51 @@ impl DynamoDbClient {
             .await
             {
                 Ok(ClientLlmResult {
-                    actions: _,
+                    actions,
                     memory_updates,
                 }) => {
                     // Update memory
                     if let Some(mem) = memory_updates {
                         app_state.set_memory_for_client(client_id, mem).await;
+                    }
+
+                    // Execute the model's follow-up actions. They used to be discarded
+                    // outright (`actions: _`), so answering dynamodb_response_received
+                    // did nothing at all -- the point of raising the event.
+                    //
+                    // They go through `run_operation_once`, which raises no event, so a
+                    // follow-up cannot trigger another response event and one operation
+                    // cannot drive an unbounded LLM loop.
+                    use crate::llm::actions::client_trait::Client;
+                    for action in actions {
+                        match protocol.execute_action(action.clone()) {
+                            Ok(crate::llm::actions::client_trait::ClientActionResult::Custom {
+                                name,
+                                data,
+                            }) => {
+                                // `run_operation_once` raises no event and calls no
+                                // LLM, so a follow-up cannot raise another response
+                                // event -- that bounds the loop -- and the async type
+                                // never becomes self-referential, which is what made
+                                // the notify -> apply -> operation -> notify chain
+                                // impossible for rustc to prove `Send`.
+                                let outcome =
+                                    Self::run_operation_once(client_id, &name, &data, app_state)
+                                        .await;
+                                info!(
+                                    "DynamoDB client {} follow-up action {:?} -> {:?}",
+                                    client_id, action, outcome
+                                );
+                            }
+                            Ok(other) => info!(
+                                "DynamoDB client {} follow-up produced no operation: {:?}",
+                                client_id, other
+                            ),
+                            Err(e) => error!(
+                                "DynamoDB client {} rejected its own follow-up action: {}",
+                                client_id, e
+                            ),
+                        }
                     }
                 }
                 Err(e) => {

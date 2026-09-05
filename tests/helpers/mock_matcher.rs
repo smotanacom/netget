@@ -52,7 +52,7 @@ impl RequestKind {
 /// Context passed to matchers when LLM is called
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct LlmContext {
-    /// Event type (e.g., "tcp_connection_received", "http_request")
+    /// Event type (e.g., "tcp_connection_opened", "http_request")
     pub event_type: Option<String>,
 
     /// Server/client instruction

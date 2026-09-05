@@ -66,11 +66,54 @@ impl OpenIdConnectClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         info!(
             "OpenID Connect client {} initializing for {}",
             client_id, remote_addr
         );
+
+        // `flow` names the OAuth2/OIDC flow to run, and nothing read it: the flow was
+        // whichever action the model happened to choose, so an operator who asked for
+        // `client_credentials` could get a device-code prompt instead. It is resolved here
+        // into the action that runs once discovery has completed.
+        //
+        // `password` is refused rather than silently ignored: it needs a username and a
+        // password, which are per-action parameters this client deliberately does not
+        // declare at startup, so there is no value of `flow` alone that could start it.
+        let (flow, startup_scopes) = match &startup_params {
+            Some(params) => (
+                params.get_optional_string("flow")?,
+                params.get_optional_string("scopes")?,
+            ),
+            None => (None, None),
+        };
+        let flow_action = match flow.as_deref() {
+            None => None,
+            Some("device_code") => Some(serde_json::json!({
+                "type": "start_device_flow", "scopes": startup_scopes })),
+            Some("authorization_code") => Some(serde_json::json!({
+                "type": "start_authorization_code_flow", "scopes": startup_scopes })),
+            Some("client_credentials") => Some(serde_json::json!({
+                "type": "exchange_client_credentials", "scopes": startup_scopes })),
+            Some("password") => {
+                return Err(anyhow::anyhow!(
+                    "OpenID Connect client: `flow: \"password\"` cannot be started from \
+                     startup parameters - the resource-owner password flow needs a username \
+                     and a password, and this client only accepts those on the \
+                     `exchange_password` action. Drive it with that action (the dashboard's \
+                     [ exchange_password ] row, or an instruction telling the model to use \
+                     it) and leave `flow` unset."
+                ));
+            }
+            Some(other) => {
+                return Err(anyhow::anyhow!(
+                    "OpenID Connect client: unknown `flow` value '{other}'. Expected one of \
+                     device_code, authorization_code, client_credentials (password is \
+                     action-driven; see the error for flow=\"password\")."
+                ));
+            }
+        };
 
         // Store provider URL in protocol_data, and seed the startup params alongside it.
         // Every OIDC flow reads `client_id` / `client_secret` out of `protocol_data`, but
@@ -138,6 +181,38 @@ impl OpenIdConnectClient {
                 Log::new(Some(&status_tx))
                     .error(format!("Failed to discover OIDC configuration: {}", e));
             }
+        }
+
+        // Start the flow the operator asked for.
+        //
+        // From its own registered task, not inline: the device flow's polling and the
+        // authorization-code flow's callback server both outlive `connect()`, which must
+        // return promptly. It runs through `execute_llm_action`, the same entry point the
+        // model's own flow actions use, so an operator-selected flow and a model-selected
+        // one are the same code path.
+        if let Some(action) = flow_action {
+            let flow_state = app_state.clone();
+            let flow_llm = llm_client.clone();
+            let flow_status = status_tx.clone();
+            let flow_task = tokio::spawn(async move {
+                let protocol = Arc::new(OpenIdConnectClientProtocol::new());
+                if let Err(e) = Self::execute_llm_action(
+                    action,
+                    client_id,
+                    &flow_llm,
+                    &flow_state,
+                    &flow_status,
+                    protocol,
+                )
+                .await
+                {
+                    Log::new(Some(&flow_status)).error(format!(
+                        "OpenID Connect client {}: the `flow` startup parameter's flow failed: {}",
+                        client_id, e
+                    ));
+                }
+            });
+            app_state.register_client_task(client_id, flow_task).await;
         }
 
         // Return a dummy local address (OIDC is HTTP-based, connectionless)

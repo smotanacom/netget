@@ -64,8 +64,18 @@ and continues rather than dying.
 
 - **`spawn()` awaits readiness** (PTY allocated, slave set raw, symlink created, master registered
   with the runtime) and returns `Err` on any failure → `ServerStatus::Error`.
-- **Fail closed** on LLM error: nothing is written to the terminal, and the error is logged at
-  ERROR on both channels.
+- **Fail closed, but not silent**, on LLM error. A terminal client has no timeout of its own — it
+  simply sits there — so writing nothing is the worst outcome. `dispatch` classifies the error with
+  `crate::utils::WireFailure` and writes a **category only**:
+  `\r\n[netget: backend at capacity, retry later]\r\n` for `Overloaded`,
+  `\r\n[netget: request could not be processed]\r\n` for `Unavailable`. CRLF on both sides because
+  `cfmakeraw` clears `ONLCR`, and a leading CRLF keeps the notice off a half-typed line. The error
+  itself — backend URL, model name, `anyhow` chain — goes to `tracing::error!` and the status
+  stream and **never** to the terminal.
+- Three outcomes are distinguishable in the log by their `decision=` tag: `model_no_output` (the
+  model answered with no `write_pty_output` — a legitimate answer on a terminal, so nothing is
+  written), `fail_closed_overloaded`, and `fail_closed_llm_error`. PTY has no reject/deny verb, so
+  there is no `model_reject` case to separate.
 - The read/dispatch loop is registered via `register_server_task`, so `stop_server` aborts it and
   releases the fds. A `LinkCleanup` guard moved into the task removes the symlink on stop/abort.
 - Processing is **serial** (a terminal is a serial line): read a chunk → one LLM round-trip →

@@ -17,7 +17,24 @@ use crate::logging::emit::Log;
 use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 use actions::TorrentPeerProtocol;
+
+/// What the connection loop should do after one event has been dispatched.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Disposition {
+    /// Keep reading from the peer.
+    Continue,
+    /// The peer has been refused and its write half half-closed; stop reading.
+    Close,
+}
+
+/// `<len=0001><id=0>` — the peer wire protocol's choke message.
+///
+/// The only refusal the base protocol has. There is no error frame and no free-text field
+/// anywhere in BEP 3, so a failure category can be expressed by *which* refusal is sent and
+/// whether the connection survives it — never by text, which has nowhere to go.
+const CHOKE_FRAME: [u8; 5] = [0x00, 0x00, 0x00, 0x01, 0x00];
 
 /// BitTorrent Peer Wire Protocol server
 pub struct TorrentPeerServer;
@@ -234,7 +251,7 @@ impl TorrentPeerServer {
                                     }),
                                 );
 
-                                Self::dispatch_event(
+                                let disposition = Self::dispatch_event(
                                     event,
                                     &write_half,
                                     peer_addr,
@@ -246,6 +263,9 @@ impl TorrentPeerServer {
                                     &protocol,
                                 )
                                 .await?;
+                                if disposition == Disposition::Close {
+                                    break 'read;
+                                }
                             }
                             Err(e) => {
                                 Log::new(Some(&status_tx))
@@ -294,7 +314,7 @@ impl TorrentPeerServer {
                                 message_type
                             ));
 
-                            Self::dispatch_event(
+                            let disposition = Self::dispatch_event(
                                 event,
                                 &write_half,
                                 peer_addr,
@@ -306,6 +326,9 @@ impl TorrentPeerServer {
                                 &protocol,
                             )
                             .await?;
+                            if disposition == Disposition::Close {
+                                break 'read;
+                            }
                         }
                         Err(e) => {
                             Log::new(Some(&status_tx))
@@ -329,6 +352,20 @@ impl TorrentPeerServer {
     }
 
     /// Call the LLM for one event and write whatever it produced back to the peer.
+    ///
+    /// On a backend failure the peer is *answered*, not left hanging. BitTorrent has no error
+    /// message, so the answer is a `choke` — the protocol's own "I will not serve you right
+    /// now" — and the two failure categories are told apart by what follows it:
+    ///
+    /// * [`WireFailure::Overloaded`] — choke alone. The connection stays up, so a peer that
+    ///   honours choke simply stops requesting and waits for an `unchoke`; nothing is
+    ///   recorded as a permanent fault and a retry costs it no new handshake.
+    /// * [`WireFailure::Unavailable`] — choke, then half-close the write half so the peer's
+    ///   next read returns EOF and it moves on to another peer.
+    ///
+    /// Nothing derived from the error reaches the socket; a choke frame is five fixed bytes
+    /// and has nowhere to put text even if it were wanted. The error goes to the log and the
+    /// status stream, tagged `decision=fail_closed_llm_error`.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_event(
         event: Event,
@@ -340,7 +377,7 @@ impl TorrentPeerServer {
         status_tx: &mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
         protocol: &Arc<TorrentPeerProtocol>,
-    ) -> Result<()> {
+    ) -> Result<Disposition> {
         match call_llm(
             llm_client,
             app_state,
@@ -362,12 +399,68 @@ impl TorrentPeerServer {
                     status_tx,
                 )
                 .await?;
+                Ok(Disposition::Continue)
             }
             Err(e) => {
-                Log::new(Some(&status_tx)).warn(format!("BitTorrent Peer LLM error: {}", e));
+                use tokio::io::AsyncWriteExt;
+                let failure = WireFailure::classify(&e);
+                let log = Log::new(Some(&status_tx));
+                // The full error belongs here and only here.
+                log.error(format!(
+                    "BitTorrent Peer {} conn={} decision=fail_closed_llm_error category={} LLM error: {}",
+                    peer_addr,
+                    connection_id.as_u32(),
+                    if failure.is_overloaded() { "overloaded" } else { "unavailable" },
+                    e
+                ));
+
+                let write_result = {
+                    let mut write = write_half.lock().await;
+                    let sent = write.write_all(&CHOKE_FRAME).await;
+                    if sent.is_ok() && !failure.is_overloaded() {
+                        // No text to send and nothing more to say: FIN is the honest signal.
+                        let _ = write.shutdown().await;
+                    }
+                    sent
+                };
+
+                match write_result {
+                    Ok(()) => {
+                        app_state
+                            .update_connection_stats(
+                                server_id,
+                                connection_id,
+                                None,
+                                Some(CHOKE_FRAME.len() as u64),
+                                None,
+                                Some(1),
+                            )
+                            .await;
+                    }
+                    Err(write_err) => {
+                        log.warn(format!(
+                            "BitTorrent Peer could not send choke to {}: {}",
+                            peer_addr, write_err
+                        ));
+                        return Ok(Disposition::Close);
+                    }
+                }
+
+                if failure.is_overloaded() {
+                    log.warn(format!(
+                        "BitTorrent Peer choked {} (transient); connection kept open",
+                        peer_addr
+                    ));
+                    Ok(Disposition::Continue)
+                } else {
+                    log.info(format!(
+                        "BitTorrent Peer choked and half-closed {} after LLM error",
+                        peer_addr
+                    ));
+                    Ok(Disposition::Close)
+                }
             }
         }
-        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -390,6 +483,28 @@ impl TorrentPeerServer {
         Log::new(Some(&status_tx)).debug(format!(
             "BitTorrent Peer got {} protocol results",
             execution_result.protocol_results.len()
+        ));
+
+        // Three outcomes must stay apart in the log: the model refused, the model said
+        // nothing, and the backend failed (tagged `decision=fail_closed_llm_error` in
+        // `dispatch_event`). Silence here is not a refusal and is not a grant — the peer
+        // simply gets no frame — so it must not be recorded as either.
+        let model_refused = execution_result
+            .raw_actions
+            .iter()
+            .any(|a| a.get("type").and_then(|t| t.as_str()) == Some("send_choke"));
+        let decision = if model_refused {
+            "model_reject"
+        } else if execution_result.protocol_results.is_empty() {
+            "model_no_action"
+        } else {
+            "model_answer"
+        };
+        Log::new(Some(&status_tx)).debug(format!(
+            "BitTorrent Peer {} conn={} decision={}",
+            peer_addr,
+            connection_id.as_u32(),
+            decision
         ));
 
         // Send responses. Every output is written, in order: a handshake reply is

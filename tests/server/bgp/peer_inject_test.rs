@@ -1,6 +1,7 @@
 //! The dashboard's "message this peer" / "disconnect this peer" path on a BGP server
 //! connection: `AppState::send_to_peer` injects a wire action into one live session and the
-//! bytes reach the socket. Zero LLM calls — no instruction and no handler, so the session
+//! bytes reach the socket. Zero LLM calls — the server is created with an *explicitly empty*
+//! instruction (the form substitutes a default one otherwise), so the session
 //! completes its handshake on the configured OPEN without consulting a model.
 //!
 //! Run with:
@@ -21,7 +22,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 async fn new_state() -> AppState {
-    let state = AppState::new_with_options(false, false, "http://127.0.0.1:1".to_string());
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
     state
         .set_llm_client(netget::llm::OllamaClient::new(
             "http://127.0.0.1:1".to_string(),
@@ -86,6 +87,10 @@ async fn injected_bgp_action_reaches_raw_socket_and_close_sends_cease_then_eof()
     let server_id = ServerForm {
         protocol: "bgp".to_string(),
         port: Some(0),
+        // Load-bearing: `ServerForm::create` substitutes a default instruction when this is
+        // None, and any non-empty instruction makes `operator_wants_dynamic` true, which sends
+        // bgp_open to the model. An empty one is what actually keeps this test model-free.
+        instruction: Some(String::new()),
         startup_params: Some(serde_json::json!({
             "as_number": 65001,
             "router_id": "10.0.0.1",

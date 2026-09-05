@@ -64,12 +64,14 @@ async fn test_dot_client_basic_query() -> E2EResult<()> {
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Verify client output shows connection
+    client.wait_for_any(&["connected"], 30).await;
     assert!(
         client.output_contains("connected").await,
         "Client should show connection message"
     );
 
     // Verify query was sent
+    client.wait_for_any(&["query", "Query"], 30).await;
     assert!(
         client.output_contains("query").await || client.output_contains("Query").await,
         "Client should show query message"
@@ -78,6 +80,10 @@ async fn test_dot_client_basic_query() -> E2EResult<()> {
     println!("✅ DoT client connected and queried DNS successfully");
 
     // Verify mock expectations were met
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(30).await;
     client.verify_mocks().await?;
 
     // Cleanup
@@ -174,6 +180,10 @@ async fn test_dot_client_multiple_queries() -> E2EResult<()> {
     println!("✅ DoT client sent multiple queries successfully");
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last response routinely lands
+    // after the sleep expires, and the test reports it as never having happened.
+    client.wait_for_mocks(30).await;
     client.verify_mocks().await?;
 
     // Cleanup

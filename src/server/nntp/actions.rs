@@ -180,16 +180,19 @@ impl NntpProtocol {
 
 // Implement Protocol trait (common functionality)
 impl Protocol for NntpProtocol {
+    /// None.
+    ///
+    /// `send_first` used to be declared here and nothing read it. It could not have been read:
+    /// RFC 3977 5.1 makes the greeting **mandatory** — a client blocks reading a status line the
+    /// instant it connects — so `handle_connection` raises the greeting event unconditionally and
+    /// `send_first: false` would produce a session no NNTP client can begin. The flag was not a
+    /// knob that was left unwired; it was a knob that must not exist. `ftp` declares none for the
+    /// same reason and says so.
+    ///
+    /// `server_startup` warns when a caller passes top-level `send_first` to a protocol that
+    /// declares none, so the request is refused audibly rather than silently accepted.
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
-        vec![crate::llm::actions::ParameterDefinition {
-            name: "send_first".to_string(),
-            type_hint: "boolean".to_string(),
-            description:
-                "Whether the server should send greeting after connection (typically true for NNTP)"
-                    .to_string(),
-            required: false,
-            example: serde_json::json!(true),
-        }]
+        Vec::new()
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         // NNTP could have async actions like post_article in the future

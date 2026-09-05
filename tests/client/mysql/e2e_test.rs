@@ -31,15 +31,10 @@ mod mysql_client_tests {
                 ]))
                 .expect_calls(1)
                 .and()
-                // Mock 2: Client connection received
-                .on_event("mysql_connection_received")
-                .respond_with_actions(serde_json::json!([
-                    {
-                        "type": "accept_connection"
-                    }
-                ]))
-                .expect_calls(1)
-                .and()
+                // No connection rule: the MySQL SERVER raises only `mysql_query`.
+                // It has no connection event, so a rule answering one can never fire --
+                // and `accept_connection` is not a verb it can execute either. The
+                // handshake is handled inside the server, not by the model.
                 // Mock 3: SELECT 1 query
                 .on_event("mysql_query")
                 .respond_with_actions(serde_json::json!([
@@ -84,14 +79,14 @@ mod mysql_client_tests {
                 .on_event("mysql_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "execute_mysql_query",
+                        "type": "execute_query",
                         "query": "SELECT 1"
                     }
                 ]))
                 .expect_calls(1)
                 .and()
                 // Mock 3: Query response received
-                .on_event("mysql_query_result")
+                .on_event("mysql_result_received")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "wait_for_more"
@@ -107,6 +102,7 @@ mod mysql_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection message. Output: {:?}",
@@ -116,6 +112,11 @@ mod mysql_client_tests {
         println!("✅ MySQL client connected and executed query successfully");
 
         // Verify mock expectations
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -146,10 +147,8 @@ mod mysql_client_tests {
                 ]))
                 .expect_calls(1)
                 .and()
-                .on_event("mysql_connection_received")
-                .respond_with_actions(serde_json::json!([{"type": "accept_connection"}]))
-                .expect_at_least(0)
-                .and()
+            // No connection rule: the MySQL server raises only `mysql_query`, and
+            // accept_connection is not a verb it can execute.
         });
 
         let mut server = start_netget_server(server_config).await?;
@@ -180,7 +179,7 @@ mod mysql_client_tests {
                 .on_event("mysql_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "execute_mysql_query",
+                        "type": "execute_query",
                         "query": "SELECT * FROM users"
                     }
                 ]))
@@ -198,6 +197,11 @@ mod mysql_client_tests {
         println!("✅ MySQL client connected with database specification");
 
         // Verify mock expectations
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -227,10 +231,8 @@ mod mysql_client_tests {
                         ]))
                         .expect_calls(1)
                         .and()
-                        .on_event("mysql_connection_received")
-                        .respond_with_actions(serde_json::json!([{"type": "accept_connection"}]))
-                        .expect_at_least(0)
-                        .and()
+                        // No connection rule: the MySQL server raises only `mysql_query`, and
+                        // accept_connection is not a verb it can execute.
                         .on_event("mysql_query")
                         .respond_with_actions(serde_json::json!([
                             {
@@ -269,16 +271,16 @@ mod mysql_client_tests {
                 .on_event("mysql_connected")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "execute_mysql_query",
+                        "type": "execute_query",
                         "query": "BEGIN"
                     }
                 ]))
                 .expect_at_least(0)
                 .and()
-                .on_event("mysql_query_result")
+                .on_event("mysql_result_received")
                 .respond_with_actions(serde_json::json!([
                     {
-                        "type": "execute_mysql_query",
+                        "type": "execute_query",
                         "query": "INSERT INTO logs VALUES ('test')"
                     }
                 ]))
@@ -291,6 +293,7 @@ mod mysql_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows connection
+        client.wait_for_any(&["connected"], 30).await;
         assert!(
             client.output_contains("connected").await,
             "Client should show connection message. Output: {:?}",
@@ -300,6 +303,11 @@ mod mysql_client_tests {
         println!("✅ MySQL client transaction test passed");
 
         // Verify mock expectations
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

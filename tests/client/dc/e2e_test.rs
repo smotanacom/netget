@@ -37,6 +37,7 @@ mod dc_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify TLS parameter was accepted (client should try to connect)
+        client.wait_for_any(&["Opening DC client", "DC"], 30).await;
         assert!(
             client.output_contains("Opening DC client").await || client.output_contains("DC").await,
             "Client should attempt DC connection. Output: {:?}",
@@ -45,6 +46,10 @@ mod dc_client_tests {
 
         println!("✅ DC client accepted TLS parameter");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -83,6 +88,10 @@ mod dc_client_tests {
 
         println!("✅ DC client accepted auto-reconnect parameters");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -118,6 +127,10 @@ mod dc_client_tests {
 
         println!("✅ DC client accepted Unicode nickname");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -150,6 +163,7 @@ mod dc_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client attempted DC connection with file user
+        client.wait_for_any(&["DC"], 30).await;
         assert!(
             client.output_contains("DC").await,
             "Client should attempt DC connection. Output: {:?}",
@@ -158,6 +172,10 @@ mod dc_client_tests {
 
         println!("✅ DC client file list parameters accepted");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 
@@ -193,6 +211,10 @@ mod dc_client_tests {
 
         println!("✅ DC client private message parameters accepted");
 
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        client.wait_for_mocks(30).await;
         client.verify_mocks().await?;
         client.stop().await?;
 

@@ -169,18 +169,18 @@ impl Protocol for TorrentTrackerClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "BitTorrent Tracker"
     }
+    /// Clones of the statics the client actually emits, so the declaration cannot drift from
+    /// what is raised.
+    ///
+    /// These used to be rebuilt by hand here, and the two copies had already diverged: the
+    /// rebuilt pair carried no `with_parameters`, so the model was never told an announce
+    /// response contains `interval`, `complete`, `incomplete` and `peers` — the entire content
+    /// of the event it was being asked about — and their example action was a literal
+    /// `{"type": "placeholder"}`, which is not a verb this protocol can execute.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "tracker_announce_response",
-                "Received announce response from tracker",
-                json!({"type": "placeholder", "event_id": "tracker_announce_response"}),
-            ),
-            EventType::new(
-                "tracker_scrape_response",
-                "Received scrape response from tracker",
-                json!({"type": "placeholder", "event_id": "tracker_scrape_response"}),
-            ),
+            TRACKER_ANNOUNCE_RESPONSE_EVENT.clone(),
+            TRACKER_SCRAPE_RESPONSE_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {

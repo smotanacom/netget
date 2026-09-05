@@ -112,8 +112,8 @@ impl Protocol for DohProtocol {
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(443))
             .implementation("hickory-proto + hyper + tokio-rustls; DNS actions and action execution are delegated to the DNS protocol")
             .llm_control("Same as DNS (delegates to DNS protocol)")
-            .e2e_testing("tests/server/doh/e2e_test.rs - hyper HTTP/2 client over rustls, mock-driven")
-            .notes("GET/POST, HTTP/2 only (no HTTP/1.1), self-signed certs, any request path accepted")
+            .e2e_testing("tests/server/doh/e2e_test.rs - reqwest (hyper+rustls) HTTP/2 client, mock-driven. It connects with http2_prior_knowledge(), so it asserts nothing about ALPN; server_advertises_h2_alpn covers that separately")
+            .notes("GET/POST, HTTP/2 only (no HTTP/1.1), self-signed certs, any request path accepted. Advertises ALPN h2 - without it a negotiating client falls back to HTTP/1.1, which this server does not speak")
             .build()
     }
     fn description(&self) -> &'static str {

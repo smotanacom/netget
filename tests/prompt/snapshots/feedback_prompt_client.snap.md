@@ -109,7 +109,7 @@ Parameters:
 - `send_first` (boolean): True if server sends data first (FTP, SMTP), false if it waits for client (HTTP)
 - `initial_memory` (string): Optional initial memory as a string. Use for storing persistent context across connections. Example: "user_count: 0"
 - `instruction` (string, required): Detailed instructions for handling network events. Use this field for custom requirements that don't have dedicated parameters (e.g., 'with 30 second timeout', 'log all requests to file', 'rate limit to 10 requests per second', etc.)
-- `startup_params` (object): Optional protocol-specific startup parameters. See protocol documentation for available parameters.
+- `startup_params` (object): Optional protocol-specific startup parameters. ONLY the parameters the protocol's documentation declares are accepted: an undeclared key is refused by name and THE SERVER DOES NOT START. A protocol that declares none takes no startup_params at all. Anything the protocol does not declare - what the server should answer, which mailbox or database exists, what data to serve - belongs in 'instruction', not here.
 - `scheduled_tasks` (array): Optional: Array of TIME-BASED tasks that execute periodically or after a delay. USE WHEN: User says 'every X seconds/minutes', 'heartbeat', 'periodic', 'scheduled', or describes time-based automation. EXAMPLES: - 'send heartbeat every 10 seconds' → scheduled_tasks with interval_secs: 10 - 'check status every minute' → scheduled_tasks with interval_secs: 60 - 'cleanup after 30 seconds' → scheduled_tasks with delay_secs: 30 DO NOT use event_handlers for periodic tasks - event_handlers respond to network events, NOT time-based triggers! Each task has: task_id (string), recurring (boolean), interval_secs (for periodic) OR delay_secs (for one-shot), max_executions (optional), instruction (what to do), context (optional).
 - `event_handlers` (array): Optional: Array of event handlers to configure how events are processed. You can configure different handlers for different events. Each handler specifies an event_pattern (specific event ID or "*" for all events) and a handler type (script, static, or llm). Handlers are matched in order - first match wins.\n\nEach handler has:\n- event_pattern: Event ID to match (e.g., \"tcp_data_received\") or \"*\" for all events\n- handler: Object with:\n- type: \"script\" (inline code), \"static\" (predefined actions), or \"llm\" (dynamic processing)\n\nREQUIRED FIELDS BY TYPE:\n- For script: language (Python (Python 3.11.0), Node.js (v20.0.0), Go (go version go1.21.0), Perl (perl 5.38.0)), code (inline script)\n- For static: actions (array of action objects)\n- For llm: instruction (string, REQUIRED) - describes how the LLM should handle this event\n\nCRITICAL: LLM handlers MUST include 'instruction' field. Example: {\"type\": \"llm\", \"instruction\": \"Handle HTTP requests...\"}\n\nSCRIPT EVENT DATA STRUCTURE:\nScripts receive JSON via stdin with this structure:\n{\n\"event_type_id\": \"http_request\",  // Event type identifier\n\"server\": {\"id\": 1, \"port\": 8080, \"stack\": \"HTTP\", \"memory\": \"\", \"instruction\": \"...\"},\n\"connection\": {\"id\": \"1\", \"remote_addr\": \"127.0.0.1:12345\"},  // Optional\n\"event\": {\n// Protocol-specific event data (fields vary by event type)\n// For HTTP: method, path, query_string, query, headers, body\n// For TCP: data (hex-encoded bytes)\n// For DNS: query_id, domain, query_type\n}\n}\n\nIMPORTANT: Event data is directly under data['event'], NOT data['event']['data']!\nAccess pattern: data['event']['field_name'] (e.g., data['event']['method'])\n\nCRITICAL - COMMON MISTAKES TO AVOID:\n❌ WRONG: data['event']['request']['query_string']      # NO 'request' wrapper!\n❌ WRONG: data['event']['http_request']['query_string'] # NO 'http_request' wrapper!\n❌ WRONG: data['event']['data']['method']               # NO 'data' wrapper!\n✅ RIGHT: data['event']['query_string']                 # Direct access\n✅ RIGHT: data['event']['method']                       # Direct access\n\nThe event_type_id tells you WHAT event occurred, but data fields are DIRECTLY under data['event'].\n\nExample HTTP script (sum query parameters x and y):\n{\"event_pattern\": \"http_request\", \"handler\": {\"type\": \"script\", \"language\": \"python\", \"code\": \"<http_sum_script>\"}}\n\n<http_sum_script>\nimport json\nimport sys\n\ndata = json.load(sys.stdin)\n# Access event data: data['event']['field_name']\nquery_params = data['event']['query']  # Pre-parsed query parameters object\nx = float(query_params['x'])\ny = float(query_params['y'])\nresult = x + y\n\nprint(json.dumps({\n'actions': [{\n'type': 'send_http_response',\n'status': 200,\n'body': str(result)\n}]\n}))\n</http_sum_script>\n\nExample TCP script (echo received data):\n{\"event_pattern\": \"tcp_data_received\", \"handler\": {\"type\": \"script\", \"language\": \"python\", \"code\": \"<tcp_echo_script>\"}}\n\n<tcp_echo_script>\nimport json\nimport sys\n\ndata = json.load(sys.stdin)\n# TCP data is hex-encoded in data['event']['data']\nreceived_hex = data['event']['data']\n\nprint(json.dumps({\n'actions': [{\n'type': 'send_tcp_data',\n'data': received_hex  # Echo back the same hex data\n}]\n}))\n</tcp_echo_script>\n\nExample static handler:\n{\"event_pattern\": \"*\", \"handler\": {\"type\": \"static\", \"actions\": [{\"type\": \"send_data\", \"data\": \"Welcome\"}]}}\n\nExample LLM handler:\n{\"event_pattern\": \"http_request\", \"handler\": {\"type\": \"llm\", \"instruction\": \"You are a recipe website\"}}
 - `feedback_instructions` (string): Optional: Instructions for automatic server adjustment based on network request feedback. When set, network requests can provide feedback via the 'provide_feedback' action. Feedback is accumulated and debounced (leading edge), then the LLM is invoked with these instructions to decide how to adjust the server behavior (e.g., update instructions, modify handlers, change configuration). Example: "Adjust response time if clients are timing out" or "Learn from failed requests and improve error handling".
@@ -150,7 +150,7 @@ Parameters:
 - `remote_addr` (string, required): Remote server address as 'hostname:port' or 'IP:port' (e.g., 'example.com:80', '192.168.1.1:6379', 'localhost:8080')
 - `instruction` (string, required): Detailed instructions for controlling the client (how to send data, interpret responses, make decisions)
 - `initial_memory` (string): Optional initial memory as a string. Use for storing persistent context. Example: "auth_token: abc123\nrequest_count: 0"
-- `startup_params` (object): Optional protocol-specific startup parameters. For example, HTTP clients may accept default headers or user agent settings.
+- `startup_params` (object): Optional protocol-specific startup parameters. ONLY the parameters the protocol's documentation declares are accepted; an undeclared key is refused by name and the client does not connect. Behavioural detail belongs in 'instruction', not here. For example, HTTP clients may accept default headers or user agent settings.
 - `scheduled_tasks` (array): Optional: Array of scheduled tasks to create with this client. Each task will be attached to the client and execute at specified intervals or delays. Tasks are automatically cleaned up when the client disconnects.
 - `event_handlers` (array): Optional: Array of event handlers to configure how client events are processed. You can configure different handlers for different client events. Each handler specifies an event_pattern (specific event ID or "*" for all events) and a handler type (script, static, or llm). Handlers are matched in order - first match wins.\n\nEach handler has:\n- event_pattern: Event ID to match (e.g., \"http_response_received\") or \"*\" for all events\n- handler: Object with:\n- type: \"script\" (inline code), \"static\" (predefined actions), or \"llm\" (dynamic processing)\n- For script: language (Python (Python 3.11.0), Node.js (v20.0.0), Go (go version go1.21.0), Perl (perl 5.38.0)), code (inline script)\n- For static: actions (array of action objects)\n- For llm: instruction (REQUIRED - describes how the LLM should handle this event)\n\nNote: Client scripts use the same event data structure as server scripts (see open_server documentation for details).\nAccess pattern: data['event']['field_name'] (e.g., data['event']['status_code'] for HTTP responses)\n\nExample script handler: {\"event_pattern\": \"redis_response_received\", \"handler\": {\"type\": \"script\", \"language\": \"python\", \"code\": \"import json,sys;data=json.load(sys.stdin);print(json.dumps({'actions':[{'type':'execute_redis_command','command':'PING'}]}))\"}}\n\nExample static handler: {\"event_pattern\": \"*\", \"handler\": {\"type\": \"static\", \"actions\": [{\"type\": \"send_http_request\", \"method\": \"GET\", \"path\": \"/\"}]}}\n\nExample LLM handler: {\"event_pattern\": \"http_response_received\", \"handler\": {\"type\": \"llm\", \"instruction\": \"You are a recipe website\"}}
 - `feedback_instructions` (string): Optional: Instructions for automatic client adjustment based on server response feedback. When set, server responses can provide feedback via the 'provide_feedback' action. Feedback is accumulated and debounced (leading edge), then the LLM is invoked with these instructions to decide how to adjust the client behavior (e.g., update request strategy, modify retry logic, change authentication method). Example: "Adjust request rate if server is throttling" or "Learn from error responses and modify request format".
@@ -219,7 +219,38 @@ Example:
 {"type":"update_client_instruction","client_id":1,"instruction":"Switch to POST requests with JSON payload"}
 ```
 
-## 9. update_instruction
+## 9. update_client
+
+Update a RUNNING client in place, by its id, instead of opening a second one. Supply only the fields you want to change. Changing the instruction, memory, event_handlers, feedback_instructions or scheduled_tasks is applied in place. Changing the remote_addr or startup_params reconnects (new id).
+
+Parameters:
+- `client_id` (number, required): Id of the client to update.
+- `instruction` (string): New LLM instruction (hot-applied).
+- `event_handlers` (array): Replacement deterministic event handlers (hot-applied).
+- `remote_addr` (string): New remote address 'host:port'. Triggers a reconnect.
+
+Example:
+```json
+{"type":"update_client","client_id":1,"instruction":"Log every response you receive."}
+```
+
+## 10. update_server
+
+Update a RUNNING server in place, by its id, instead of opening a second one. Supply only the fields you want to change. Changing the instruction, memory, event_handlers, feedback_instructions or scheduled_tasks is applied WITHOUT dropping connections. Changing the port, host, interface, mac_address or startup_params requires a clean stop+start (connections are dropped and the server gets a new id). Prefer this over open_server when a server for the protocol already exists.
+
+Parameters:
+- `server_id` (number, required): Id of the server to update (from the running servers list).
+- `instruction` (string): New LLM instruction (hot-applied).
+- `event_handlers` (array): Replacement deterministic event handlers (hot-applied). Same shape as open_server's.
+- `startup_params` (object): Startup parameters to merge in. Validated against the protocol schema; triggers a restart.
+- `port` (number): New port to bind. Triggers a restart.
+
+Example:
+```json
+{"type":"update_server","server_id":1,"instruction":"Return 503 for every request now."}
+```
+
+## 11. update_instruction
 
 Update the current server instruction (combines with existing instruction)
 
@@ -231,7 +262,7 @@ Example:
 {"type":"update_instruction","instruction":"For all HTTP requests, return status 404 with 'Not Found' message."}
 ```
 
-## 10. set_memory
+## 12. set_memory
 
 Replace the entire global memory with new content. Any existing memory is discarded. Use this to reset or completely rewrite memory state.
 
@@ -243,7 +274,7 @@ Example:
 {"type":"set_memory","value":"session_id: abc123\nuser_preferences: dark_mode=true\nlast_command: LIST"}
 ```
 
-## 11. append_memory
+## 13. append_memory
 
 Add new content to the end of global memory. Existing memory is preserved and a newline is automatically added before the new content. Use this to incrementally build up memory state.
 
@@ -255,7 +286,7 @@ Example:
 {"type":"append_memory","value":"connection_count: 5\nlast_file_requested: readme.md"}
 ```
 
-## 12. schedule_task
+## 14. schedule_task
 
 Schedule a task (one-shot or recurring). The task will call the LLM or execute a script with the provided instruction. One-shot tasks execute once after a delay and are automatically removed. Recurring tasks execute at intervals until cancelled or max_executions is reached. Useful for delayed operations, timeouts, periodic health checks, heartbeats, SSE messages, metrics collection, etc.
 
@@ -279,7 +310,7 @@ Example:
 {"type":"schedule_task","task_id":"sse_heartbeat","recurring":true,"interval_secs":30,"server_id":1,"instruction":"Send SSE heartbeat to all active connections"}
 ```
 
-## 13. cancel_task
+## 15. cancel_task
 
 Cancel a scheduled task by its task_id. Works for both one-shot and recurring tasks. The task is immediately removed and will not execute again.
 
@@ -291,7 +322,7 @@ Example:
 {"type":"cancel_task","task_id":"cleanup_logs"}
 ```
 
-## 14. show_message
+## 16. show_message
 
 Display a message to the user controlling NetGet
 
@@ -303,7 +334,7 @@ Example:
 {"type":"show_message","message":"Server started successfully on port 8080"}
 ```
 
-## 15. append_to_log
+## 17. append_to_log
 
 If you are asked to log information for the user, use this to append logs to a file. Use this to create access logs, audit trails, or any persistent logging.
 
@@ -316,7 +347,7 @@ Example:
 {"type":"append_to_log","output_name":"access_logs","content":"127.0.0.1 - - [29/Oct/2025:12:34:56 +0000] \"GET /index.html HTTP/1.1\" 200 1234"}
 ```
 
-## 16. create_database
+## 18. create_database
 
 Create a new SQLite database (in-memory or file-based). Use this to store protocol state (e.g., NFS file system, DNS cache, user sessions). The database persists for the lifetime of the owning server/client, or forever if global. You can execute DDL to create tables during creation.
 
@@ -331,7 +362,7 @@ Example:
 {"type":"create_database","name":"nfs_storage","is_memory":true,"owner":"server-1","schema_ddl":"CREATE TABLE files (path TEXT PRIMARY KEY, content BLOB, size INTEGER, modified INTEGER);"}
 ```
 
-## 17. delete_database
+## 19. delete_database
 
 Delete a database and remove its file (if file-based). This is permanent and cannot be undone. Server/client-owned databases are automatically deleted when the owner closes.
 

@@ -121,6 +121,10 @@ async fn test_openai_list_models() -> E2EResult<()> {
     }
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ OpenAI List Models test completed\n");
@@ -297,6 +301,10 @@ async fn test_openai_chat_completion() -> E2EResult<()> {
     );
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ OpenAI Chat Completion test completed\n");
@@ -437,6 +445,10 @@ async fn test_openai_invalid_endpoint() -> E2EResult<()> {
     }
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("✓ OpenAI Invalid Endpoint test completed\n");
@@ -631,6 +643,10 @@ async fn test_openai_with_rust_client() -> E2EResult<()> {
     }
 
     // Verify mock expectations
+    // Wait for the exchange the mocks describe, rather than trusting a fixed
+    // sleep to have covered it. Under load the last event routinely lands after
+    // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
 
     println!("\n✓ OpenAI Rust Client test completed - Full compatibility verified!\n");

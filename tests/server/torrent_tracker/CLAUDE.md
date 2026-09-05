@@ -298,7 +298,7 @@ print(bencodepy.decode(response))
 - Time: ~10-15s
 - LLM calls: 2-3 (first announce, first scrape, pattern reuse after)
 
-**Concurrent Clients** (--ollama-lock enabled):
+**Concurrent Clients**:
 
 - Requests serialized to prevent Ollama overload
 - Expected slowdown proportional to client count

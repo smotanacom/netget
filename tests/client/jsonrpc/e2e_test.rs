@@ -105,6 +105,7 @@ mod jsonrpc_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client output shows connection/response
+        client.wait_for_any(&["JSON-RPC", "jsonrpc"], 30).await;
         assert!(
             client.output_contains("JSON-RPC").await || client.output_contains("jsonrpc").await,
             "Client should show JSON-RPC protocol message. Output: {:?}",
@@ -114,6 +115,11 @@ mod jsonrpc_client_tests {
         println!("✅ JSON-RPC client made single request successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -224,6 +230,11 @@ mod jsonrpc_client_tests {
         println!("✅ JSON-RPC client responded to LLM instruction");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -343,6 +354,7 @@ mod jsonrpc_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client is connected
+        client.wait_for_any(&["JSON-RPC", "connected"], 30).await;
         assert!(
             client.output_contains("JSON-RPC").await || client.output_contains("connected").await,
             "Client should show JSON-RPC connection. Output: {:?}",
@@ -352,6 +364,11 @@ mod jsonrpc_client_tests {
         println!("✅ JSON-RPC client sent batch request successfully");
 
         // Verify mock expectations were met
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last response routinely lands
+        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 

@@ -327,6 +327,7 @@ impl TcpServer {
                     }
 
                     // Handle protocol results (send banner)
+                    let mut wrote_banner = false;
                     for protocol_result in execution_result.protocol_results {
                         match protocol_result {
                             ActionResult::Output(output_data) => {
@@ -368,18 +369,58 @@ impl TcpServer {
                                         ));
                                     }
                                     log.debug(format!("Sent banner to {connection_id}"));
+                                    wrote_banner = true;
                                 }
                             }
                             ActionResult::CloseConnection => {
                                 connections.lock().await.remove(&connection_id);
-                                log.info(format!("Closed connection {connection_id} after banner"));
+                                log.info(format!(
+                                    "Closed connection {connection_id} after banner: decision=model_close"
+                                ));
                             }
                             _ => {}
                         }
                     }
+
+                    // A silent answer is a real answer here (a server may legitimately
+                    // greet with nothing); it is not a backend failure and must not be
+                    // logged as one.
+                    if !wrote_banner {
+                        log.debug(format!(
+                            "No banner bytes for {connection_id}: decision=model_no_actions"
+                        ));
+                    }
                 }
                 Err(e) => {
-                    Log::new(Some(&status_tx)).warn(format!("LLM error generating banner: {e}"));
+                    let log = Log::new(Some(&status_tx));
+                    let failure = crate::utils::WireFailure::classify(&e);
+                    let class = if failure.is_overloaded() {
+                        "overloaded"
+                    } else {
+                        "unavailable"
+                    };
+                    // The full error goes to the log and the status stream, where an
+                    // operator looks. Nothing derived from it reaches the peer.
+                    log.warn(format!(
+                        "TCP banner failed for {connection_id}: decision=fail_closed_llm_error class={class} error={e}"
+                    ));
+
+                    // A send_first server owes this peer a greeting and now has none.
+                    // Raw TCP has no error frame, so the only honest signal is FIN:
+                    // half-close so the peer's next read returns EOF immediately
+                    // instead of blocking until its own timeout. This is the same
+                    // shape as the data path below.
+                    {
+                        let mut write = write_half.lock().await;
+                        let _ = write.shutdown().await;
+                    }
+                    connections.lock().await.remove(&connection_id);
+                    app_state
+                        .close_connection_on_server(server_id, connection_id)
+                        .await;
+                    log.info(format!(
+                        "Closed connection {connection_id} after banner LLM error"
+                    ));
                 }
             }
         }
@@ -528,6 +569,7 @@ impl TcpServer {
                     // Handle protocol results
                     let mut should_close = false;
                     let mut should_wait = false;
+                    let mut wrote_output = false;
 
                     for protocol_result in execution_result.protocol_results {
                         match protocol_result {
@@ -584,6 +626,7 @@ impl TcpServer {
                                             Some(1),
                                         )
                                         .await;
+                                    wrote_output = true;
                                 }
                             }
                             ActionResult::CloseConnection => {
@@ -610,8 +653,22 @@ impl TcpServer {
                     // Handle close_connection
                     if should_close {
                         connections.lock().await.remove(&connection_id);
-                        log.info(format!("Closed connection {connection_id}"));
+                        // The model answered by hanging up — distinct in the log from
+                        // "answered nothing" and from an LLM failure.
+                        log.info(format!(
+                            "Closed connection {connection_id}: decision=model_close"
+                        ));
                         return;
+                    }
+
+                    // The model answered, but with no bytes and no lifecycle action.
+                    // On raw TCP that is a legitimate answer ("say nothing, keep
+                    // listening"), so the connection stays open — but it must not be
+                    // confused with the backend having failed.
+                    if !wrote_output {
+                        log.debug(format!(
+                            "No response bytes for {connection_id}: decision=model_no_actions"
+                        ));
                     }
 
                     // Check for queued data
@@ -656,7 +713,16 @@ impl TcpServer {
                 }
                 Err(e) => {
                     let log = Log::new(Some(&status_tx));
-                    log.warn(format!("LLM error for TCP data: {e}"));
+                    let failure = crate::utils::WireFailure::classify(&e);
+                    let class = if failure.is_overloaded() {
+                        "overloaded"
+                    } else {
+                        "unavailable"
+                    };
+                    // Full error to the log/status stream only — never to the peer.
+                    log.warn(format!(
+                        "LLM error for TCP data on {connection_id}: decision=fail_closed_llm_error class={class} error={e}"
+                    ));
 
                     // Say *something* on the wire. Raw TCP has no error frame, so
                     // the only honest signal is FIN: half-close the connection so
@@ -668,7 +734,7 @@ impl TcpServer {
                     // half of the concurrency-drop bug, and the same shape as the
                     // "reset to Idle and write nothing" pattern noted in
                     // CLAUDE.md's known systemic issues.
-                    if crate::llm::is_overload_error(&e) {
+                    if failure.is_overloaded() {
                         log.warn(format!(
                             "TCP connection {} closed: LLM capacity exhausted",
                             connection_id

@@ -212,10 +212,32 @@ pub struct Args {
     )]
     pub min_stability: Option<String>,
 
-    /// Use file locking to serialize Ollama API access (enables concurrent test execution)
+    // Developer note, deliberately a `//` comment and not a doc comment: clap derive turns
+    // doc comments into `--help` output, and none of this belongs in front of an operator.
+    //
+    // **This field is now write-only, and that is the whole point.** Nothing reads
+    // `args.ollama_lock`. The plumbing it used to feed is gone: the `ollama_lock_enabled` field
+    // on `AppStateInner`, `AppState::get_ollama_lock_enabled()`, the second parameter of
+    // `AppState::new_with_options`, the `lock_enabled` argument threaded through
+    // `create_llm_client`, and `OllamaClient::new_with_options`, whose body was `Self::new(url)`
+    // under a comment claiming locking was "handled at a different layer". Nothing in `src/` was
+    // that layer and no `ollama.lock` was ever created, so every one of those hops carried a
+    // boolean that could not change any behaviour — while making the flag look implemented to
+    // anyone who followed it.
+    //
+    // The flag itself stays **accepted and inert** rather than deleted. Removing it turns
+    // `--ollama-lock` into a hard clap error, and it appears in scripts and in this repo's own
+    // history; breaking those buys nothing, since an ignored flag and an absent one differ only
+    // in whether the caller gets an error for asking. `tests/ollama_lock_is_a_noop_test.rs`
+    // pins that it is still parsed, still does nothing, and that no `ollama.lock` appears.
+    //
+    // Implementing it was considered and rejected: a real cross-process lock would serialise
+    // every e2e test, and `--llm-max-concurrent` (with `--llm-queue-timeout` and
+    // `--llm-max-queued`) already bounds LLM concurrency and is actually enforced.
+    /// DEPRECATED AND IGNORED. Accepted for compatibility only; it locks nothing.
     #[clap(
         long = "ollama-lock",
-        help = "Enable file-based locking for Ollama API access. This prevents concurrent requests from overloading the LLM, allowing multiple NetGet instances to run safely in parallel. The lock file is created at ./ollama.lock in the current directory."
+        help = "DEPRECATED AND IGNORED. Accepted for compatibility only: nothing is locked, nothing is written to disk, and NetGet instances are not serialized against each other. It has never done any of those things. To bound LLM concurrency use --llm-max-concurrent (with --llm-queue-timeout and --llm-max-queued), which are enforced."
     )]
     pub ollama_lock: bool,
 

@@ -31,6 +31,18 @@ IMAP maintains explicit session state transitions:
 - **Selected** - After SELECT/EXAMINE mailbox
 - **Logout** - Terminal state
 
+**Transitions happen only on a tagged `OK`.** `update_session_state` takes a `command_ok` flag
+derived from the tagged completion the client actually received: the model's own tagged line
+if it sent one (via `tagged_ok_for`), otherwise the synthesised completion (`OK` when untagged
+data went out, `NO` when nothing did). LOGOUT is the sole exception and always transitions —
+the client is leaving either way, and a dead session marked live is worse.
+
+This used to run unconditionally, which was a fail-open on session state rather than on the
+wire: a SELECT the model refused with `tag NO` still moved the session to `Selected` and
+recorded the mailbox, so the client was told no while the server believed yes, and every later
+FETCH/STORE ran against a mailbox the model had just declined. A command still awaiting more
+data (`WaitForMore`) now transitions nothing either, since it has not completed.
+
 State stored in `ProtocolConnectionInfo::Imap`:
 
 ```rust

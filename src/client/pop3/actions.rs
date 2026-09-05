@@ -69,7 +69,8 @@ impl Protocol for Pop3ClientProtocol {
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
         vec![ParameterDefinition {
             name: "use_tls".to_string(),
-            description: "Whether to use TLS/SSL (POP3S). Default: false (plain POP3)".to_string(),
+            description: "Must be false. This client speaks POP3 over a plain TCP socket and implements no TLS, so `use_tls: true` is REFUSED at connect with an error rather than silently producing a cleartext session carrying the USER/PASS exchange. Terminate TLS in front of the server instead."
+                .to_string(),
             type_hint: "boolean".to_string(),
             required: false,
             example: json!(false),
@@ -256,6 +257,7 @@ impl Client for Pop3ClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                ctx.startup_params,
             )
             .await
         })

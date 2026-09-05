@@ -300,6 +300,10 @@ You are an ICMP echo server. When you receive echo requests:
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify mocks were called correctly
+        // Wait for the exchange the mocks describe, rather than trusting a fixed
+        // sleep to have covered it. Under load the last event routinely lands after
+        // the sleep expires, and the test reports it as never having happened.
+        test_state.wait_for_mocks(30).await;
         test_state.verify_mocks().await?;
 
         // Print summary

@@ -323,6 +323,11 @@ enum Dispatch {
     /// Raise it - and run whatever the LLM answers - before returning. Used by the
     /// connected-event handler, which is where that recursion has always lived.
     Inline,
+    /// Do the call and raise nothing at all -- neither the success event nor the error
+    /// event. Used for a retry the model asks for in answer to `grpc_client_error`: that
+    /// retry must not itself raise another error event, or a persistently failing call
+    /// would drive the model round the same loop forever.
+    Silent,
     /// Hand the event payload back to the caller instead. The injected-command loop
     /// uses this so it can reply with the truthful byte count **first** and only then
     /// raise the event: a client whose events are routed to a manual handler would
@@ -558,201 +563,299 @@ struct GrpcCallReport {
 /// the per-connection state machine refused it because another call is in flight. A
 /// caller reporting a [`ClientSendOutcome`] must not turn `None` into `Sent`.
 #[allow(clippy::too_many_arguments)]
-async fn make_grpc_call(
+/// Returns a boxed future rather than being a plain `async fn`.
+///
+/// The error path can retry the call the model asks for, which means this function calls
+/// itself. rustc cannot infer the type of a directly self-referential `async fn` -- it is
+/// an infinitely nested opaque type -- so the body is boxed once here and the recursion
+/// becomes an ordinary dynamic call.
+#[allow(clippy::too_many_arguments)]
+fn make_grpc_call<'a>(
     client_id: ClientId,
-    service: &str,
-    method: &str,
+    service: &'a str,
+    method: &'a str,
     request_json: serde_json::Value,
     metadata: Option<serde_json::Map<String, serde_json::Value>>,
     grpc_client_data: Arc<Mutex<GrpcClientData>>,
-    app_state: &Arc<AppState>,
-    llm_client: &OllamaClient,
-    status_tx: &mpsc::UnboundedSender<String>,
-    protocol: &Arc<GrpcClientProtocol>,
+    app_state: &'a Arc<AppState>,
+    llm_client: &'a OllamaClient,
+    status_tx: &'a mpsc::UnboundedSender<String>,
+    protocol: &'a Arc<GrpcClientProtocol>,
     dispatch: Dispatch,
-) -> Result<Option<GrpcCallReport>> {
-    // Check if client is in idle state
-    {
-        let data = grpc_client_data.lock().await;
-        if matches!(data.state, ConnectionState::Processing) {
-            info!("gRPC client {} is busy, skipping request", client_id);
-            return Ok(None);
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<GrpcCallReport>>> + Send + 'a>>
+{
+    Box::pin(async move {
+        // Check if client is in idle state
+        {
+            let data = grpc_client_data.lock().await;
+            if matches!(data.state, ConnectionState::Processing) {
+                info!("gRPC client {} is busy, skipping request", client_id);
+                return Ok(None);
+            }
         }
-    }
 
-    // Set state to Processing
-    {
-        let mut data = grpc_client_data.lock().await;
-        data.state = ConnectionState::Processing;
-    }
+        // Set state to Processing
+        {
+            let mut data = grpc_client_data.lock().await;
+            data.state = ConnectionState::Processing;
+        }
 
-    info!("gRPC client {} calling {}/{}", client_id, service, method);
+        info!("gRPC client {} calling {}/{}", client_id, service, method);
 
-    // Get descriptor pool and find method
-    let (input_desc, output_desc) = {
-        let data = grpc_client_data.lock().await;
-        let method_desc = data
-            .descriptor_pool
-            .get_service_by_name(service)
-            .and_then(|s| s.methods().find(|m| m.name() == method))
-            .context(format!("Method {}/{} not found in schema", service, method))?;
+        // Get descriptor pool and find method
+        let (input_desc, output_desc) = {
+            let data = grpc_client_data.lock().await;
+            let method_desc = data
+                .descriptor_pool
+                .get_service_by_name(service)
+                .and_then(|s| s.methods().find(|m| m.name() == method))
+                .context(format!("Method {}/{} not found in schema", service, method))?;
 
-        let input_desc = method_desc.input();
-        let output_desc = method_desc.output();
-        (input_desc, output_desc)
-    };
+            let input_desc = method_desc.input();
+            let output_desc = method_desc.output();
+            (input_desc, output_desc)
+        };
 
-    // Convert JSON request to protobuf
-    let request_msg = json_to_dynamic_message(&request_json, &input_desc)
-        .context("Failed to convert request JSON to protobuf")?;
+        // Convert JSON request to protobuf
+        let request_msg = json_to_dynamic_message(&request_json, &input_desc)
+            .context("Failed to convert request JSON to protobuf")?;
 
-    // Encode request
-    let request_bytes = request_msg.encode_to_vec();
+        // Encode request
+        let request_bytes = request_msg.encode_to_vec();
 
-    info!(
-        "gRPC client {} sending {}-byte request to {}/{}",
-        client_id,
-        request_bytes.len(),
-        service,
-        method
-    );
+        info!(
+            "gRPC client {} sending {}-byte request to {}/{}",
+            client_id,
+            request_bytes.len(),
+            service,
+            method
+        );
 
-    // Build gRPC request path
-    let path = format!("/{}/{}", service, method);
+        // Build gRPC request path
+        let path = format!("/{}/{}", service, method);
 
-    // Get channel
-    let channel = {
-        let data = grpc_client_data.lock().await;
-        data.channel.clone()
-    };
+        // Get channel
+        let channel = {
+            let data = grpc_client_data.lock().await;
+            data.channel.clone()
+        };
 
-    // Create HTTP request with gRPC framing
-    use http::HeaderValue;
+        // Create HTTP request with gRPC framing
+        use http::HeaderValue;
 
-    let mut request_builder = Request::builder()
-        .method("POST")
-        .uri(path.clone())
-        .header("content-type", "application/grpc")
-        .header("te", "trailers")
-        .header("grpc-accept-encoding", "identity");
+        let mut request_builder = Request::builder()
+            .method("POST")
+            .uri(path.clone())
+            .header("content-type", "application/grpc")
+            .header("te", "trailers")
+            .header("grpc-accept-encoding", "identity");
 
-    // Add custom metadata
-    if let Some(meta) = metadata {
-        for (key, value) in meta {
-            if let Some(val_str) = value.as_str() {
-                if let Ok(header_value) = HeaderValue::from_str(val_str) {
-                    request_builder = request_builder.header(key.as_str(), header_value);
+        // Add custom metadata
+        if let Some(meta) = metadata {
+            for (key, value) in meta {
+                if let Some(val_str) = value.as_str() {
+                    if let Ok(header_value) = HeaderValue::from_str(val_str) {
+                        request_builder = request_builder.header(key.as_str(), header_value);
+                    }
                 }
             }
         }
-    }
 
-    // Encode gRPC message with 5-byte header (compression flag + length)
-    let mut grpc_message = Vec::with_capacity(5 + request_bytes.len());
-    grpc_message.push(0); // No compression
-    grpc_message.extend_from_slice(&(request_bytes.len() as u32).to_be_bytes());
-    grpc_message.extend_from_slice(&request_bytes);
+        // Encode gRPC message with 5-byte header (compression flag + length)
+        let mut grpc_message = Vec::with_capacity(5 + request_bytes.len());
+        grpc_message.push(0); // No compression
+        grpc_message.extend_from_slice(&(request_bytes.len() as u32).to_be_bytes());
+        grpc_message.extend_from_slice(&request_bytes);
 
-    // Create body using UnsyncBoxBody which is compatible with tonic
-    use http_body_util::combinators::UnsyncBoxBody;
-    let full_body = http_body_util::Full::new(Bytes::from(grpc_message));
-    let body = UnsyncBoxBody::new(
-        full_body
-            .map_err(|_: std::convert::Infallible| tonic::Status::internal("infallible error")),
-    );
-    let http_request = request_builder
-        .body(body)
-        .context("Failed to build HTTP request")?;
+        // Create body using UnsyncBoxBody which is compatible with tonic
+        use http_body_util::combinators::UnsyncBoxBody;
+        let full_body = http_body_util::Full::new(Bytes::from(grpc_message));
+        let body =
+            UnsyncBoxBody::new(full_body.map_err(|_: std::convert::Infallible| {
+                tonic::Status::internal("infallible error")
+            }));
+        let http_request = request_builder
+            .body(body)
+            .context("Failed to build HTTP request")?;
 
-    // Make the call using the channel
-    let result = call_grpc_unary(&channel, http_request).await;
+        // Make the call using the channel
+        let result = call_grpc_unary(&channel, http_request).await;
 
-    // Reset to idle
-    {
-        let mut data = grpc_client_data.lock().await;
-        data.state = ConnectionState::Idle;
-    }
-
-    let framed_len = 5 + request_bytes.len();
-
-    match result {
-        Ok(response_bytes) => {
-            // Decode response
-            let response_msg = DynamicMessage::decode(output_desc.clone(), &response_bytes[..])
-                .context("Failed to decode gRPC response")?;
-
-            // Convert to JSON
-            let response_json = dynamic_message_to_json(&response_msg)?;
-
-            info!(
-                "gRPC client {} received response for {}/{}",
-                client_id, service, method
-            );
-
-            let event_data = serde_json::json!({
-                "service": service,
-                "method": method,
-                "response": response_json,
-            });
-
-            let pending_notify = match dispatch {
-                Dispatch::Inline => {
-                    notify_grpc_response(
-                        client_id,
-                        event_data,
-                        grpc_client_data,
-                        app_state.clone(),
-                        llm_client.clone(),
-                        status_tx.clone(),
-                        protocol.clone(),
-                    )
-                    .await;
-                    None
-                }
-                Dispatch::Defer => Some(event_data),
-            };
-
-            Ok(Some(GrpcCallReport {
-                bytes_sent: framed_len,
-                pending_notify,
-            }))
+        // Reset to idle
+        {
+            let mut data = grpc_client_data.lock().await;
+            data.state = ConnectionState::Idle;
         }
-        Err(e) => {
-            error!("gRPC client {} call failed: {}", client_id, e);
 
-            // Call LLM with error
-            if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
-                let event = Event::new(
-                    &GRPC_CLIENT_ERROR_EVENT,
-                    serde_json::json!({
-                        "service": service,
-                        "method": method,
-                        "code": "UNKNOWN",
-                        "message": e.to_string(),
-                    }),
+        let framed_len = 5 + request_bytes.len();
+
+        match result {
+            Ok(response_bytes) => {
+                // Decode response
+                let response_msg = DynamicMessage::decode(output_desc.clone(), &response_bytes[..])
+                    .context("Failed to decode gRPC response")?;
+
+                // Convert to JSON
+                let response_json = dynamic_message_to_json(&response_msg)?;
+
+                info!(
+                    "gRPC client {} received response for {}/{}",
+                    client_id, service, method
                 );
 
-                let memory = app_state
-                    .get_memory_for_client(client_id)
-                    .await
-                    .unwrap_or_default();
+                let event_data = serde_json::json!({
+                    "service": service,
+                    "method": method,
+                    "response": response_json,
+                });
 
-                let _ = call_llm_for_client(
-                    llm_client,
-                    app_state,
-                    client_id.to_string(),
-                    &instruction,
-                    &memory,
-                    Some(&event),
-                    protocol.as_ref(),
-                    status_tx,
-                )
-                .await;
+                let pending_notify = match dispatch {
+                    Dispatch::Inline => {
+                        notify_grpc_response(
+                            client_id,
+                            event_data,
+                            grpc_client_data,
+                            app_state.clone(),
+                            llm_client.clone(),
+                            status_tx.clone(),
+                            protocol.clone(),
+                        )
+                        .await;
+                        None
+                    }
+                    // A retry raises nothing: the caller already reported the original
+                    // failure, and re-raising would restart the error loop this bound exists
+                    // to prevent.
+                    Dispatch::Silent => None,
+                    Dispatch::Defer => Some(event_data),
+                };
+
+                Ok(Some(GrpcCallReport {
+                    bytes_sent: framed_len,
+                    pending_notify,
+                }))
             }
+            Err(e) => {
+                error!("gRPC client {} call failed: {}", client_id, e);
 
-            Err(e)
+                // Tell the model, and DO what it answers.
+                //
+                // The answer used to be dropped (`let _ = call_llm_for_client(...)`), so a
+                // model that saw a call fail and wanted to retry it, call a fallback method,
+                // or hang up was ignored -- on the one event whose entire purpose is to let it
+                // react.
+                //
+                // A retry runs with `Dispatch::Silent`, which raises neither the success event
+                // nor another error event. That bound is essential: without it a persistently
+                // failing call would raise an error, be retried, fail, raise another error,
+                // and drive the model round the same loop forever.
+                if matches!(dispatch, Dispatch::Silent) {
+                    // Already a retry. Do not ask again.
+                    return Err(e);
+                }
+                if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
+                    let event = Event::new(
+                        &GRPC_CLIENT_ERROR_EVENT,
+                        serde_json::json!({
+                            "service": service,
+                            "method": method,
+                            "code": "UNKNOWN",
+                            "message": e.to_string(),
+                        }),
+                    );
+
+                    let memory = app_state
+                        .get_memory_for_client(client_id)
+                        .await
+                        .unwrap_or_default();
+
+                    match call_llm_for_client(
+                        llm_client,
+                        app_state,
+                        client_id.to_string(),
+                        &instruction,
+                        &memory,
+                        Some(&event),
+                        protocol.as_ref(),
+                        status_tx,
+                    )
+                    .await
+                    {
+                        Ok(result) => {
+                            if let Some(mem) = result.memory_updates {
+                                app_state.set_memory_for_client(client_id, mem).await;
+                            }
+                            for action in result.actions {
+                                use crate::llm::actions::client_trait::Client;
+                                match protocol.execute_action(action.clone()) {
+                                    Ok(ClientActionResult::Custom { name, data })
+                                        if name == "grpc_call" =>
+                                    {
+                                        let retry_service =
+                                            data["service"].as_str().unwrap_or(service).to_string();
+                                        let retry_method =
+                                            data["method"].as_str().unwrap_or(method).to_string();
+                                        info!(
+                                            "gRPC client {} retrying as {}/{} on the model's \
+                                         request",
+                                            client_id, retry_service, retry_method
+                                        );
+                                        let retry = make_grpc_call(
+                                            client_id,
+                                            &retry_service,
+                                            &retry_method,
+                                            data.get("request").cloned().unwrap_or_default(),
+                                            data.get("metadata")
+                                                .and_then(|m| m.as_object())
+                                                .cloned(),
+                                            grpc_client_data.clone(),
+                                            app_state,
+                                            llm_client,
+                                            status_tx,
+                                            protocol,
+                                            Dispatch::Silent,
+                                        )
+                                        .await;
+                                        if let Err(re) = retry {
+                                            error!(
+                                                "gRPC client {} retry also failed: {}",
+                                                client_id, re
+                                            );
+                                        }
+                                    }
+                                    Ok(ClientActionResult::Disconnect) => {
+                                        info!(
+                                            "gRPC client {} disconnecting after error, as the \
+                                         model asked",
+                                            client_id
+                                        );
+                                        app_state
+                                            .update_client_status(
+                                                client_id,
+                                                crate::state::ClientStatus::Disconnected,
+                                            )
+                                            .await;
+                                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                                    }
+                                    Ok(_) => {}
+                                    Err(ae) => error!(
+                                        "gRPC client {} rejected its own error-path action: {}",
+                                        client_id, ae
+                                    ),
+                                }
+                            }
+                        }
+                        Err(le) => error!(
+                            "gRPC client {} LLM error on grpc_client_error: {}",
+                            client_id, le
+                        ),
+                    }
+                }
+
+                Err(e)
+            }
         }
-    }
+    })
 }
 
 /// Raise `grpc_response_received` for a completed call and run whatever the LLM answers.

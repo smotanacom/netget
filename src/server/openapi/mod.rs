@@ -246,6 +246,63 @@ fn immediate_400(error_message: String) -> Response<Full<Bytes>> {
         .unwrap()
 }
 
+/// Build the peer-visible failure response for a request netget could not answer.
+///
+/// The peer gets a *category*, never the error: no backend URL, no model name, no `anyhow`
+/// chain. `Overloaded` is transient, so it is reported as 503 + `Retry-After` and a client
+/// backs off; anything else is a 500 so it is not retried forever. See
+/// `crate::utils::wire_failure`.
+#[cfg(feature = "openapi")]
+fn failure_response(failure: crate::utils::WireFailure) -> Response<Full<Bytes>> {
+    let (status, reason) = if failure.is_overloaded() {
+        (503, "Service Unavailable")
+    } else {
+        (500, "Internal Server Error")
+    };
+
+    let body = json!({
+        "error": reason,
+        "message": failure.text(),
+    })
+    .to_string();
+
+    let mut builder = Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json");
+    if failure.is_overloaded() {
+        builder = builder.header(hyper::header::RETRY_AFTER, "1");
+    }
+
+    builder
+        .body(Full::new(Bytes::from(body)))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+}
+
+/// The LLM call itself failed. Log the whole error, answer the peer with a category only.
+#[cfg(feature = "openapi")]
+fn llm_error_response(
+    error: anyhow::Error,
+    method: &str,
+    path: &str,
+    status_tx: &mpsc::UnboundedSender<String>,
+) -> Response<Full<Bytes>> {
+    let failure = crate::utils::WireFailure::classify(&error);
+    let category = if failure.is_overloaded() {
+        "overloaded"
+    } else {
+        "unavailable"
+    };
+
+    // `Log` writes the file log and the TUI status stream from one call, so the whole error
+    // is recorded exactly once — where an operator looks, and nowhere the peer can read.
+    Log::new(Some(status_tx)).error(format!(
+        "OpenAPI {} {} decision=fail_closed_llm_error category={}: {}",
+        method, path, category, error
+    ));
+
+    failure_response(failure)
+}
+
 /// Handle LLM response and process actions
 #[cfg(feature = "openapi")]
 async fn handle_llm_response(
@@ -262,11 +319,15 @@ async fn handle_llm_response(
         let _ = status_tx.send(msg);
     }
 
-    // Default response
+    // Default response. `produced_response` stays false until the model actually answers:
+    // a silent model must not read on the wire like a successful 200 (see the fail-open
+    // rule in CLAUDE.md).
     let mut status_code = 200;
     let mut response_headers = HashMap::new();
     let mut response_body = String::new();
     let mut spec_to_load: Option<String> = None;
+    let mut produced_response = false;
+    let mut decision = "fail_closed_no_action";
 
     // Process protocol results
     for protocol_result in execution_result.protocol_results {
@@ -274,6 +335,8 @@ async fn handle_llm_response(
             ActionResult::Custom { name, data } => {
                 match name.as_str() {
                     "send_openapi_response" => {
+                        produced_response = true;
+                        decision = "model_response";
                         // Extract response details
                         if let Some(status) = data.get("status_code").and_then(|v| v.as_u64()) {
                             status_code = status as u16;
@@ -290,6 +353,11 @@ async fn handle_llm_response(
                         }
                     }
                     "send_validation_error" => {
+                        produced_response = true;
+                        decision = "model_reject";
+                        // A validation error the model did not give a status for is a 400,
+                        // not the 200 the default would otherwise leave in place.
+                        status_code = 400;
                         // Extract error details
                         if let Some(status) = data.get("status_code").and_then(|v| v.as_u64()) {
                             status_code = status as u16;
@@ -328,6 +396,8 @@ async fn handle_llm_response(
             ActionResult::Output(output_data) => {
                 // Legacy fallback for non-action responses
                 if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&output_data) {
+                    produced_response = true;
+                    decision = "model_output_legacy";
                     if let Some(status) = json_value.get("status").and_then(|v| v.as_u64()) {
                         status_code = status as u16;
                     }
@@ -387,23 +457,26 @@ async fn handle_llm_response(
         }
     }
 
-    // Ensure we always have valid JSON in response if body is empty
-    if response_body.is_empty() {
-        response_body = json!({
-            "message": "OpenAPI server received request but LLM did not generate a response",
-            "method": method,
-            "path": path
-        })
-        .to_string();
-        response_headers.insert("content-type".to_string(), "application/json".to_string());
+    // The model was consulted and produced no response action. That is not a success: a
+    // silent model used to be answered with 200 and a body naming netget's own internals,
+    // so a caller could not tell an answered request from an unanswered one. Fail closed
+    // with a category, and keep the reason in the log rather than on the wire. A spec
+    // reload or an error-handling change on its own is configuration, not an answer.
+    if !produced_response {
+        Log::new(Some(&status_tx)).warn(format!(
+            "OpenAPI {} {} decision=fail_closed_no_action -> 500 (no response action returned)",
+            method, path
+        ));
+        return Ok(failure_response(crate::utils::WireFailure::Unavailable));
     }
 
     Log::new(Some(&status_tx)).info(format!(
-        "OpenAPI {} {} -> {} ({} bytes)",
+        "OpenAPI {} {} -> {} ({} bytes, decision={})",
         method,
         path,
         status_code,
-        response_body.len()
+        response_body.len(),
+        decision
     ));
 
     // `status_code` and every header name/value here are model output, so this must not be
@@ -783,19 +856,7 @@ async fn handle_openapi_request(
                         .await;
                     }
                     Err(e) => {
-                        Log::new(Some(&status_tx))
-                            .warn(format!("OpenAPI LLM error for {} {}: {}", method, path, e));
-                        return Ok(Response::builder()
-                            .status(500)
-                            .header("Content-Type", "application/json")
-                            .body(Full::new(Bytes::from(
-                                json!({
-                                    "error": "Internal Server Error",
-                                    "message": "Failed to generate response"
-                                })
-                                .to_string(),
-                            )))
-                            .unwrap());
+                        return Ok(llm_error_response(e, &method, &path, &status_tx));
                     }
                 }
             }
@@ -880,21 +941,6 @@ async fn handle_openapi_request(
                 )))
                 .unwrap())
         }
-        Err(e) => {
-            Log::new(Some(&status_tx))
-                .warn(format!("OpenAPI LLM error for {} {}: {}", method, path, e));
-
-            Ok(Response::builder()
-                .status(500)
-                .header("Content-Type", "application/json")
-                .body(Full::new(Bytes::from(
-                    json!({
-                        "error": "Internal Server Error",
-                        "message": "Failed to generate response"
-                    })
-                    .to_string(),
-                )))
-                .unwrap())
-        }
+        Err(e) => Ok(llm_error_response(e, &method, &path, &status_tx)),
     }
 }
