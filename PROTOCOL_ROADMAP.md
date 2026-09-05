@@ -607,3 +607,111 @@ Learned from the incidents recorded in `CLAUDE.md`, and applied to every wave:
 5. **Watch `df` between waves.** `target/` reached 130 GB in one session, and at
    zero bytes free the session cannot recover — every tool call needs to write.
    `cargo clean --profile dev` is the remedy and keeps `target/release`.
+
+---
+
+# Programme 2 — quality pass over every protocol
+
+Started 4 September 2026. Goal: every one of the 154 servers and 102 clients
+audited and improved for robustness, failure semantics, model-facing accuracy,
+lifecycle correctness, test honesty and documentation truth.
+
+**Paused mid-flight on quota exhaustion.** Read "Where to resume" below.
+
+## How the work is organised
+
+39 family batches, one agent each, run in waves of about ten. Each agent works
+in **its own git worktree** with a **shared `CARGO_TARGET_DIR`**
+(`/Users/matus/dev/netget-shared-target`) — worktrees give git isolation, the
+shared target directory stops 39 private `target/` trees refilling the disk.
+
+**`src/tui/wireshark.rs` is deliberately excluded from every agent's boundary.**
+Agents report the correct entry for their protocols; it is applied centrally.
+One table edited by 39 agents is the collision this repo has already hit.
+
+## The eight-point rubric each agent applies
+
+1. **Robustness** — hostile input must not panic, hang or allocate without bound:
+   unbounded line/message reads, missing read timeouts, byte-index slicing on a
+   `&str` (use `crate::utils::truncate_for_log`), a lock guard held across an
+   `.await` doing I/O or an LLM call, `block_on`/`blocking_lock()` on the async
+   runtime, and library panics reachable from the wire.
+2. **Failure semantics** — a `crate::utils::wire_failure` category to the peer
+   (never the error text), or deliberate silence where every reply the protocol
+   defines is a positive assertion; `decision=` log tags as `src/server/radius/`.
+3. **Model-facing surface** — action descriptions match executor behaviour, every
+   declared `example` accepted by its own executor, no raw bytes or base64,
+   `.with_actions(...)` on every event, every declared event actually emitted.
+4. **Startup parameters** — declared ⇄ read both ways; `?` never `unwrap()`.
+5. **Lifecycle** — `spawn()` awaits readiness and returns `Err`; every spawned
+   task registered; connection stats updated; `.connectionless()` where apt.
+6. **Tests** — `verify_mocks()` everywhere; wait for *conditions*, never fixed
+   sleeps; an `#[ignore]`d or skip-when-missing test is not evidence.
+7. **Docs and honesty** — `CLAUDE.md` matches the code; **lower** any maturity
+   rating the evidence does not support and say why.
+8. **Wireshark** — report the entry, do not edit the file.
+
+**Prefer removing a defect or a lie over adding a feature.** "This one is already
+sound" is a good outcome; inventing work to look productive is not. Never weaken
+a test to make it pass.
+
+## Where to resume
+
+- **Wave 1 (pilot) was in flight when quota ran out**: `mail` (smtp/imap/pop3/nntp),
+  `l2raw` (arp/datalink/icmp/igmp), `db-core` (mysql/postgresql/redis/memcached).
+  Their worktrees may hold committed or partial work — **check
+  `git worktree list` and each worktree's log before re-running them**, and merge
+  anything already committed rather than redoing it.
+- The pilot existed to validate two unknowns: the worktree mechanics (where it
+  lives, what branch, how commits come back) and whether the rubric yields real
+  fixes rather than busywork. **Answer those before launching the remaining 36.**
+- Everything after the pilot is unstarted.
+
+## The 39 batches
+
+```
+# batch-name | protocols (server+client together)
+PILOT-1 mail        | smtp imap pop3 nntp
+PILOT-2 l2raw       | arp datalink icmp igmp
+PILOT-3 db-core     | mysql postgresql redis memcached
+web-core            | http http2 http3 http_common quic
+web-aux             | websocket webdav proxy http_proxy socks5
+dns                 | dns doh dot mdns
+db-nosql            | mongodb cassandra couchdb elasticsearch
+db-cloud            | dynamo s3 sqs snowflake spark
+db-enterprise       | mssql db2 oracle etcd zookeeper
+messaging           | amqp mqtt kafka nats stomp
+routing             | bgp ospf rip isis
+redundancy          | vrrp hsrp stp lldp cdp
+discovery           | ssdp llmnr netbios_ns
+voip                | sip rtp rtsp hls
+webrtc              | webrtc webrtc_signaling stun turn
+files               | ftp tftp nfs smb
+vcs                 | git svn mercurial
+packages            | npm pypi maven yarn oci_registry
+auth-dir            | ldap radius ssh ssh_agent
+auth-web            | oauth2 openid saml_idp saml_sp eapol
+tls-vpn             | tls ipsec openvpn wireguard
+legacy-text         | whois finger gopher ident telnet
+core-transport      | tcp udp dc reverse_shell
+ipc                 | named_pipe pty stdio socket_file
+rpc                 | jsonrpc xmlrpc grpc mcp
+llm-api             | openai ollama openapi
+chat                | irc xmpp
+p2p                 | bitcoin torrent_dht torrent_peer torrent_tracker tor_relay
+iot-industrial      | modbus coap can gtp m3ua
+netmgmt             | snmp syslog ntp dhcp bootp dhcpv6
+raw-new             | ndp rawip tuntap wol
+remote-desktop      | vnc rdp
+print-feed          | ipp rss
+k8s                 | kubernetes
+usb                 | usb (7 sub-protocols)
+ble-core            | bluetooth_ble bluetooth_ble_beacon
+ble-hid              | bluetooth_ble_keyboard bluetooth_ble_mouse bluetooth_ble_gamepad bluetooth_ble_presenter bluetooth_ble_remote
+ble-sensors          | bluetooth_ble_battery bluetooth_ble_heart_rate bluetooth_ble_thermometer bluetooth_ble_environmental bluetooth_ble_proximity bluetooth_ble_weight_scale bluetooth_ble_cycling bluetooth_ble_running bluetooth_ble_data_stream bluetooth_ble_file_transfer
+nfc                 | nfc
+```
+
+Client directories whose name differs from the server's — the batch owning the
+server also owns these: `bluetooth` (ble-core), `dynamodb` (db-cloud),
+`openidconnect` and `saml` (auth-web), `tor` (p2p).
