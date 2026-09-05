@@ -132,9 +132,55 @@ impl PostgresqlServer {
 
                         let conn_state_owner = server.app_state.clone();
                         let conn_server_id = server.server_id;
-                        tokio::spawn(async move {
-                            if let Err(e) = process_socket(stream, None, handler_factory).await {
-                                error!("PostgreSQL connection error: {:?}", e);
+                        let conn_status_tx = status_tx.clone();
+                        let conn_handle = tokio::spawn(async move {
+                            // `process_socket` is run in a task of its own so a **panic**
+                            // inside pgwire is contained rather than lost.
+                            //
+                            // pgwire 0.35's `decode_packet` bounds a message's declared
+                            // length only from above and then hands `decode_fn` the whole
+                            // remaining buffer, so `get_cstring` can call
+                            // `split_to(remaining + 1)` and panic on a message that carries
+                            // no NUL — six bytes after a valid startup handshake are enough
+                            // (IMPROVEMENTS #77). The fix belongs upstream: pgwire owns the
+                            // socket loop and takes a concrete `TcpStream`, so nothing here
+                            // can bound the frame without proxying the connection.
+                            //
+                            // What NetGet can do is not lose the connection's bookkeeping to
+                            // it. Previously the panic unwound straight past
+                            // `close_connection_on_server`, so the dashboard kept an Active
+                            // row for a socket that was already gone — and PostgreSQL is not
+                            // `connectionless`, so the idle sweep never collected it either.
+                            // The entry now closes on every path, and the panic is reported
+                            // instead of being swallowed by `tokio::spawn`.
+                            let inner = tokio::spawn(async move {
+                                process_socket(stream, None, handler_factory).await
+                            });
+                            match inner.await {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => {
+                                    error!("PostgreSQL connection error: {:?}", e);
+                                }
+                                Err(join_error) if join_error.is_panic() => {
+                                    error!(
+                                        "PostgreSQL connection {}: pgwire panicked while \
+                                         decoding a message from the peer (a malformed frame; \
+                                         see IMPROVEMENTS #77). The connection is closed; the \
+                                         server is unaffected.",
+                                        connection_id
+                                    );
+                                    let _ = conn_status_tx.send(format!(
+                                        "[ERROR] PostgreSQL connection {} killed by a malformed \
+                                         message (pgwire decoder panic)",
+                                        connection_id
+                                    ));
+                                }
+                                Err(join_error) => {
+                                    error!(
+                                        "PostgreSQL connection {} task ended abnormally: {}",
+                                        connection_id, join_error
+                                    );
+                                }
                             }
                             // Mark the connection closed so it does not stay Active forever
                             // in the server's connection map.
@@ -144,6 +190,15 @@ impl PostgresqlServer {
                                     .await;
                             }
                         });
+
+                        // Register the per-connection task too, not just the accept loop:
+                        // aborting the accept loop releases the port but leaves every
+                        // in-flight session running, so `stop_server` did not actually stop
+                        // the server. `register_server_task` prunes finished handles on each
+                        // call, so this cannot grow without bound.
+                        if let Some(server_id) = conn_server_id {
+                            app_state.register_server_task(server_id, conn_handle).await;
+                        }
                     }
                     Err(e) => {
                         console_error!(status_tx, "PostgreSQL accept error: {}", e);
@@ -253,6 +308,37 @@ const MAX_PENDING_DESCRIBES: usize = 64;
 type DescribeCache = Arc<TokioMutex<Vec<(String, PgOutcome)>>>;
 
 impl PostgresqlHandler {
+    /// Refresh the dashboard's per-connection counters and `last_activity`.
+    ///
+    /// `pgwire::tokio::process_socket` takes a concrete `TcpStream` and never exposes the raw
+    /// byte streams, so these are the **application-visible** payload sizes seen at the
+    /// handler boundary (the SQL text received, the cell text produced), not the exact wire
+    /// bytes — pgwire adds a 5-byte message header, the RowDescription and per-field length
+    /// prefixes on top. Good enough for the rail's `↓/↑` counters and, more importantly, for
+    /// keeping `last_activity` current: without this nothing on this protocol ever called
+    /// `update_connection_stats`, so every PostgreSQL peer row read `0 / 0` for its whole
+    /// life however much SQL crossed it.
+    async fn record_stats(
+        &self,
+        bytes_in: Option<u64>,
+        bytes_out: Option<u64>,
+        packets_in: Option<u64>,
+        packets_out: Option<u64>,
+    ) {
+        if let Some(server_id) = self.server_id {
+            self.app_state
+                .update_connection_stats(
+                    server_id,
+                    self.connection_id,
+                    bytes_in,
+                    bytes_out,
+                    packets_in,
+                    packets_out,
+                )
+                .await;
+        }
+    }
+
     /// Run one statement through the handler pipeline and translate the resulting action into
     /// wire-level output. Returns `Err` for `postgresql_error_response` and for LLM failures.
     async fn resolve(&self, sql: &str) -> PgWireResult<PgOutcome> {
@@ -260,6 +346,9 @@ impl PostgresqlHandler {
         let _ = self
             .status_tx
             .send(format!("[DEBUG] PostgreSQL query: {}", sql));
+
+        self.record_stats(Some(sql.len() as u64), None, Some(1), None)
+            .await;
 
         let event = Event::new(
             &POSTGRESQL_QUERY_EVENT,
@@ -272,7 +361,7 @@ impl PostgresqlHandler {
             .server_id
             .unwrap_or_else(|| crate::state::ServerId::new(0));
 
-        let execution_result = call_llm(
+        let execution_result = match call_llm(
             &self.llm_client,
             &self.app_state,
             server_id,
@@ -281,39 +370,49 @@ impl PostgresqlHandler {
             self.protocol.as_ref(),
         )
         .await
-        .map_err(|e| {
-            // An ErrorResponse carrying a SQLSTATE, not silence: a client that gets nothing
-            // back sits in its own read until it times out, and cannot tell an unavailable
-            // backend from a slow query.
-            //
-            // Overload is reported as 53300 (too_many_connections, class 53 "insufficient
-            // resources"), which drivers classify as transient; everything else stays XX000
-            // (internal_error). The two are deliberately distinguishable — an outage must not
-            // look like a permanent fault, and neither may look like success.
-            let overloaded = crate::llm::is_overload_error(&e);
-            error!(
-                "LLM error for PostgreSQL query on connection {} (overload={}): {}",
-                self.connection_id, overloaded, e
-            );
-            let message = crate::utils::WireFailure::classify(&e).prefixed_text();
-            let code = if overloaded {
-                warn!(
-                    "PostgreSQL connection {}: LLM capacity exhausted, replying 53300",
-                    self.connection_id
+        {
+            Ok(result) => result,
+            Err(e) => {
+                // An ErrorResponse carrying a SQLSTATE, not silence: a client that gets
+                // nothing back sits in its own read until it times out, and cannot tell an
+                // unavailable backend from a slow query.
+                //
+                // Overload is reported as 53300 (too_many_connections, class 53 "insufficient
+                // resources"), which drivers classify as transient; everything else stays
+                // XX000 (internal_error). The two are deliberately distinguishable — an
+                // outage must not look like a permanent fault, and neither may look like
+                // success.
+                //
+                // `decision=` tags mirror `radius`: the log distinguishes a backend outage
+                // from a model that answered and said nothing, which the wire code alone
+                // cannot.
+                let overloaded = crate::llm::is_overload_error(&e);
+                let decision = if overloaded {
+                    "fail_closed_llm_overloaded"
+                } else {
+                    "fail_closed_llm_error"
+                };
+                error!(
+                    "PostgreSQL connection {} decision={} sqlstate={}: {}",
+                    self.connection_id,
+                    decision,
+                    if overloaded { "53300" } else { "XX000" },
+                    e
                 );
-                "53300"
-            } else {
-                "XX000"
-            };
-            let _ = self
-                .status_tx
-                .send(format!("[ERROR] PostgreSQL {}: {}", code, message));
-            PgWireError::UserError(Box::new(ErrorInfo::new(
-                "ERROR".to_string(),
-                code.to_string(),
-                message.to_string(),
-            )))
-        })?;
+                let message = crate::utils::WireFailure::classify(&e).prefixed_text();
+                let code = if overloaded { "53300" } else { "XX000" };
+                let _ = self
+                    .status_tx
+                    .send(format!("[ERROR] PostgreSQL {}: {}", code, message));
+                self.record_stats(None, Some(message.len() as u64), None, Some(1))
+                    .await;
+                return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
+                    "ERROR".to_string(),
+                    code.to_string(),
+                    message.to_string(),
+                ))));
+            }
+        };
 
         let mut close_requested = false;
 
@@ -332,10 +431,28 @@ impl PostgresqlHandler {
                             .and_then(|v| v.as_array())
                             .cloned()
                             .unwrap_or_default();
+                        // Estimate the outbound payload from the cell text while the JSON is
+                        // still in hand — a `DataRow` does not expose its encoded length.
+                        let sent_bytes: u64 = columns
+                            .iter()
+                            .filter_map(|c| c.get("name"))
+                            .filter_map(|v| v.as_str())
+                            .map(|s| s.len() as u64)
+                            .sum::<u64>()
+                            + rows
+                                .iter()
+                                .filter_map(|r| r.as_array())
+                                .flatten()
+                                .map(|v| json_value_to_string(v).len() as u64)
+                                .sum::<u64>();
+                        self.record_stats(None, Some(sent_bytes), None, Some(1))
+                            .await;
                         return build_row_outcome(&columns, &rows);
                     }
                     "postgresql_ok" => {
                         let tag = data.get("tag").and_then(|v| v.as_str()).unwrap_or("OK");
+                        self.record_stats(None, Some(tag.len() as u64), None, Some(1))
+                            .await;
                         return Ok(PgOutcome::Tag(tag.to_string()));
                     }
                     "postgresql_error" => {
@@ -359,6 +476,14 @@ impl PostgresqlHandler {
                             "[ERROR] PostgreSQL error {} {}: {}",
                             severity, code, message
                         ));
+                        // A refusal the model chose, not a backend failure — tagged so the
+                        // log distinguishes the two, as `radius` does.
+                        warn!(
+                            "PostgreSQL connection {} decision=model_reject sqlstate={}: {}",
+                            self.connection_id, code, message
+                        );
+                        self.record_stats(None, Some(message.len() as u64), None, Some(1))
+                            .await;
 
                         return Err(PgWireError::UserError(Box::new(ErrorInfo::new(
                             severity, code, message,
@@ -381,10 +506,18 @@ impl PostgresqlHandler {
 
         // No response action matched. An empty result set is the safest reply for a SELECT
         // (the client still gets a valid, if empty, row description).
-        warn!("PostgreSQL: no response action produced for {:?}", sql);
+        //
+        // `decision=model_silent` distinguishes this from the backend-failure path above:
+        // the model answered and produced nothing usable, which is not the same event as the
+        // backend being unreachable, and on the wire both are just "not a result".
+        warn!(
+            "PostgreSQL connection {} decision=model_silent: no response action produced for {:?}",
+            self.connection_id, sql
+        );
         let _ = self
             .status_tx
             .send("[WARN] PostgreSQL: no response action produced".to_string());
+        self.record_stats(None, Some(0), None, Some(1)).await;
 
         if sql.trim_start().to_uppercase().starts_with("SELECT") {
             Ok(PgOutcome::Rows {
