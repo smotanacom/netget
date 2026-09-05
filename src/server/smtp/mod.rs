@@ -27,6 +27,88 @@ use actions::SMTP_COMMAND_EVENT;
 #[cfg(feature = "smtp")]
 use tokio_rustls::TlsAcceptor;
 
+/// The longest single line this server will buffer, in bytes.
+///
+/// RFC 5321 §4.5.3.1 sets the minimum a server must accept at 512 octets for a command and
+/// 1000 for a `DATA` text line, and invites larger. 64 KiB is far above anything legitimate
+/// and far below what it costs us to refuse.
+///
+/// The cap is the point. `BufReader::read_line` grows its `String` until it finds a `\n`, so
+/// a peer that connects and streams bytes without ever sending one allocates until the
+/// process dies — one unauthenticated socket, no credentials, no protocol state.
+#[cfg(feature = "smtp")]
+const MAX_LINE_BYTES: usize = 64 * 1024;
+
+/// How long a session waits for the next line before it gives up on the peer.
+///
+/// RFC 5321 §4.5.3.2 sets the server-side "command" timeout at 5 minutes. Without one, a peer
+/// that connects and then says nothing holds a connection task, a socket and its slot in the
+/// connection map for as long as the process runs.
+#[cfg(feature = "smtp")]
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The outcome of one bounded read.
+#[cfg(feature = "smtp")]
+enum LineRead {
+    Line(String),
+    /// The peer closed, or sent a partial line and then closed.
+    Eof,
+    /// `MAX_LINE_BYTES` went by without a `\n`.
+    TooLong,
+    /// `READ_TIMEOUT` went by without a byte.
+    Timeout,
+}
+
+/// Read one `\n`-terminated line, bounded in both length and time.
+///
+/// Two deliberate differences from `BufReader::read_line`:
+///
+/// * It stops at `MAX_LINE_BYTES` instead of growing without bound.
+/// * It decodes lossily instead of failing on invalid UTF-8. `read_line` returns
+///   `ErrorKind::InvalidData` for any non-UTF-8 byte and the session died on it — while
+///   `execute_send_smtp_ehlo` advertises `8BITMIME` by default, so the server was promising a
+///   capability its own read path could not survive. One Latin-1 byte in a message body was
+///   enough. These bytes only ever become the model's event payload and a log line; nothing
+///   here is re-emitted on the wire, so a lossy decode loses nothing a peer can observe.
+///
+/// A partial line at EOF is reported as `Eof`, not as a line: half a command is not a command.
+#[cfg(feature = "smtp")]
+async fn read_line_bounded<R>(reader: &mut tokio::io::BufReader<R>) -> Result<LineRead>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncBufReadExt;
+
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let chunk = match tokio::time::timeout(READ_TIMEOUT, reader.fill_buf()).await {
+            Err(_elapsed) => return Ok(LineRead::Timeout),
+            Ok(result) => result?,
+        };
+        if chunk.is_empty() {
+            return Ok(LineRead::Eof);
+        }
+        match chunk.iter().position(|&b| b == b'\n') {
+            Some(idx) => {
+                if buf.len() + idx + 1 > MAX_LINE_BYTES {
+                    return Ok(LineRead::TooLong);
+                }
+                buf.extend_from_slice(&chunk[..=idx]);
+                reader.consume(idx + 1);
+                return Ok(LineRead::Line(String::from_utf8_lossy(&buf).into_owned()));
+            }
+            None => {
+                let taken = chunk.len();
+                if buf.len() + taken > MAX_LINE_BYTES {
+                    return Ok(LineRead::TooLong);
+                }
+                buf.extend_from_slice(chunk);
+                reader.consume(taken);
+            }
+        }
+    }
+}
+
 /// SMTP server that forwards mail to LLM
 pub struct SmtpServer;
 
@@ -265,10 +347,11 @@ impl SmtpSession {
         R: tokio::io::AsyncRead + Unpin,
         W: tokio::io::AsyncWrite + Unpin,
     {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
-        // Send initial greeting
-        Self::send_greeting(
+        // Send initial greeting. `false` means the model refused the connection; close
+        // without entering the command loop.
+        if !Self::send_greeting(
             write_half,
             connection_id,
             server_id,
@@ -277,16 +360,55 @@ impl SmtpSession {
             status_tx,
             protocol,
         )
-        .await?;
-
-        let mut line = String::new();
+        .await?
+        {
+            return Ok(());
+        }
 
         loop {
-            line.clear();
-            let n = reader.read_line(&mut line).await?;
-            if n == 0 {
-                break;
-            }
+            let line = match read_line_bounded(&mut reader).await? {
+                LineRead::Line(line) => line,
+                LineRead::Eof => break,
+                LineRead::TooLong => {
+                    // RFC 5321 §4.5.3.1 sets the line limits; 500 5.5.2 is the reply for
+                    // breaking them. Close afterwards: we stopped reading mid-line, so the
+                    // rest of that line would be parsed as fresh commands.
+                    warn!(
+                        "SMTP connection {} sent a line over {} bytes with no newline; closing",
+                        connection_id, MAX_LINE_BYTES
+                    );
+                    Self::write_counted(
+                        write_half,
+                        b"500 5.5.2 Line too long\r\n",
+                        connection_id,
+                        server_id,
+                        app_state,
+                        status_tx,
+                    )
+                    .await?;
+                    break;
+                }
+                LineRead::Timeout => {
+                    // RFC 5321 §4.5.3.2: the server-side command timeout. 421 is the code for
+                    // "service closing transmission channel", which is exactly what happens.
+                    warn!(
+                        "SMTP connection {} idle for {}s; closing",
+                        connection_id,
+                        READ_TIMEOUT.as_secs()
+                    );
+                    Self::write_counted(
+                        write_half,
+                        b"421 4.4.2 Timeout waiting for command\r\n",
+                        connection_id,
+                        server_id,
+                        app_state,
+                        status_tx,
+                    )
+                    .await?;
+                    break;
+                }
+            };
+            let n = line.len();
             app_state
                 .update_connection_stats(
                     server_id,
@@ -320,10 +442,13 @@ impl SmtpSession {
             {
                 Ok(execution_result) => {
                     let mut should_close = false;
+                    let mut wrote_reply = false;
+                    let mut silence_is_deliberate = false;
 
                     for protocol_result in execution_result.protocol_results {
                         match protocol_result {
                             ActionResult::Output(data) => {
+                                wrote_reply = true;
                                 let mut writer = write_half.lock().await;
                                 writer.write_all(&data).await?;
                                 writer.flush().await?;
@@ -346,12 +471,43 @@ impl SmtpSession {
                             // close_connection in the same batch, and returning early would
                             // drop the 221 when the ordering came back reversed.
                             ActionResult::CloseConnection => should_close = true,
+                            // `wait_for_more` is the model saying "send nothing and read the
+                            // next line" - correct and required during DATA, where SMTP
+                            // expects no per-line reply. It is the one answer that makes
+                            // silence right, which is exactly why it has to be told apart
+                            // from an empty answer below.
+                            ActionResult::WaitForMore => silence_is_deliberate = true,
                             _ => {}
                         }
                     }
 
                     if should_close {
                         return Ok(());
+                    }
+
+                    // A model that answered with nothing at all used to leave the peer
+                    // blocked until its own timeout - the same defect the `Err` arm's 451
+                    // exists to remove, reached through the success path instead. SMTP is not
+                    // one of the deliberately-silent protocols: every command owes a reply,
+                    // and `wait_for_more` is already the way to decline one. So an empty
+                    // answer is a failure and gets the same 451, and the log says which of
+                    // the two it was.
+                    if !wrote_reply && !silence_is_deliberate {
+                        Log::new(Some(status_tx)).error(format!(
+                            "SMTP connection {} decision=model_silent for {:?}: the model \
+                             produced no reply; answering 451",
+                            connection_id,
+                            crate::utils::truncate_for_log(command, 200)
+                        ));
+                        Self::write_counted(
+                            write_half,
+                            b"451 4.3.0 Temporary local error, try again later\r\n",
+                            connection_id,
+                            server_id,
+                            app_state,
+                            status_tx,
+                        )
+                        .await?;
                     }
                 }
                 Err(e) => {
@@ -405,7 +561,54 @@ impl SmtpSession {
         Ok(())
     }
 
-    /// Send greeting for plain connection
+    /// Write a fixed reply and account for it, dropping the writer guard before returning.
+    ///
+    /// The byte slice is `&'static [u8]` on purpose: everything this is used for is a protocol
+    /// constant, and a `&[u8]` parameter would be one `format!` away from putting an internal
+    /// error string on a stranger's terminal — the defect `crate::utils::wire_failure` exists
+    /// to prevent.
+    async fn write_counted<W>(
+        write_half: &Arc<tokio::sync::Mutex<W>>,
+        reply: &'static [u8],
+        connection_id: crate::server::connection::ConnectionId,
+        server_id: crate::state::ServerId,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) -> Result<()>
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        use tokio::io::AsyncWriteExt;
+
+        {
+            let mut writer = write_half.lock().await;
+            writer.write_all(reply).await?;
+            writer.flush().await?;
+        }
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                None,
+                Some(reply.len() as u64),
+                None,
+                Some(1),
+            )
+            .await;
+        console_debug!(
+            status_tx,
+            "SMTP sent: {}",
+            String::from_utf8_lossy(reply).trim()
+        );
+        Ok(())
+    }
+
+    /// Send the greeting.
+    ///
+    /// Returns `Ok(false)` when the model answered the greeting event with `close_connection`
+    /// — a deliberate refusal, which is a different thing from a backend failure and must not
+    /// be reported as one. `Err` is reserved for the backend actually failing, and carries the
+    /// 421 that has already been written.
     async fn send_greeting<W>(
         write_half: &Arc<tokio::sync::Mutex<W>>,
         connection_id: crate::server::connection::ConnectionId,
@@ -414,7 +617,7 @@ impl SmtpSession {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
         protocol: &Arc<SmtpProtocol>,
-    ) -> Result<()>
+    ) -> Result<bool>
     where
         W: tokio::io::AsyncWrite + Unpin,
     {
@@ -438,23 +641,42 @@ impl SmtpSession {
         .await
         {
             Ok(execution_result) => {
+                let mut refused = false;
                 for protocol_result in execution_result.protocol_results {
-                    if let ActionResult::Output(data) = protocol_result {
-                        let mut writer = write_half.lock().await;
-                        writer.write_all(&data).await?;
-                        writer.flush().await?;
-                        drop(writer);
-                        app_state
-                            .update_connection_stats(
-                                server_id,
-                                connection_id,
-                                None,
-                                Some(data.len() as u64),
-                                None,
-                                Some(1),
-                            )
-                            .await;
+                    match protocol_result {
+                        ActionResult::Output(data) => {
+                            let mut writer = write_half.lock().await;
+                            writer.write_all(&data).await?;
+                            writer.flush().await?;
+                            drop(writer);
+                            app_state
+                                .update_connection_stats(
+                                    server_id,
+                                    connection_id,
+                                    None,
+                                    Some(data.len() as u64),
+                                    None,
+                                    Some(1),
+                                )
+                                .await;
+                        }
+                        // `close_connection` is advertised on `smtp_command`, and the greeting
+                        // *is* an `smtp_command` event, so refusing the connection is an answer
+                        // the model is explicitly offered. This arm used to be an
+                        // `if let ActionResult::Output(..)`, which dropped the refusal on the
+                        // floor and carried on into the command loop on a connection the model
+                        // had declined - a denial that did not deny.
+                        ActionResult::CloseConnection => refused = true,
+                        _ => {}
                     }
+                }
+                if refused {
+                    Log::new(Some(status_tx)).info(format!(
+                        "SMTP connection {} decision=model_reject: the model refused the \
+                         connection at the greeting",
+                        connection_id
+                    ));
+                    return Ok(false);
                 }
             }
             Err(e) => {
@@ -502,7 +724,7 @@ impl SmtpSession {
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 }
 

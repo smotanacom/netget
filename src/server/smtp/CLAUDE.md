@@ -44,6 +44,25 @@ and a sending MTA that gets one requeues the message instead of bouncing it:
 |---|---|---|
 | greeting (`CONNECTION_ESTABLISHED`) | `421 4.3.0` (`4.3.2` on overload) | session closes, per RFC 5321 §3.1 |
 | any later command | `451 4.3.0` (`4.3.2` on overload) | session stays open |
+| model answered a command with **no actions** | `451 4.3.0` | session stays open |
+| line over `MAX_LINE_BYTES` | `500 5.5.2` | session closes |
+| idle past `READ_TIMEOUT` | `421 4.4.2` | session closes |
+
+**An empty answer is a failure, not silence.** The `Ok` arm used to iterate zero results and
+loop straight back to the read, leaving the peer blocked until its own timeout — the same
+defect the 451 exists to remove, reached through the success path instead of the error path.
+SMTP is not one of the deliberately-silent protocols: every command owes a reply, and
+`wait_for_more` is already the way for the model to decline one (and is what `DATA` body lines
+use). So an empty answer gets the 451 and `wait_for_more` does not, and the log records
+`decision=model_silent` so the two are distinguishable afterwards.
+
+**A refused greeting is honoured.** `close_connection` is advertised on `smtp_command`, and
+the greeting *is* an `smtp_command` event, so refusing the connection is an answer the model is
+explicitly offered. `send_greeting` used to match only `ActionResult::Output`, dropping the
+refusal and carrying on into the command loop on a connection the model had declined — a denial
+that did not deny. It now returns `Ok(false)` and the session closes, logged
+`decision=model_reject`. That is deliberately *not* an `Err`: a refusal is not a backend
+failure and must not be reported as one.
 
 The enhanced code splits the two cases apart: 4.3.2 ("system not accepting network messages")
 is used when `crate::llm::is_overload_error` says the failure was capacity exhaustion, 4.3.0
@@ -140,8 +159,27 @@ Use the `open_server` action with TLS options:
 - **Privileged default port** - `metadata()` declares `PrivilegedPort(25)`, so `server_startup`
   preflights the bind against `SystemCapabilities` instead of failing with a bare EPERM
 - **No PIPELINING** - Commands processed sequentially
-- **No size validation** - MESSAGE_SIZE limits not enforced
+- **No size validation** - MESSAGE_SIZE limits not enforced. A *line* is bounded
+  (`MAX_LINE_BYTES`, 64 KiB) and an idle session is bounded (`READ_TIMEOUT`, 300s, RFC 5321
+  §4.5.3.2), but nothing caps the total size of a message across lines
 - **No relay control** - Accepts all MAIL FROM/RCPT TO
+
+### Reading is bounded, and 8-bit clean
+
+`read_line_bounded` replaces `BufReader::read_line`, which was wrong in two ways that only
+show up under a hostile or merely non-English peer:
+
+- It grew its `String` until it found a `\n`, so a peer that connected and streamed bytes
+  without one allocated until the process died — one unauthenticated socket. Now capped at
+  `MAX_LINE_BYTES`, answered `500 5.5.2 Line too long`, then closed (we stopped reading
+  mid-line, so the remainder would otherwise be parsed as fresh commands).
+- It required valid UTF-8 and returned `InvalidData` otherwise, which killed the session with
+  **no reply at all** — while the default EHLO advertises `8BITMIME`, promising exactly the
+  octets that killed it. One Latin-1 byte in a body was enough. The reader now decodes lossily;
+  these bytes only ever become the model's event payload and a log line, and nothing here is
+  re-emitted on the wire, so nothing a peer can observe is lost.
+
+An idle connection now gets `421 4.4.2` and a close rather than holding a task forever.
 
 ## Examples
 
