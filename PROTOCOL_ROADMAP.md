@@ -725,13 +725,31 @@ Agent worktrees live at `.claude/worktrees/agent-<id>`, each on its own branch
 disjoint, so conflicts should be limited to shared files agents were told not
 to touch.
 
-Wave 1 worktrees as of the pause (base was `525029e1`):
+Wave 1 ran until a session limit killed all three agents mid-task. **Every one
+had produced real fixes first**, and the pilot therefore did its job: it proved
+the rubric finds genuine defects rather than generating busywork.
 
-| batch | branch | state at pause |
-|---|---|---|
-| mail (smtp/imap/pop3/nntp) | `worktree-agent-a26377dd9a0f3624b` | **has commits** (`7897c8ed`) — merge, do not redo |
-| l2raw (arp/datalink/icmp/igmp) | `worktree-agent-ae9489544f89cd1ea` | at base, no commits yet |
-| db-core (mysql/postgresql/redis/memcached) | `worktree-agent-afc24a51591969272` | at base, no commits yet |
+| batch | branch | verified commit | unverified WIP |
+|---|---|---|---|
+| mail | `worktree-agent-a26377dd9a0f3624b` | `fa9f7775` — a mutex guard in a `match` scrutinee deadlocked the NNTP client read loop | `616f818d` (smtp) |
+| l2raw | `worktree-agent-ae9489544f89cd1ea` | `0ce7a3bc` — ARP: a client deadlock, a discarded model answer, a leaked capture handle, and a missing fail-closed log | `4da520ba` (icmp) |
+| db-core | `worktree-agent-afc24a51591969272` | `606d33a5` — MySQL prepared statements never worked: three defects and the docs that hid them | `6430977f` (postgresql) |
+
+**The `wip(...)` commits were made by the supervising session, not by the agents,
+and were never built or tested.** They exist so the work is not lost, not because
+they are believed correct. Verify before merging; treat them as a starting point.
+
+The three named fixes are the agents' own commits and were made in the normal
+way, but **none has been verified by a build in the main tree** — the session
+lost its quota before that could happen. Build and test each before merging.
+
+Note the `mail` branch also merged master into itself, so a diff against the old
+base shows 249 commits; only `fa9f7775` and `616f818d` are its own work.
+
+**What the pilot settled:** the worktree mechanics (above), and that the rubric
+yields real defects — a deadlock, a discarded answer, a resource leak and a
+whole broken feature, inside three families in one short wave. The remaining 36
+batches can proceed on the same pattern.
 
 Check each with `git -C .claude/worktrees/agent-<id> log --oneline` and
 `git -C .claude/worktrees/agent-<id> status` before deciding — a worktree at
