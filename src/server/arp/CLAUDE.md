@@ -243,7 +243,40 @@ ARP is stateless:
 - Each ARP packet spawned in separate tokio task
 - No queueing (unlike TCP protocols)
 - Multiple ARP requests processed in parallel
-- Ollama lock serializes LLM calls but not pcap capture
+- LLM concurrency is bounded by `--llm-max-concurrent`, not by pcap capture
+
+## Failure semantics: deliberately silent, `decision=` in the log
+
+ARP is in the **deliberately silent** class. The only reply the protocol defines is the
+positive assertion *"this MAC owns that IP"*, and the requester writes it straight into its
+neighbour cache — so a fabricated reply is strictly worse than no reply, and there is no ARP
+error frame to send instead. On any failure the server therefore writes **nothing**.
+
+That makes the wire useless as a diagnostic: success, refusal and outage all look identical
+on it. The **log** carries the distinction instead, with the same stable token vocabulary
+`src/server/radius/` uses, so `grep decision=fail_closed_` finds every packet the model did
+not actually answer:
+
+| token | meaning |
+|---|---|
+| `decision=model_reply` | a reply was built from the model's actions and queued for injection |
+| `decision=model_reject` | the model ran `ignore_arp` — a real answer, deliberately silent |
+| `decision=static_no_policy` | no instruction and no handler: the static default, and **not** a failure. No LLM round-trip was taken |
+| `decision=fail_closed_no_action` | the model replied with no actions at all |
+| `decision=fail_closed_action_error` | actions were produced and every one failed to execute |
+| `decision=fail_closed_llm_error` | the LLM call itself failed |
+
+The three `fail_closed_*` outcomes log at ERROR and are also pushed to the status stream; the
+rest log at INFO. Keeping `model_reject` distinct from `fail_closed_*` is the point: a model
+that chose silence and a backend that was unreachable must never be the same log line, or an
+outage reads as policy.
+
+The error text goes to the log and the operator's status stream only. Nothing is interpolated
+into anything peer-visible — on this protocol there is no peer-visible anything.
+
+`Decision`/`Decision::is_fail_closed` are public and asserted by
+`tests/server/arp/frame_codec_test.rs::fail_closed_decisions_are_named_and_classified`, so the
+grep prefix cannot be renamed silently.
 
 ## Known Limitations
 
@@ -402,7 +435,7 @@ This simulates an ARP spoofing attack for testing
 ### Concurrency
 
 - Each ARP packet processed in separate task
-- Ollama lock serializes LLM calls
+- LLM concurrency is bounded by `--llm-max-concurrent`
 - pcap capture runs in dedicated blocking thread
 - No CPU bottleneck (LLM API is bottleneck)
 

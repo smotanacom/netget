@@ -81,15 +81,25 @@ impl Protocol for ArpProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            // ARP is connectionless: it has no session, and every packet stands alone. The
+            // server registers no connection entries today, so the 10s idle sweep has nothing
+            // to reap either way — the flag is declared because it is true, and so that a
+            // later per-remote entry does not leak by default.
+            .connectionless()
             .privilege_requirement(PrivilegeRequirement::PacketCapture)
             .implementation("libpcap (pcap crate) + pnet for ARP packet handling")
             .llm_control("Optional: which MAC to advertise for a queried IP is a policy decision (LLM); with no mapping configured the server answers nothing with no LLM call")
             .e2e_testing(
-                "tests/capture_startup_reports_failure_test.rs asserts spawn() returns Err for \
-                 an unknown device and for missing capture privilege, unprivileged. \
+                "tests/server/arp/frame_codec_test.rs runs unprivileged in every ordinary test \
+                 run: it asserts the emitted reply field by field against the Ethernet II + RFC \
+                 826 layout, that the declared send_arp_reply example executes to those same \
+                 bytes, and that nine malformed actions are refused rather than panicking. \
+                 tests/capture_startup_reports_failure_test.rs asserts spawn() returns Err for \
+                 an unknown device and for missing capture privilege, also unprivileged. \
                  tests/server/arp/e2e_test.rs crafts real ARP frames with pnet and reads the \
                  replies back off the wire with pcap, but is #[ignore]d for capture privilege \
-                 and has never been run in CI.",
+                 and has never been run in CI — so NO test has observed a captured ARP request \
+                 becoming a reply on a wire.",
             )
             .notes(
                 "Requires root/CAP_NET_RAW (or /dev/bpf* access) for promiscuous mode and packet \

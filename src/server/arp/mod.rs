@@ -39,6 +39,80 @@ Common use cases: network reconnaissance detection, ARP spoofing simulation, cus
     (context, output_format)
 }
 
+/// What happened to one captured ARP packet, as a stable log token.
+///
+/// ARP is in the deliberately-silent class: there is no error frame, and the only reply the
+/// protocol defines is the positive assertion "this MAC owns that IP", so a fabricated reply
+/// would poison the requester's neighbour cache. Every failure mode therefore looks identical
+/// on the wire — nothing is sent — and the **log** is the only place the distinction survives.
+/// The tokens mirror `src/server/radius/`'s so `decision=fail_closed_` finds every packet the
+/// model did not actually answer, across protocols.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// A reply was built from the model's actions and handed to the injection thread.
+    ModelReply,
+    /// The model ran an action that deliberately produces no frame (`ignore_arp`).
+    ModelReject,
+    /// No operator policy at all (no instruction, no handler): the static default, and the
+    /// only one of these that is not a failure. No LLM round-trip was taken.
+    StaticNoPolicy,
+    /// The model replied, but with no actions. Not the same as an explicit `ignore_arp`.
+    FailClosedNoAction,
+    /// Actions were produced but every one of them failed to execute.
+    FailClosedActionError,
+    /// The LLM call itself failed (backend down, rate-limited, unparseable after retries).
+    FailClosedLlmError,
+}
+
+impl Decision {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Decision::ModelReply => "model_reply",
+            Decision::ModelReject => "model_reject",
+            Decision::StaticNoPolicy => "static_no_policy",
+            Decision::FailClosedNoAction => "fail_closed_no_action",
+            Decision::FailClosedActionError => "fail_closed_action_error",
+            Decision::FailClosedLlmError => "fail_closed_llm_error",
+        }
+    }
+
+    pub fn is_fail_closed(&self) -> bool {
+        matches!(
+            self,
+            Decision::FailClosedNoAction
+                | Decision::FailClosedActionError
+                | Decision::FailClosedLlmError
+        )
+    }
+}
+
+/// Log one packet's outcome to both sinks, loudly when it was a fail-closed drop.
+fn log_decision(
+    status_tx: &mpsc::UnboundedSender<String>,
+    decision: Decision,
+    operation: &str,
+    sender_ip: Ipv4Addr,
+    target_ip: Ipv4Addr,
+) {
+    let summary = format!(
+        "ARP {} from {} for {} decision={}",
+        operation,
+        sender_ip,
+        target_ip,
+        decision.as_str()
+    );
+    if decision.is_fail_closed() {
+        error!("{} (nothing sent: no usable answer was produced)", summary);
+        let _ = status_tx.send(format!(
+            "✗ {} (nothing sent: no usable answer was produced)",
+            summary
+        ));
+    } else {
+        info!("{}", summary);
+        let _ = status_tx.send(format!("→ {}", summary));
+    }
+}
+
 /// ARP server that captures and responds to ARP requests
 pub struct ArpServer;
 
@@ -261,12 +335,18 @@ impl ArpServer {
                             .await
                             {
                                 debug!(
-                                    "ARP ignoring {} packet: no operator policy configured (no instruction or handler), no MAC to advertise and no LLM call",
-                                    operation_to_string(operation)
+                                    "ARP {} from {} for {} decision={}: no operator policy configured (no instruction or handler), no MAC to advertise and no LLM call",
+                                    operation_to_string(operation),
+                                    sender_ip,
+                                    target_ip,
+                                    Decision::StaticNoPolicy.as_str()
                                 );
                                 let _ = status_clone.send(format!(
-                                    "ARP {} ignored: no policy configured (static default, no LLM)",
-                                    operation_to_string(operation)
+                                    "ARP {} from {} for {} decision={}",
+                                    operation_to_string(operation),
+                                    sender_ip,
+                                    target_ip,
+                                    Decision::StaticNoPolicy.as_str()
                                 ));
                                 return;
                             }
@@ -300,35 +380,24 @@ impl ArpServer {
                                         "ARP got {} protocol results",
                                         execution_result.protocol_results.len()
                                     );
-                                    let _ = status_clone.send(format!(
-                                        "[DEBUG] ARP got {} protocol results",
-                                        execution_result.protocol_results.len()
-                                    ));
 
                                     // Send ARP replies if any via channel
-                                    for protocol_result in execution_result.protocol_results {
+                                    let mut queued = 0usize;
+                                    for protocol_result in &execution_result.protocol_results {
                                         if let Some(output_data) =
                                             protocol_result.get_all_output().first()
                                         {
                                             // Send packet via channel to injection thread
                                             if packet_tx_clone.send(output_data.clone()).is_ok() {
+                                                queued += 1;
                                                 debug!(
                                                     "ARP queued {} bytes for sending",
                                                     output_data.len()
                                                 );
-                                                let _ = status_clone.send(format!(
-                                                    "[DEBUG] ARP queued {} bytes for sending",
-                                                    output_data.len()
-                                                ));
-
                                                 trace!(
                                                     "ARP reply (hex): {}",
                                                     hex::encode(output_data)
                                                 );
-                                                let _ = status_clone.send(format!(
-                                                    "[TRACE] ARP reply (hex): {}",
-                                                    hex::encode(output_data)
-                                                ));
                                             } else {
                                                 error!("Failed to queue ARP reply");
                                                 let _ = status_clone.send(
@@ -338,16 +407,47 @@ impl ArpServer {
                                         }
                                     }
 
-                                    let _ = status_clone.send(format!(
-                                        "→ ARP {} processed: {} -> {}",
+                                    let decision = if queued > 0 {
+                                        Decision::ModelReply
+                                    } else if execution_result.raw_actions.is_empty() {
+                                        // The model answered, but with no action at all. On a
+                                        // protocol whose only reply asserts "this MAC owns that
+                                        // IP", silence is the only safe reading of silence.
+                                        Decision::FailClosedNoAction
+                                    } else if !execution_result.failures.is_empty() {
+                                        Decision::FailClosedActionError
+                                    } else {
+                                        // Actions ran and deliberately produced no frame —
+                                        // `ignore_arp`. Distinct from the model saying nothing.
+                                        Decision::ModelReject
+                                    };
+                                    log_decision(
+                                        &status_clone,
+                                        decision,
                                         operation_to_string(operation),
                                         sender_ip,
-                                        target_ip
-                                    ));
+                                        target_ip,
+                                    );
                                 }
                                 Err(e) => {
-                                    error!("ARP LLM call failed: {}", e);
-                                    let _ = status_clone.send(format!("✗ ARP LLM error: {}", e));
+                                    // Deliberate silence: a fabricated ARP reply would write a
+                                    // MAC we did not choose into the requester's neighbour
+                                    // cache. The error text stays in the log and the operator
+                                    // status stream; nothing goes on the wire.
+                                    error!(
+                                        "ARP LLM call failed for {} from {} for {}: {}",
+                                        operation_to_string(operation),
+                                        sender_ip,
+                                        target_ip,
+                                        e
+                                    );
+                                    log_decision(
+                                        &status_clone,
+                                        Decision::FailClosedLlmError,
+                                        operation_to_string(operation),
+                                        sender_ip,
+                                        target_ip,
+                                    );
                                 }
                             }
                         });
