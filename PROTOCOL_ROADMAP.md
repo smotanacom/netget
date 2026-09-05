@@ -715,3 +715,24 @@ nfc                 | nfc
 Client directories whose name differs from the server's — the batch owning the
 server also owns these: `bluetooth` (ble-core), `dynamodb` (db-cloud),
 `openidconnect` and `saml` (auth-web), `tor` (p2p).
+
+## Worktree mechanics — answered, no need to re-derive
+
+Agent worktrees live at `.claude/worktrees/agent-<id>`, each on its own branch
+`worktree-agent-<id>`, branched from the master commit at launch. They are
+**locked**, so `git worktree prune` will not remove them. Merge with
+`git merge --no-ff <branch>` from the main tree; per-protocol directories are
+disjoint, so conflicts should be limited to shared files agents were told not
+to touch.
+
+Wave 1 worktrees as of the pause (base was `525029e1`):
+
+| batch | branch | state at pause |
+|---|---|---|
+| mail (smtp/imap/pop3/nntp) | `worktree-agent-a26377dd9a0f3624b` | **has commits** (`7897c8ed`) — merge, do not redo |
+| l2raw (arp/datalink/icmp/igmp) | `worktree-agent-ae9489544f89cd1ea` | at base, no commits yet |
+| db-core (mysql/postgresql/redis/memcached) | `worktree-agent-afc24a51591969272` | at base, no commits yet |
+
+Check each with `git -C .claude/worktrees/agent-<id> log --oneline` and
+`git -C .claude/worktrees/agent-<id> status` before deciding — a worktree at
+base may still hold uncommitted work that is worth keeping.
