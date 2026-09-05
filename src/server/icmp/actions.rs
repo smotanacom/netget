@@ -246,15 +246,8 @@ impl IcmpProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'destination_ip' parameter")?;
 
-        let identifier = action
-            .get("identifier")
-            .and_then(|v| v.as_u64())
-            .context("Missing 'identifier' parameter")? as u16;
-
-        let sequence = action
-            .get("sequence")
-            .and_then(|v| v.as_u64())
-            .context("Missing 'sequence' parameter")? as u16;
+        let identifier = u16_field(&action, "identifier")?;
+        let sequence = u16_field(&action, "sequence")?;
 
         let payload_hex = action
             .get("payload_hex")
@@ -388,15 +381,8 @@ impl IcmpProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'destination_ip' parameter")?;
 
-        let identifier = action
-            .get("identifier")
-            .and_then(|v| v.as_u64())
-            .context("Missing 'identifier' parameter")? as u16;
-
-        let sequence = action
-            .get("sequence")
-            .and_then(|v| v.as_u64())
-            .context("Missing 'sequence' parameter")? as u16;
+        let identifier = u16_field(&action, "identifier")?;
+        let sequence = u16_field(&action, "sequence")?;
 
         let originate_timestamp = action
             .get("originate_timestamp")
@@ -517,7 +503,7 @@ fn send_destination_unreachable_action() -> ActionDefinition {
             "source_ip": "192.168.1.1",
             "destination_ip": "192.168.1.50",
             "code": 1,
-            "original_packet_hex": "4500003c..."
+            "original_packet_hex": "4500001c00004000401172ba7f0000017f0000010035003500080000"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -564,7 +550,7 @@ fn send_time_exceeded_action() -> ActionDefinition {
             "source_ip": "10.0.0.1",
             "destination_ip": "192.168.1.50",
             "code": 0,
-            "original_packet_hex": "4500003c..."
+            "original_packet_hex": "4500001c00004000401172ba7f0000017f0000010035003500080000"
         }),
         log_template: Some(
             LogTemplate::new()
@@ -769,7 +755,7 @@ pub static ICMP_OTHER_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "source_ip": "192.168.1.1",
             "destination_ip": "192.168.1.50",
             "code": 1,
-            "original_packet_hex": "4500003c..."
+            "original_packet_hex": "4500001c00004000401172ba7f0000017f0000010035003500080000"
         }),
     )
     .with_parameters(vec![
