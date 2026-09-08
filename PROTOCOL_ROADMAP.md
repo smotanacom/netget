@@ -746,6 +746,24 @@ lost its quota before that could happen. Build and test each before merging.
 Note the `mail` branch also merged master into itself, so a diff against the old
 base shows 249 commits; only `fa9f7775` and `616f818d` are its own work.
 
+**Agent worktrees branch from `origin/master`, NOT from local `HEAD`. Push
+before launching them.** This is the most expensive thing wave 1 taught, and it
+is not obvious.
+
+Local master was 249 commits ahead of the remote when wave 1 launched, so all
+three worktrees were created at `525029e1` — a base predating every one of those
+commits. The `mail` agent noticed and merged master into its worktree first,
+which is why it merged back cleanly. The other two did not, and re-fixed ground
+master had already covered: `687c4c7a` had made every documented example
+executable, and `176fafe8`/`20f36994` had already reworked ARP. Merging them back
+produced semantic conflicts between two independent fixes to the same lines —
+the worst kind to resolve, because both sides are *correct* and neither is
+simply newer.
+
+The rule is now in `CLAUDE.md`: **pushing to `origin` is pre-authorised in this
+repo, so push as you go.** Before launching any worktree wave, verify
+`git rev-list --count origin/master..HEAD` is `0`.
+
 **What the pilot settled:** the worktree mechanics (above), and that the rubric
 yields real defects — a deadlock, a discarded answer, a resource leak and a
 whole broken feature, inside three families in one short wave. The remaining 36
