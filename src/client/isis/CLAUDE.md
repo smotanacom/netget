@@ -161,6 +161,24 @@ through the protocol's own `execute_action`, exactly as LLM-produced ones are:
 loop checks that status on every iteration, so the capture stops within one pcap timeout
 (1s). The handle is dropped there and when the capture loop exits.
 
+### Stopping the capture — two paths, and only one of them is a status change
+
+`stop_capture` works by *setting* `ClientStatus::Disconnected`, which the loop sees. Removing
+the client does not: `AppState::remove_client` **deletes the entry** (`inner.clients.remove`),
+so `get_client` returns `None` and a liveness poll that only inspects `Some(client)` never
+fires. Nor can the blocking task simply be aborted — Tokio cannot unwind a thread parked in
+`next_packet()`, which is why `crate::utils::StopSignal` exists.
+
+So the capture is stopped by a `StopSignal` the loop polls once per iteration, whose
+`park_task()` is what gets handed to `register_client_task`. `remove_client` aborts that task,
+its guard's `Drop` trips the flag, and the loop exits at its next poll — within ~1s, because
+the capture is opened with `.timeout(1000)`. The blocking task's own `JoinHandle` is
+deliberately *not* registered, since aborting it would achieve nothing. This mirrors
+`crate::server::isis` exactly; the server had it and the client did not.
+
+**Do not remove the pcap read timeout** — a poll between packets only runs when the blocking
+call returns, so without it shutdown becomes unbounded on an idle interface.
+
 Test: `tests/client/isis/command_channel_test.rs` (zero LLM calls, privilege-independent -
 none of these outcomes touches the pcap handle).
 
