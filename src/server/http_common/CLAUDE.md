@@ -3,8 +3,10 @@
 Not a protocol. This module holds the code that HTTP/1.1 (`src/server/http/`) and
 HTTP/2 (`src/server/http2/`) must agree on: how an inbound request is turned into
 event data, how a model's response action becomes bytes on the wire, and which
-requests are worth an LLM call at all. HTTP/3 (`src/server/http3/`) does **not**
-use any of this — it serves raw QUIC streams and shares no code here.
+requests are worth an LLM call at all. There is no HTTP/3 *server* in the tree —
+`src/server/quic/` serves raw QUIC streams under ALPN `h3` with no HTTP/3 framing,
+and shares no code here. (The HTTP/3 *client*, `src/client/http3/`, is real HTTP/3
+via the `h3` crate and likewise shares nothing with this module.)
 
 There is no `Protocol`/`Server` impl in this module, no registry entry, and no
 feature flag of its own.
@@ -30,20 +32,26 @@ protocol that does not depend on `http`, add it to that `cfg` — do not copy
 
 | File | Contents |
 |---|---|
-| `handler.rs` | `RequestData`, `extract_request_data`, `build_response`, `build_safe_response`, `build_error_response`, `RequestFilter` + its startup-parameter schema |
+| `handler.rs` | `RequestData`, `extract_request_data`, `MAX_REQUEST_BODY_BYTES`/`BodyTooLarge`/`build_payload_too_large_response`, `build_response`, `build_safe_response`, `build_error_response`, `RequestFilter` + its startup-parameter schema |
 | `actions.rs` | `execute_http_response_action` — the executor behind `send_http_response` and `send_http2_response` |
 
 ## Request extraction
 
-`extract_request_data(req, label, status_tx) -> RequestData` consumes a hyper
+`extract_request_data(req, label, status_tx) -> Result<RequestData, BodyTooLarge>`
+consumes a hyper
 `Request<Incoming>` and returns method, `path?query`, version, a lowercase header
 map, and the **fully buffered** body. It also does the dual logging (DEBUG
 summary, TRACE full headers/body, JSON pretty-printed when it parses).
 
 Two things to know:
 
-- **The body is read entirely into memory with no size limit.** A large upload is
-  buffered and then embedded in an LLM prompt. There is no streaming request path.
+- **The body is buffered whole, bounded by `MAX_REQUEST_BODY_BYTES` (8 MiB).** There
+  is no streaming request path — the body ends up embedded in an LLM prompt, so a
+  large one is cost without benefit. Over the cap, `extract_request_data` returns
+  `Err(BodyTooLarge)` and the caller answers `413` via
+  `build_payload_too_large_response`, spending no LLM call. It refuses rather than
+  truncating on purpose: a truncated body looks identical to a complete one, and the
+  model would answer a request it never saw.
 - **Header values that are not valid UTF-8 are silently dropped** from the map, so
   the model does not see them. Header *names* are whatever hyper produced
   (lowercase in practice).
@@ -60,9 +68,11 @@ result it received and produces the final response.
 
 This path is deliberately lenient, because **a rejected action is invisible to
 the client**: `execute_actions()` (`src/llm/actions/executor.rs:114`) only logs a
-warning and drops the action, and the request then falls through to the default
-empty `200`. A strict executor therefore turns a slightly-off model response into
-a silent wrong answer rather than an error. So:
+warning and drops the action, and the request then falls through to whatever the
+protocol does with no response action (HTTP/1.1: the server's `default_response`, or
+an empty `200` if none is set; HTTP/2: a fail-closed `500`). A strict executor
+therefore turns a slightly-off model response into a silent wrong answer rather than
+an error. So:
 
 - `status` accepts a number or a numeric string, and must be 100-599.
 - `body` is optional (absent ⇒ empty body, which is what 204/304 need) and a
@@ -146,3 +156,9 @@ If a new protocol reuses this module:
 3. Build the `RequestFilter` **once**, not per request, and forward `warnings()`.
 4. Route responses through `build_safe_response` (or an equivalent that cannot
    panic). Never `unwrap()` a builder fed with model output.
+5. Handle `Err(BodyTooLarge)` from `extract_request_data` with
+   `build_payload_too_large_response`; do not treat it as an empty body.
+6. On LLM failure use `build_error_response`, which classifies with
+   `crate::utils::WireFailure` and answers 503 + `Retry-After` for overload vs 500
+   otherwise, logging `decision=fail_closed_llm_overloaded` /
+   `decision=fail_closed_llm_error`. The error text itself never reaches the peer.

@@ -429,9 +429,22 @@ async fn handle_http_request_inner(
         }
     }
 
-    // Use shared request extraction logic
+    // Use shared request extraction logic. A body over the shared cap is refused with
+    // 413 here rather than being truncated: a truncated body handed to the model looks
+    // exactly like a complete one, and the model would answer a request it never saw.
     let request_data =
-        crate::server::http_common::handler::extract_request_data(req, "HTTP", &status_tx).await;
+        match crate::server::http_common::handler::extract_request_data(req, "HTTP", &status_tx)
+            .await
+        {
+            Ok(data) => data,
+            Err(too_large) => {
+                return Ok(
+                    crate::server::http_common::handler::build_payload_too_large_response(
+                        &too_large, "HTTP", &status_tx,
+                    ),
+                );
+            }
+        };
 
     // The body is the only part of the request whose byte count survives hyper's
     // parsing; the packet counter was already incremented by the caller.

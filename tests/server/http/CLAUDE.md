@@ -23,7 +23,10 @@ application scenarios.
 - `test_http_methods()`: 4 LLM calls (GET, POST, PUT, DELETE)
 - `test_http_error_responses()`: 3 LLM calls (403, 500, 301 redirects)
 - `test_http_simple_get_with_logging()`: 1 LLM call (GET with file logging)
-- **Total: 14 LLM calls** (above 10 target, but necessary for comprehensive HTTP testing)
+- `failure_semantics_test.rs` (3 tests): 1 LLM call each — only the startup instruction is
+  mocked, and every `http_request` is deliberately left unmatched so the mock answers HTTP
+  500 and netget reports a backend failure
+- **Total: 17 LLM calls** (above 10 target, but necessary for comprehensive HTTP testing)
 
 **Optimization Opportunity**: Could consolidate into 2-3 comprehensive servers:
 
@@ -70,7 +73,7 @@ endpoints are hit repeatedly. Current tests focus on functionality breadth, not 
 ## Expected Runtime
 
 - Model: qwen3-coder:30b
-- Runtime: ~2-3 minutes for full test suite (7 tests × 14 LLM calls)
+- Runtime: ~2-3 minutes for full test suite (10 tests, 17 LLM calls)
 - Each test includes:
     - Server startup: 2-3 seconds
     - LLM response per request: 5-8 seconds
@@ -159,6 +162,25 @@ endpoints are hit repeatedly. Current tests focus on functionality breadth, not 
 - **Purpose**: File I/O action, logging capability
 - **Note**: Lenient validation - LLM may interpret logging differently
 
+### 8-10. Failure semantics (`failure_semantics_test.rs`)
+
+`CLAUDE.md` names HTTP as the reference other protocols copy for answering a peer on LLM
+failure, and nothing tested it until these. All three point the server at a mock that
+answers the startup instruction and nothing else, so every `http_request` event is a
+backend failure.
+
+- `test_http_answers_500_when_the_llm_fails` — a `GET` gets **500** promptly (not silence,
+  and not 503: 503 + `Retry-After` is reserved for an *overloaded* backend so a client can
+  tell a retryable failure from a permanent one). The body is asserted to name `netget` and
+  to contain none of the backend URL, model name, retry text or `Caused by` chain — the
+  leak that hit ~25 protocols at once.
+- `test_http_failure_body_is_a_category_on_post_too` — the same through a body-carrying
+  method.
+- `test_http_refuses_an_oversized_request_body` — a body one byte over
+  `http_common::MAX_REQUEST_BODY_BYTES` (8 MiB) is answered **413**, and `expect_calls(1)`
+  on the startup rule proves it cost **no** LLM call: had the request reached the model,
+  the unmatched event would be a second recorded call and `verify_mocks` would fail.
+
 ## Known Issues
 
 ### 1. LLM Response Variability
@@ -244,7 +266,8 @@ Default 10-second timeout per request provides good balance:
 
 ### Test Coverage Gaps
 
-1. **Large request bodies**: No tests for large POST/PUT bodies (e.g., 10MB upload)
+1. **Large request bodies**: covered by `test_http_refuses_an_oversized_request_body` for
+   the *refusal* path only — there is no test of a large body the server accepts
 2. **Chunked encoding**: No tests for chunked transfer encoding
 3. **Keep-alive**: No tests verifying multiple requests on same TCP connection
 4. **Concurrent requests**: No tests for multiple simultaneous clients
@@ -252,8 +275,12 @@ Default 10-second timeout per request provides good balance:
 6. **Query parameters**: No tests for URL query string parsing
 7. **Request headers**: No tests verifying LLM sees all request headers
 8. **WebSocket upgrade**: No tests for Upgrade header (out of scope)
-9. **HTTP/2**: No tests for HTTP/2 (not implemented)
-10. **HTTPS/TLS**: No tests for TLS (not implemented)
+9. **HTTP/2**: not tested from *this* suite — HTTP/2 is implemented
+   (`src/server/http2/`) and has its own tests in `tests/server/http2/`. The h2c upgrade
+   path in `src/server/http/mod.rs` is what nothing covers.
+10. **HTTPS/TLS**: no tests here. TLS *is* implemented (`tls_enabled` and the rest of
+    `tls_cert_manager`'s startup parameters); it is the coverage that is missing, not the
+    feature.
 
 ### Consolidation Opportunity
 
@@ -306,7 +333,7 @@ GET /redirect → 301 Location: /home
 |----------|-------|-----------|----------|--------------------------------------------------|
 | TCP      | 5     | 5         | ~60s     | Core protocol, raw bytes                         |
 | UDP      | 1     | 1         | ~10s     | Minimal (protocols like DNS tested separately)   |
-| **HTTP** | **7** | **14**    | **2-3m** | **Beta protocol, comprehensive feature testing** |
+| **HTTP** | **10** | **17**   | **2-3m** | **Beta protocol, comprehensive feature testing** |
 | DNS      | 2     | 2         | ~25s     | Scripting enabled, fast                          |
 | SSH      | 3     | ~8-10     | ~2m      | Authentication, shell, commands                  |
 
