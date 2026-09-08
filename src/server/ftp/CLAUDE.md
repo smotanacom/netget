@@ -40,9 +40,15 @@ not at all.
 2. Register the connection in `ServerInstance` so it appears in the TUI.
 3. Raise `ftp_command` with `command = "CONNECTION_ESTABLISHED"` and write whatever the handler
    returns — this is how the mandatory 220 greeting is produced.
-4. Read command lines with `BufReader::read_line`, raise `ftp_command` per line, write the
+4. Read command lines with `read_command_line`, raise `ftp_command` per line, write the
    handler's output, repeat.
 5. On `close_connection`, EOF, or a write error, mark the connection closed.
+
+`read_command_line` exists because `BufReader::read_line` grows its buffer until it finds a
+newline: a peer that connects and streams bytes with no `\n` made the server allocate without
+bound, which is a one-connection out-of-memory from an unauthenticated client. It caps the
+line at `MAX_COMMAND_LINE` (8 KiB — RFC 959 commands are short) and answers an over-long line
+with `500 Command line too long` before closing, rather than dropping the connection silently.
 
 ### Dashboard injection (peer handle + counters)
 
@@ -70,9 +76,19 @@ server always sends the greeting event itself, so passing `send_first` would onl
 
 ### Error handling
 
-A handler failure is not silent. The greeting path logs the error (the client would otherwise
-wait forever for a 220 with nothing in the log); the command path logs it, replies
-`421 Service not available, closing control connection`, and closes.
+A handler failure is not silent, and the peer never sees the error text. Both paths classify
+the failure with `crate::utils::WireFailure` and put only its `&'static str` category on the
+wire; the error itself goes to the log:
+
+| Path | Wire | Log |
+|---|---|---|
+| greeting | `421 Service not available, closing control connection (netget: …)` then close | WARN with the full error |
+| command | `421 Service not available, closing control connection (netget: …)` then close | WARN with the full error |
+
+421 rather than silence because an FTP client may not send a command until it has read a
+greeting, so a silent greeting failure hangs the client until its own timeout. The two
+categories are `netget: backend at capacity, retry later` (overload — retryable) and
+`netget: request could not be processed`.
 
 ## LLM Integration
 
@@ -103,9 +119,16 @@ accepted, send your 220 greeting"; it is never sent by a client.
 
 `code` is validated: it must be a three-digit RFC 959 code in 100–599. Out-of-range values and a
 missing `code` or `message` are errors, not silently substituted defaults — a wrong reply code
-is worse than a visible failure. `send_ftp_data` normalises the ending so exactly one CRLF is
-written (a bare `\n` is upgraded; previously this path emitted a lone `\r` and truncated the
-line for the client).
+is worse than a visible failure.
+
+`message`, each element of `lines`, and each `entries` element are rejected if they contain CR
+or LF (`reject_line_breaks`). All three descriptions already promised this and nothing checked
+it, which left `send_ftp_response` a response-splitting primitive: a `message` of
+`"ok\r\n230 Logged in"` makes the client read a second, forged reply and treat a 331 as a
+successful login. `send_ftp_data` is deliberately exempt — it is the documented raw escape
+hatch for bytes the reply actions cannot express, and it normalises the ending so exactly one
+CRLF is written (a bare `\n` is upgraded; previously this path emitted a lone `\r` and
+truncated the line for the client).
 
 There are no async (user-triggered) actions.
 

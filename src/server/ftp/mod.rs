@@ -133,6 +133,90 @@ impl FtpServer {
     }
 }
 
+/// Largest control line the server will accumulate before giving up on the peer.
+///
+/// RFC 959 commands are short — the longest standard one is a `STOR` with a path — and
+/// 8 KiB is far above anything a real client sends. The cap exists because
+/// [`tokio::io::AsyncBufReadExt::read_line`] grows its buffer until it finds a newline: a
+/// peer that opens a connection and streams bytes with no `\n` makes the server allocate
+/// without bound, which is a one-connection out-of-memory.
+#[cfg(feature = "ftp")]
+const MAX_COMMAND_LINE: usize = 8192;
+
+/// The result of trying to read one control line.
+#[cfg(feature = "ftp")]
+enum CommandLine {
+    /// A complete line. The trailing CRLF is still attached; the caller trims it.
+    Line(String),
+    /// The peer closed the control connection.
+    Eof,
+    /// The peer sent `MAX_COMMAND_LINE` bytes with no newline in them.
+    TooLong,
+}
+
+/// Read a single CRLF-terminated FTP command, refusing to buffer more than `max_len` bytes.
+///
+/// Returns the line and the number of bytes consumed from the socket, so the caller can
+/// account for them in the connection stats exactly as `read_line` allowed.
+#[cfg(feature = "ftp")]
+async fn read_command_line<R>(
+    reader: &mut tokio::io::BufReader<R>,
+    max_len: usize,
+) -> std::io::Result<(CommandLine, usize)>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncBufReadExt;
+
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        // `fill_buf` borrows the reader, so decide what to take and drop the borrow before
+        // calling `consume`.
+        let (newline_at, available_len) = {
+            let available = reader.fill_buf().await?;
+            (
+                available.iter().position(|&b| b == b'\n'),
+                available.len(),
+            )
+        };
+
+        if available_len == 0 {
+            // EOF. A trailing fragment with no newline is not a command; the peer hung up
+            // mid-line, which is the same as hanging up.
+            return Ok((CommandLine::Eof, buf.len()));
+        }
+
+        let take = match newline_at {
+            Some(idx) => idx + 1,
+            None => available_len,
+        };
+
+        if buf.len() + take > max_len {
+            // Consume what we looked at so the reader is not left mid-buffer, then give up:
+            // the caller closes the connection, so there is nothing to resynchronise with.
+            reader.consume(take);
+            return Ok((CommandLine::TooLong, buf.len() + take));
+        }
+
+        {
+            let available = reader.fill_buf().await?;
+            buf.extend_from_slice(&available[..take]);
+        }
+        reader.consume(take);
+
+        if newline_at.is_some() {
+            let consumed = buf.len();
+            // `from_utf8_lossy` rather than a hard error: a stray non-UTF-8 byte in a
+            // command is the peer's problem to be answered with 500, not a reason to drop
+            // the connection without a reply.
+            return Ok((
+                CommandLine::Line(String::from_utf8_lossy(&buf).into_owned()),
+                consumed,
+            ));
+        }
+    }
+}
+
 #[cfg(feature = "ftp")]
 struct FtpSession;
 
@@ -323,18 +407,35 @@ impl FtpSession {
         R: tokio::io::AsyncRead + Unpin,
         W: tokio::io::AsyncWrite + Unpin,
     {
-        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio::io::BufReader;
 
         let mut reader = BufReader::new(read_half);
-        let mut line = String::new();
         let log = Log::new(Some(status_tx));
 
         loop {
-            line.clear();
-            let n = reader.read_line(&mut line).await?;
-            if n == 0 {
-                break;
-            }
+            let (outcome, n) = read_command_line(&mut reader, MAX_COMMAND_LINE).await?;
+            let line = match outcome {
+                CommandLine::Eof => break,
+                CommandLine::TooLong => {
+                    // A control line this long is not an FTP command. RFC 959 has no
+                    // "line too long" code, but 500 is the syntax-error reply and the
+                    // connection is closed so the peer cannot keep feeding the buffer.
+                    log.warn(format!(
+                        "FTP command line from connection {connection_id} exceeded \
+                         {MAX_COMMAND_LINE} bytes without a newline; closing"
+                    ));
+                    let _ = Self::write_out(
+                        write_half,
+                        b"500 Command line too long\r\n",
+                        app_state,
+                        server_id,
+                        connection_id,
+                    )
+                    .await;
+                    return Ok(());
+                }
+                CommandLine::Line(line) => line,
+            };
             app_state
                 .update_connection_stats(
                     server_id,
@@ -395,10 +496,22 @@ impl FtpSession {
                 Err(e) => {
                     // Do not leave the client hanging with no diagnostic: RFC 959 421 tells it
                     // the service is unavailable and the control connection is closing.
-                    log.warn(format!("FTP handler failed for command {command:?}: {e}"));
+                    //
+                    // The peer gets the `WireFailure` *category* — the same one the greeting
+                    // path uses — never the error text. `prefixed_text()` returns
+                    // `&'static str`, so nothing derived from `e` can reach the wire; `e`
+                    // itself goes to the log, which is where an operator looks.
+                    let notice = crate::utils::WireFailure::classify(&e).prefixed_text();
+                    log.warn(format!(
+                        "FTP handler failed for command {command:?}, refused with 421 \
+                         ({notice}): {e}"
+                    ));
+                    let reply = format!(
+                        "421 Service not available, closing control connection ({notice})\r\n"
+                    );
                     let _ = Self::write_out(
                         write_half,
-                        b"421 Service not available, closing control connection\r\n",
+                        reply.as_bytes(),
                         app_state,
                         server_id,
                         connection_id,
