@@ -35,7 +35,8 @@ The `h2c` upgrade path from HTTP/1.1 (`src/server/http/mod.rs`) also lands in
 **Event**: `http2_request`, one per HTTP/2 stream.
 
 `method`, `uri` (path+query), `version`, `headers` (lowercase map), `body` (UTF-8
-lossy), `body_bytes`.
+lossy), `body_bytes`, and `body_is_binary` (present and `true` only when the body
+was not valid UTF-8).
 
 **Actions**:
 
@@ -49,17 +50,29 @@ lossy), `body_bytes`.
 
 Same hard limits as HTTP/1.1: **one response per stream, sent complete; no
 streaming or chunking; text bodies only, no binary payloads;** request bodies are
-fully buffered before the LLM sees them. Do not set HTTP/2 pseudo-headers
-(`:status`, `:path`, …) or `content-length` — `h2` handles them; illegal header
-names/values are dropped rather than sent.
-
-Unlike HTTP/1.1, the event does **not** carry a `body_is_binary` flag: a non-UTF-8
-body is decoded lossily with no signal. Add it here if this protocol is promoted.
+buffered whole, bounded by `http_common::MAX_REQUEST_BODY_BYTES` (8 MiB) — a larger
+one is answered `413` and never reaches the model. That bound matters more here than
+on HTTP/1.1: `release_capacity` re-opens the flow-control window after every chunk,
+so without a *total* limit a peer can stream an unbounded amount into the buffer.
+Do not set HTTP/2 pseudo-headers (`:status`, `:path`, …) or `content-length` — `h2`
+handles them; illegal header names/values are dropped rather than sent.
 
 ### Failure behavior
 
-- LLM error → `500` with body `Internal Server Error`.
-- No response action → empty `200`.
+- LLM error → the *category* reaches the client, never the error text
+  (`crate::utils::WireFailure`): an **overloaded** backend → `503` + `Retry-After: 1`,
+  anything else → `500`. Logged as `decision=fail_closed_llm_overloaded` /
+  `decision=fail_closed_llm_error`. Same split as HTTP/1.1's `build_error_response`;
+  HTTP/2 answered a flat 500 for both until this pass, so a client could not tell
+  "come back in a second" from "this is broken".
+- No response action → the server's `default_response` startup param if set, otherwise
+  a fail-closed `500` (`decision=fail_closed_no_action`) carrying the same category
+  body. It is deliberately *not* an empty `200`, which a client cannot tell from a real,
+  empty answer. `default_response` is declared by
+  `request_handling_startup_parameters()`, which HTTP/2 advertises; until this pass
+  HTTP/2 read it nowhere, so setting it changed nothing.
+- Request body over the 8 MiB cap → `413`, `decision=refused_body_too_large`, no LLM
+  call.
 - Invalid status/header from the model → 500 / header dropped
   (`build_h2_response_head`), never a panic and never a dead stream.
 - Errors from `send_response`/`send_data` propagate out of `handle_h2_request`
@@ -75,7 +88,9 @@ body is decoded lossily with no signal. Add it here if this protocol is promoted
   handshake). **ALPN is never advertised**, so a browser will not select HTTP/2
   over TLS on its own — clients must pick `h2` explicitly, or use cleartext h2c.
 - One task per connection, one task per stream. Streams on a connection are
-  processed concurrently; the Ollama lock still serializes the LLM calls.
+  processed concurrently; how many *model* calls run at once is bounded by
+  `--llm-max-concurrent` (default 1). Do not reason about this from `--ollama-lock` —
+  that flag is accepted and inert, and its plumbing was deleted.
 - The request filter is built **once per server** in
   `spawn_with_push_support` (not per connection), and
   `RequestFilter::warnings()` is forwarded to the status channel — parsing is
@@ -103,16 +118,27 @@ exists to write it.
 
 ## Testing
 
-`tests/server/http2/e2e_test.rs` — 3 mocked scenarios, declared in
-`tests/server/http2/mod.rs`.
+`tests/server/http2/e2e_test.rs` — 3 mocked scenarios (basic GETs, POST with body,
+multiplexing), driven with `reqwest`'s `http2_prior_knowledge()`.
+`tests/server/http2/failure_semantics_test.rs` — 2 more: `500` on backend failure with
+no internal detail and no `Retry-After` in the body, and `413` (proven to cost no LLM
+call) for a body over the size cap. Both declared in `tests/server/http2/mod.rs`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features http2 \
     --test server::http2::e2e_test -- --test-threads=100
 ```
 
-**Gaps**: no coverage of server push, of the request filter on the HTTP/2 path,
-of TLS, or of the h2c upgrade from HTTP/1.1.
+**Gaps**: no coverage of server push, of the request filter on the HTTP/2 path, of
+`default_response`, of TLS, or of the h2c upgrade from HTTP/1.1.
+
+**On maturity**: HTTP/2 stays **Experimental**, and a push test would not change that.
+Root `CLAUDE.md` lists `http2` under "evidence is only a generic HTTP client", and the
+obvious way to test push — the `h2` crate's client `push_promises()` — is the circular
+case that file also names: the server frames with `h2` too, so it would assert only
+that one crate round-trips through itself. Promotion needs a peer that is not `h2`
+(curl, nghttp2, a browser) completing a real exchange, including ALPN, which this
+server does not advertise.
 
 ## Example prompts
 
@@ -138,8 +164,7 @@ Deterministic variant (no LLM call):
 ## Not implemented
 
 ALPN negotiation · stream prioritization control · streaming/chunked responses ·
-binary bodies · LLM control over connection lifetime ·
-`body_is_binary` signalling · trailers · `recent_requests`.
+binary bodies · LLM control over connection lifetime · trailers · `recent_requests`.
 
 ## References
 

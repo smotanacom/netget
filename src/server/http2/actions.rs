@@ -14,6 +14,12 @@ use std::sync::LazyLock;
 /// HTTP/2 protocol action handler
 pub struct Http2Protocol;
 
+impl Default for Http2Protocol {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Http2Protocol {
     pub fn new() -> Self {
         Self
@@ -208,7 +214,21 @@ impl Http2Protocol {
             .and_then(|v| v.as_str())
             .context("Missing 'path' parameter")?;
 
-        let status = action.get("status").and_then(|v| v.as_u64()).unwrap_or(200) as u16;
+        // Range-checked rather than cast: `65736 as u16` is 200, so an out-of-range value
+        // would silently become a plausible status instead of being reported.
+        let status = match action.get("status") {
+            None | Some(serde_json::Value::Null) => 200u16,
+            Some(v) => v
+                .as_u64()
+                .filter(|s| (100..=599).contains(s))
+                .with_context(|| {
+                    format!(
+                        "Invalid 'status' parameter {}: expected an HTTP status code between \
+                         100 and 599",
+                        v
+                    )
+                })? as u16,
+        };
 
         let headers = action
             .get("headers")
@@ -248,7 +268,10 @@ fn send_http2_response_action() -> ActionDefinition {
         description: "Respond to the HTTP/2 request that triggered this event. Emit it exactly \
             once per request: the response is sent complete, in one piece. There is no way to \
             stream or chunk it, and the body is sent as UTF-8 text, so binary payloads cannot be \
-            produced. If you emit no send_http2_response, the client gets an empty 200."
+            produced. ALWAYS emit exactly one send_http2_response for every request — if you \
+            emit none, the server has no answer to send and refuses the stream with 500 (or the \
+            server's configured default_response, if it has one). push_resource does not count: \
+            a PUSH_PROMISE is an extra resource offered alongside an answer, not the answer."
             .to_string(),
         parameters: vec![
             Parameter {
@@ -362,9 +385,8 @@ fn push_resource_action() -> ActionDefinition {
 // ============================================================================
 
 pub static SEND_HTTP2_RESPONSE_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| send_http2_response_action());
-pub static PUSH_RESOURCE_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| push_resource_action());
+    LazyLock::new(send_http2_response_action);
+pub static PUSH_RESOURCE_ACTION: LazyLock<ActionDefinition> = LazyLock::new(push_resource_action);
 
 // ============================================================================
 // HTTP/2 Event Type Constants
@@ -405,7 +427,25 @@ pub static HTTP2_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "body".to_string(),
             type_hint: "string".to_string(),
-            description: "Request body".to_string(),
+            description:
+                "Request body decoded as UTF-8 text (empty string when there is no body). \
+                Bytes that are not valid UTF-8 are replaced with U+FFFD, so when body_is_binary \
+                is true this field is lossy and must not be treated as the exact request payload."
+                    .to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "body_bytes".to_string(),
+            type_hint: "number".to_string(),
+            description: "Size of the request body in bytes, before UTF-8 decoding.".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "body_is_binary".to_string(),
+            type_hint: "boolean".to_string(),
+            description: "Present and true only when the request body is not valid UTF-8. The \
+                body field is then a lossy decoding; the raw bytes are not available to you."
+                .to_string(),
             required: false,
         },
     ])
