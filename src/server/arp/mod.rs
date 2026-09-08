@@ -349,6 +349,29 @@ impl ArpServer {
                                             sender_ip,
                                             target_ip
                                         ));
+                                    } else if execution_result.protocol_results.is_empty() {
+                                        // A fourth outcome, and the one that reads as a bug
+                                        // rather than a policy: the model answered with real
+                                        // actions and every one of them failed to execute — a
+                                        // MAC that does not parse, an IPv6 address where IPv4
+                                        // is required. On the wire this is silence again, and
+                                        // conflating it with `model_no_answer` sends the
+                                        // operator looking at the prompt when the fault is in
+                                        // the action's fields. ERROR, not INFO: the other
+                                        // three are deliberate, this one is not.
+                                        error!(
+                                            "ARP decision=fail_closed_action_error: {} action(s) from the model all failed to execute for {} from {} for {}, no reply sent",
+                                            execution_result.raw_actions.len(),
+                                            operation_to_string(operation),
+                                            sender_ip,
+                                            target_ip
+                                        );
+                                        let _ = status_clone.send(format!(
+                                            "✗ ARP decision=fail_closed_action_error: {} {} -> {} produced no frame (no reply)",
+                                            operation_to_string(operation),
+                                            sender_ip,
+                                            target_ip
+                                        ));
                                     }
 
                                     debug!(

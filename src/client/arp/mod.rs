@@ -44,9 +44,13 @@ enum ConnectionState {
 /// learns whether the frame really went out: the injection thread reports the result of
 /// `sendpacket` back, which is what lets the command loop answer `Sent { bytes_sent }`
 /// truthfully instead of guessing.
-struct InjectedPacket {
-    frame: Vec<u8>,
-    ack: Option<tokio::sync::oneshot::Sender<std::result::Result<usize, String>>>,
+///
+/// Public so a test can stand in for the pcap injection thread: holding the receiver and
+/// answering `ack` exercises the whole injected-command surface — including the `Sent`
+/// outcome, which is otherwise reachable only under root.
+pub struct InjectedPacket {
+    pub frame: Vec<u8>,
+    pub ack: Option<tokio::sync::oneshot::Sender<std::result::Result<usize, String>>>,
 }
 
 /// How long an injected command waits for the pcap thread's acknowledgement.
@@ -141,13 +145,20 @@ impl ArpClient {
         ));
         app_state.register_client_task(client_id, cmd_task).await;
 
+        // Copy the memory out and drop the guard BEFORE the call. A `client_data.lock().await`
+        // written inline in the scrutinee is a temporary whose guard lives until the end of the
+        // whole `match` — so the arm's own `client_data.lock().await.memory = mem` would wait
+        // forever on a mutex this task already holds. `tokio::sync::Mutex` is not reentrant and
+        // never times out, so the symptom is a client stuck in `Connected` for good.
+        let memory_snapshot = client_data.lock().await.memory.clone();
+
         // Call LLM with started event
         match call_llm_for_client(
             &llm_client,
             &app_state,
             client_id.to_string(),
             &instruction,
-            &client_data.lock().await.memory,
+            &memory_snapshot,
             Some(&event),
             protocol.as_ref(),
             &status_tx,
@@ -163,10 +174,20 @@ impl ArpClient {
                     client_data.lock().await.memory = mem;
                 }
 
-                // Process initial actions (if any)
-                for _action in actions {
-                    debug!("ARP client {} processing initial action", client_id);
-                }
+                // Execute the model's answer to the started event. Counting the actions and
+                // logging the count is the family's documented defect: a client told to send a
+                // gratuitous ARP announcement on start put nothing on the wire and reported
+                // success. The frames go to the same injection thread the packet-driven path
+                // uses, so both routes behave identically.
+                Self::execute_client_actions(
+                    actions,
+                    protocol.as_ref(),
+                    &packet_tx,
+                    client_id,
+                    &app_state,
+                    &status_tx,
+                )
+                .await;
             }
             Err(e) => {
                 error!("ARP client {} initial LLM call failed: {}", client_id, e);
@@ -181,45 +202,62 @@ impl ArpClient {
         let llm_client_clone = llm_client.clone();
         let client_data_clone = client_data.clone();
 
+        // Opening the pcap handles is the step that needs privilege (root, /dev/bpf* on
+        // macOS/BSD, CAP_NET_RAW on Linux). It must NOT be fire-and-forget: the outcome comes
+        // back over this oneshot and `connect()` returns `Err`, so an unprivileged run shows
+        // `ClientStatus::Error` instead of a client sitting in `Connected` having captured
+        // nothing. This mirrors the fix already made on the ARP *server* side.
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+
+        // `JoinHandle::abort()` cannot interrupt a thread parked in `next_packet()`, so the
+        // capture loop stops cooperatively on this flag. The parked task registered below
+        // trips it when `remove_client` aborts the client's tasks; without it the capture
+        // (and its LLM calls) outlived the client until the process exited.
+        let stop = crate::utils::StopSignal::new();
+        let stop_in_loop = stop.clone();
+
         tokio::task::spawn_blocking(move || {
-            // Find device
-            let device = match Self::find_device(&interface_clone) {
-                Ok(d) => d,
-                Err(e) => {
-                    Log::new(Some(&status_tx_clone)).error(format!("Failed to find device: {}", e));
-                    return;
-                }
+            let open_captures = || -> Result<(Capture<pcap::Active>, Capture<pcap::Active>)> {
+                let device = Self::find_device(&interface_clone)
+                    .with_context(|| format!("no such capture device '{}'", interface_clone))?;
+
+                let mut cap_rx = Capture::from_device(device.clone())
+                    .map(|c| c.promisc(true).snaplen(65535).timeout(1000))
+                    .and_then(|c| c.open())
+                    .with_context(|| {
+                        format!(
+                            "failed to open pcap capture on '{}' (needs root, or read \
+                                 access to /dev/bpf* on macOS/BSD, or CAP_NET_RAW on Linux)",
+                            interface_clone
+                        )
+                    })?;
+
+                cap_rx
+                    .filter("arp", true)
+                    .context("failed to apply the 'arp' BPF filter")?;
+
+                let cap_tx = Capture::from_device(device)
+                    .map(|c| c.promisc(true).snaplen(65535).timeout(1000))
+                    .and_then(|c| c.open())
+                    .with_context(|| {
+                        format!(
+                            "failed to open pcap injection handle on '{}'",
+                            interface_clone
+                        )
+                    })?;
+
+                Ok((cap_rx, cap_tx))
             };
 
-            // Open capture for receiving
-            let mut cap_rx = match Capture::from_device(device.clone())
-                .map(|c| c.promisc(true).snaplen(65535).timeout(1000))
-                .and_then(|c| c.open())
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    Log::new(Some(&status_tx_clone))
-                        .error(format!("Failed to open capture: {}", e));
-                    return;
+            let (mut cap_rx, mut cap_tx) = match open_captures() {
+                Ok(handles) => {
+                    let _ = ready_tx.send(Ok(()));
+                    handles
                 }
-            };
-
-            // Apply ARP filter to receiving capture
-            if let Err(e) = cap_rx.filter("arp", true) {
-                Log::new(Some(&status_tx_clone))
-                    .error(format!("Failed to apply ARP filter: {}", e));
-                return;
-            }
-
-            // Open capture for sending (separate instance)
-            let mut cap_tx = match Capture::from_device(device)
-                .map(|c| c.promisc(true).snaplen(65535).timeout(1000))
-                .and_then(|c| c.open())
-            {
-                Ok(c) => c,
                 Err(e) => {
                     Log::new(Some(&status_tx_clone))
-                        .error(format!("Failed to open capture for sending: {}", e));
+                        .error(format!("ARP client capture startup failed: {:#}", e));
+                    let _ = ready_tx.send(Err(e));
                     return;
                 }
             };
@@ -247,8 +285,16 @@ impl ArpClient {
                 }
             });
 
-            // Capture loop
+            // Capture loop. The pcap read timeout (1000ms, set above) bounds how long a stop
+            // takes to be noticed on an idle interface.
             loop {
+                if stop_in_loop.is_stopped() {
+                    info!(
+                        "ARP client {} capture on {} stopping",
+                        client_id, interface_clone
+                    );
+                    break;
+                }
                 match cap_rx.next_packet() {
                     Ok(packet) => {
                         let data = packet.data.to_vec();
@@ -363,51 +409,17 @@ impl ArpClient {
                                             }
 
                                             // Execute actions
-                                            for action in actions {
-                                                match protocol_task_clone
-                                                    .as_ref()
-                                                    .execute_action(action)
-                                                {
-                                                    Ok(ClientActionResult::Custom {
-                                                        name,
-                                                        data,
-                                                    }) => {
-                                                        if let Some(packet) =
-                                                            build_packet_for_custom_result(
-                                                                &name, &data,
-                                                            )
-                                                        {
-                                                            if packet_tx_clone
-                                                                .send(InjectedPacket {
-                                                                    frame: packet,
-                                                                    ack: None,
-                                                                })
-                                                                .is_ok()
-                                                            {
-                                                                debug!(
-                                                                    "ARP client {} queued {}",
-                                                                    client_id, name
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-                                                    Ok(ClientActionResult::Disconnect) => {
-                                                        info!(
-                                                            "ARP client {} stopping capture",
-                                                            client_id
-                                                        );
-                                                        state_clone
-                                                            .update_client_status(
-                                                                client_id,
-                                                                ClientStatus::Disconnected,
-                                                            )
-                                                            .await;
-                                                        let _ = status_clone
-                                                            .send("__UPDATE_UI__".to_string());
-                                                        return;
-                                                    }
-                                                    _ => {}
-                                                }
+                                            if Self::execute_client_actions(
+                                                actions,
+                                                protocol_task_clone.as_ref(),
+                                                &packet_tx_clone,
+                                                client_id,
+                                                &state_clone,
+                                                &status_clone,
+                                            )
+                                            .await
+                                            {
+                                                return;
                                             }
                                         }
                                         Err(e) => {
@@ -450,8 +462,105 @@ impl ArpClient {
             let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
         });
 
+        // Wait for the blocking task to report whether the capture actually came up, and
+        // return `Err` if it did not.
+        //
+        // There is no third option: `client_startup::connect_client` overwrites the status
+        // with `ClientStatus::Connected` on any `Ok`, so a client that returns `Ok` having
+        // opened nothing *is* the lie this family is known for — the client-side twin of the
+        // fire-and-forget `spawn_blocking` that left ARP/DataLink/ICMP servers `Running` with
+        // no capture. Erroring out puts the reason (device name, privilege hint) in front of
+        // the operator, which the same generic path does via its `Err` arm. The ICMP client
+        // already behaves this way; ARP now matches it.
+        match ready_rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                app_state.remove_client_handle(client_id).await;
+                return Err(e);
+            }
+            Err(_) => {
+                app_state.remove_client_handle(client_id).await;
+                return Err(anyhow::anyhow!(
+                    "ARP capture task on '{}' exited before signalling readiness",
+                    interface
+                ));
+            }
+        }
+
+        // Only now that the capture is genuinely live: `remove_client` aborts this parked
+        // task, which trips `stop` and ends the blocking loop above.
+        app_state
+            .register_client_task(client_id, stop.park_task())
+            .await;
+
         // Return a dummy socket address (ARP doesn't use ports)
         Ok(SocketAddr::from(([0, 0, 0, 0], 0)))
+    }
+
+    /// Execute a batch of model-produced actions, handing any resulting frame to the pcap
+    /// injection thread.
+    ///
+    /// Both LLM entry points go through here — the started event and every captured packet —
+    /// so a client cannot act on one and silently drop the other. Returns `true` if the model
+    /// asked to disconnect, in which case the caller must stop.
+    async fn execute_client_actions(
+        actions: Vec<serde_json::Value>,
+        protocol: &ArpClientProtocol,
+        packet_tx: &mpsc::UnboundedSender<InjectedPacket>,
+        client_id: ClientId,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) -> bool {
+        for action in actions {
+            match protocol.execute_action(action) {
+                Ok(ClientActionResult::Custom { name, data }) => {
+                    match build_packet_for_custom_result(&name, &data) {
+                        Some(packet) => {
+                            if packet_tx
+                                .send(InjectedPacket {
+                                    frame: packet,
+                                    ack: None,
+                                })
+                                .is_ok()
+                            {
+                                debug!("ARP client {} queued {}", client_id, name);
+                            } else {
+                                // The injection thread is gone: the capture never opened, or
+                                // it has stopped. Saying so is the difference between "sent"
+                                // and "silently dropped".
+                                error!(
+                                    "ARP client {} could not queue '{}': the pcap injection \
+                                     thread is not running",
+                                    client_id, name
+                                );
+                            }
+                        }
+                        None => error!(
+                            "ARP client {} could not build a frame for '{}': check the MAC and \
+                             IP fields",
+                            client_id, name
+                        ),
+                    }
+                }
+                Ok(ClientActionResult::Disconnect) => {
+                    info!("ARP client {} stopping capture", client_id);
+                    app_state
+                        .update_client_status(client_id, ClientStatus::Disconnected)
+                        .await;
+                    let _ = status_tx.send("__UPDATE_UI__".to_string());
+                    return true;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    error!("ARP client {} action failed: {}", client_id, e);
+                    let _ = status_tx.send(format!(
+                        "[WARN] ARP client {} action failed: {}",
+                        client_id, e
+                    ));
+                }
+            }
+        }
+        false
     }
 
     /// Drain injected commands until the channel closes (client removed, or the capture
@@ -461,7 +570,7 @@ impl ArpClient {
     /// there is no `AsyncWrite` half at all. An ARP frame is built here exactly as the LLM
     /// path builds it and handed to the same pcap injection thread, which acknowledges the
     /// `sendpacket` call so the reply can be truthful.
-    async fn command_loop(
+    pub async fn command_loop(
         mut command_rx: mpsc::Receiver<ClientCommand>,
         protocol: Arc<ArpClientProtocol>,
         packet_tx: mpsc::UnboundedSender<InjectedPacket>,
@@ -605,7 +714,11 @@ impl ArpClient {
 /// Build the Ethernet frame for one of the ARP protocol's `Custom` results, or `None` when
 /// the action's MAC/IP fields do not parse. Shared by the LLM path and injected commands so
 /// the frame layout exists in one place.
-fn build_packet_for_custom_result(name: &str, data: &serde_json::Value) -> Option<Vec<u8>> {
+///
+/// Public because this — not `execute_action` — is where a malformed MAC or a non-IPv4
+/// address is actually refused: `execute_action` only checks that the fields are *present*.
+/// A test that wants to assert the rejection has to reach this layer.
+pub fn build_packet_for_custom_result(name: &str, data: &serde_json::Value) -> Option<Vec<u8>> {
     match name {
         "send_arp_request" => build_arp_request_from_action(data),
         "send_arp_reply" => build_arp_reply_from_action(data),
