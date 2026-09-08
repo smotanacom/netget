@@ -45,8 +45,27 @@ use actions::{
 };
 
 /// NATS' own default control-line limit. A line longer than this without a CRLF is a peer
-/// that is not speaking NATS, and the buffer must not grow for it forever.
+/// that is not speaking NATS.
+///
+/// This bounds one *line*. It does not bound the read buffer, which the previous wording
+/// claimed it did: a `PUB` declares its own length, and the reader buffers toward it.
+/// `MAX_BUFFERED_BYTES` below is what bounds the buffer.
 pub const MAX_CONTROL_LINE: usize = 4096;
+
+/// Hard ceiling on the reader's frame buffer, whatever any frame declares.
+///
+/// A frame is at most one control line plus `max_payload` plus its terminator, so anything
+/// past that with no frame extractable is a peer that will never produce one. Without this,
+/// `max_payload` was the only bound in the system and it was applied to a *declared* size,
+/// not to what had actually been buffered.
+const MAX_BUFFERED_SLACK: usize = MAX_CONTROL_LINE + 16;
+
+/// How many `accept()` failures in a row before the listener is treated as dead.
+///
+/// Transient failures - descriptor exhaustion, a peer hanging up between SYN and accept -
+/// clear on their own, so one of them must not end the accept loop. A listener that is
+/// genuinely broken fails every time, and this bounds how long that takes to notice.
+const MAX_CONSECUTIVE_ACCEPT_ERRORS: u32 = 64;
 
 /// How many parsed frames may wait for the dispatcher before the reader stops reading.
 const FRAME_QUEUE_CAPACITY: usize = 256;
@@ -130,6 +149,43 @@ impl std::fmt::Display for FrameError {
 /// accepted too, so that a human poking at the port with `nc` gets sensible behaviour rather
 /// than `Unknown Protocol Operation` on every line.
 pub fn parse_frame(buf: &[u8], max_payload: u64) -> Result<Option<(Frame, usize)>, FrameError> {
+    let skipped = blank_line_prefix_len(buf);
+    match parse_one_frame(&buf[skipped..], max_payload)? {
+        Some((frame, consumed)) => Ok(Some((frame, skipped + consumed))),
+        None => Ok(None),
+    }
+}
+
+/// Length of the leading run of blank lines (`\n`, `\r\n`, or a line of only whitespace).
+///
+/// Real servers ignore blank lines between frames. Skipping them iteratively is not a style
+/// choice. The version this replaced recursed into `parse_frame` once per blank line — one
+/// stack frame deeper each time, and not in tail position, since the returned offset had to
+/// be adjusted after the call. A peer writing 8 KB of newlines, which is one `read`, recursed
+/// about 8000 levels and overflowed the stack. A Rust stack overflow is `SIGSEGV`, not a
+/// catchable panic, so `tokio::spawn` could not contain it and the whole NetGet process
+/// aborted — every other server with it.
+///
+/// The reader drains this prefix before parsing as well. `parse_frame` folds it into
+/// `consumed` when a frame follows, but when nothing follows it reports `Ok(None)` having
+/// consumed nothing — so without the eager drain a peer sending only newlines would still
+/// grow the read buffer by a chunk on every read, without bound.
+pub fn blank_line_prefix_len(buf: &[u8]) -> usize {
+    let mut offset = 0;
+    while let Some(nl) = buf[offset..].iter().position(|&b| b == b'\n') {
+        let line_end = offset + nl;
+        let line = &buf[offset..line_end];
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if !line.iter().all(|b| b.is_ascii_whitespace()) {
+            break;
+        }
+        offset = line_end + 1;
+    }
+    offset
+}
+
+/// Decode one frame from a buffer whose first line is known not to be blank.
+fn parse_one_frame(buf: &[u8], max_payload: u64) -> Result<Option<(Frame, usize)>, FrameError> {
     let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
         if buf.len() > MAX_CONTROL_LINE {
             return Err(FrameError::MaximumControlLineExceeded);
@@ -149,15 +205,6 @@ pub fn parse_frame(buf: &[u8], max_payload: u64) -> Result<Option<(Frame, usize)
     let line = std::str::from_utf8(&buf[..line_end])
         .map_err(|_| FrameError::UnknownProtocolOperation)?
         .trim();
-
-    if line.is_empty() {
-        // A blank line between frames: real servers ignore it. Skip it and decode from
-        // after it, so the caller never re-parses bytes that can never become a frame.
-        return match parse_frame(&buf[after_line..], max_payload)? {
-            Some((frame, consumed)) => Ok(Some((frame, after_line + consumed))),
-            None => Ok(None),
-        };
-    }
 
     let mut parts = line.split_whitespace();
     let verb = parts.next().ok_or(FrameError::UnknownProtocolOperation)?;
@@ -252,13 +299,24 @@ pub fn parse_frame(buf: &[u8], max_payload: u64) -> Result<Option<(Frame, usize)
         if header_len > total_len {
             return Err(FrameError::UnknownProtocolOperation);
         }
-        // The limit applies to the message body, as it does in a real server: the header
-        // block is accounted separately.
-        if (total_len - header_len) as u64 > max_payload {
+        // The limit applies to the whole declared size, header block included, which is what
+        // nats-server's processHeaderPub does (`c.pa.size > c.mpay`, where `size` is the
+        // total). Bounding only `total_len - header_len` left `header_len` itself unbounded,
+        // and because `header_len == total_len` yields a zero-length body it passed both
+        // checks: `HPUB x 4000000000 4000000000` is 30 bytes on the wire and made the reader
+        // buffer its way toward 4 GB, while `HPUB x <usize::MAX> <usize::MAX>` overflowed the
+        // `after_line + total_len` index below — a panic in debug, and in release a wrap to a
+        // `start > end` slice that panicked one line further on. `PUB` was safe only by
+        // accident, its header length being a literal `0`.
+        if total_len as u64 > max_payload {
             return Err(FrameError::MaximumPayloadViolation);
         }
 
-        let body_end = after_line + total_len;
+        // `max_payload` is caller-supplied and may itself be enormous; a declared size must
+        // never be able to wrap the index that reads it.
+        let Some(body_end) = after_line.checked_add(total_len) else {
+            return Err(FrameError::MaximumPayloadViolation);
+        };
         if buf.len() <= body_end {
             return Ok(None);
         }
@@ -389,9 +447,17 @@ impl NatsServer {
         let task_registrar = app_state.clone();
 
         let accept_handle = tokio::spawn(async move {
+            // `accept()` fails transiently when the process is briefly out of descriptors
+            // (EMFILE/ENFILE) or a peer hangs up between SYN and accept (ECONNABORTED).
+            // Breaking on those stopped the listener for good while `AppState` still reported
+            // the server `Running` - a server that lies about being up, arrived at from the
+            // other direction. Retry with a short backoff, and give up only when the failures
+            // are relentless enough that the listener really is dead.
+            let mut consecutive_accept_errors = 0u32;
             loop {
                 match listener.accept().await {
                     Ok((stream, peer_addr)) => {
+                        consecutive_accept_errors = 0;
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -418,8 +484,17 @@ impl NatsServer {
                         }
                     }
                     Err(e) => {
-                        Log::new(Some(&status_tx)).error(format!("NATS accept error: {}", e));
-                        break;
+                        consecutive_accept_errors += 1;
+                        if consecutive_accept_errors >= MAX_CONSECUTIVE_ACCEPT_ERRORS {
+                            Log::new(Some(&status_tx)).error(format!(
+                                "NATS accept failed {} times in a row ({}); listener stopping",
+                                consecutive_accept_errors, e
+                            ));
+                            break;
+                        }
+                        Log::new(Some(&status_tx))
+                            .warn(format!("NATS accept error: {} - retrying", e));
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
                 }
             }
@@ -646,8 +721,42 @@ async fn run_reader(
         log.debug(format!("NATS received {} bytes from {}", n, peer_addr));
 
         loop {
+            // `parse_frame` folds a leading run of blank lines into `consumed` when a frame
+            // follows one, but reports `Ok(None)` having consumed nothing when none does.
+            // Draining here is what stops a peer that sends only newlines from growing `buf`
+            // by a chunk on every read for as long as it cares to keep typing.
+            let blank = blank_line_prefix_len(&buf);
+            if blank > 0 {
+                buf.drain(..blank);
+            }
             match parse_frame(&buf, max_payload) {
-                Ok(None) => break,
+                Ok(None) => {
+                    // Nothing extractable, and more buffered than any single frame could
+                    // ever need. The peer is not going to complete one.
+                    if buf.len() as u64 > max_payload.saturating_add(MAX_BUFFERED_SLACK as u64) {
+                        log.warn(format!(
+                            "NATS buffered {} bytes from {} with no complete frame - \
+                             closing connection",
+                            buf.len(),
+                            peer_addr
+                        ));
+                        let _ = write_counted(
+                            &write_half,
+                            format!(
+                                "-ERR '{}'\r\n",
+                                FrameError::MaximumPayloadViolation.wire_text()
+                            )
+                            .as_bytes(),
+                            &app_state,
+                            server_id,
+                            connection_id,
+                        )
+                        .await;
+                        let _ = write_half.lock().await.shutdown().await;
+                        break 'session;
+                    }
+                    break;
+                }
                 Ok(Some((frame, consumed))) => {
                     buf.drain(..consumed);
 
