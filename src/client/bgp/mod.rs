@@ -57,6 +57,15 @@ const DEFAULT_ROUTER_ID: &str = "192.168.1.100";
 /// RFC 4271 section 4.2: a non-zero hold time below three seconds is unacceptable.
 const MIN_HOLD_TIME: u16 = 3;
 
+/// RFC 4271 section 8.2.2: having sent our OPEN we are in OpenSent, where the Hold Timer is set
+/// to "a large value" — the RFC suggests 4 minutes — because the *negotiated* timer cannot start
+/// until the peer's OPEN has arrived.
+///
+/// Without it, a peer that accepted the TCP connection and then said nothing left this client
+/// parked in `read_exact` indefinitely: `spawn_timers` is only reached from the OPEN handler, so
+/// there was no timer of any kind covering the one phase the peer controls entirely.
+const OPEN_HOLD_TIME: std::time::Duration = std::time::Duration::from_secs(240);
+
 /// Where a write half lives once the read loop has been spawned.
 type SharedWriter = Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>;
 
@@ -117,6 +126,26 @@ impl Shutdown {
 
     fn is_set(&self) -> bool {
         self.flag.load(Ordering::SeqCst)
+    }
+}
+
+/// [`with_deadline`] gave up before the future finished.
+struct DeadlineExpired;
+
+/// Await `fut`, abandoning it after `limit` when one is given.
+///
+/// A plain `tokio::time::timeout` cannot express "no limit", and only the pre-OPEN reads are
+/// bounded from the read loop: once the session is negotiated, `spawn_timers` owns the schedule
+/// and signals through `Shutdown` instead.
+async fn with_deadline<F: std::future::Future>(
+    limit: Option<std::time::Duration>,
+    fut: F,
+) -> std::result::Result<F::Output, DeadlineExpired> {
+    match limit {
+        Some(limit) => tokio::time::timeout(limit, fut)
+            .await
+            .map_err(|_| DeadlineExpired),
+        None => Ok(fut.await),
     }
 }
 
@@ -382,19 +411,43 @@ impl BgpClient {
                 break;
             }
 
-            // The negotiated four-octet-AS state decides how AS_PATH is read. Copy it out
-            // rather than holding the guard across the read.
-            let peer_asn4 = client_data.lock().await.peer_asn4;
+            // The negotiated four-octet-AS state decides how AS_PATH is read, and the session
+            // state decides whether the pre-OPEN deadline applies. Copy both out rather than
+            // holding the guard across the read.
+            let (peer_asn4, open_deadline) = {
+                let data = client_data.lock().await;
+                (
+                    data.peer_asn4,
+                    (data.bgp_state == BgpState::OpenSent).then_some(OPEN_HOLD_TIME),
+                )
+            };
 
             let mut header = [0u8; wire::BGP_HEADER_LEN];
             // A parked `read_exact` is exactly what a hold timer has to be able to interrupt:
             // the peer that has to be dropped is by definition the one sending nothing. The
             // timer task raises `shutdown` after writing its NOTIFICATION, and this select
-            // turns that into an immediate exit rather than a wait for TCP to give up.
+            // turns that into an immediate exit rather than a wait for TCP to give up. Before
+            // the peer's OPEN there is no timer task yet, so the deadline above stands in.
             let read_result = tokio::select! {
                 biased;
                 _ = shutdown.notify.notified() => break,
-                r = read_half.read_exact(&mut header) => r,
+                r = with_deadline(open_deadline, read_half.read_exact(&mut header)) => match r {
+                    Ok(r) => r,
+                    Err(DeadlineExpired) => {
+                        error!(
+                            "BGP client {} received no OPEN within {}s, closing (RFC 4271 8.2.2)",
+                            client_id,
+                            OPEN_HOLD_TIME.as_secs()
+                        );
+                        let _ = status_tx.send(format!(
+                            "[CLIENT] BGP peer sent no OPEN within {}s, closing session",
+                            OPEN_HOLD_TIME.as_secs()
+                        ));
+                        Self::send_notification(write_half, wire::ERR_HOLD_TIMER_EXPIRED, 0, &[])
+                            .await;
+                        break;
+                    }
+                },
             };
 
             match read_result {
@@ -438,10 +491,34 @@ impl BgpClient {
             let mut full = vec![0u8; msg_len];
             full[..wire::BGP_HEADER_LEN].copy_from_slice(&header);
             if msg_len > wire::BGP_HEADER_LEN {
-                read_half
-                    .read_exact(&mut full[wire::BGP_HEADER_LEN..])
-                    .await
-                    .context("BGP message body truncated")?;
+                // The body read has to be under the same select as the header read. It was not,
+                // and that left a hole the hold timer could not close: a peer that sent a valid
+                // 19-octet header announcing a 4096-octet message and then stopped parked this
+                // `read_exact` forever. `shutdown` was raised on expiry and nothing observed it,
+                // so the NOTIFICATION went out and the session stayed up regardless. Half a
+                // message is not worth preserving, so abandoning the read mid-way is fine —
+                // every path out of here ends the session.
+                let body = tokio::select! {
+                    biased;
+                    _ = shutdown.notify.notified() => break,
+                    r = with_deadline(
+                        open_deadline,
+                        read_half.read_exact(&mut full[wire::BGP_HEADER_LEN..]),
+                    ) => r,
+                };
+                match body {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => return Err(e).context("BGP message body truncated"),
+                    Err(DeadlineExpired) => {
+                        error!(
+                            "BGP client {} stalled mid-message before the OPEN exchange, closing",
+                            client_id
+                        );
+                        Self::send_notification(write_half, wire::ERR_HOLD_TIMER_EXPIRED, 0, &[])
+                            .await;
+                        break;
+                    }
+                }
             }
 
             // RFC 4271 section 6.5 / section 10: the Hold Timer restarts on every KEEPALIVE,
@@ -544,6 +621,7 @@ impl BgpClient {
                         app_state,
                         status_tx,
                         client_data,
+                        write_half,
                         shutdown,
                     )
                     .await;
@@ -719,6 +797,18 @@ impl BgpClient {
     }
 
     /// Handle a peer UPDATE: report the decoded routes to the handler.
+    ///
+    /// The handler *does* get a reply path. It used to be passed `None`, on the reasoning that
+    /// "this client announces nothing, so an UPDATE handler cannot reply on the wire" — but that
+    /// conflates announcing routes with answering at all. This client's whole vocabulary is
+    /// `send_keepalive` / `send_notification` / `disconnect` / `wait_for_more`; none of them is
+    /// a route announcement, and a monitor that sees a prefix it must not accept wanting to tear
+    /// the session down is the obvious use for the event. So every action the model returned was
+    /// executed nowhere and logged as discarded, which is the "asks the model and throws the
+    /// answer away" defect the root CLAUDE.md describes, softened by a warning.
+    ///
+    /// `bgp_notification_received` keeps `None`, and that one is genuinely correct: RFC 4271
+    /// section 4.5 forbids answering a NOTIFICATION at all.
     #[allow(clippy::too_many_arguments)]
     async fn handle_update_message(
         update: &netgauze_bgp_pkt::update::BgpUpdateMessage,
@@ -727,6 +817,7 @@ impl BgpClient {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
         client_data: &Arc<Mutex<ClientData>>,
+        write_half: &SharedWriter,
         shutdown: &Arc<Shutdown>,
     ) {
         info!(
@@ -748,8 +839,6 @@ impl BgpClient {
 
         let event = Event::new(&BGP_CLIENT_UPDATE_RECEIVED_EVENT, data);
 
-        // No write half: this client announces nothing, so an UPDATE handler cannot reply on
-        // the wire. Passing one would advertise a capability that does not exist.
         Self::dispatch_event(
             &event,
             client_id,
@@ -757,7 +846,7 @@ impl BgpClient {
             app_state,
             status_tx,
             client_data,
-            None,
+            Some(write_half),
             shutdown,
         )
         .await;

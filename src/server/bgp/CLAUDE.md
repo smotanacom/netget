@@ -80,6 +80,21 @@ validates the marker and bounds the length to `[19, 4096]` (plus the per-type mi
 any allocation, so a peer cannot choose the buffer size and `len - 19` cannot underflow. Only
 then is the complete message handed to netgauze.
 
+**The pre-OPEN phase has its own deadline** (`OPEN_HOLD_TIME`, 240s). RFC 4271 section 8.2.2
+sets the Hold Timer to "a large value" on entering OpenSent precisely because the *negotiated*
+timer cannot start until an OPEN has been exchanged. Without it a peer that completed the TCP
+handshake and then said nothing — or sent a valid header and stopped mid-body — parked
+`read_exact` for the life of the process, holding a task, a socket and a connection row. The
+negotiated timers were already enforced; this closes the window before them. After the OPEN the
+deadline is dropped and `spawn_timers` owns the schedule, signalling expiry through `Shutdown`,
+which the read loop selects on.
+
+**Every session task is registered** with `register_server_task`, not just the accept loop.
+Aborting the accept loop closes the listener and does nothing to sessions already running: each
+owns its own socket and goes on sending keepalives — and spending LLM budget — after
+`stop_server` reported the server gone. `register_server_task` prunes finished handles on every
+call, so a long-lived listener does not accumulate them.
+
 ### What was broken before
 
 - **No KEEPALIVE after our OPEN.** RFC 4271 section 8.2.2 requires it to reach OpenConfirm. The
@@ -158,6 +173,16 @@ Use BIRD or FRR for anything that forwards packets.
 | `bgp_established` | session reached Established | `send_bgp_update` to advertise |
 | `bgp_update` | peer sent routes | `send_bgp_update` or `wait_for_more` |
 | `bgp_notification` | peer is tearing down | informational only; nothing is written back |
+
+`bgp_notification` declares **only `wait_for_more`**. It used to declare all four `send_bgp_*`
+verbs, which was a lie the model could act on: `on_notification` discards whatever comes back —
+it has to, since RFC 4271 section 4.5 forbids answering a NOTIFICATION — so those verbs could
+never reach the socket. `.with_no_actions()` would be wrong here rather than merely unnecessary:
+a **server** narrows, so `call_llm` builds its tool list from this list alone, and dropping
+`wait_for_more` would leave the event's own response example teaching an action the model was
+never offered. (A **client** unions async ∪ sync ∪ event actions, which is why the client half
+can use `with_no_actions()` for the same situation.) The common actions — `set_memory`,
+`append_to_log` — are added by `call_llm` regardless, so a handler can still record what it saw.
 
 `bgp_established` replaced a declared-but-never-emitted `bgp_keepalive` event. Emitting one per
 KEEPALIVE would have cost a model call every `hold/3` seconds per peer, forever, to decide
@@ -255,9 +280,20 @@ What was done instead, in `tests/server/bgp/`:
    honoured, a peer UPDATE arrives as structured event data, and keepalives plus hold-timer
    expiry are observed on a 3-second hold time.
 
+4. **`llm_failure_test.rs`** — with a peering *policy* in the instruction and no mock rule for
+   `bgp_open` (so the harness answers HTTP 500), the peer must get NOTIFICATION Cease / 5 and
+   not the configured OPEN. Asserts the message is exactly 21 octets, which is what makes
+   "nothing derived from the error reached the wire" a measurement rather than a claim.
+5. **`static_default_test.rs`** — the no-policy path: the handshake completes on the configured
+   OPEN with the mock recording **zero** event calls.
+6. **`peer_inject_test.rs`** — the dashboard's `[ message this peer ]` / `[ disconnect this
+   peer ]` through the session's own command task.
+
 The suite was mutation-checked: removing the post-OPEN KEEPALIVE, disabling hold-timer expiry and
 forcing four-octet AS_PATH each made the corresponding tests fail.
 
 Not covered: interoperability with a live daemon, IPv6 and MP-BGP on the send path (inbound
 MP_REACH/MP_UNREACH parse but are reported by name only), route refresh, graceful restart, add-
-path, and multi-peer behaviour of any kind.
+path, multi-peer behaviour of any kind, and the pre-OPEN `OPEN_HOLD_TIME` deadline — at 240s it
+is too long to assert against in a suite that has to stay under ten seconds, so it is verified by
+inspection only.

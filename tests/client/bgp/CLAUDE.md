@@ -84,8 +84,31 @@ The first mutation also caught a defect in the test itself: a per-read 12s timeo
 every keepalive, so a client that keepalives forever hung the test instead of failing it. The
 deadline is now for the whole wait.
 
+## `update_reply_test.rs` — a handler's answer reaching the wire
+
+Same raw-socket shape as `hold_timer_test.rs`, for the same two reasons: the assertion is about
+specific octets, and the peer has to send an UPDATE at a moment of the test's choosing. The
+reply comes from a **static event handler** registered on the client with
+`set_client_event_handler_config`, which `try_execute_client_event_handler` serves before the
+LLM budget is debited — so the answer is deterministic and no model is consulted for the event
+under test.
+
+| Test | Asserts | LLM calls |
+|---|---|---|
+| `update_handler_disconnect_reaches_the_peer` | after a handshake and one UPDATE, a handler answering `disconnect` produces a 21-octet NOTIFICATION checked field by field (marker, type 3, **code 6**, **subcode 2** — Cease / Administrative Shutdown), the socket then reaches EOF, and the client is `Disconnected` in `AppState` | 1, failed (`bgp_connected`) |
+| `update_handler_wait_for_more_leaves_the_session_up` | the identical path with `wait_for_more` instead: nothing but KEEPALIVEs for 7s, no close, client still `Connected` | 1, failed (`bgp_connected`) |
+
+The control is what makes the first test mean anything. Without it, a client that tore every
+session down — or one whose NOTIFICATION came from a misfiring hold timer rather than from the
+handler — would pass. The peer keeps keepaliving throughout the control so the 3s hold timer
+cannot fire and supply a NOTIFICATION of its own.
+
+**This is the test that fails without the fix.** `handle_update_message` passed `None` for the
+write half, so the handler's actions were executed nowhere and logged as discarded; no
+NOTIFICATION ever arrived and the first test times out at its 15s bound.
+
 ## Not covered
 
-NOTIFICATION handling, the client's `disconnect` and `send_notification` actions reaching a
-peer, multiple simultaneous peers, hold time 0 (no ticker is spawned; only the code path is
-inspected), and interoperability with a real BGP daemon (none is installed).
+Multiple simultaneous peers, hold time 0 (no ticker is spawned; only the code path is
+inspected), `send_notification` with a caller-chosen code reaching a peer (`disconnect` covers
+the same write path), and interoperability with a real BGP daemon (none is installed).

@@ -77,6 +77,17 @@ const DEFAULT_HOLD_TIME: u16 = 180;
 /// Below this the hold time is unusable (RFC 4271 section 6.2: 1 and 2 are rejected outright).
 const MIN_HOLD_TIME: u16 = 3;
 
+/// RFC 4271 section 8.2.2: on entering OpenSent the speaker sets its Hold Timer to "a large
+/// value", for which the RFC suggests 4 minutes. It exists precisely because the *negotiated*
+/// hold timer cannot start until an OPEN has been exchanged, so until then nothing bounds how
+/// long a peer may stay silent.
+///
+/// Without it a peer that completed the TCP handshake and then sent nothing — or sent a valid
+/// header and then stopped — parked `read_exact` forever, holding the connection, its task and
+/// its state entry for the life of the process. The negotiated timers were already enforced;
+/// this is the window before them.
+const OPEN_HOLD_TIME: std::time::Duration = std::time::Duration::from_secs(240);
+
 /// BGP server that handles routing protocol sessions under LLM policy control.
 pub struct BgpServer;
 
@@ -129,7 +140,8 @@ impl BgpServer {
                         let protocol_clone = protocol.clone();
                         let config_clone = config.clone();
 
-                        tokio::spawn(async move {
+                        let session_registrar = app_state.clone();
+                        let session_handle = tokio::spawn(async move {
                             if let Err(e) = run_session(
                                 stream,
                                 connection_id,
@@ -154,6 +166,15 @@ impl BgpServer {
                                 .info(format!("BGP connection {} closed", connection_id));
                             let _ = status_clone.send("__UPDATE_UI__".to_string());
                         });
+                        // Aborting the accept loop closes the listener but does nothing to
+                        // sessions already running: each owns its own socket and keeps sending
+                        // keepalives (and spending LLM budget) after `stop_server` reported the
+                        // server gone. Registering the session handle is what makes the stop
+                        // actually stop. `register_server_task` prunes finished handles on every
+                        // call, so a long-lived listener does not accumulate them.
+                        session_registrar
+                            .register_server_task(server_id, session_handle)
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))
@@ -440,10 +461,30 @@ impl BgpSession {
             if shutdown.is_set() {
                 break;
             }
+            // Before the OPEN exchange there is no negotiated hold timer, so this deadline is
+            // the only thing bounding a silent peer (RFC 4271 section 8.2.2). Afterwards
+            // `spawn_timers` owns the schedule and signals expiry through `shutdown`, which the
+            // first select arm turns into an exit even from inside a parked read.
+            let open_deadline =
+                matches!(self.state, BgpSessionState::Connect).then_some(OPEN_HOLD_TIME);
+
             let (incoming, bytes_in) = tokio::select! {
                 biased;
                 _ = shutdown.notify.notified() => break,
-                incoming = read_message(reader, self.peer_asn4) => incoming,
+                result = with_deadline(open_deadline, read_message(reader, self.peer_asn4)) => {
+                    match result {
+                        Ok(incoming) => incoming,
+                        Err(DeadlineExpired) => {
+                            Log::new(Some(&self.status_tx)).warn(format!(
+                                "BGP peer {} sent no OPEN within {}s, closing (RFC 4271 8.2.2)",
+                                self.remote_addr,
+                                OPEN_HOLD_TIME.as_secs()
+                            ));
+                            self.notify(wire::ERR_HOLD_TIMER_EXPIRED, 0, &[]);
+                            break;
+                        }
+                    }
+                }
             };
             if bytes_in > 0 {
                 self.app_state
@@ -1138,6 +1179,28 @@ fn spawn_timers(
             trace!("BGP KEEPALIVE sent on {}", connection_id);
         }
     })
+}
+
+/// `with_deadline` gave up before `fut` finished.
+#[cfg(feature = "bgp")]
+struct DeadlineExpired;
+
+/// Await `fut`, abandoning it after `limit` when one is given.
+///
+/// A plain `tokio::time::timeout` cannot express "no limit", and the two cases differ per
+/// message here: only the pre-OPEN read is bounded from this loop, because after that the
+/// negotiated hold timer runs in its own task.
+#[cfg(feature = "bgp")]
+async fn with_deadline<F: std::future::Future>(
+    limit: Option<std::time::Duration>,
+    fut: F,
+) -> std::result::Result<F::Output, DeadlineExpired> {
+    match limit {
+        Some(limit) => tokio::time::timeout(limit, fut)
+            .await
+            .map_err(|_| DeadlineExpired),
+        None => Ok(fut.await),
+    }
 }
 
 /// Read one BGP message: 19-byte header, bounds check, then exactly the declared body.
