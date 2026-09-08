@@ -240,15 +240,20 @@ async fn test_smb_session_setup() -> E2EResult<()> {
     assert!(n >= 64, "Response too short for SMB2 message");
     assert_eq!(&response[0..4], b"\xFESMB", "Invalid SMB2 signature");
 
-    if let Some(status) = parse_smb2_status(&response) {
-        println!("  [TEST] Session Setup status: 0x{:08X}", status);
-        // Status 0x00000000 = success, 0xC0000016 = more processing required
-        // Both are acceptable for guest auth
-        assert!(
-            status == 0 || status == 0xC0000016,
-            "Session Setup should succeed or require more processing"
-        );
-    }
+    // `if let Some(status)` used to wrap this, so a response too malformed to parse a
+    // status out of skipped the check entirely and the test passed.
+    let status = parse_smb2_status(&response)
+        .expect("SESSION_SETUP response was too short to carry an NTSTATUS");
+    println!("  [TEST] Session Setup status: 0x{:08X}", status);
+    // The model approved this login, so STATUS_SUCCESS is the only correct answer.
+    // 0xC0000016 used to be accepted here as "more processing required" — it is
+    // STATUS_MORE_PROCESSING_REQUIRED, an intermediate SPNEGO status this server never has
+    // cause to send, and accepting it is what let the deny path go unnoticed for so long:
+    // the same constant was being sent for an approval and for a refusal.
+    assert_eq!(
+        status, 0,
+        "an approved SESSION_SETUP must answer STATUS_SUCCESS"
+    );
 
     println!("  [TEST] ✓ SMB2 Session Setup successful");
 
@@ -559,10 +564,13 @@ async fn test_smb_auth_llm_controlled() -> E2EResult<()> {
     // The model denied guest, so the server must say so on the wire. Printing either
     // outcome as a success - which this test used to do - means it passes whatever
     // happens, including when the LLM response is rejected outright.
+    // 0xC0000022, not 0xC0000016. This assertion used to name ACCESS_DENIED while pinning
+    // STATUS_MORE_PROCESSING_REQUIRED — the status that tells a client the SPNEGO exchange
+    // is still going — so it held the server's denial path to a value that does not deny.
     assert_eq!(
         parse_smb2_status(&response),
-        Some(0xC0000016),
-        "smb_auth_deny must produce STATUS_ACCESS_DENIED"
+        Some(0xC000_0022),
+        "smb_auth_deny must produce STATUS_ACCESS_DENIED (0xC0000022)"
     );
 
     println!("  [TEST] ✓ Denied login answered with STATUS_ACCESS_DENIED");
@@ -1218,6 +1226,80 @@ async fn test_smb_write_approved_reports_byte_count() -> E2EResult<()> {
 
 /// The payload codec is a bijection: whatever the server shows the model on a write,
 /// feeding it straight back as `smb_read_file` content reproduces the exact bytes.
+
+/// A file operation on a connection that never authenticated must be refused.
+///
+/// `SmbConnectionState.sessions` was written by the successful SESSION_SETUP path and then
+/// read by nothing but a log line, so the model's authentication decision governed exactly
+/// one response and nothing after it. A peer could open a socket and send CREATE straight
+/// away — no NEGOTIATE, no SESSION_SETUP, no LLM call about admission at all — and get
+/// STATUS_SUCCESS and a live file handle back. A peer whose login the model had just
+/// *denied* could send CREATE on the same connection and be served identically.
+///
+/// This connects and sends CREATE as its first byte. The mock declares the create rule with
+/// `expect_calls(0)`, so the test fails both ways: if the wire status is not
+/// STATUS_USER_SESSION_DELETED, and if the server consulted the model about a `create` it
+/// should never have reached.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_smb_file_operation_without_a_session_is_refused() -> E2EResult<()> {
+    println!("\n=== Test: SMB CREATE before SESSION_SETUP is refused ===");
+
+    let prompt = "Start an SMB file server via smb.";
+
+    let config = crate::helpers::NetGetConfig::new(prompt).with_mock(|mock| {
+        mock.on_event("smb_operation")
+            .and_event_data_contains("operation", "create")
+            .respond_with_actions(serde_json::json!([
+                {"type": "smb_create_file", "path": "/secret.txt"}
+            ]))
+            // The gate is upstream of the LLM call, so this rule must never fire. If it
+            // does, the server asked the model to admit a handle on an unauthenticated
+            // connection — which is the defect, whatever the model then answered.
+            .expect_calls(0)
+            .and()
+            .on_any()
+            .respond_with_actions(serde_json::json!([
+                {"type": "open_server", "port": 0, "base_stack": "SMB", "instruction": prompt}
+            ]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let server = start_netget_server(config).await?;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port))?;
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    // No handshake. Straight to a file operation.
+    stream.write_all(&build_smb2_create(1, "/secret.txt"))?;
+    stream.flush()?;
+    let response = read_smb2_response(&mut stream)?;
+
+    assert_eq!(
+        parse_smb2_status(&response),
+        Some(0xC000_0203),
+        "CREATE on a connection with no session must answer STATUS_USER_SESSION_DELETED, \
+         not a file handle"
+    );
+
+    // And no handle may come back with it.
+    assert!(
+        response.len() < 64 + 89,
+        "the refusal carried a CREATE response body ({} bytes); a refused open must not \
+         hand out a file handle",
+        response.len()
+    );
+
+    println!("  [TEST] ✓ unauthenticated CREATE refused with STATUS_USER_SESSION_DELETED");
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    Ok(())
+}
+
 #[test]
 fn smb_payload_encoding_round_trips() {
     use netget::server::smb::actions::{decode_smb_payload, encode_smb_payload};
