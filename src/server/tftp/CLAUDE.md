@@ -104,6 +104,16 @@ Final: LLM knows complete file = "Hello WORLD"
 
 ### 6. Connection Tracking
 
+TFTP is UDP but is deliberately **not** declared `.connectionless()`. The flag exists for
+servers whose per-remote-address records nothing ever closes, so the ten-second idle sweep in
+`AppState::cleanup_old_connections` is their only cleanup. TFTP is not one of those: every
+exit path - final ACK, ACK timeout, DATA timeout, ERROR, socket error - calls
+`close_connection_on_server`, so there is nothing to reap. Declaring it connectionless
+actively broke transfers' bookkeeping, because a connection is idle for the whole duration of
+the handler's LLM call and one round-trip routinely exceeds ten seconds: the entry was
+evicted mid-transfer, and the block counter and the eventual close then targeted a record
+that no longer existed while the transfer went on completing over the wire.
+
 Each TFTP transfer creates a "connection" entry:
 
 ```rust
@@ -183,7 +193,17 @@ Parameters:
 
 #### `send_tftp_error`
 
-Send error and terminate transfer.
+Send error and terminate transfer. Valid at any point: refusing an RRQ or WRQ outright, and
+aborting a transfer already in flight. The read continuation used to identify what it had
+just sent by the packet's *length* rather than its opcode, so a mid-transfer ERROR was
+mistaken for a final DATA block - the server waited five seconds for an ACK that would never
+come and read the error code as a block number. It now dispatches on the opcode, as the
+request path always did, and `tests/server/tftp/e2e_test.rs` covers the mid-stream abort.
+
+Both parameters are declared required and are now enforced. They used to be defaulted to 0
+and `"Error"`, so a malformed action produced a plausible ERROR packet instead of a visible
+failure. `error_code` must be 0-7 (RFC 1350 defines no others) and `error_message` must not
+contain a NUL, which would truncate the NUL-terminated field on the wire.
 
 Parameters:
 - `error_code` (required) - Error code:
@@ -214,9 +234,10 @@ RFC 1350 defines error codes 0-7 and none of them means "try again", so both cas
 | `crate::llm::is_overload_error` is true | `Server overloaded, retry later` |
 | any other LLM failure | `Internal error: LLM backend failure` |
 
-Everything routes through `fail_transfer_on_llm_error`, which logs at ERROR via
-`console_error!` (tracing + status stream), sends the packet, removes the transfer from the
-map and closes the connection - so no transfer state or connection entry leaks. It never
+Everything routes through `fail_transfer_on_llm_error`, which logs at **WARN** (tracing +
+status stream - the client still gets an ERROR packet and the transfer is torn down cleanly,
+so this is not a server fault), sends the packet, removes the transfer from the map and
+closes the connection - so no transfer state or connection entry leaks. It never
 sends a plausible-looking DATA or ACK: an outage must not be indistinguishable from a
 successful transfer. `tests/server/tftp/llm_failure_test.rs` covers all three failure points
 against real UDP sockets.
