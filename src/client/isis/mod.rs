@@ -241,7 +241,10 @@ impl IsisClient {
                 // Checked before the blocking read as well as after it, so a stop arriving
                 // while the loop is between packets is not missed.
                 if stop_in_loop.is_stopped() {
-                    info!("ISIS client {} stopping capture (client removed)", client_id);
+                    info!(
+                        "ISIS client {} stopping capture (client removed)",
+                        client_id
+                    );
                     break;
                 }
 
