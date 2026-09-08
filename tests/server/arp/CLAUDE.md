@@ -1,5 +1,28 @@
 # ARP Protocol E2E Tests
 
+## What actually runs — read this before the rest
+
+Most of this file describes `e2e_test.rs`, and **`e2e_test.rs` has never run and cannot
+run as written.** It is `#[ignore]`d, and unlike most ignored tests `sudo` does not
+release it: it targets the **loopback** interface, and ARP's `spawn()` refuses loopback
+outright. `arp` is an Ethernet-only BPF keyword, so on DLT_NULL/DLT_LOOP libpcap compiles
+the filter to "expression rejects all packets" and errors —
+`tests/capture_startup_reports_failure_test.rs::arp_spawn_refuses_loopback_and_says_why`
+asserts that refusal in both the privileged and unprivileged branches. Exercising the
+scenario needs a real Ethernet or Wi-Fi interface *and* root, and would inject ARP frames
+onto that live segment.
+
+**`frame_codec_test.rs` is the ARP server evidence that actually runs**, in every ordinary
+test run, needing no interface and no privilege: five tests asserting the emitted reply
+field by field against the Ethernet II + RFC 826 layout, that the declared `send_arp_reply`
+example executes to those same bytes, that `ignore_arp` produces no output at all, and that
+nine malformed actions are refused rather than panicking.
+
+Everything below about LLM budgets, runtimes, pass rates and graceful skipping describes
+the *intent* of `e2e_test.rs`. None of it has ever been measured. The numbers were written
+from expectation, not observation — treat them as a specification for a future rewrite
+against a real interface, not as a record.
+
 ## Test Overview
 
 End-to-end tests for ARP (Address Resolution Protocol) server functionality. Tests spawn NetGet ARP server and validate
@@ -114,13 +137,16 @@ fn find_loopback_interface() -> Result<String, Box<dyn std::error::Error>>;
 - Packet injection/capture: <1ms per request
 - Timeout waits: 3-10 seconds (waiting for replies or no-reply confirmation)
 
-**With Ollama Lock**: Single test runs sequentially. Total time ~15-20s.
+**Note**: `--ollama-lock` does nothing — the flag is inert and its plumbing was deleted.
+LLM concurrency is bounded by `--llm-max-concurrent` / `--llm-max-queued`.
 
 **Note**: ARP tests may be slower due to pcap timeout windows (need to wait to confirm no reply).
 
 ## Failure Rate
 
-**Historical Flakiness**: **Medium** (~10-20%)
+**Historical Flakiness**: unmeasured. The test has never completed a run, so no pass
+rate exists. The percentages below were written from expectation and are retained only as
+a list of the failure modes a rewrite would have to handle.
 
 **Why Less Stable Than Other Tests**:
 
@@ -208,14 +234,23 @@ fn find_loopback_interface() -> Result<String, Box<dyn std::error::Error>>;
 - Raw packet injection at Layer 2
 - Bypassing OS network stack
 
-**Graceful Degradation**: Tests detect privilege issues and skip gracefully:
+**The in-test guard does NOT detect the privilege it claims to.** On macOS any
+unprivileged user can call `Device::list()` successfully — it is *opening* a handle that
+fails — so this guard never fires and the test would proceed to fail for a different
+reason. It is the same mistake `src/privilege.rs` was fixed for (it now probes by opening
+a handle). The `#[ignore]` is what actually keeps the test out of ordinary runs:
 
 ```rust
+// Present in e2e_test.rs, and inert:
 if Device::list().is_err() {
     println!("⚠ Skipping ARP test: requires CAP_NET_RAW or root privileges");
     return Ok(());
 }
 ```
+
+Note also that this shape — print a skip message and return `Ok(())` — is *not* evidence
+even when it does fire. A skipped test is a silent pass. See the root `CLAUDE.md` on
+skip-when-missing gates.
 
 **CI Considerations**: CI runners may not grant raw socket access. Tests must tolerate skips.
 
@@ -404,15 +439,23 @@ sudo setcap cap_net_raw+ep target/release/netget
 
 ## Success Criteria
 
-✅ **LLM Budget**: 1-2 calls (well under 10 call target)
-⚠️ **Runtime**: ~15-20 seconds (moderate due to pcap timeouts)
-✅ **Coverage**: Core ARP request/reply tested
-✅ **Scripting**: Perfect protocol for scripting mode (simple IP-to-MAC lookup)
-⚠️ **Stability**: ~80-90% pass rate (privilege and platform dependent)
-✅ **Graceful Degradation**: Skips cleanly when privileges unavailable
+Scored against what runs, not against what was hoped for.
 
-**Recommendation**: Keep ARP in **Experimental** status until:
+| Criterion | `frame_codec_test.rs` | `e2e_test.rs` |
+|---|---|---|
+| Runs in an ordinary test run | ✅ five tests, no privilege, no interface | ❌ `#[ignore]`d, and cannot pass even under `sudo` |
+| LLM calls | ✅ zero — pure functions | not measured; never ran |
+| Runtime | ✅ <10ms | not measured; never ran |
+| Coverage | wire format, the declared example, `ignore_arp`, nine rejection paths | request → reply over a real wire — the thing nothing has ever observed |
+| Graceful degradation | n/a — nothing to skip | ❌ the `Device::list()` guard does not fire; see above |
 
-1. Loopback ARP behavior validated on major platforms (Linux, macOS, Windows)
-2. Test stability improves to >95% pass rate
-3. Non-loopback testing added (real network interfaces)
+**Maturity**: ARP stays **Experimental**, and the reason is narrower than this file used
+to give. What is missing is not stability or platform coverage — it is that **no test has
+ever observed a captured ARP request becoming a reply on a wire.** `frame_codec_test.rs`
+proves the bytes are right; it cannot prove the capture, the filter, the injection thread
+and the LLM round-trip compose. Promoting past Experimental needs:
+
+1. A rewrite of `e2e_test.rs` against a real Ethernet or Wi-Fi interface (loopback is
+   refused by design and always will be), accepting that it injects onto a live segment
+   and so cannot be part of an ordinary run.
+2. Somebody having actually run it, once, and said so here.
