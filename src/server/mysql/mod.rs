@@ -13,7 +13,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use opensrv_mysql::{
     AsyncMysqlIntermediary, AsyncMysqlShim, Column, ColumnFlags, ColumnType, ErrorKind, InitWriter,
-    OkResponse, ParamParser, QueryResultWriter, StatementMetaWriter, StatusFlags,
+    OkResponse, ParamParser, QueryResultWriter, RowWriter, StatementMetaWriter, StatusFlags,
 };
 use std::io;
 use std::net::SocketAddr;
@@ -27,6 +27,31 @@ use tracing::{error, trace, warn};
 /// The map is keyed by statement id and only pruned by an explicit COM_STMT_CLOSE, so a client
 /// that PREPAREs in a loop and never closes would grow it without bound.
 const MAX_PREPARED_STATEMENTS: usize = 4096;
+
+/// Most `?` placeholders one prepared statement may declare.
+///
+/// Real MySQL's own limit is 65535. This is far lower because the descriptors are held in a
+/// process-wide table (`PLACEHOLDER_COLUMNS`) and no statement a model or an ORM produces
+/// comes anywhere near it; anything past it gets `ER_PS_MANY_PARAM` rather than a silently
+/// wrong parameter count.
+const MAX_PLACEHOLDERS: usize = 1024;
+
+/// Parameter descriptors handed to `StatementMetaWriter::reply`.
+///
+/// They have to outlive the writer's borrow, so they cannot be built per statement; the
+/// contents are identical for every statement anyway — real MySQL names each parameter `?`
+/// and types it as a string, and nothing reads either field because `on_execute` does not
+/// decode parameter values.
+static PLACEHOLDER_COLUMNS: std::sync::LazyLock<Vec<Column>> = std::sync::LazyLock::new(|| {
+    (0..MAX_PLACEHOLDERS)
+        .map(|_| Column {
+            table: String::new(),
+            column: "?".to_string(),
+            coltype: ColumnType::MYSQL_TYPE_VAR_STRING,
+            colflags: ColumnFlags::empty(),
+        })
+        .collect()
+});
 
 /// MySQL server implementation
 pub struct MysqlServer {
@@ -124,7 +149,7 @@ impl MysqlServer {
 
                         let conn_state_owner = server.app_state.clone();
                         let conn_server_id = server.server_id;
-                        tokio::spawn(async move {
+                        let conn_handle = tokio::spawn(async move {
                             // MySQL requires split read/write streams
                             let (reader, writer) = tokio::io::split(stream);
                             if let Err(e) =
@@ -140,6 +165,15 @@ impl MysqlServer {
                                     .await;
                             }
                         });
+
+                        // Register the per-connection task too, not just the accept loop:
+                        // aborting the accept loop releases the port but leaves every
+                        // in-flight session running, so `stop_server` did not actually stop
+                        // the server. `register_server_task` prunes finished handles on each
+                        // call, so this cannot grow without bound.
+                        if let Some(server_id) = conn_server_id {
+                            app_state.register_server_task(server_id, conn_handle).await;
+                        }
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("MySQL accept error: {}", e));
@@ -241,9 +275,38 @@ impl<W: tokio::io::AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MysqlHandler
         stmts.insert(stmt_id, query.to_string());
         drop(stmts);
 
-        // Reply with the statement ID
+        // Reply with the statement ID and the number of `?` placeholders the statement has.
+        //
+        // The count is not cosmetic: the client stores it and uses it to frame
+        // COM_STMT_EXECUTE. Replying `&[]` unconditionally — as this did — told every client
+        // the statement took no parameters, so `conn.exec("… WHERE id = ?", (42,))` was
+        // rejected client-side and never reached the wire at all. The parameter *values* are
+        // still not substituted (the model sees the `?`), and `on_execute` deliberately does
+        // not iterate `ParamParser`: opensrv-mysql's `params.rs` panics on several malformed
+        // COM_STMT_EXECUTE shapes, including an explicit `panic!("bad column type")` on a
+        // client-chosen byte, so reading them would trade a limitation for a remotely
+        // reachable panic.
+        let placeholders = count_placeholders(query);
+        if placeholders > MAX_PLACEHOLDERS {
+            warn!(
+                "MySQL connection {}: statement declares {} placeholders, more than the {} \
+                 supported",
+                self.connection_id, placeholders, MAX_PLACEHOLDERS
+            );
+            let mut stmts = self.prepared_statements.lock().await;
+            stmts.remove(&stmt_id);
+            drop(stmts);
+            return info
+                .error(
+                    ErrorKind::ER_PS_MANY_PARAM,
+                    b"Prepared statement contains too many placeholders",
+                )
+                .await;
+        }
+
         self.record_stats(None, Some(0), None, Some(1)).await;
-        info.reply(stmt_id, &[], &[]).await
+        info.reply(stmt_id, &PLACEHOLDER_COLUMNS[..placeholders], &[])
+            .await
     }
 
     async fn on_execute<'a>(
@@ -600,6 +663,84 @@ fn mysql_error_kind(code: u16) -> ErrorKind {
     }
 }
 
+/// Count the `?` parameter placeholders in a SQL statement.
+///
+/// A `?` inside a string literal, a quoted identifier or a comment is data, not a
+/// placeholder, so those regions are skipped. MySQL's lexical rules:
+///
+/// - `'…'` and `"…"` are strings (`"` is an identifier under `ANSI_QUOTES`, but either way a
+///   `?` inside it is not a placeholder), with both `\` escapes and the doubled-quote form.
+/// - `` `…` `` is a quoted identifier, escaped by doubling the backtick.
+/// - `-- ` and `#` run to end of line; `/* … */` is a block comment. `/*! … */` version
+///   comments are treated as comments too — a placeholder hidden inside one would be
+///   pathological, and under-counting there is caught by the client rather than desyncing us.
+///
+/// Exposed for `tests/server/mysql/prepared_statement_test.rs`; the project keeps unit tests
+/// out of `src/`.
+pub fn count_placeholders(sql: &str) -> usize {
+    let bytes = sql.as_bytes();
+    let mut count = 0usize;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            q @ (b'\'' | b'"' | b'`') => {
+                let escapes_with_backslash = q != b'`';
+                i += 1;
+                while i < bytes.len() {
+                    if escapes_with_backslash && bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == q {
+                        // A doubled quote stays inside the literal.
+                        if bytes.get(i + 1) == Some(&q) {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'#' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            // MySQL requires whitespace (or end of input) after `--` for it to be a comment;
+            // `a--b` is two unary minuses.
+            b'-' if bytes.get(i + 1) == Some(&b'-')
+                && bytes.get(i + 2).is_none_or(|c| c.is_ascii_whitespace()) =>
+            {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < bytes.len() {
+                    if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'?' => {
+                count += 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+
+    count
+}
+
 /// Turn a successfully-written response into a connection teardown when the LLM asked for
 /// `close_this_connection`. opensrv-mysql ends the session when the shim returns an error.
 fn finish_query(result: io::Result<()>, close_requested: bool) -> io::Result<()> {
@@ -658,24 +799,197 @@ async fn send_result_set<'a, W: tokio::io::AsyncWrite + Send + Unpin>(
     // Start the result set
     let mut row_writer = results.start(&cols).await?;
 
-    // Write rows
+    // Write rows. Every row is written to exactly `cols.len()` cells: a short row is padded
+    // with NULLs and a long one is truncated. opensrv-mysql returns `InvalidData` from
+    // `end_row()` for a short row, and that error ends the *session*, so a model that
+    // miscounted one row used to kill the connection rather than produce one odd row.
+    // PostgreSQL's handler has always padded; this matches it.
     for row_data in &rows {
-        if let Some(row_values) = row_data.as_array() {
-            // Convert JSON values to Strings (simplified - ToMysqlValue is implemented for String)
-            let values: Vec<String> = row_values.iter().map(|v| json_to_mysql_string(v)).collect();
-
-            row_writer.write_row(values).await?;
+        let Some(row_values) = row_data.as_array() else {
+            warn!("MySQL: skipping row that is not an array: {}", row_data);
+            continue;
+        };
+        if row_values.len() != cols.len() {
+            warn!(
+                "MySQL: row has {} values for {} columns; padding/truncating",
+                row_values.len(),
+                cols.len()
+            );
         }
+        for (idx, col) in cols.iter().enumerate() {
+            let value = row_values.get(idx).unwrap_or(&serde_json::Value::Null);
+            write_cell(&mut row_writer, col, value)?;
+        }
+        row_writer.end_row().await?;
     }
 
     // Finish the result set
     row_writer.finish().await
 }
 
-/// Convert JSON value to MySQL string representation
+/// Write one cell, encoded the way its declared column type requires.
+///
+/// This is only load-bearing for the **binary** protocol (`COM_STMT_EXECUTE`, i.e. every
+/// prepared statement). In the text protocol opensrv-mysql writes every cell as a
+/// length-encoded string whatever the column says, so handing it a `String` was fine. In the
+/// binary protocol it encodes according to `Column::coltype` and returns `io::Error` for a
+/// Rust type it cannot write as that type — and `String`/`&[u8]` is rejected by every numeric
+/// and every temporal column (`opensrv-mysql-0.7.0/src/value/encode.rs`). So the protocol's
+/// own advertised example, `{"name": "id", "type": "INT"}`, ended the session on
+/// `conn.exec(...)` while working perfectly on `conn.query(...)`.
+///
+/// A value that cannot be represented as its column's type is sent as SQL NULL with a WARN.
+/// That is deliberately not an error: a single odd cell must not cost the connection, and a
+/// silently coerced wrong number would be worse than an explicit absence.
+fn write_cell<W: tokio::io::AsyncWrite + Send + Unpin>(
+    row: &mut RowWriter<'_, W>,
+    column: &Column,
+    value: &serde_json::Value,
+) -> io::Result<()> {
+    if value.is_null() {
+        // A real SQL NULL: the NULL bitmap in binary, 0xFB in text. It used to be written as
+        // the four-character string "NULL", which every client read as data.
+        return row.write_col(None::<String>);
+    }
+
+    /// Send NULL and say why, rather than ending the session over one cell.
+    macro_rules! unrepresentable {
+        ($row:expr, $column:expr, $value:expr) => {{
+            warn!(
+                "MySQL: value {} cannot be sent as column '{}' ({:?}); sending NULL",
+                $value, $column.column, $column.coltype
+            );
+            $row.write_col(None::<String>)
+        }};
+    }
+
+    match column.coltype {
+        // opensrv's `i32` encoder covers TINY/SHORT/INT24/LONG (and range-checks); its `i64`
+        // encoder accepts LONGLONG only.
+        ColumnType::MYSQL_TYPE_TINY
+        | ColumnType::MYSQL_TYPE_SHORT
+        | ColumnType::MYSQL_TYPE_INT24
+        | ColumnType::MYSQL_TYPE_LONG => {
+            match json_to_i64(value).and_then(|n| i32::try_from(n).ok()) {
+                Some(n) => row.write_col(n),
+                None => unrepresentable!(row, column, value),
+            }
+        }
+        ColumnType::MYSQL_TYPE_LONGLONG => match json_to_i64(value) {
+            Some(n) => row.write_col(n),
+            None => unrepresentable!(row, column, value),
+        },
+        ColumnType::MYSQL_TYPE_FLOAT => match json_to_f64(value) {
+            Some(n) => row.write_col(n as f32),
+            None => unrepresentable!(row, column, value),
+        },
+        ColumnType::MYSQL_TYPE_DOUBLE => match json_to_f64(value) {
+            Some(n) => row.write_col(n),
+            None => unrepresentable!(row, column, value),
+        },
+        ColumnType::MYSQL_TYPE_DATE => match value.as_str().and_then(parse_date) {
+            Some(d) => row.write_col(d),
+            None => unrepresentable!(row, column, value),
+        },
+        ColumnType::MYSQL_TYPE_DATETIME | ColumnType::MYSQL_TYPE_TIMESTAMP => {
+            match value.as_str().and_then(parse_datetime) {
+                Some(dt) => row.write_col(dt),
+                None => unrepresentable!(row, column, value),
+            }
+        }
+        ColumnType::MYSQL_TYPE_TIME => match value.as_str().and_then(parse_time) {
+            Some(d) => row.write_col(d),
+            None => unrepresentable!(row, column, value),
+        },
+        // Every remaining type this server maps to (VAR_STRING, STRING, BLOB, DECIMAL) is one
+        // opensrv's `&[u8]` encoder accepts in both protocols.
+        _ => row.write_col(json_to_mysql_string(value)),
+    }
+}
+
+/// Coerce a JSON value to an integer, accepting the shapes a model actually produces.
+fn json_to_i64(value: &serde_json::Value) -> Option<i64> {
+    match value {
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_u64().and_then(|u| i64::try_from(u).ok()))
+            .or_else(|| {
+                n.as_f64()
+                    .filter(|f| f.fract() == 0.0 && f.is_finite())
+                    .map(|f| f as i64)
+            }),
+        serde_json::Value::String(s) => s.trim().parse::<i64>().ok(),
+        serde_json::Value::Bool(b) => Some(*b as i64),
+        _ => None,
+    }
+}
+
+fn json_to_f64(value: &serde_json::Value) -> Option<f64> {
+    match value {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
+        serde_json::Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
+fn parse_date(s: &str) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok()
+}
+
+fn parse_datetime(s: &str) -> Option<chrono::NaiveDateTime> {
+    let s = s.trim();
+    for format in [
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+    ] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, format) {
+            return Some(dt);
+        }
+    }
+    parse_date(s).map(|d| d.into())
+}
+
+/// `HH:MM:SS[.ffffff]` as a duration since midnight.
+///
+/// Bounded at 34 days because `opensrv-mysql`'s `Duration` encoder contains
+/// `assert!(d <= 34)` — a longer value would *panic* the connection task rather than fail it,
+/// and the value comes from model output.
+fn parse_time(s: &str) -> Option<std::time::Duration> {
+    let s = s.trim();
+    let (whole, fraction) = match s.split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (s, ""),
+    };
+    let mut parts = whole.split(':');
+    let hours: u64 = parts.next()?.parse().ok()?;
+    let minutes: u64 = parts.next()?.parse().ok()?;
+    let seconds: u64 = parts.next().unwrap_or("0").parse().ok()?;
+    if parts.next().is_some() || minutes > 59 || seconds > 59 {
+        return None;
+    }
+    let micros: u32 = if fraction.is_empty() {
+        0
+    } else {
+        let padded = format!("{:0<6}", &fraction[..fraction.len().min(6)]);
+        padded.parse().ok()?
+    };
+    let total_secs = hours * 3600 + minutes * 60 + seconds;
+    if total_secs / (24 * 3600) > 34 {
+        return None;
+    }
+    Some(std::time::Duration::new(total_secs, micros * 1_000))
+}
+
+/// Convert JSON value to MySQL string representation.
+///
+/// `Null` is handled by the caller (`write_cell`) as a real SQL NULL and never reaches here;
+/// the empty string is the safe answer if it ever does.
 fn json_to_mysql_string(v: &serde_json::Value) -> String {
     match v {
-        serde_json::Value::Null => "NULL".to_string(),
+        serde_json::Value::Null => String::new(),
         serde_json::Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::String(s) => s.clone(),

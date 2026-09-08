@@ -35,10 +35,37 @@ event logger, so log templates may reference them.
 `columns` is an array of `{"name": …, "type": …}`. Recognised type names —
 `INT`/`INTEGER`, `BIGINT`, `SMALLINT`, `TINYINT`, `FLOAT`, `DOUBLE`, `DECIMAL`,
 `DATE`, `TIME`, `DATETIME`/`TIMESTAMP`, `BLOB`/`BINARY`, `TEXT`, `VARCHAR` —
-set the column metadata only. **Every value is transmitted in MySQL's text
-protocol**, so the declared type affects what the client thinks the column is,
-not how the bytes are written. JSON `null` becomes the literal string `NULL`,
-not a SQL NULL.
+set the column metadata *and* the encoding.
+
+**The declared type is not cosmetic, and believing it was cost the binary
+protocol entirely.** `COM_QUERY` uses MySQL's text protocol, where opensrv-mysql
+writes every cell as a length-encoded string whatever the column says — so
+handing it a `String` worked. `COM_STMT_EXECUTE` (every prepared statement) uses
+the **binary** protocol, where opensrv encodes according to `Column::coltype` and
+returns `io::Error` for a Rust type it cannot write as that type. `String` is
+rejected by every numeric and every temporal column, and that error ends the
+*session*. The protocol's own advertised example,
+`{"name": "id", "type": "INT"}`, therefore killed the connection on
+`conn.exec(...)` while working perfectly on `conn.query(...)`.
+
+`write_cell` now encodes each value as its column demands: integer columns take
+an integer, `FLOAT`/`DOUBLE` a float, `DATE`/`TIME`/`DATETIME`/`TIMESTAMP` a
+parsed `YYYY-MM-DD` / `HH:MM:SS` / `YYYY-MM-DD HH:MM:SS` string, everything else
+a string. A value that cannot be represented as its column's type is sent as
+**SQL NULL with a WARN** — one odd cell must not cost the connection, and a
+silently coerced wrong number would be worse than an explicit absence. (`TIME`
+is additionally bounded at 34 days, because opensrv's `Duration` encoder holds
+`assert!(d <= 34)` and the value comes from model output.)
+
+JSON `null` is a real SQL NULL (the NULL bitmap in binary, `0xFB` in text). It
+used to be written as the four-character string `"NULL"`, which every client read
+as data.
+
+**Rows are padded and truncated to the column count.** opensrv returns
+`InvalidData` from `end_row()` for a short row and that error ends the session,
+so a model that miscounted one row used to kill the connection instead of
+producing one odd row. PostgreSQL's handler has always padded; MySQL now matches
+it, with a WARN naming the mismatch.
 
 ### Error codes
 
@@ -120,10 +147,26 @@ counters live and refresh `last_activity`. Proven with zero LLM calls by
 - `close_this_connection` is implemented by writing the current response and then
   returning `io::ErrorKind::ConnectionAborted` from the shim, which is the only
   way to stop the loop opensrv drives.
+- The per-connection task is registered with `register_server_task` as well as
+  the accept loop. Aborting only the accept loop releases the port but leaves
+  every in-flight session running, so `stop_server` did not actually stop the
+  server. `register_server_task` prunes finished handles on each call, so the
+  vector cannot grow without bound.
 - PREPARE stores the SQL text keyed by an incrementing statement id; EXECUTE
-  looks it up and re-runs it as a query; CLOSE removes it. Parameters are **not**
-  substituted — the model sees the statement text with its `?` placeholders
-  intact.
+  looks it up and re-runs it as a query; CLOSE removes it.
+- **PREPARE reports the statement's `?` count** (`count_placeholders`, which
+  skips `?` inside string literals, quoted identifiers and comments). The count
+  is not cosmetic: the client stores it and uses it to frame COM_STMT_EXECUTE.
+  Replying "no parameters" unconditionally — as this did — meant
+  `conn.exec("… WHERE id = ?", (42,))` was rejected client-side and never reached
+  the wire at all. Statements past `MAX_PLACEHOLDERS` (1024) get
+  `ER_PS_MANY_PARAM` rather than a silently wrong count.
+- Parameter **values** are still not substituted — the model sees the statement
+  text with its `?` placeholders intact — and `on_execute` deliberately does not
+  iterate `ParamParser`. opensrv-mysql's `params.rs` panics on several malformed
+  COM_STMT_EXECUTE shapes, including an explicit `panic!("bad column type")` on a
+  client-chosen byte (see IMPROVEMENTS' panic audit), so decoding parameters
+  would trade a limitation for a remotely reachable panic.
 
 ## Not implemented
 
@@ -132,8 +175,8 @@ counters live and refresh `last_activity`. Proven with zero LLM calls by
   test with an 8.0 client (`/opt/homebrew/opt/mysql@8.0/bin/mysql`) or
   `mysql_async`.
 - **TLS**.
-- **Binary result-set protocol** — prepared statements answer in the text
-  protocol.
+- **Prepared-statement parameter values** — see above; the `?` reaches the model
+  unsubstituted.
 - **Binary column data** — `BLOB`/`BINARY` values are sent as UTF-8 text.
 - **Transactions, stored procedures, multi-statement queries** — `BEGIN`,
   `COMMIT` and friends reach the model as ordinary queries.
