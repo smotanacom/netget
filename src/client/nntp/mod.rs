@@ -153,12 +153,23 @@ impl NntpClient {
                                 }),
                             );
 
+                            // Snapshot the memory before the `match`, do not borrow it out of a
+                            // guard in the scrutinee. A temporary created in a `match`
+                            // scrutinee lives until the end of the whole `match`, so
+                            // `&client_data.lock().await.memory` leaves the guard held across
+                            // every arm — and the arms re-lock the same non-reentrant
+                            // `tokio::sync::Mutex` (the `memory_updates` write below, and every
+                            // `apply_action` that records `last_command`). That deadlocked the
+                            // read loop against itself permanently: the command reached the
+                            // wire, then the task never read another byte and the dashboard's
+                            // inject path blocked behind it too.
+                            let memory = client_data.lock().await.memory.clone();
                             match call_llm_for_client(
                                 &llm_client,
                                 &app_state,
                                 client_id.to_string(),
                                 &instruction,
-                                &client_data.lock().await.memory,
+                                &memory,
                                 Some(&event),
                                 protocol.as_ref(),
                                 &status_tx,
@@ -326,12 +337,17 @@ impl NntpClient {
                                             }),
                                         );
 
+                                        // Snapshot before the `match` - see the note on the
+                                        // connected-event call above. Borrowing out of a guard
+                                        // in the scrutinee holds it across every arm, and the
+                                        // arms re-lock the same non-reentrant mutex.
+                                        let memory = client_data.lock().await.memory.clone();
                                         match call_llm_for_client(
                                             &llm_client,
                                             &app_state,
                                             client_id.to_string(),
                                             &instruction,
-                                            &client_data.lock().await.memory,
+                                            &memory,
                                             Some(&event),
                                             protocol.as_ref(),
                                             &status_tx,
