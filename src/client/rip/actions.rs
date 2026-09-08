@@ -11,12 +11,63 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::LazyLock;
 
+/// One place each action is defined, so the async list, the sync list and the event
+/// vocabularies below cannot drift apart.
+fn send_rip_request_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "send_rip_request".to_string(),
+        description: "Send a RIP Request asking the router for its whole routing table".to_string(),
+        parameters: vec![Parameter {
+            name: "version".to_string(),
+            type_hint: "number".to_string(),
+            description: "RIP version: 1 (RFC 1058) or 2 (RFC 2453). No other value is accepted."
+                .to_string(),
+            required: true,
+        }],
+        example: json!({
+            "type": "send_rip_request",
+            "version": 2
+        }),
+        log_template: None,
+    }
+}
+
+fn disconnect_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "disconnect".to_string(),
+        description: "Stop listening and release the socket. RIP is UDP and has no wire close, \
+                      so this ends the session locally."
+            .to_string(),
+        parameters: vec![],
+        example: json!({
+            "type": "disconnect"
+        }),
+        log_template: None,
+    }
+}
+
+fn wait_for_more_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "wait_for_more".to_string(),
+        description: "The routing table was split across several datagrams; wait for the rest \
+                      before deciding."
+            .to_string(),
+        parameters: vec![],
+        example: json!({
+            "type": "wait_for_more"
+        }),
+        log_template: None,
+    }
+}
+
 /// RIP client connected event
 pub static RIP_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "rip_connected",
         "RIP client connected to router",
-        json!({"type": "placeholder", "event_id": "rip_connected"}),
+        // The example is what the model copies, so it has to be an action the executor
+        // accepts. It used to be `{"type": "placeholder"}`, which `execute_action` rejects.
+        json!({"type": "send_rip_request", "version": 2}),
     )
     .with_parameters(vec![Parameter {
         name: "remote_addr".to_string(),
@@ -24,6 +75,7 @@ pub static RIP_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         description: "RIP router address".to_string(),
         required: true,
     }])
+    .with_actions(vec![send_rip_request_action(), disconnect_action()])
 });
 
 /// RIP client response received event
@@ -31,7 +83,7 @@ pub static RIP_CLIENT_RESPONSE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::n
     EventType::new(
         "rip_response_received",
         "RIP response received from router",
-        json!({"type": "placeholder", "event_id": "rip_response_received"}),
+        json!({"type": "disconnect"}),
     )
     .with_parameters(vec![
         Parameter {
@@ -61,6 +113,11 @@ pub static RIP_CLIENT_RESPONSE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::n
             required: true,
         },
     ])
+    .with_actions(vec![
+        send_rip_request_action(),
+        wait_for_more_action(),
+        disconnect_action(),
+    ])
 });
 
 /// RIP client protocol action handler
@@ -81,76 +138,22 @@ impl RipClientProtocol {
 // Implement Protocol trait (common functionality)
 impl Protocol for RipClientProtocol {
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
-        vec![
-            ActionDefinition {
-                name: "send_rip_request".to_string(),
-                description: "Send RIP request to query routing table".to_string(),
-                parameters: vec![Parameter {
-                    name: "version".to_string(),
-                    type_hint: "number".to_string(),
-                    description: "RIP version (1 or 2)".to_string(),
-                    required: true,
-                }],
-                example: json!({
-                    "type": "send_rip_request",
-                    "version": 2
-                }),
-                log_template: None,
-            },
-            ActionDefinition {
-                name: "disconnect".to_string(),
-                description: "Close RIP client connection".to_string(),
-                parameters: vec![],
-                example: json!({
-                    "type": "disconnect"
-                }),
-                log_template: None,
-            },
-        ]
+        vec![send_rip_request_action(), disconnect_action()]
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        vec![
-            ActionDefinition {
-                name: "send_rip_request".to_string(),
-                description: "Send RIP request in response to received data".to_string(),
-                parameters: vec![Parameter {
-                    name: "version".to_string(),
-                    type_hint: "number".to_string(),
-                    description: "RIP version (1 or 2)".to_string(),
-                    required: true,
-                }],
-                example: json!({
-                    "type": "send_rip_request",
-                    "version": 2
-                }),
-                log_template: None,
-            },
-            ActionDefinition {
-                name: "wait_for_more".to_string(),
-                description: "Wait for more responses before responding".to_string(),
-                parameters: vec![],
-                example: json!({
-                    "type": "wait_for_more"
-                }),
-                log_template: None,
-            },
-        ]
+        vec![send_rip_request_action(), wait_for_more_action()]
     }
     fn protocol_name(&self) -> &'static str {
         "RIP"
     }
+    // The events the client actually raises, not re-declared copies of them. These used to be
+    // freshly-built `EventType`s with the same two ids but no parameters, so everything reading
+    // the declared surface — the model's event documentation, the registry audits — saw a
+    // stripped version of what `mod.rs` really emits.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "rip_connected",
-                "Triggered when RIP client connects to router",
-                json!({"type": "placeholder", "event_id": "rip_connected"}),
-            ),
-            EventType::new(
-                "rip_response_received",
-                "Triggered when RIP client receives routing table response",
-                json!({"type": "placeholder", "event_id": "rip_response_received"}),
-            ),
+            RIP_CLIENT_CONNECTED_EVENT.clone(),
+            RIP_CLIENT_RESPONSE_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
@@ -267,6 +270,16 @@ impl Client for RipClientProtocol {
                     .get("version")
                     .and_then(|v| v.as_u64())
                     .context("Missing 'version' field")?;
+                // RFC 1058 defines version 1 and RFC 2453 version 2; there is no third. Refuse
+                // anything else here rather than in the transport, so the operator and the model
+                // both get a `Rejected` naming the problem instead of a silently-downgraded
+                // datagram.
+                if version != 1 && version != 2 {
+                    return Err(anyhow::anyhow!(
+                        "Invalid RIP 'version' {}: must be 1 (RFC 1058) or 2 (RFC 2453)",
+                        version
+                    ));
+                }
 
                 Ok(ClientActionResult::Custom {
                     name: "send_rip_request".to_string(),

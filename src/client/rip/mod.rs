@@ -277,12 +277,18 @@ impl RipClient {
         );
 
         if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
+            // Snapshot the memory into a local BEFORE the match. Passing
+            // `&client_data.lock().await.memory` directly as an argument would put the
+            // `MutexGuard` in the match scrutinee, and scrutinee temporaries live until the
+            // end of the whole `match` — so the guard would be held across the LLM await and
+            // the `Ok` arm's own `client_data.lock()` below would deadlock on it.
+            let memory = client_data.lock().await.memory.clone();
             match call_llm_for_client(
                 &llm_client,
                 &app_state,
                 client_id.to_string(),
                 &instruction,
-                &client_data.lock().await.memory,
+                &memory,
                 Some(&event),
                 protocol.as_ref(),
                 &status_tx,
@@ -375,11 +381,26 @@ impl RipClient {
                                         client_data_lock.state = ConnectionState::Processing;
                                         drop(client_data_lock);
 
-                                        // Call LLM with response event
-                                        if let Some(instruction) =
-                                            app_state.get_instruction_for_client(client_id).await
-                                        {
-                                            let routes: Vec<_> = msg
+                                        // Drain anything the Processing/Accumulating arms
+                                        // parked, oldest first, and only then go back to Idle
+                                        // — the TCP reference loops back over `queued_data`
+                                        // the same way, where this used to `clear()` the queue
+                                        // unread.
+                                        //
+                                        // Today the queue cannot actually fill: this task is
+                                        // the only producer and it is parked on the LLM call
+                                        // below, so `Processing`/`Accumulating` are
+                                        // unreachable. The drain is here so the arms mean what
+                                        // they say if a second producer ever appears, not
+                                        // because datagrams are being lost now.
+                                        let mut current = msg;
+                                        loop {
+                                            // Call LLM with response event
+                                            if let Some(instruction) = app_state
+                                                .get_instruction_for_client(client_id)
+                                                .await
+                                            {
+                                                let routes: Vec<_> = current
                                                 .routes
                                                 .iter()
                                                 .map(|r| {
@@ -392,43 +413,51 @@ impl RipClient {
                                                 })
                                                 .collect();
 
-                                            let event = Event::new(
-                                                &RIP_CLIENT_RESPONSE_RECEIVED_EVENT,
-                                                serde_json::json!({
-                                                    "version": msg.version as u8,
-                                                    "command": match msg.command {
-                                                        RipCommand::Request => "request",
-                                                        RipCommand::Response => "response",
-                                                    },
-                                                    "route_count": routes.len(),
-                                                    "routes": routes,
-                                                }),
-                                            );
+                                                let event = Event::new(
+                                                    &RIP_CLIENT_RESPONSE_RECEIVED_EVENT,
+                                                    serde_json::json!({
+                                                        "version": current.version as u8,
+                                                        "command": match current.command {
+                                                            RipCommand::Request => "request",
+                                                            RipCommand::Response => "response",
+                                                        },
+                                                        "route_count": routes.len(),
+                                                        "routes": routes,
+                                                    }),
+                                                );
 
-                                            match call_llm_for_client(
-                                                &llm_client,
-                                                &app_state,
-                                                client_id.to_string(),
-                                                &instruction,
-                                                &client_data_clone.lock().await.memory,
-                                                Some(&event),
-                                                protocol.as_ref(),
-                                                &status_tx,
-                                            )
-                                            .await
-                                            {
-                                                Ok(ClientLlmResult {
-                                                    actions,
-                                                    memory_updates,
-                                                }) => {
-                                                    // Update memory
-                                                    if let Some(mem) = memory_updates {
-                                                        client_data_clone.lock().await.memory = mem;
-                                                    }
+                                                // Snapshot before the match: a `MutexGuard` built
+                                                // in the scrutinee lives to the end of the whole
+                                                // `match`, so it would be held across the LLM
+                                                // await and the `Ok` arm's own `lock()` below
+                                                // would deadlock on it.
+                                                let memory =
+                                                    client_data_clone.lock().await.memory.clone();
+                                                match call_llm_for_client(
+                                                    &llm_client,
+                                                    &app_state,
+                                                    client_id.to_string(),
+                                                    &instruction,
+                                                    &memory,
+                                                    Some(&event),
+                                                    protocol.as_ref(),
+                                                    &status_tx,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(ClientLlmResult {
+                                                        actions,
+                                                        memory_updates,
+                                                    }) => {
+                                                        // Update memory
+                                                        if let Some(mem) = memory_updates {
+                                                            client_data_clone.lock().await.memory =
+                                                                mem;
+                                                        }
 
-                                                    // Execute actions
-                                                    for action in actions {
-                                                        match protocol.as_ref().execute_action(action) {
+                                                        // Execute actions
+                                                        for action in actions {
+                                                            match protocol.as_ref().execute_action(action) {
                                                             Ok(result) => {
                                                                 match Self::apply_action(client_id, result, &socket_clone, remote_sock_addr).await {
                                                                     Ok(Applied::Disconnect) => {
@@ -444,21 +473,28 @@ impl RipClient {
                                                             }
                                                             Err(e) => error!("RIP client {} could not execute action: {}", client_id, e),
                                                         }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        error!(
+                                                            "LLM error for RIP client {}: {}",
+                                                            client_id, e
+                                                        );
                                                     }
                                                 }
-                                                Err(e) => {
-                                                    error!(
-                                                        "LLM error for RIP client {}: {}",
-                                                        client_id, e
-                                                    );
-                                                }
                                             }
-                                        }
 
-                                        // Reset state
-                                        let mut client_data_lock = client_data_clone.lock().await;
-                                        client_data_lock.queued_responses.clear();
-                                        client_data_lock.state = ConnectionState::Idle;
+                                            // Take the next datagram that queued up while the
+                                            // model was deciding, oldest first. Only when the
+                                            // queue is empty does the client go back to Idle.
+                                            let mut client_data_lock =
+                                                client_data_clone.lock().await;
+                                            if client_data_lock.queued_responses.is_empty() {
+                                                client_data_lock.state = ConnectionState::Idle;
+                                                break;
+                                            }
+                                            current = client_data_lock.queued_responses.remove(0);
+                                        }
                                     }
                                     ConnectionState::Processing => {
                                         // Queue response
@@ -592,16 +628,23 @@ impl RipClient {
                 let version = data["version"]
                     .as_u64()
                     .context("send_rip_request is missing 'version'")?;
-                let rip_version = if version == 1 {
-                    RipVersion::V1
-                } else {
-                    RipVersion::V2
+                // Refuse a version we cannot encode rather than silently sending v2 and
+                // logging the number the caller asked for — RFC 1058 defines 1, RFC 2453
+                // defines 2, and there is no third.
+                let rip_version = match version {
+                    1 => RipVersion::V1,
+                    2 => RipVersion::V2,
+                    other => {
+                        return Err(anyhow::anyhow!(
+                            "send_rip_request: unsupported RIP version {other} (must be 1 or 2)"
+                        ))
+                    }
                 };
                 let bytes = RipMessage::request(rip_version).encode();
                 let sent = socket.send_to(&bytes, remote_addr).await?;
                 debug!(
                     "RIP client {} sent request (version {}, {} bytes)",
-                    client_id, version, sent
+                    client_id, rip_version as u8, sent
                 );
                 Ok(Applied::Sent(sent))
             }

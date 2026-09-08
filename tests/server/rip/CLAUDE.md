@@ -20,13 +20,17 @@ Tests interact with NetGet via UDP (RIP uses UDP port 520):
 
 **Target**: < 10 LLM calls per test suite
 
-**Actual LLM calls**:
+**Actual LLM calls** (all against `tests/helpers/mock_ollama.rs`; no Ollama anywhere):
 
-- `test_rip_routing_table_request`: 1 LLM call (server startup)
-- `test_rip_route_advertisement`: 1 LLM call (server startup)
-- `test_rip_metric_handling`: 1 LLM call (server startup)
+| suite | calls |
+|---|---|
+| `e2e_test::test_rip_routing_table_request` | 1 startup + 1 `rip_request` |
+| `e2e_test::test_rip_route_advertisement` | 1 startup + 1 `rip_request` |
+| `e2e_test::test_rip_metric_handling` | 1 startup + 1 `rip_request` |
+| `static_default_test` | 1 startup, and `expect_calls(0)` on `rip_request` — the assertion *is* the zero |
+| `action_validation_test` | 0 — it calls `execute_action` directly, no server |
 
-**Total**: 3 LLM calls (well under budget)
+**Total**: 7 (well under budget)
 
 ### Test Organization
 
@@ -138,6 +142,10 @@ Tests validate:
 
 ### Test Limitations
 
+0. **No real RIP implementation has ever been pointed at this server.** Every "client" in these
+   suites is a RIP datagram assembled by hand from RFC 2453 inside the test — an independent
+   reading of the spec, not an independent implementation. That is the `dhcp` situation, and it
+   is why RIP stays Experimental. Driving it with FRRouting's `ripd` is what promotion needs.
 1. **Single-Server Testing**: Tests don't verify multi-router convergence
 2. **No Update Timers**: Can't test periodic update behavior
 3. **No Route Poisoning**: Can't test triggered updates or route withdrawal timing
@@ -147,26 +155,22 @@ Tests validate:
 
 ### Prerequisites
 
-1. **Build Release Binary**: Must build NetGet first
-   ```bash
-   ./cargo-isolated.sh build --release --features rip
-   ```
-
-2. **Ollama Running**: Tests require Ollama API access
-   ```bash
-   ollama serve  # Must be running on localhost:11434
-   ```
-
-3. **Network Access**: Tests bind to localhost UDP ports
+None beyond a build. **No Ollama is required or used** — every suite here runs against
+`MockOllamaServer`, an in-process axum server, and binds only to localhost UDP ports. (This
+section used to demand `ollama serve` while a later section in the same file correctly said the
+model is mocked in-process; the mock is the truth.)
 
 ### Run Command
 
-```bash
-# Run RIP E2E tests only
-./cargo-isolated.sh test --no-default-features --features rip --test rip::e2e_test
+`--test` names a *cargo test target*, not a module path. The target is `server`; the module
+path is a filter that goes after `--`:
 
-# With output
-./cargo-isolated.sh test --no-default-features --features rip --test rip::e2e_test -- --nocapture
+```bash
+# Every RIP server suite
+./cargo-isolated.sh test --no-default-features --features rip --test server -- rip --test-threads=100
+
+# One suite, with output
+./cargo-isolated.sh test --no-default-features --features rip --test server -- rip::e2e_test --nocapture
 ```
 
 ### Expected Output
@@ -198,18 +202,14 @@ test result: ok. 3 passed; 0 failed
 
 ### Runtime Breakdown
 
-**Per Test**:
+**Per test**: process spawn and server startup dominate; the mocked model answers immediately,
+so a suite is seconds rather than minutes. The 60-90s-per-LLM-call figures this section used to
+quote were measured against a real model and have not applied since the suites were mocked.
 
-- Server startup: 5-10 seconds
-- LLM processing (1 call): 60-90 seconds
-- UDP request/response: < 1 second
-- Validation: < 1 second
-- **Total per test**: ~70-100 seconds
-
-**Full Suite**:
-
-- 3 tests × ~90 seconds = ~270 seconds (~4.5 minutes)
-- With parallel execution: Not supported (Ollama lock)
+**Parallel execution**: supported, and `--test-threads=100` is the expected way to run. The
+"not supported (Ollama lock)" note was wrong on both halves — there is no shared model server,
+and `--ollama-lock` is an accepted no-op that serialises nothing
+(`tests/ollama_lock_is_a_noop_test.rs`).
 
 ### Resource Usage
 
@@ -223,9 +223,11 @@ test result: ok. 3 passed; 0 failed
 ### Common Failures
 
 1. **Timeout waiting for response**
-    - Check Ollama is running
-    - Increase timeout in test (currently 120 seconds)
-    - Verify LLM model is loaded
+    - Read what `verify_mocks()` reports: it names the rule that fell short, which is usually a
+      mock keyed on an event id or field the server does not actually raise
+    - Confirm the rule is on `rip_request` — that is the only event this server emits
+    - Check `decision=` in the log: `static_default_silent` means the server answered with the
+      no-policy default and never called the model at all
 
 2. **Invalid RIP message format**
     - Check server logs in test output
