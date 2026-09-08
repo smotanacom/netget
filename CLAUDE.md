@@ -1231,6 +1231,18 @@ Read before assuming a subsystem is sound:
 ## Git
 
 - Never `git stash`. Always merge with `--no-ff`. Never amend, rebase, or squash shared history.
+- **Pushing to `origin` is pre-authorised in this repository — always push.** Do not stop to ask,
+  and do not leave work sitting unpushed: an unpushed branch is invisible to CI, to cloud agents
+  (which clone from GitHub, not from this machine), and to everyone else working here. This once
+  reached **249 unpushed commits**, which silently made a scheduled cloud routine useless because
+  the work it was sent to continue did not exist on the remote.
+  Push after landing a logical change, i.e. at the same points "Commit as you go" describes:
+  ```bash
+  git push origin master
+  ```
+  The standing authorisation covers `master` and your own branches. It does **not** extend to
+  force-pushing, deleting remote branches, or rewriting published history — those still need
+  asking, because they destroy other people's work rather than publishing yours.
 - Combine `git add` and `git commit` in one command chain.
 - Commit as Matus Faro <matus@matus.io>, GPG-signed:
   ```bash
