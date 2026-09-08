@@ -1,8 +1,8 @@
 //! The dashboard's `[ send ]` path on an OSPF client.
 //!
-//! OSPF needs a raw IP socket (protocol 89), which is root/`CAP_NET_RAW` only - the
-//! protocol's own metadata declares `PrivilegeRequirement::Root` (over-broad: it really
-//! wants `CAP_NET_RAW`, left as-is here). So this file is split in two:
+//! OSPF needs a raw IP socket (protocol 89), which wants `CAP_NET_RAW` - the protocol's own
+//! metadata declares `PrivilegeRequirement::RawSockets` accordingly. So this file is split
+//! in two:
 //!
 //! * [`command_channel_wiring`] always runs. Without the capability the client cannot be
 //!   created at all, and what it asserts is the part of the contract that failure still has

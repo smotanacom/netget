@@ -18,7 +18,7 @@ routing logic.
 
 Whether to respond at all is **policy**. So with **no operator policy** (no server instruction and
 no per-event handler), the server is a **passive listener — no response, no LLM call** per captured
-packet (gated by `should_call_llm` in `mod.rs` = `has_instruction || has_handler`). The model is
+packet (gated by `operator_wants_dynamic` in `mod.rs` = `has_instruction || has_handler`). The model is
 consulted **only when the operator opts in** with how the router should behave (an instruction or a
 handler). This passive default is compile-verified since the raw-socket path needs root and the
 E2E suite never touches it. Everything below describing the LLM generating OSPF responses is the
@@ -66,12 +66,21 @@ builders fell back to hardcoded constants. Two things now consume them:
    `local_router_priority`, so the refusal is visible to the model rather than silent.
 
 > **Scope warning.** This is a Hello-level simulator, not a router. It parses every OSPF packet
-> type and hands the parsed fields to the LLM, but it can only *construct* a complete Hello.
-> Outgoing DD carries no LSA headers, and outgoing LSR/LSU/LSAck carry a valid header with an
-> empty body - they are well-formed packets that advertise nothing. Adjacency therefore cannot
-> progress past 2-Way, and no test has ever run this code against a real router: the E2E suite
-> starts a **plain UDP server** (`"base_stack": "UDP"`) and hand-rolls OSPF bytes in the test
-> file, so it never touches the raw-socket path or any function in this module.
+> type down to its 20-byte LSA headers — never to LSA bodies — and hands the parsed fields to
+> the LLM. Outgoing Hello, DD, LSR and LSAck carry real bodies built from the model's
+> structured fields; **outgoing LSU always advertises zero LSAs**, because constructing an LSA
+> body (Router/Network/Summary link lists) is not implemented and there is no parameter through
+> which the model could supply one. So this server can acknowledge LSAs and ask for them by
+> name, but can never answer a Link State Request, and adjacency cannot progress past 2-Way.
+>
+> **No test runs this module at all.** Not "no test against a real router" — no test, full
+> stop. `spawn_with_llm_actions` opens a raw IP-89 socket before anything else, so it cannot
+> run unprivileged; and the three tests in `tests/server/ospf/e2e_test.rs` named "E2E" start a
+> **generic UDP server** (`"base_stack": "UDP"`, which `open_server` renames straight to
+> `protocol`) and exchange OSPF-shaped bytes the test itself built. They mock
+> `udp_datagram_received` / `send_udp_response`, which belong to `src/server/udp/`; no test in
+> the tree mocks an `ospf_*` event or a `send_hello` action. The real coverage here is the
+> unit tests in that same file, which call `OspfProtocol` directly.
 
 ## Use Cases
 
@@ -337,13 +346,50 @@ emitted failed the receiver's validity check, so FRR/BIRD dropped all of them si
 defining property, and the check a receiver performs, is that recomputing the sum over the packet
 with the checksum left in place yields 0. `OspfProtocol::calculate_checksum` satisfies it.
 
-### LSA Packets (NOT IMPLEMENTED)
+**The direction matters, and getting it wrong is invisible.** `calculate_checksum` sums the
+packet exactly as given and does **not** special-case bytes 12..14, because that single
+behaviour is what lets one function serve both ends of the standard one's-complement idiom:
 
-Router LSA, Network LSA and Summary LSA construction does not exist. `send_link_state_update`
-accepts `router_id`, `area_id` and `destination` and emits a header with an LSA count of zero;
-there is no parameter through which the LLM could supply LSA contents. `send_link_state_request`
-and `send_link_state_ack` are the same shape. Treat all three as "emits a syntactically valid
-packet that says nothing".
+| | what the caller does |
+|---|---|
+| sending | leave the checksum field zero, call it, store the result there |
+| receiving | call it over the packet as it arrived; a valid packet yields 0 |
+
+A version that zeroed bytes 12..14 unconditionally collapsed those into one. The receiver then
+recomputed the *sender's* value instead of 0, so the validity check could never pass and a
+corrupted packet was indistinguishable from a good one — while the doc comment asserted the
+yields-0 property the code had just made unsatisfiable. Each `build_*_packet` now zeroes the
+field immediately before the call, so the sending contract is local rather than an assumption
+about header code thirty lines earlier.
+
+Note that a test asserting only "a corrupted packet does **not** validate" passes under the
+broken version too, because it never returned 0 for anything. The yields-0 assertion is the one
+that carries the weight; keep both.
+
+### LSA headers: carried. LSA bodies: not implemented.
+
+The distinction matters, because three of the four packet types only ever needed headers.
+
+**Carried.** An LSA *header* is the fixed 20 bytes of RFC 2328 A.4.1 — age, options, type,
+Link State ID, Advertising Router, sequence, checksum, length. `OspfProtocol::parse_lsa_headers`
+reads them and every DD/LSU/LSAck event reports them as structured JSON;
+`send_link_state_ack` and `send_database_description` take an `lsa_headers` array in that same
+shape and serialise it back, and `send_link_state_request` takes a `requests` array of
+LSType/LinkStateID/AdvertisingRouter triples (A.3.4). So the model answers a flood by handing
+the event's `lsa_headers` straight back, and asks for LSAs by naming them.
+
+This is not cosmetic. RFC 2328 §13.7 matches an acknowledgement against the neighbour's
+retransmission list **header by header, checksum included** — so the body-less LSAck this used
+to emit acknowledged nothing, and the neighbour retransmitted every LSA each RxmtInterval
+until the adjacency failed. An empty LSAck is a positive assertion that is simply false, not a
+harmless no-op.
+
+**Not implemented.** LSA *bodies* — Router LSA link lists, Network LSA attached-router lists,
+Summary LSA network+metric. `send_link_state_update` therefore always writes an LSA count of
+zero and there is no parameter through which the model could supply contents. A Link State
+Request from a peer consequently cannot be satisfied, which is why the `ospf_link_state_request`
+event tells the model to answer `wait_for_more` rather than pretending. This is the single
+remaining gap that keeps adjacency at 2-Way.
 
 ## Sending Packets
 
@@ -394,6 +440,16 @@ unsafe {
   fields (DD flags + sequence + LSA headers; LSR request triples; LSU LSA headers walked by each
   LSA's own length field; LSAck LSA headers)
 - Neighbor state tracking (Down/Init/2-Way)
+- Dead neighbour ageing: a neighbour silent for the configured `router_dead_interval` is
+  dropped on the next received packet. This is also what bounds the neighbour table — the key
+  is the sender's Router ID, four bytes it chooses, so before this a peer spraying Hellos with
+  random Router IDs grew the map without limit
+- Neighbours published to `AppState` via `add_connection_to_server` + `update_connection_stats`,
+  so they appear as peers in the dashboard rail with live ↓/↑ counters, and `call_llm` can
+  resolve the peer address for the event and access logs. The `ConnectionId` used to be minted
+  and written into every event without ever being registered, so every OSPF log line recorded a
+  null client address. `metadata()` declares `.connectionless()`, so the 10s idle sweep reaps
+  these entries — OSPF has no close to key removal on
 - Structured JSON events to LLM - all five event types declare their actions, so the model is
   actually offered tools (`EventType::actions` is what `call_llm` advertises, not
   `get_sync_actions()`)
@@ -409,14 +465,13 @@ unsafe {
 
 ### 📋 NOT IMPLEMENTED
 
-- **LSA packet construction** (Router, Network, Summary) - the single biggest gap; without it
-  DD/LSR/LSU/LSAck can only be sent empty and adjacency cannot leave 2-Way
+- **LSA *body* construction** (Router, Network, Summary link lists) - the single biggest
+  remaining gap; without it `send_link_state_update` can only advertise zero LSAs, a peer's
+  Link State Request cannot be answered, and adjacency cannot leave 2-Way. LSA *headers* are
+  carried on DD/LSR/LSAck - see the section above for why that is a different thing
 - DD exchange *state* (master/slave negotiation, sequence tracking) - packets are parsed and
-  surfaced, but nothing tracks the exchange
+  surfaced, and the model can echo LSA headers, but nothing tracks the exchange
 - Periodic Hello timer - the server only ever replies, it never initiates
-- Dead neighbor detection (`last_hello` is recorded and never checked). Note the
-  configured `router_dead_interval` *is* read - it is advertised in outgoing Hellos and
-  enforced as an RFC 2328 §10.5 acceptance check - but nothing uses it as a timer
 - DR/BDR election (the LLM claims a role by setting priority; no algorithm runs)
 - LSDB, SPF, routing table, route installation - out of scope by design
 
@@ -480,15 +535,28 @@ packet before parsing it. Nobody has since re-run the experiment, and raw socket
 - Multicast reception
 - Protocol parsing
 
-**What the E2E suite actually asserts.** `tests/server/ospf/e2e_test.rs` still runs the
-OSPF wire format over a plain UDP server and never touches the raw-socket path, so it
-proves nothing about this module's I/O. It does now assert the configuration plumbing at
-byte level against RFC 2328 A.3.2 offsets: that a configured `hello_interval` /
-`router_dead_interval` / `router_priority` / `network_mask` reach bytes 28-29, 32-35, 31
-and 24-27 of the Hello body; that an action-supplied value overrides the configured one;
-that non-Hello packets take only `router_id`/`area_id`; that the §10.5 check fires on
-exactly the three fields the RFC names; and that the declared startup-parameter set equals
-the set the implementation reads.
+**What `tests/server/ospf/e2e_test.rs` actually asserts.** Its three "E2E" tests are not
+OSPF tests: they start a generic UDP server and relay OSPF-shaped bytes the test itself
+built (see the scope warning at the top). Nothing anywhere drives this module's I/O.
+
+The rest of the file is real, and tests `OspfProtocol` directly:
+
+- **Checksum** — that recomputing `calculate_checksum` over a built packet yields 0, which
+  is precisely the validity check a receiver runs; that a corrupted body fails it; and that
+  the 64-bit authentication field is excluded, so filling it in does not invalidate the
+  packet. Until this pass the only checksum test in the file exercised the *test's own*
+  Fletcher helper — the algorithm this module records as the bug that made FRR/BIRD drop
+  every packet — and asserted only that it was non-zero.
+- **Startup config → wire**, at RFC 2328 A.3.2 offsets: a configured `hello_interval` /
+  `router_dead_interval` / `router_priority` / `network_mask` reaching bytes 28-29, 32-35,
+  31 and 24-27 of the Hello body; an action-supplied value overriding the configured one;
+  non-Hello packets taking only `router_id`/`area_id`.
+- **LSA headers and request triples** at A.4.1/A.3.4 offsets, including that the LS checksum
+  is echoed verbatim, that a multi-header LSAck still validates, that both bodies remain
+  optional, and that what a peer would parse back equals the header the model supplied.
+- **A malformed dotted quad is rejected** rather than silently becoming 0.0.0.0.
+- The §10.5 mismatch check firing on exactly the three fields the RFC names, and the
+  declared startup-parameter set equalling the set the implementation reads.
 
 ## Security Considerations
 
@@ -600,7 +668,9 @@ LLM generates:
 
 ### 2. Database Description Handling (DD Exchange)
 
-**What's Missing**: Can receive DD packets, but LLM doesn't track exchange state or LSA headers.
+**What's Missing**: the exchange *state*. DD packets are parsed and their LSA headers reach the
+model, and `send_database_description` takes an `lsa_headers` array back, but nothing tracks
+master/slave or sequence continuity across packets — the model has to hold that itself.
 
 **How to Implement**:
 
@@ -624,7 +694,10 @@ LLM generates:
 
 ### 3. LSR/LSU/LSAck Handling
 
-**What's Missing**: Can send these packet types (empty), but doesn't parse incoming ones or maintain state.
+**Mostly done.** Incoming LSR/LSU/LSAck are parsed and raise their own events with structured
+fields, and outgoing LSR and LSAck now carry real bodies (request triples / LSA headers). What
+remains is `send_link_state_update`, which cannot carry LSAs because LSA *bodies* are not
+implemented — see item 1 — and any notion of retained state.
 
 **How to Implement**:
 
@@ -687,47 +760,21 @@ LLM generates:
 
 **Priority**: High. Required for maintaining neighbor relationships (40s dead timer).
 
-### 5. Dead Neighbor Detection (40s Timeout)
+### 5. Dead Neighbor Detection — DONE
 
-**What's Missing**: Neighbors never time out. last_hello timestamp tracked but not checked.
+Neighbours silent for the configured `router_dead_interval` are dropped, in
+`handle_ospf_packet`, under the lock it already takes. It is *lazy* — the sweep runs when the
+next packet arrives, not on a timer — which is enough for both jobs it does: RFC 2328 §10.5
+correctness, and bounding the table against a peer spraying Hellos with attacker-chosen Router
+IDs. A timer-driven version would additionally let a neighbour go Down while the interface is
+completely silent; that needs the periodic Hello timer (item 4) to be worth having.
 
-**How to Implement**:
-
-1. Add connection-scoped task for each neighbor:
-   ```rust
-   // When neighbor transitions to Init/2-Way
-   let timeout_task = ScheduledTask {
-       task_id: format!("neighbor_timeout_{}", neighbor_id),
-       server_id: Some(server_id),
-       connection_id: Some(connection_id),
-       recurring: false,
-       delay_secs: Some(40),
-       instruction: format!("Check if neighbor {} has sent Hello in last 40s. If not, mark Down.", neighbor_id),
-   };
-   ```
-
-2. Alternative: Background task in mod.rs:
-   ```rust
-   tokio::spawn(async move {
-       let mut check_timer = tokio::time::interval(Duration::from_secs(10));
-       loop {
-           check_timer.tick().await;
-           let now = Instant::now();
-           neighbors.lock().await.retain(|id, neighbor| {
-               if now.duration_since(neighbor.last_hello).as_secs() > 40 {
-                   warn!("Neighbor {} timed out", id);
-                   false
-               } else {
-                   true
-               }
-           });
-       }
-   });
-   ```
-
-**Effort**: Low (1 hour).
-
-**Priority**: High. Prevents stale neighbor state.
+Note the ordering constraint the implementation has to respect and the obvious version does
+not: allocating the `ConnectionId` calls `get_next_unified_id`, which takes the global
+`AppState` write lock. Doing that while holding the neighbour mutex is a lock held across an
+`.await` — forbidden here, and a lock-order inversion against every task that takes `AppState`
+first. So the lookup and the allocation are separate critical sections, and the insert
+re-checks for a racing packet from the same neighbour.
 
 ### 6. DR/BDR Election Logic
 

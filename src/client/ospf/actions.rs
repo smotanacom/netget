@@ -156,9 +156,25 @@ pub static OSPF_CLIENT_DD_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(||
 pub static OSPF_CLIENT_LSU_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "ospf_link_state_update_received",
-        "OSPF Link State Update packet received with LSAs",
+        "OSPF Link State Update received: a router is flooding LSAs, which is where the \
+         topology actually lives. Acknowledge them with send_link_state_ack, passing this \
+         event's 'lsa_headers' array straight back - unacknowledged LSAs are retransmitted \
+         every RxmtInterval until the router gives up on the adjacency (RFC 2328 §13.5).",
         json!({
-            "type": "wait_for_more"
+            "type": "send_link_state_ack",
+            "router_id": "1.1.1.1",
+            "area_id": "0.0.0.0",
+            "lsa_headers": [{
+                "age": 1,
+                "options": 2,
+                "lsa_type": 1,
+                "link_state_id": "2.2.2.2",
+                "advertising_router": "2.2.2.2",
+                "sequence": 2147483649_u32,
+                "checksum": 65262,
+                "length": 48
+            }],
+            "destination": "192.168.1.2"
         }),
     )
     .with_parameters(vec![
@@ -169,9 +185,27 @@ pub static OSPF_CLIENT_LSU_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|
             required: true,
         },
         Parameter {
+            name: "advertised_lsa_count".to_string(),
+            type_hint: "number".to_string(),
+            description: "LSA count the packet's own header claims. May exceed lsa_count if \
+                          the packet was truncated or lied."
+                .to_string(),
+            required: true,
+        },
+        Parameter {
             name: "lsa_count".to_string(),
             type_hint: "number".to_string(),
-            description: "Number of LSAs in update".to_string(),
+            description: "Number of LSA headers actually parsed out of the packet".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "lsa_headers".to_string(),
+            type_hint: "array".to_string(),
+            description: "One object per LSA: lsa_type, lsa_type_name, link_state_id, \
+                          advertising_router, sequence, age, options, checksum, length. \
+                          This is the topology data, and also exactly what \
+                          send_link_state_ack needs handed back."
+                .to_string(),
             required: true,
         },
     ])
@@ -330,6 +364,66 @@ impl Protocol for OspfClientProtocol {
                     "type": "send_link_state_request",
                     "router_id": "1.1.1.1",
                     "area_id": "0.0.0.0",
+                    "requests": [{
+                        "lsa_type": 1,
+                        "link_state_id": "2.2.2.2",
+                        "advertising_router": "2.2.2.2"
+                    }],
+                    "destination": "192.168.1.2"
+                }),
+                log_template: None,
+            },
+            ActionDefinition {
+                name: "send_link_state_ack".to_string(),
+                description: "Acknowledge the LSAs a router flooded to us. Without this the \
+                              router retransmits every LSA each RxmtInterval until it gives \
+                              up on the adjacency."
+                    .to_string(),
+                parameters: vec![
+                    Parameter {
+                        name: "router_id".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Our router ID".to_string(),
+                        required: true,
+                    },
+                    Parameter {
+                        name: "area_id".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "OSPF area ID".to_string(),
+                        required: true,
+                    },
+                    Parameter {
+                        name: "lsa_headers".to_string(),
+                        type_hint: "array".to_string(),
+                        description: "The LSA headers being acknowledged - pass back the \
+                                      'lsa_headers' array exactly as the \
+                                      ospf_link_state_update_received event delivered it. \
+                                      An acknowledgement is matched header by header, so an \
+                                      empty list acknowledges nothing."
+                            .to_string(),
+                        required: true,
+                    },
+                    Parameter {
+                        name: "destination".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Destination IP address".to_string(),
+                        required: true,
+                    },
+                ],
+                example: json!({
+                    "type": "send_link_state_ack",
+                    "router_id": "1.1.1.1",
+                    "area_id": "0.0.0.0",
+                    "lsa_headers": [{
+                        "age": 1,
+                        "options": 2,
+                        "lsa_type": 1,
+                        "link_state_id": "2.2.2.2",
+                        "advertising_router": "2.2.2.2",
+                        "sequence": 2147483649_u32,
+                        "checksum": 65262,
+                        "length": 48
+                    }],
                     "destination": "192.168.1.2"
                 }),
                 log_template: None,
@@ -396,11 +490,11 @@ impl Protocol for OspfClientProtocol {
         ProtocolMetadataV2 {
             state: DevelopmentState::Experimental,
             privilege_requirement: PrivilegeRequirement::RawSockets,
-            implementation: "Raw IP socket (protocol 89) client for OSPF network monitoring",
+            implementation: "Raw IP socket (protocol 89) client for OSPF network monitoring. Parses received Hello, Database Description and Link State Update packets down to their LSA headers; sends Hello, DD, Link State Request and Link State Acknowledgment. Cannot construct LSA bodies, so it can ask for and acknowledge LSAs but never originate one.",
             llm_control:
-                "LLM controls Hello packet sending, Database Description requests, LSR queries",
-            e2e_testing: "E2E tests verify OSPF packet exchange with server (requires root)",
-            notes: Some("Query mode only - topology discovery, not full OSPF router"),
+                "LLM controls Hello sending, Database Description exchange, LSR queries and LSAck. The LSA headers an event reports are the same shape send_link_state_ack and send_link_state_request consume, so the model answers a flood by handing the headers back.",
+            e2e_testing: "Weak, and weaker than it looks. tests/client/ospf/e2e_test.rs skips itself with a pass whenever the process is not root - which is every CI run - and even when it runs it asserts only that the word 'OSPF' appears in the client's own output, which the prompt already contains. The real coverage is tests/client/ospf/command_channel_test.rs, which hard-fails either way: unprivileged it asserts connect() returns Err, leaves no command handle behind and makes a later send_to_client fail fast; privileged it asserts the live wiring. The test that actually multicasts a Hello is #[ignore]d because it needs CAP_NET_RAW and a multicast-capable interface.",
+            notes: Some("Query mode only - topology discovery, not a full OSPF router. No LSDB, no SPF, no periodic Hello timer, no adjacency state machine: it reacts to what arrives. Packet construction is shared with the OSPF server (crate::server::ospf::actions::OspfProtocol), so both directions agree on the wire format by construction."),
             connectionless: false,
         }
     }
@@ -512,6 +606,10 @@ impl Client for OspfClientProtocol {
             }),
             "send_link_state_request" => Ok(ClientActionResult::Custom {
                 name: "ospf_send_lsr".to_string(),
+                data: action.clone(),
+            }),
+            "send_link_state_ack" => Ok(ClientActionResult::Custom {
+                name: "ospf_send_lsack".to_string(),
                 data: action.clone(),
             }),
             "disconnect" => Ok(ClientActionResult::Disconnect),

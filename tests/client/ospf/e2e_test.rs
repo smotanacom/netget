@@ -1,10 +1,27 @@
-//! E2E tests for OSPF client
+//! E2E tests for OSPF client — **weak, and weaker than they look.**
 //!
-//! These tests verify OSPF client functionality by spawning the actual NetGet binary
-//! and testing client behavior as a black-box.
+//! OSPF needs a raw IP-89 socket (`CAP_NET_RAW`), so these spawn the real netget binary and
+//! then `return Ok(())` when the process is not root. That is a *silent pass*: on every
+//! ordinary run and every CI run all three report green having exercised nothing. The
+//! project treats a skip-when-missing gate as no evidence at all, and these are that shape.
 //!
-//! **IMPORTANT**: OSPF requires root/CAP_NET_RAW privileges for raw IP sockets.
-//! These tests will SKIP if not running with sufficient privileges.
+//! They are also weak when they do run. Each asserts that some word appears in the client's
+//! own output — `"OSPF"`, `"Hello"`, `"connected"`, `"received"` — and the prompt handed to
+//! the client already contains those words, so the assertion can be satisfied by the prompt
+//! being echoed back. `test_ospf_client_with_server` additionally uses fixed sleeps and
+//! configures no mock, so under a reachable Ollama it would make real LLM calls. Nothing in
+//! this file calls `verify_mocks()`.
+//!
+//! **The real coverage is `command_channel_test.rs`**, which hard-fails either way: without
+//! the capability it asserts the failure contract (`connect()` returns `Err`, no command
+//! handle is left behind, a later `send_to_client` fails fast rather than hanging), and with
+//! it, the live wiring. The one test there that actually multicasts a packet is `#[ignore]`d
+//! rather than skipped-with-a-pass, which is the honest way to gate on a privilege.
+//!
+//! Fixing this file means either dropping the privilege requirement (impossible — raw IP-89
+//! is the protocol) or hard-failing when unprivileged, which would make the suite unrunnable
+//! for everyone. Left as-is deliberately; the point of this note is that the green tick here
+//! must not be read as OSPF client evidence. `metadata().e2e_testing` says the same.
 //!
 //! Test strategy: Use netget binary to start OSPF client, < 5 LLM calls total.
 

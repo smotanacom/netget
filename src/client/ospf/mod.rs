@@ -741,15 +741,50 @@ impl OspfClient {
         }
 
         // Parse LSU header (4 bytes: number of LSAs)
-        let lsa_count = u32::from_be_bytes([data[24], data[25], data[26], data[27]]);
+        let advertised_count = u32::from_be_bytes([data[24], data[25], data[26], data[27]]);
 
-        debug!("OSPF LSU: {} LSAs from {}", lsa_count, sender_router_id);
+        // Walk the LSAs by each header's own length field rather than trusting the
+        // advertised count, so a peer cannot make us read past the packet.
+        //
+        // This client exists for topology discovery and the Link State Update is the packet
+        // that carries the topology - yet the event used to report only how many LSAs had
+        // arrived and threw the LSAs themselves away, so the model was told "6 LSAs" and
+        // never what was in them. These are also the exact fields send_link_state_ack needs
+        // in order to acknowledge them.
+        let body = &data[28..];
+        let mut lsas = Vec::new();
+        let mut offset = 0usize;
+        while offset + 20 <= body.len() && lsas.len() < 64 {
+            let header = crate::server::ospf::actions::OspfProtocol::parse_lsa_headers(
+                &body[offset..offset + 20],
+                1,
+            );
+            let Some(header) = header.into_iter().next() else {
+                break;
+            };
+            let declared = header["length"].as_u64().unwrap_or(0) as usize;
+            lsas.push(header);
+            // A length below the header size would not advance us; stop rather than spin.
+            if declared < 20 {
+                break;
+            }
+            offset += declared;
+        }
+
+        debug!(
+            "OSPF LSU: {} LSAs advertised, {} parsed, from {}",
+            advertised_count,
+            lsas.len(),
+            sender_router_id
+        );
 
         Some(Event::new(
             &OSPF_CLIENT_LSU_RECEIVED_EVENT,
             serde_json::json!({
                 "neighbor_id": sender_router_id,
-                "lsa_count": lsa_count,
+                "advertised_lsa_count": advertised_count,
+                "lsa_count": lsas.len(),
+                "lsa_headers": lsas,
             }),
         ))
     }
@@ -771,6 +806,9 @@ impl OspfClient {
             "ospf_send_lsr" => {
                 crate::server::ospf::actions::OspfProtocol::build_link_state_request_packet(data)?
             }
+            "ospf_send_lsack" => {
+                crate::server::ospf::actions::OspfProtocol::build_link_state_ack_packet(data)?
+            }
             _ => return Err(anyhow!("Unknown OSPF action: {}", action_name)),
         };
 
@@ -783,7 +821,20 @@ impl OspfClient {
         let dest_ip = match destination_str {
             "multicast" => OSPF_ALL_SPF_ROUTERS,
             "dr_multicast" => OSPF_ALL_DROUTERS,
-            ip_str => ip_str.parse::<Ipv4Addr>().unwrap_or(OSPF_ALL_SPF_ROUTERS),
+            ip_str => match ip_str.parse::<Ipv4Addr>() {
+                Ok(ip) => ip,
+                Err(_) => {
+                    // Falling back silently sent a packet the model meant for one router to
+                    // every OSPF speaker on the segment. Still send it - a typo should not
+                    // swallow the action - but say where it actually went.
+                    warn!(
+                        "OSPF client: destination '{}' is not an IP address; sending to \
+                         224.0.0.5 (all SPF routers) instead",
+                        ip_str
+                    );
+                    OSPF_ALL_SPF_ROUTERS
+                }
+            },
         };
 
         // Send packet

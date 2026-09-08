@@ -302,15 +302,100 @@ impl OspfProtocol {
         })
     }
 
-    // Helper: Parse IPv4 address string to bytes
+    /// Parse a dotted-quad into the four bytes every OSPF ID field carries.
+    ///
+    /// Strict on purpose. This used to fall back to `0.0.0.0` for anything it could not
+    /// parse and return `Ok`, so `router_id: "1.1.1"`, `"999.1.1.1"` or a typo'd startup
+    /// parameter produced a well-formed packet advertising Router ID 0.0.0.0 — a different
+    /// router — with nothing logged anywhere. Every caller already uses `?`, so an error
+    /// here surfaces as the "OSPF packet build error" the operator can act on, and no
+    /// packet goes out claiming an identity nobody asked for.
     fn parse_ipv4(ip: &str) -> Result<[u8; 4]> {
-        let parts: Vec<u8> = ip.split('.').filter_map(|s| s.parse::<u8>().ok()).collect();
+        ip.parse::<std::net::Ipv4Addr>()
+            .map(|addr| addr.octets())
+            .map_err(|_| {
+                anyhow::anyhow!("'{ip}' is not an IPv4 address in dotted-quad form (e.g. 1.1.1.1)")
+            })
+    }
 
-        if parts.len() == 4 {
-            Ok([parts[0], parts[1], parts[2], parts[3]])
-        } else {
-            Ok([0, 0, 0, 0])
+    /// Parse the fixed 20-byte LSA headers that DD and LSAck packets carry, and that LSU
+    /// packets carry ahead of each LSA body (RFC 2328 A.4.1).
+    ///
+    /// Returns structured fields, never raw bytes - models cannot read a hex blob (see
+    /// CLAUDE.md, action & event design rules). The shape is exactly what
+    /// [`Self::build_link_state_ack_packet`] consumes, so the model can acknowledge an
+    /// update by handing back the `lsa_headers` the event gave it.
+    ///
+    /// Lives here rather than in the server loop because the OSPF *client* parses the same
+    /// headers out of the Link State Updates it receives.
+    pub fn parse_lsa_headers(body: &[u8], max: usize) -> Vec<serde_json::Value> {
+        const LSA_HEADER_LEN: usize = 20;
+        let mut out = Vec::new();
+        let mut offset = 0;
+        while offset + LSA_HEADER_LEN <= body.len() && out.len() < max {
+            let h = &body[offset..offset + LSA_HEADER_LEN];
+            let lsa_type = h[3];
+            out.push(json!({
+                "age": u16::from_be_bytes([h[0], h[1]]),
+                "options": h[2],
+                "lsa_type": lsa_type,
+                "lsa_type_name": match lsa_type {
+                    1 => "router",
+                    2 => "network",
+                    3 => "summary_network",
+                    4 => "summary_asbr",
+                    5 => "as_external",
+                    7 => "nssa_external",
+                    _ => "unknown",
+                },
+                "link_state_id": format!("{}.{}.{}.{}", h[4], h[5], h[6], h[7]),
+                "advertising_router": format!("{}.{}.{}.{}", h[8], h[9], h[10], h[11]),
+                "sequence": u32::from_be_bytes([h[12], h[13], h[14], h[15]]),
+                // The LS checksum must be echoed verbatim in an acknowledgement: RFC 2328
+                // 13.7 matches an LSAck against the retransmission list on the full header,
+                // checksum included. Dropping it here made a correct ack unbuildable.
+                "checksum": u16::from_be_bytes([h[16], h[17]]),
+                "length": u16::from_be_bytes([h[18], h[19]]),
+            }));
+            offset += LSA_HEADER_LEN;
         }
+        out
+    }
+
+    /// Serialise one LSA header (RFC 2328 A.4.1) from the same JSON shape
+    /// [`Self::parse_lsa_headers`] produces.
+    fn push_lsa_header(msg: &mut Vec<u8>, header: &serde_json::Value) -> Result<()> {
+        let u16_field = |name: &str| header.get(name).and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+        let ip_field = |name: &str| -> Result<[u8; 4]> {
+            Self::parse_ipv4(
+                header
+                    .get(name)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0.0.0.0"),
+            )
+        };
+
+        msg.extend_from_slice(&u16_field("age").to_be_bytes());
+        msg.push(header.get("options").and_then(|v| v.as_u64()).unwrap_or(0) as u8);
+        msg.push(header.get("lsa_type").and_then(|v| v.as_u64()).unwrap_or(1) as u8);
+        msg.extend_from_slice(&ip_field("link_state_id")?);
+        msg.extend_from_slice(&ip_field("advertising_router")?);
+        msg.extend_from_slice(
+            &(header
+                .get("sequence")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0x8000_0001) as u32)
+                .to_be_bytes(),
+        );
+        msg.extend_from_slice(&u16_field("checksum").to_be_bytes());
+        // An LSA header echoed in an ack describes the original LSA's length, so 20 (the
+        // header alone) is only the right default when the caller knows nothing else.
+        let length = match header.get("length").and_then(|v| v.as_u64()) {
+            Some(n) => n as u16,
+            None => 20,
+        };
+        msg.extend_from_slice(&length.to_be_bytes());
+        Ok(())
     }
 
     /// Compute the OSPF packet checksum (RFC 2328 Section A.3.1).
@@ -323,21 +408,33 @@ impl OspfProtocol {
     /// dropped by real routers (FRR/BIRD).
     ///
     /// The defining property, and how a receiver validates: recomputing this sum over the packet
-    /// with the checksum field left in place must yield 0.
+    /// **with the checksum field left in place** must yield 0.
+    ///
+    /// That property is why this function does not special-case bytes 12..14. It sums the packet
+    /// exactly as given, which makes one function serve both directions of the standard
+    /// one's-complement idiom:
+    ///
+    /// * **Sending** — leave the checksum field zero, call this, store the result there. Every
+    ///   `build_*_packet` here does that, and their headers already lay the field down as
+    ///   `[0, 0]`.
+    /// * **Receiving** — call this over the packet as it arrived. A valid packet yields 0.
+    ///
+    /// Zeroing bytes 12..14 unconditionally, as an earlier version did, collapses those two into
+    /// one: the receiver then recomputes the sender's value instead of 0, so the validity check
+    /// can never pass and a corrupted packet is indistinguishable from a good one. The doc
+    /// comment claimed the property above while the code made it unsatisfiable.
     pub fn calculate_checksum(data: &[u8]) -> u16 {
         let mut sum: u32 = 0;
-        // Accumulate 16-bit big-endian words, skipping the auth field and zeroing the
-        // checksum field. `pending` holds the high byte of a word still being assembled,
-        // which matters because excluding bytes 16..24 keeps 16-bit alignment intact only
-        // because that range is itself even-aligned and even-length.
+        // Accumulate 16-bit big-endian words, skipping the auth field. `pending` holds the
+        // high byte of a word still being assembled, which matters because excluding bytes
+        // 16..24 keeps 16-bit alignment intact only because that range is itself even-aligned
+        // and even-length.
         let mut pending: Option<u8> = None;
-        for (i, &raw) in data.iter().enumerate() {
+        for (i, &byte) in data.iter().enumerate() {
             // Skip the 64-bit authentication field entirely.
             if (16..24).contains(&i) {
                 continue;
             }
-            // The checksum field contributes as zero.
-            let byte = if i == 12 || i == 13 { 0 } else { raw };
             match pending.take() {
                 None => pending = Some(byte),
                 Some(hi) => sum += u16::from_be_bytes([hi, byte]) as u32,
@@ -418,6 +515,10 @@ impl OspfProtocol {
         // Update packet length and checksum
         let packet_len = msg.len() as u16;
         msg[2..4].copy_from_slice(&packet_len.to_be_bytes());
+        // Computed with its own field zeroed, so that a receiver summing the packet with the
+        // checksum in place gets 0. The header lays the field down as [0, 0]; this makes that
+        // a local guarantee rather than an assumption about code 30 lines up.
+        msg[12..14].copy_from_slice(&[0, 0]);
         let checksum = Self::calculate_checksum(&msg);
         msg[12..14].copy_from_slice(&checksum.to_be_bytes());
 
@@ -476,18 +577,32 @@ impl OspfProtocol {
         msg.push(flags);
         msg.extend_from_slice(&sequence.to_be_bytes());
 
-        // LSA headers would go here (simplified - empty for now)
+        // Database summary: the LSA headers this router is advertising, in the shape
+        // parse_lsa_headers emits.
+        if let Some(headers) = action.get("lsa_headers").and_then(|v| v.as_array()) {
+            for header in headers {
+                Self::push_lsa_header(&mut msg, header)?;
+            }
+        }
 
         // Update packet length and checksum
         let packet_len = msg.len() as u16;
         msg[2..4].copy_from_slice(&packet_len.to_be_bytes());
+        // Computed with its own field zeroed, so that a receiver summing the packet with the
+        // checksum in place gets 0. The header lays the field down as [0, 0]; this makes that
+        // a local guarantee rather than an assumption about code 30 lines up.
+        msg[12..14].copy_from_slice(&[0, 0]);
         let checksum = Self::calculate_checksum(&msg);
         msg[12..14].copy_from_slice(&checksum.to_be_bytes());
 
         Ok(msg)
     }
 
-    /// Build OSPF Link State Request packet from action data
+    /// Build OSPF Link State Request packet from action data (RFC 2328 A.3.4).
+    ///
+    /// Body is a repeating triple: LSType(4) | LinkStateID(4) | AdvertisingRouter(4), taken
+    /// from the action's `requests` array. The `ospf_link_state_update` event hands the model
+    /// LSA headers carrying exactly those three fields, so a request can name real LSAs.
     pub fn build_link_state_request_packet(action: &serde_json::Value) -> Result<Vec<u8>> {
         let router_id = action
             .get("router_id")
@@ -510,11 +625,36 @@ impl OspfProtocol {
         msg.extend_from_slice(&[0, 0]); // AuType
         msg.extend_from_slice(&[0; 8]); // Authentication
 
-        // LSR body (simplified - would contain list of requested LSAs)
+        // LSR body: one 12-byte triple per requested LSA.
+        if let Some(requests) = action.get("requests").and_then(|v| v.as_array()) {
+            for request in requests {
+                let lsa_type = request
+                    .get("lsa_type")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1) as u32;
+                msg.extend_from_slice(&lsa_type.to_be_bytes());
+                msg.extend_from_slice(&Self::parse_ipv4(
+                    request
+                        .get("link_state_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("0.0.0.0"),
+                )?);
+                msg.extend_from_slice(&Self::parse_ipv4(
+                    request
+                        .get("advertising_router")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("0.0.0.0"),
+                )?);
+            }
+        }
 
         // Update packet length and checksum
         let packet_len = msg.len() as u16;
         msg[2..4].copy_from_slice(&packet_len.to_be_bytes());
+        // Computed with its own field zeroed, so that a receiver summing the packet with the
+        // checksum in place gets 0. The header lays the field down as [0, 0]; this makes that
+        // a local guarantee rather than an assumption about code 30 lines up.
+        msg[12..14].copy_from_slice(&[0, 0]);
         let checksum = Self::calculate_checksum(&msg);
         msg[12..14].copy_from_slice(&checksum.to_be_bytes());
 
@@ -552,13 +692,27 @@ impl OspfProtocol {
         // Update packet length and checksum
         let packet_len = msg.len() as u16;
         msg[2..4].copy_from_slice(&packet_len.to_be_bytes());
+        // Computed with its own field zeroed, so that a receiver summing the packet with the
+        // checksum in place gets 0. The header lays the field down as [0, 0]; this makes that
+        // a local guarantee rather than an assumption about code 30 lines up.
+        msg[12..14].copy_from_slice(&[0, 0]);
         let checksum = Self::calculate_checksum(&msg);
         msg[12..14].copy_from_slice(&checksum.to_be_bytes());
 
         Ok(msg)
     }
 
-    /// Build OSPF Link State Acknowledgment packet from action data
+    /// Build OSPF Link State Acknowledgment packet from action data (RFC 2328 A.3.6).
+    ///
+    /// The body is the list of 20-byte LSA headers being acknowledged, taken from the
+    /// action's `lsa_headers` array in the shape [`Self::parse_lsa_headers`] emits — so the
+    /// model acknowledges an update by handing back the `lsa_headers` the
+    /// `ospf_link_state_update` event gave it.
+    ///
+    /// An LSAck with an empty body is not a no-op: RFC 2328 13.7 matches an acknowledgement
+    /// against the neighbour's retransmission list header by header, so a body-less LSAck
+    /// acknowledges nothing and the peer keeps retransmitting every LSA each RxmtInterval
+    /// until the adjacency fails. That is what this used to emit.
     pub fn build_link_state_ack_packet(action: &serde_json::Value) -> Result<Vec<u8>> {
         let router_id = action
             .get("router_id")
@@ -581,11 +735,20 @@ impl OspfProtocol {
         msg.extend_from_slice(&[0, 0]); // AuType
         msg.extend_from_slice(&[0; 8]); // Authentication
 
-        // LSA headers to acknowledge would go here
+        // LSA headers being acknowledged.
+        if let Some(headers) = action.get("lsa_headers").and_then(|v| v.as_array()) {
+            for header in headers {
+                Self::push_lsa_header(&mut msg, header)?;
+            }
+        }
 
         // Update packet length and checksum
         let packet_len = msg.len() as u16;
         msg[2..4].copy_from_slice(&packet_len.to_be_bytes());
+        // Computed with its own field zeroed, so that a receiver summing the packet with the
+        // checksum in place gets 0. The header lays the field down as [0, 0]; this makes that
+        // a local guarantee rather than an assumption about code 30 lines up.
+        msg[12..14].copy_from_slice(&[0, 0]);
         let checksum = Self::calculate_checksum(&msg);
         msg[12..14].copy_from_slice(&checksum.to_be_bytes());
 
@@ -724,6 +887,17 @@ fn send_database_description_action() -> ActionDefinition {
                 required: false,
             },
             Parameter {
+                name: "lsa_headers".to_string(),
+                type_hint: "array".to_string(),
+                description: "LSA headers summarising the database, each an object with \
+                              lsa_type, link_state_id, advertising_router, sequence, age, \
+                              options, checksum and length - the same shape the \
+                              ospf_link_state_update event delivers. Omit for an empty \
+                              summary."
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
                 name: "destination".to_string(),
                 type_hint: "string".to_string(),
                 description: "Destination IP: 'multicast' (default) or unicast IP".to_string(),
@@ -752,7 +926,8 @@ fn send_database_description_action() -> ActionDefinition {
 fn send_link_state_request_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_link_state_request".to_string(),
-        description: "Send OSPF Link State Request packet".to_string(),
+        description: "Send OSPF Link State Request packet asking a neighbour for named LSAs"
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "router_id".to_string(),
@@ -767,6 +942,17 @@ fn send_link_state_request_action() -> ActionDefinition {
                 required: true,
             },
             Parameter {
+                name: "requests".to_string(),
+                type_hint: "array".to_string(),
+                description: "LSAs to request, each an object with lsa_type (number), \
+                              link_state_id and advertising_router (dotted quads). These are \
+                              the fields the ospf_database_description and \
+                              ospf_link_state_update events report for every LSA header. A \
+                              request with no entries asks for nothing."
+                    .to_string(),
+                required: false,
+            },
+            Parameter {
                 name: "destination".to_string(),
                 type_hint: "string".to_string(),
                 description: "Destination IP: 'multicast' (default) or unicast IP".to_string(),
@@ -777,6 +963,11 @@ fn send_link_state_request_action() -> ActionDefinition {
             "type": "send_link_state_request",
             "router_id": "1.1.1.1",
             "area_id": "0.0.0.0",
+            "requests": [{
+                "lsa_type": 1,
+                "link_state_id": "2.2.2.2",
+                "advertising_router": "2.2.2.2"
+            }],
             "destination": "192.168.1.2"
         }),
         log_template: Some(
@@ -832,7 +1023,8 @@ fn send_link_state_update_action() -> ActionDefinition {
 fn send_link_state_ack_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_link_state_ack".to_string(),
-        description: "Send OSPF Link State Acknowledgment packet".to_string(),
+        description: "Send OSPF Link State Acknowledgment for the LSAs a neighbour flooded"
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "router_id".to_string(),
@@ -847,6 +1039,17 @@ fn send_link_state_ack_action() -> ActionDefinition {
                 required: true,
             },
             Parameter {
+                name: "lsa_headers".to_string(),
+                type_hint: "array".to_string(),
+                description: "The LSA headers being acknowledged - pass back the \
+                              'lsa_headers' array exactly as the ospf_link_state_update \
+                              event delivered it. An acknowledgement is matched header by \
+                              header, so an empty list acknowledges nothing and the \
+                              neighbour keeps retransmitting."
+                    .to_string(),
+                required: true,
+            },
+            Parameter {
                 name: "destination".to_string(),
                 type_hint: "string".to_string(),
                 description: "Destination IP: 'multicast' (default) or unicast IP".to_string(),
@@ -857,6 +1060,16 @@ fn send_link_state_ack_action() -> ActionDefinition {
             "type": "send_link_state_ack",
             "router_id": "1.1.1.1",
             "area_id": "0.0.0.0",
+            "lsa_headers": [{
+                "age": 1,
+                "options": 2,
+                "lsa_type": 1,
+                "link_state_id": "2.2.2.2",
+                "advertising_router": "2.2.2.2",
+                "sequence": 2147483649_u32,
+                "checksum": 65262,
+                "length": 48
+            }],
             "destination": "192.168.1.2"
         }),
         log_template: Some(
@@ -967,15 +1180,12 @@ pub static OSPF_LINK_STATE_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(||
     EventType::new(
         "ospf_link_state_request",
         "OSPF Link State Request received: the neighbor is asking for LSAs it does not have. \
-         Answer with send_link_state_update carrying them — a request left unanswered stalls \
-         the adjacency in Loading and it never reaches Full (RFC 2328 §10.9). Describing what \
-         you would send is not sending it: only the action puts a packet on the wire.",
-        json!({
-            "type": "send_link_state_update",
-            "router_id": "1.1.1.1",
-            "area_id": "0.0.0.0",
-            "destination": "192.168.1.2"
-        }),
+         A request left unanswered stalls the adjacency in Loading and it never reaches Full \
+         (RFC 2328 §10.9). NetGet cannot build LSA bodies, so send_link_state_update carries \
+         no LSAs and cannot satisfy the request — this server can hold an adjacency at 2-Way \
+         but not complete one. Answer honestly rather than pretending: wait_for_more is the \
+         truthful reply. Describing what you would send is not sending it.",
+        json!({ "type": "wait_for_more" }),
     )
     .with_actions(ospf_response_actions())
     .with_log_template(
@@ -990,13 +1200,25 @@ pub static OSPF_LINK_STATE_UPDATE_EVENT: LazyLock<EventType> = LazyLock::new(|| 
     EventType::new(
         "ospf_link_state_update",
         "OSPF Link State Update received: the neighbor is flooding LSAs. Answer with \
-         send_link_state_ack — every LSA must be acknowledged or the neighbor retransmits it \
-         every RxmtInterval until the adjacency fails (RFC 2328 §13.5). Describing the \
-         acknowledgement is not sending it: only the action puts a packet on the wire.",
+         send_link_state_ack, passing this event's 'lsa_headers' array straight back as the \
+         action's 'lsa_headers' — every LSA must be acknowledged by header or the neighbor \
+         retransmits it every RxmtInterval until the adjacency fails (RFC 2328 §13.5), and an \
+         acknowledgement with no headers acknowledges nothing. Describing the acknowledgement \
+         is not sending it: only the action puts a packet on the wire.",
         json!({
             "type": "send_link_state_ack",
             "router_id": "1.1.1.1",
             "area_id": "0.0.0.0",
+            "lsa_headers": [{
+                "age": 1,
+                "options": 2,
+                "lsa_type": 1,
+                "link_state_id": "2.2.2.2",
+                "advertising_router": "2.2.2.2",
+                "sequence": 2147483649_u32,
+                "checksum": 65262,
+                "length": 48
+            }],
             "destination": "192.168.1.2"
         }),
     )
@@ -1076,10 +1298,15 @@ impl Protocol for OspfProtocol {
                 // Raw socket on IP protocol 89 - CAP_NET_RAW is sufficient, full root is not
                 // required, so declaring Root would refuse to start on a capability-only process.
                 .privilege_requirement(PrivilegeRequirement::RawSockets)
-                .implementation("Manual OSPFv2 (RFC 2328) over a raw IP-protocol-89 socket. Hello is parsed in full; DD/LSR/LSU/LSAck are parsed to their headers only. Outgoing DD carries no LSA headers and outgoing LSR/LSU/LSAck carry empty bodies - they are valid packets that advertise nothing.")
-                .llm_control("Optional: whether to engage with an OSPF speaker (respond to a Hello, claim DR/BDR, act as a honeypot) is a policy decision. With no operator policy (no instruction, no handler) the server observes passively and does NOT respond, with no LLM round-trip per packet. When the operator opts in, every received packet type raises an event carrying parsed fields and the LLM chooses the reply packet (it cannot yet put LSA contents into a reply). Fields the reply omits are filled from the interface configuration given at startup (router_id, area_id, network_mask, hello_interval, router_dead_interval, router_priority).")
-                .e2e_testing("None against a real router. The E2E suite runs the OSPF wire format over a plain UDP server and never exercises the raw-socket path, so it proves nothing about the raw-socket implementation. What IS verified at byte level (tests/server/ospf/e2e_test.rs): build_hello_packet writes the configured hello_interval, router_dead_interval, priority and network mask into the Hello body at RFC 2328 A.3.2 offsets when the action omits them, an action-supplied value overrides the configured one, and the RFC 2328 10.5 mismatch check fires on exactly the three fields the RFC names.")
-                .notes("Hello-level simulator, not a router. Whether to respond at all is policy, so with no operator policy the server is a passive listener (no response, no LLM call); the passive default is compile-verified since the raw-socket path needs root and the E2E suite never touches it. No LSDB, no SPF, no routing table, no LSA construction, no DR/BDR election, no periodic Hello timer and no dead-neighbor timeout. Adjacency cannot progress past 2-Way, and a Hello that fails the RFC 2328 10.5 interval/mask check does not advance it at all - the event still reaches the model, carrying the mismatch, so the refusal is visible rather than silent. On an LLM failure the server deliberately sends nothing: OSPF has no error or NAK packet, and every one of its five packet types is a positive routing assertion, so any fabricated reply would claim an adjacency, DR role or database state netget cannot back - the peer's own RouterDeadInterval covers a router that goes quiet. The failure is reported to the operator only, tagged decision=fail_closed_overloaded / fail_closed_unavailable and distinct from decision=model_wait / model_no_action.")
+                // OSPF has no connection to close: a neighbour entry is created on first sight
+                // of a Router ID and nothing on the wire ever ends it, which is exactly what
+                // AppState's idle sweep exists for. Without this the entries accumulated for
+                // the life of the server.
+                .connectionless()
+                .implementation("Manual OSPFv2 (RFC 2328) over a raw IP-protocol-89 socket. Hello is parsed in full; DD/LSR/LSU/LSAck are parsed to their 20-byte LSA headers, never to LSA bodies. Outgoing DD, LSR and LSAck carry real bodies built from the model's structured fields (LSA headers per RFC 2328 A.4.1, request triples per A.3.4); outgoing LSU always advertises zero LSAs because NetGet cannot construct an LSA body.")
+                .llm_control("Optional: whether to engage with an OSPF speaker (respond to a Hello, claim DR/BDR, act as a honeypot) is a policy decision. With no operator policy (no instruction, no handler) the server observes passively and does NOT respond, with no LLM round-trip per packet. When the operator opts in, every received packet type raises an event carrying parsed fields and the LLM chooses the reply packet. The model can acknowledge LSAs and request them by name - the LSA headers an event reports are the same shape send_link_state_ack and send_link_state_request consume - but it cannot supply LSA contents, so a Link State Request from a peer cannot be satisfied. Fields the reply omits are filled from the interface configuration given at startup (router_id, area_id, network_mask, hello_interval, router_dead_interval, router_priority).")
+                .e2e_testing("None against a real router, and none against this server at all: OSPF needs a raw IP-89 socket, so spawn_with_llm_actions cannot run unprivileged and no test drives it. The three tests in tests/server/ospf/e2e_test.rs named 'E2E' start a *generic UDP server* (open_server protocol=UDP) and exchange OSPF-shaped bytes the test itself built over it, mocking udp_datagram_received/send_udp_response - they exercise src/server/udp/, not this protocol, and no test anywhere mocks an ospf_* event. What IS verified, as unit tests against the real code: the RFC 2328 A.3.1 packet checksum (recomputing over a built packet yields zero), that build_hello_packet writes the configured hello_interval, router_dead_interval, priority and network mask into the Hello body at RFC 2328 A.3.2 offsets when the action omits them and that an action-supplied value overrides them, that LSAck and LSR bodies serialise at the A.4.1/A.3.4 offsets and round-trip through parse_lsa_headers, that a malformed IPv4 field is rejected rather than silently becoming 0.0.0.0, and that the RFC 2328 10.5 mismatch check fires on exactly the three fields the RFC names.")
+                .notes("Hello-level simulator, not a router. Whether to respond at all is policy, so with no operator policy the server is a passive listener (no response, no LLM call); the passive default is compile-verified since the raw-socket path needs root and no test touches it. No LSDB, no SPF, no routing table, no LSA body construction, no DR/BDR election and no periodic Hello timer. Adjacency cannot progress past 2-Way, and a Hello that fails the RFC 2328 10.5 interval/mask check does not advance it at all - the event still reaches the model, carrying the mismatch, so the refusal is visible rather than silent. Neighbours ARE aged out: one silent for RouterDeadInterval is dropped, which also bounds the neighbour table against a peer spraying Hellos with random Router IDs. On an LLM failure the server deliberately sends nothing: OSPF has no error or NAK packet, and every one of its five packet types is a positive routing assertion, so any fabricated reply would claim an adjacency, DR role or database state netget cannot back - the peer's own RouterDeadInterval covers a router that goes quiet. The failure is reported to the operator only, tagged decision=fail_closed_overloaded / fail_closed_unavailable and distinct from decision=model_wait / model_no_action.")
                 .build()
     }
     fn description(&self) -> &'static str {

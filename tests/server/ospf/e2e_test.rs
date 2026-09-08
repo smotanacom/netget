@@ -72,28 +72,44 @@ mod tests {
         packet
     }
 
-    // Helper: Calculate OSPF checksum (Fletcher checksum)
+    // Helper: OSPF packet checksum.
+    //
+    // This was a hand-rolled *Fletcher* checksum, which is the algorithm OSPF uses for LSA
+    // headers and NOT for packet headers - RFC 2328 A.3.1 specifies the standard IP
+    // one's-complement sum. It is the exact bug `OspfProtocol::calculate_checksum` documents
+    // as having made every packet NetGet emitted fail a real router's validity check. Keeping
+    // a second, wrong implementation next to the fixed one is how that comes back, so this
+    // now delegates. (It also underflowed on any input shorter than 14 bytes.)
     fn calculate_ospf_checksum(data: &[u8]) -> u16 {
-        let mut c0: u32 = 0;
-        let mut c1: u32 = 0;
-
-        // Start after first 2 bytes, skip checksum field (12-13)
-        for (i, &byte) in data.iter().enumerate() {
-            if (i >= 2 && i < 12) || i >= 14 {
-                c0 = (c0 + byte as u32) % 255;
-                c1 = (c1 + c0) % 255;
-            }
-        }
-
-        let x = ((data.len() - 14) * c0 as usize - c1 as usize) % 255;
-        let y = (510 - c0 as usize - x) % 255;
-
-        ((x as u16) << 8) | (y as u16)
+        OspfProtocol::calculate_checksum(data)
     }
+
+    // ========================================================================
+    // The three tests below do NOT test OSPF. Read this before trusting them.
+    //
+    // They pass `"base_stack": "UDP"`, which `open_server` renames to `protocol` - so what
+    // starts is the **generic UDP server** in src/server/udp/, not src/server/ospf/. The
+    // `"application_protocol": "OSPF"` alongside it is read by nothing anywhere in src/.
+    // The mocked event is `udp_datagram_received` and the mocked action is
+    // `send_udp_response`, both of which belong to the UDP server; this protocol raises
+    // `ospf_hello` / `ospf_database_description` / `ospf_link_state_{request,update,ack}`
+    // and executes `send_hello` and friends, and no test in the tree mocks any of those.
+    //
+    // So the exchange is: the test builds OSPF-shaped bytes, the mock hands OSPF-shaped
+    // bytes back, and a UDP server relays them. Nothing in src/server/ospf/ is entered, and
+    // `assert_eq!(buf[1], 1)` is asserting a constant the test itself wrote two functions
+    // earlier. Nor could they drive OSPF: `spawn_with_llm_actions` opens a raw IP-89 socket
+    // before anything else, which needs CAP_NET_RAW.
+    //
+    // They are kept because they are real coverage of the *UDP* server carrying an
+    // arbitrary binary payload, and deleting them would remove that. What they must not be
+    // is cited as evidence about OSPF - `metadata().e2e_testing` says so too. The genuine
+    // OSPF coverage in this file is the unit tests below, which call OspfProtocol directly.
+    // ========================================================================
 
     #[tokio::test]
     async fn test_ospf_hello_exchange() -> E2EResult<()> {
-        println!("\n=== E2E Test: OSPF Hello Exchange ===");
+        println!("\n=== UDP-transport test (NOT an OSPF test - see the note above) ===");
 
         // PROMPT: Tell the LLM to act as an OSPF router
         let prompt = "Listen on port {AVAILABLE_PORT} via UDP. Act as OSPF router with router_id 1.1.1.1 in area 0.0.0.0. \
@@ -644,30 +660,246 @@ mod tests {
         );
     }
 
+    // ========================================================================
+    // Checksum
+    //
+    // The only checksum test here used to be of `calculate_ospf_checksum` above -
+    // this file's own Fletcher helper, which is the algorithm `OspfProtocol` records
+    // as the bug it was fixed for ("every packet NetGet emitted failed the receiver's
+    // validity check", so FRR/BIRD dropped all of them). It asserted `!= 0`, which any
+    // garbage satisfies, and it never touched production code. These do.
+    // ========================================================================
+
+    /// RFC 2328 A.3.1 defines the check a receiver performs: recompute the one's-complement
+    /// sum over the packet with the checksum field left in place, and the result must be
+    /// zero. That property is the whole contract, so assert it directly rather than pinning
+    /// a magic constant.
     #[test]
-    fn test_ospf_checksum() {
-        // Create a simple test packet
-        let mut packet = vec![
-            2, 1, // Version, Type
-            0, 32, // Length (32 bytes)
-            1, 1, 1, 1, // Router ID
-            0, 0, 0, 0, // Area ID
-            0, 0, // Checksum (placeholder)
-            0, 0, // AuType
-            0, 0, 0, 0, 0, 0, 0, 0, // Authentication
-            // Minimal Hello body
-            255, 255, 255, 0, // Network mask
-            0, 10, // Hello interval
-            0, 1, // Options, Priority
-        ];
+    fn ospf_packet_checksum_validates_the_way_a_receiver_checks_it() {
+        let mut action = serde_json::json!({"type": "send_hello"});
+        configured().apply_defaults(&mut action);
+        let hello = OspfProtocol::build_hello_packet(&action).expect("build hello");
 
-        // Calculate checksum
-        let checksum = calculate_ospf_checksum(&packet);
-        packet[12..14].copy_from_slice(&checksum.to_be_bytes());
+        assert_ne!(
+            u16::from_be_bytes([hello[12], hello[13]]),
+            0,
+            "a built packet must carry a real checksum"
+        );
+        assert_eq!(
+            OspfProtocol::calculate_checksum(&hello),
+            0,
+            "recomputing the checksum over a valid packet must yield 0 - this is exactly \
+             the validity check FRR/BIRD run before parsing"
+        );
+    }
 
-        // Verify checksum is non-zero
-        assert_ne!(checksum, 0);
+    /// A packet whose body was altered in flight must fail that same check.
+    #[test]
+    fn ospf_packet_checksum_catches_a_corrupted_packet() {
+        let mut action = serde_json::json!({"type": "send_hello"});
+        configured().apply_defaults(&mut action);
+        let mut hello = OspfProtocol::build_hello_packet(&action).expect("build hello");
 
-        println!("✓ OSPF checksum calculated: 0x{:04x}", checksum);
+        hello[31] ^= 0xff; // Router Priority, in the Hello body
+        assert_ne!(
+            OspfProtocol::calculate_checksum(&hello),
+            0,
+            "a corrupted packet must not validate"
+        );
+    }
+
+    /// The 64-bit authentication field (header bytes 16..24) is excluded from the sum, so a
+    /// router that fills it in does not invalidate its own packet. Easy to get wrong, and
+    /// nothing else here would catch it.
+    #[test]
+    fn ospf_packet_checksum_excludes_the_authentication_field() {
+        let mut action = serde_json::json!({"type": "send_hello"});
+        configured().apply_defaults(&mut action);
+        let mut hello = OspfProtocol::build_hello_packet(&action).expect("build hello");
+
+        hello[16..24].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            OspfProtocol::calculate_checksum(&hello),
+            0,
+            "bytes 16..24 must not contribute to the packet checksum (RFC 2328 A.3.1)"
+        );
+    }
+
+    // ========================================================================
+    // LSA headers and request triples on the wire
+    //
+    // send_link_state_ack and send_link_state_request used to emit a bare 24-byte header
+    // with an empty body. An LSAck is matched against the neighbour's retransmission list
+    // header by header (RFC 2328 13.7), so a body-less one acknowledges nothing and the
+    // neighbour retransmits forever - it is not a harmless no-op.
+    // ========================================================================
+
+    /// Exactly what `parse_lsa_headers` emits for one header, `lsa_type_name` included, so
+    /// the round-trip assertion below can be a plain equality. `push_lsa_header` ignores
+    /// `lsa_type_name` on the way out — it is derived from `lsa_type`, not a wire field.
+    fn sample_lsa_header() -> serde_json::Value {
+        serde_json::json!({
+            "age": 1,
+            "options": 2,
+            "lsa_type": 1,
+            "lsa_type_name": "router",
+            "link_state_id": "2.2.2.2",
+            "advertising_router": "3.3.3.3",
+            "sequence": 2147483649_u32,
+            "checksum": 65262,
+            "length": 48
+        })
+    }
+
+    /// RFC 2328 A.4.1 field offsets, and the round trip through the parser the events use.
+    #[test]
+    fn ospf_lsack_carries_the_lsa_headers_at_rfc_offsets() {
+        let ack = OspfProtocol::build_link_state_ack_packet(&serde_json::json!({
+            "type": "send_link_state_ack",
+            "router_id": "1.1.1.1",
+            "area_id": "0.0.0.0",
+            "lsa_headers": [sample_lsa_header()],
+        }))
+        .expect("build lsack");
+
+        assert_eq!(ack[1], 5, "type 5 = Link State Acknowledgment");
+        assert_eq!(
+            ack.len(),
+            24 + 20,
+            "24-byte header + one 20-byte LSA header"
+        );
+        assert_eq!(
+            u16::from_be_bytes([ack[2], ack[3]]) as usize,
+            ack.len(),
+            "packet length must cover the body"
+        );
+
+        let body = &ack[24..];
+        assert_eq!(u16::from_be_bytes([body[0], body[1]]), 1, "LS age");
+        assert_eq!(body[2], 2, "options");
+        assert_eq!(body[3], 1, "LS type");
+        assert_eq!(&body[4..8], &[2, 2, 2, 2], "Link State ID");
+        assert_eq!(&body[8..12], &[3, 3, 3, 3], "Advertising Router");
+        assert_eq!(
+            u32::from_be_bytes([body[12], body[13], body[14], body[15]]),
+            2147483649,
+            "LS sequence number"
+        );
+        assert_eq!(
+            u16::from_be_bytes([body[16], body[17]]),
+            65262,
+            "LS checksum must be echoed verbatim - RFC 2328 13.7 matches on it"
+        );
+        assert_eq!(u16::from_be_bytes([body[18], body[19]]), 48, "length");
+
+        // The acknowledgement a peer would read back must be the header we were given.
+        let parsed = OspfProtocol::parse_lsa_headers(body, 8);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0], sample_lsa_header());
+    }
+
+    /// Several headers, and the packet still validates as a whole.
+    #[test]
+    fn ospf_lsack_round_trips_several_headers() {
+        let mut second = sample_lsa_header();
+        second["lsa_type"] = serde_json::json!(5);
+        second["link_state_id"] = serde_json::json!("10.0.0.0");
+
+        let ack = OspfProtocol::build_link_state_ack_packet(&serde_json::json!({
+            "type": "send_link_state_ack",
+            "router_id": "1.1.1.1",
+            "area_id": "0.0.0.0",
+            "lsa_headers": [sample_lsa_header(), second.clone()],
+        }))
+        .expect("build lsack");
+
+        assert_eq!(ack.len(), 24 + 40);
+        assert_eq!(OspfProtocol::calculate_checksum(&ack), 0);
+
+        let parsed = OspfProtocol::parse_lsa_headers(&ack[24..], 8);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[1]["lsa_type_name"], "as_external");
+        assert_eq!(parsed[1]["link_state_id"], "10.0.0.0");
+    }
+
+    /// RFC 2328 A.3.4: the LSR body is a repeating LSType(4) | LinkStateID(4) |
+    /// AdvertisingRouter(4) triple.
+    #[test]
+    fn ospf_lsr_carries_the_request_triples() {
+        let lsr = OspfProtocol::build_link_state_request_packet(&serde_json::json!({
+            "type": "send_link_state_request",
+            "router_id": "1.1.1.1",
+            "area_id": "0.0.0.0",
+            "requests": [
+                {"lsa_type": 1, "link_state_id": "2.2.2.2", "advertising_router": "2.2.2.2"},
+                {"lsa_type": 5, "link_state_id": "10.0.0.0", "advertising_router": "3.3.3.3"},
+            ],
+        }))
+        .expect("build lsr");
+
+        assert_eq!(lsr[1], 3, "type 3 = Link State Request");
+        assert_eq!(lsr.len(), 24 + 24, "two 12-byte triples");
+        assert_eq!(OspfProtocol::calculate_checksum(&lsr), 0);
+
+        let body = &lsr[24..];
+        assert_eq!(u32::from_be_bytes([body[0], body[1], body[2], body[3]]), 1);
+        assert_eq!(&body[4..8], &[2, 2, 2, 2]);
+        assert_eq!(&body[8..12], &[2, 2, 2, 2]);
+        assert_eq!(
+            u32::from_be_bytes([body[12], body[13], body[14], body[15]]),
+            5
+        );
+        assert_eq!(&body[16..20], &[10, 0, 0, 0]);
+        assert_eq!(&body[20..24], &[3, 3, 3, 3]);
+    }
+
+    /// Omitting the body is still allowed - it just produces a packet that asks for and
+    /// acknowledges nothing, which is what these two used to do unconditionally.
+    #[test]
+    fn ospf_lsack_and_lsr_bodies_are_optional() {
+        let bare = serde_json::json!({"router_id": "1.1.1.1", "area_id": "0.0.0.0"});
+        assert_eq!(
+            OspfProtocol::build_link_state_ack_packet(&bare)
+                .expect("build")
+                .len(),
+            24
+        );
+        assert_eq!(
+            OspfProtocol::build_link_state_request_packet(&bare)
+                .expect("build")
+                .len(),
+            24
+        );
+    }
+
+    /// A malformed dotted quad used to become 0.0.0.0 and return Ok, so a typo'd router_id
+    /// produced a well-formed packet claiming to be a different router, with nothing logged.
+    #[test]
+    fn ospf_rejects_a_malformed_ipv4_field_instead_of_substituting_zero() {
+        for bad in ["1.1.1", "999.1.1.1", "1.1.1.1.1", "not-an-ip", ""] {
+            let action = serde_json::json!({
+                "type": "send_hello",
+                "router_id": bad,
+                "area_id": "0.0.0.0",
+            });
+            let err = OspfProtocol::build_hello_packet(&action).expect_err(
+                "a malformed router_id must be an error, not a packet advertising 0.0.0.0",
+            );
+            assert!(
+                err.to_string().contains(bad) || bad.is_empty(),
+                "the error should name the offending value, got {err:#}"
+            );
+        }
+
+        // The good case still builds.
+        let action = serde_json::json!({
+            "type": "send_hello",
+            "router_id": "1.1.1.1",
+            "area_id": "0.0.0.0",
+        });
+        assert_eq!(
+            &OspfProtocol::build_hello_packet(&action).expect("build hello")[4..8],
+            &[1, 1, 1, 1]
+        );
     }
 }

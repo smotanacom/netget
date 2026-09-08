@@ -77,7 +77,8 @@ struct OspfNeighbor {
 #[cfg(feature = "ospf")]
 struct OspfState {
     socket_fd: i32,
-    #[allow(dead_code)]
+    /// This interface's address: the local end of every neighbour connection published
+    /// to AppState.
     interface_ip: Ipv4Addr,
     /// Interface configuration from the startup parameters. Supplies the defaults for
     /// every outgoing packet and the RFC 2328 10.5 acceptance check for incoming Hellos.
@@ -144,6 +145,23 @@ impl OspfServer {
             if let Some(v) = params.get_optional_i64("router_priority")? {
                 config.router_priority = u8::try_from(v)
                     .map_err(|_| anyhow!("router_priority must be between 0 and 255, got {v}"))?;
+            }
+        }
+
+        // The three dotted-quad parameters are declared "IPv4 format" and were accepted as
+        // any string at all. A typo did not fail here: it reached parse_ipv4 at send time,
+        // which silently substituted 0.0.0.0, so the server ran happily and advertised a
+        // Router ID nobody configured. Fail at startup, where the operator is looking.
+        for (name, value) in [
+            ("router_id", &config.router_id),
+            ("area_id", &config.area_id),
+            ("network_mask", &config.network_mask),
+        ] {
+            if value.parse::<Ipv4Addr>().is_err() {
+                return Err(anyhow!(
+                    "OSPF startup parameter '{name}' must be in IPv4 dotted-quad form \
+                     (e.g. 1.1.1.1), got '{value}'"
+                ));
             }
         }
 
@@ -303,28 +321,116 @@ impl OspfServer {
         ospf_state: Arc<OspfState>,
         server_id: crate::state::ServerId,
     ) -> Result<()> {
-        // Get or create connection ID
-        let connection_id = {
+        // Age out neighbours we have not heard from within RouterDeadInterval, then find or
+        // create this one.
+        //
+        // The ageing is not cosmetic. The key is the sender's Router ID, four bytes chosen
+        // by whoever sent the packet, and nothing else ever removed an entry — a peer
+        // spraying Hellos with random Router IDs grew this map until the server stopped.
+        // RFC 2328 10.5 already says a neighbour silent for RouterDeadInterval is Down, so
+        // the bound and the correct behaviour are the same change.
+        let dead_after = ospf_state.config.router_dead_interval;
+        let existing = {
             let mut neighbors = ospf_state.neighbors.lock().await;
-            if let Some(neighbor) = neighbors.get_mut(&sender_router_id) {
-                neighbor.last_hello = Instant::now();
+            let now = Instant::now();
+            if dead_after > 0 {
+                let deadline = std::time::Duration::from_secs(dead_after as u64);
+                neighbors.retain(|id, n| {
+                    // The sender is alive by definition: this packet is from it.
+                    let alive =
+                        *id == sender_router_id || now.duration_since(n.last_hello) < deadline;
+                    if !alive {
+                        info!(
+                            "OSPF neighbor {} aged out after {}s without a packet",
+                            id, dead_after
+                        );
+                    }
+                    alive
+                });
+            }
+            neighbors.get_mut(&sender_router_id).map(|neighbor| {
+                neighbor.last_hello = now;
                 neighbor.connection_id
-            } else {
-                let connection_id = ConnectionId::new(app_state.get_next_unified_id().await);
-                let neighbor = OspfNeighbor {
-                    router_id: sender_router_id.clone(),
-                    neighbor_ip: src_ip,
-                    connection_id,
-                    state: OspfNeighborState::Down,
-                    priority: 0,
-                    dr: "0.0.0.0".to_string(),
-                    bdr: "0.0.0.0".to_string(),
-                    last_hello: Instant::now(),
-                };
-                neighbors.insert(sender_router_id.clone(), neighbor);
-                connection_id
+            })
+        };
+
+        // A new neighbour needs an id, and `get_next_unified_id` takes the global AppState
+        // write lock. Allocating it while still holding the neighbour mutex would be a lock
+        // held across an await — the pattern this codebase forbids, and a lock-order
+        // inversion against every task that takes AppState first. An id allocated and then
+        // lost to a race costs nothing; it is a counter.
+        let (connection_id, is_new_neighbor) = match existing {
+            Some(id) => (id, false),
+            None => {
+                let fresh = ConnectionId::new(app_state.get_next_unified_id().await);
+                let mut neighbors = ospf_state.neighbors.lock().await;
+                match neighbors.get(&sender_router_id) {
+                    // Another packet from the same neighbour won the race while we were
+                    // outside the lock.
+                    Some(raced) => (raced.connection_id, false),
+                    None => {
+                        neighbors.insert(
+                            sender_router_id.clone(),
+                            OspfNeighbor {
+                                router_id: sender_router_id.clone(),
+                                neighbor_ip: src_ip,
+                                connection_id: fresh,
+                                state: OspfNeighborState::Down,
+                                priority: 0,
+                                dr: "0.0.0.0".to_string(),
+                                bdr: "0.0.0.0".to_string(),
+                                last_hello: Instant::now(),
+                            },
+                        );
+                        (fresh, true)
+                    }
+                }
             }
         };
+
+        // Publish the neighbour to AppState. Until this existed the ConnectionId above was
+        // minted, handed to `call_llm` and written into every event, but never registered:
+        // `call_llm_inner` resolves the peer address by looking the connection up, so every
+        // OSPF event and access-log line recorded a null client address, the dashboard rail
+        // showed an OSPF server with no peers however much traffic it took, and the ↓/↑
+        // byte counters stayed at zero. The 10s idle sweep reaps these again — see
+        // `.connectionless()` in the metadata.
+        if is_new_neighbor {
+            use crate::state::server::{
+                ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
+            };
+            let now = std::time::Instant::now();
+            app_state
+                .add_connection_to_server(
+                    server_id,
+                    ServerConnectionState {
+                        id: connection_id,
+                        remote_addr: SocketAddr::new(IpAddr::V4(src_ip), 0),
+                        local_addr: SocketAddr::new(IpAddr::V4(ospf_state.interface_ip), 0),
+                        bytes_sent: 0,
+                        bytes_received: data.len() as u64,
+                        packets_sent: 0,
+                        packets_received: 1,
+                        last_activity: now,
+                        status: ConnectionStatus::Active,
+                        status_changed_at: now,
+                        protocol_info: ProtocolConnectionInfo::empty(),
+                    },
+                )
+                .await;
+            let _ = status_tx.send("__UPDATE_UI__".to_string());
+        } else {
+            app_state
+                .update_connection_stats(
+                    server_id,
+                    connection_id,
+                    Some(data.len() as u64),
+                    None,
+                    Some(1),
+                    None,
+                )
+                .await;
+        }
 
         match packet_type {
             OSPF_TYPE_HELLO => {
@@ -543,40 +649,6 @@ impl OspfServer {
         .await
     }
 
-    /// Parse the fixed 20-byte LSA headers that DD and LSAck packets carry, and that LSU
-    /// packets carry ahead of each LSA body. Returns structured fields, never raw bytes -
-    /// models cannot read a hex blob (see CLAUDE.md, action & event design rules).
-    #[cfg(feature = "ospf")]
-    fn parse_lsa_headers(body: &[u8], max: usize) -> Vec<serde_json::Value> {
-        const LSA_HEADER_LEN: usize = 20;
-        let mut out = Vec::new();
-        let mut offset = 0;
-        while offset + LSA_HEADER_LEN <= body.len() && out.len() < max {
-            let h = &body[offset..offset + LSA_HEADER_LEN];
-            let lsa_type = h[3];
-            out.push(serde_json::json!({
-                "age": u16::from_be_bytes([h[0], h[1]]),
-                "options": h[2],
-                "lsa_type": lsa_type,
-                "lsa_type_name": match lsa_type {
-                    1 => "router",
-                    2 => "network",
-                    3 => "summary_network",
-                    4 => "summary_asbr",
-                    5 => "as_external",
-                    7 => "nssa_external",
-                    _ => "unknown",
-                },
-                "link_state_id": format!("{}.{}.{}.{}", h[4], h[5], h[6], h[7]),
-                "advertising_router": format!("{}.{}.{}.{}", h[8], h[9], h[10], h[11]),
-                "sequence": u32::from_be_bytes([h[12], h[13], h[14], h[15]]),
-                "length": u16::from_be_bytes([h[18], h[19]]),
-            }));
-            offset += LSA_HEADER_LEN;
-        }
-        out
-    }
-
     /// Handle a Database Description packet (RFC 2328 A.3.3).
     ///
     /// Body layout after the 24-byte OSPF header:
@@ -604,7 +676,7 @@ impl OspfServer {
         let options = data[26];
         let flags = data[27];
         let dd_sequence = u32::from_be_bytes([data[28], data[29], data[30], data[31]]);
-        let lsa_headers = Self::parse_lsa_headers(&data[32..], 32);
+        let lsa_headers = OspfProtocol::parse_lsa_headers(&data[32..], 32);
 
         info!(
             "OSPF DD from {} (seq={}, init={}, more={}, master={}, {} LSA headers)",
@@ -740,7 +812,7 @@ impl OspfServer {
         let mut lsas = Vec::new();
         let mut offset = 0usize;
         while offset + 20 <= body.len() && lsas.len() < 64 {
-            let header = Self::parse_lsa_headers(&body[offset..offset + 20], 1);
+            let header = OspfProtocol::parse_lsa_headers(&body[offset..offset + 20], 1);
             let Some(header) = header.into_iter().next() else {
                 break;
             };
@@ -803,7 +875,7 @@ impl OspfServer {
         server_id: crate::state::ServerId,
     ) -> Result<()> {
         let body = data.get(OSPF_HEADER_LEN..).unwrap_or(&[]);
-        let lsa_headers = Self::parse_lsa_headers(body, 64);
+        let lsa_headers = OspfProtocol::parse_lsa_headers(body, 64);
 
         trace!(
             "OSPF LSAck from {} ({} LSA headers)",
@@ -975,6 +1047,18 @@ impl OspfServer {
                                     ) {
                                         Ok(()) => {
                                             packets_sent += 1;
+                                            // The rail's uparrow counter and the
+                                            // connection-scoped task prompts read these.
+                                            app_state
+                                                .update_connection_stats(
+                                                    server_id,
+                                                    connection_id,
+                                                    None,
+                                                    Some(packet.len() as u64),
+                                                    None,
+                                                    Some(1),
+                                                )
+                                                .await;
                                             let log = Log::new(Some(&status_tx));
                                             // Summary + hex payload are FileOnly (hot path).
                                             log.debug(format!(
