@@ -50,7 +50,7 @@ The rest pin refusals: CRLF injection through `st`, a missing or blank `st`, a n
 point, and `max-age` parsing out of `CACHE-CONTROL` including the cases that must yield `None`
 (`no-cache` is not zero seconds).
 
-### 2. Two devices hand-written here (2 tests)
+### 2. Hand-written devices on the wire (2 tests)
 
 `one_search_collects_every_responder_and_hears_an_announcement` is **the** test of this
 protocol's distinguishing property. One search; device one receives it and answers; device two
@@ -117,9 +117,11 @@ device sees stays realistic while the collection window is long enough that both
 the announcement land inside it with a hundred tests running together. The server's own
 `max_response_delay_ms` is set to 100 so its MX jitter does not dominate.
 
-Assertions go through `wait_for_log`, never a bare `output_contains` straight after sending:
-the datagrams cross the socket well before the harness has necessarily drained the child's
-stdout, so the direct form is a race that passes only on a quiet machine.
+Assertions wait for the log rather than reading it straight after sending: the datagrams
+cross the socket well before the harness has necessarily drained the child's stdout, so the
+direct form is a race that passes only on a quiet machine. There are three bare
+`output_contains` calls, and each sits *behind* a `wait_for_log` that has already forced the
+output to be drained — the rule is "never as the thing that waits", not "never at all".
 
 ## Things that would look like evidence and are not
 

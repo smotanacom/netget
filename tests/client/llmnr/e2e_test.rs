@@ -18,10 +18,11 @@
 //!
 //! `PROTOCOL_ROADMAP.md` records the measurement: bound to `127.0.0.1`, joining a multicast
 //! group **succeeds** but *sending* to one fails with `EADDRNOTAVAIL` (49), because loopback
-//! carries no multicast route. So no test here sends to `224.0.0.252`. Two of them point
-//! `remote_addr` straight at an ephemeral port; the third opens the client on the real
-//! multicast group and overrides the destination per query with `send_llmnr_query`'s `target`,
-//! which is what that parameter exists for.
+//! carries no multicast route. So no test here sends to `224.0.0.252`. Three of the four point
+//! `remote_addr` straight at an ephemeral port; only
+//! `test_llmnr_client_treats_no_answer_as_a_normal_outcome` opens the client on the real
+//! multicast group, and it overrides the destination per query with `send_llmnr_query`'s
+//! `target`, which is what that parameter exists for.
 //!
 //! ## `response_wait_secs` is raised in every test
 //!

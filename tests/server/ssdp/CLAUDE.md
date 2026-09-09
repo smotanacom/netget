@@ -65,10 +65,16 @@ socket bound to 127.0.0.1.
 | Test | LLM calls | What it pins |
 |---|---|---|
 | `answers_a_matching_search_and_stays_silent_for_a_mismatch` | 3 | the full §1.3.3 response for a match; **no datagram at all** for a mismatch; `decision=model_response` then `decision=model_reject`, and that neither is `fail_closed` |
-| `stays_silent_but_logs_when_the_llm_fails` | 1 | **no datagram** on a backend outage, plus `decision=fail_closed_llm_error`, and that it is *not* recorded as `model_reject` |
-| `an_inbound_notify_reaches_the_model_and_an_announcement_goes_out` | 2 | the `ssdp_notify` event fires with the announcer's fields; `send_ssdp_notify` produces a real NOTIFY whose `HOST` names the group |
+| `stays_silent_but_logs_when_the_llm_fails` | 2 | **no datagram** on a backend outage, plus `decision=fail_closed_llm_error`, and that it is *not* recorded as `model_reject` |
+| `an_inbound_notify_reaches_the_model_and_an_announcement_goes_out` | 2 | the `ssdp_notify` event fires and its `nts` reaches the model (the mock branches on it, so a server that mis-decoded the announcement answers `no_response` and the observer times out); `send_ssdp_notify` produces a real NOTIFY whose `HOST` names the group. Note that `nts` is the **only** inbound field under test — nothing asserts that `usn`, `nt`, `location` or `server` survived the trip |
 
-Total: **6 LLM calls**, inside the ~10 budget.
+Total: **7 LLM calls**, inside the ~10 budget. The seventh is the one the
+failure test *wants* to fail: it declares no `ssdp_msearch` rule, so that request
+reaches the mock, matches nothing and gets an HTTP 500 — a single attempt, since
+the transport error propagates rather than being retried. It is a real request to
+the mock and so it counts, but `verify_mocks()` asserts only the six *expected*
+ones; the seventh is asserted through the `decision=fail_closed_llm_error` log
+line instead.
 
 ### The searches are unicast, and that is not a shortcut
 
@@ -103,8 +109,10 @@ covering both cases, which is the OAuth2 failure in its silence-shaped form.
 
 ### On `respond_with_actions_from_event`
 
-All three tests derive the mock's answer from the event rather than returning a
-fixed blob, and each does so for a reason that would otherwise go untested:
+The two tests with an event rule derive the mock's answer from the event rather
+than returning a fixed blob, and each does so for a reason that would otherwise go
+untested. (`stays_silent_but_logs_when_the_llm_fails` has no event rule at all —
+that is the point of it — and its startup answer is a fixed blob.)
 
 * the search test branches on `st`, so a server that handed the model the wrong
   search target — or dropped it — turns the matching case into a refusal and
@@ -181,10 +189,16 @@ the root `CLAUDE.md`, and neither was taken:
 
 The device description document, SOAP control, SCPD, GENA eventing,
 `BOOTID`/`CONFIGID` bookkeeping, spontaneous `ssdp:alive` on startup, and
-duplicate-search suppression. `metadata()` and `src/server/ssdp/CLAUDE.md` both
-say these do not exist. A test asserting, say, that `BOOTID.UPNP.ORG` can be set
-through `extra_headers` would read as coverage of the UDA versioning scheme and
-is worse than nothing.
+duplicate-search suppression. `src/server/ssdp/CLAUDE.md` says so for all of
+them; `metadata()` names only the first three, so it is the per-protocol doc and
+not the metadata that is complete here.
+
+The distinction worth holding is between *rendering* a header and *maintaining*
+it. `renders_the_mandatory_search_response_header_set` does pass
+`BOOTID.UPNP.ORG` through `extra_headers` and assert it comes out in the message,
+which is a real test of `extra_headers`. What would be worse than nothing is a
+test presenting that as coverage of the UDA versioning scheme: nothing here
+increments a BOOTID across a reboot, or reads one, or acts on a peer's.
 
 ## Running
 

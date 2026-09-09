@@ -15,10 +15,10 @@ that ran nothing. The filter goes after `--`.
 
 | Test | Proves | LLM calls (client / server) |
 |---|---|---|
-| `accepts_a_matching_response` | a valid answer is accepted and attributed to the host that sent it | 3 / 2 |
-| `discards_a_response_that_does_not_match_its_query` | **the client's central property**: wrong transaction ID *and* wrong echoed question are both refused, and each query still ends as an ordinary unanswered query with `discarded_count` 1 | 4 / 3 |
-| `treats_no_answer_as_a_normal_outcome` | silence is reported as the expected outcome, `discarded_count` 0; also exercises the `target` override from a client opened on the real multicast group | 3 / 2 |
-| `reports_two_responders_that_disagree` | two hosts, two different answers, one query → two `llmnr_response_received` plus `llmnr_conflicting_responses` | 5 / — |
+| `test_llmnr_client_accepts_a_matching_response` | a valid answer is accepted and attributed to the host that sent it | 3 / 2 |
+| `test_llmnr_client_discards_a_response_that_does_not_match_its_query` | **the client's central property**: wrong transaction ID *and* wrong echoed question are both refused, and each query still ends as an ordinary unanswered query with `discarded_count` 1 | 4 / 3 |
+| `test_llmnr_client_treats_no_answer_as_a_normal_outcome` | silence is reported as the expected outcome, `discarded_count` 0; also exercises the `target` override from a client opened on the real multicast group | 3 / 2 |
+| `test_llmnr_client_reports_two_responders_that_disagree` | two hosts, two different answers, one query → two `llmnr_response_received` plus `llmnr_conflicting_responses` | 5 / — |
 
 Each test is its own process with its own mock, so the ~10-call suite guidance is met with room
 to spare; the largest single process makes 5.
@@ -30,10 +30,10 @@ to spare; the largest single process makes 5.
 **`EADDRNOTAVAIL` (49)**, because loopback carries no multicast route. Bound to `0.0.0.0` both
 work.
 
-So no test sends to `224.0.0.252`. Two point `remote_addr` straight at an ephemeral port;
-`treats_no_answer_as_a_normal_outcome` opens the client on the genuine group and redirects every
-query with `send_llmnr_query`'s `target`, which is what that parameter exists for. If you see a
-multicast join in a log here, it is not broken.
+So no test sends to `224.0.0.252`. **Three** point `remote_addr` straight at an ephemeral
+port; only `test_llmnr_client_treats_no_answer_as_a_normal_outcome` opens the client on the
+genuine group, and it redirects every query with `send_llmnr_query`'s `target`, which is what
+that parameter exists for. If you see a multicast join in a log here, it is not broken.
 
 ## The transaction ID must be echoed dynamically — and here it bites twice
 
@@ -51,7 +51,7 @@ looking exactly like the product bug the test is meant to catch. Always:
 }]))
 ```
 
-`discards_a_response_that_does_not_match_its_query` inverts this on purpose: it XORs the event's
+`test_llmnr_client_discards_a_response_that_does_not_match_its_query` inverts this on purpose: it XORs the event's
 ID with `0x5555` (stays a valid `u16`, guaranteed to differ) for one query, and echoes a
 *different name* for the other.
 
@@ -76,13 +76,13 @@ The counts prove the events fired; the log lines prove *what they said*. Two are
   thing a reader needs, and asserting it stops a regression that collapses several answers into
   one.
 
-`discards_a_response_that_does_not_match_its_query` deliberately declares **no** rule for
+`test_llmnr_client_discards_a_response_that_does_not_match_its_query` deliberately declares **no** rule for
 `llmnr_response_received`: if either forgery were accepted, that event would fire, the mock would
 answer HTTP 500, and the run would show it.
 
 ## The two hand-written responders
 
-`reports_two_responders_that_disagree` needs two hosts answering **one** query, which NetGet's own
+`test_llmnr_client_reports_two_responders_that_disagree` needs two hosts answering **one** query, which NetGet's own
 responder cannot do — it sends exactly one datagram per query by design (`decide()` takes the
 first output and warns about extras). So the test binds two `UdpSocket`s in one task: `a` receives
 the query, and both `a` and `b` answer it with different addresses. The client sees two source
