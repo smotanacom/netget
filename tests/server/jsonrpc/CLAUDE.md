@@ -41,7 +41,14 @@ Tests use **action-based mode** (no scripting) to ensure LLM interprets each req
     - 1 method call (unknown method)
     - Total: 2 LLM calls
 
-**Total: 10 LLM calls** (exactly at limit)
+5. **`llm_failure_test::test_jsonrpc_refuses_oversized_input_and_fails_closed_with_a_category`**
+   — **1 LLM call**
+    - 1 startup call. The two refusals (oversized body, oversized batch) are answered before
+      any model is consulted, and the third request deliberately matches no mock rule so the
+      mock backend answers HTTP 500 and `call_llm` returns `Err` — the branch under test.
+    - Total: 1 LLM call
+
+**Total: 11 LLM calls** across both files.
 
 ## Scripting Usage
 
@@ -127,6 +134,24 @@ Tests use **action-based mode** (no scripting) to ensure LLM interprets each req
 - Response has `error` object
 - Error has `code` (should be -32601) and `message`
 - Error code is negative
+
+### 5. Refusals and fail-closed (`llm_failure_test.rs`)
+
+**Validates**: the two input caps and what a caller gets when netget itself cannot answer.
+
+- A body over `MAX_REQUEST_BODY_BYTES` (4 MiB) → `-32600` naming the limit. `req.collect()`
+  was unbounded, and the body is buffered whole, parsed and pretty-printed into the trace log.
+- A batch over `MAX_BATCH_LEN` (128) → `-32600` naming the limit. Every member is a separate
+  sequential model call, so batch length is an amplification factor the body cap does **not**
+  bound — at forty bytes a member, 4 MiB is a hundred thousand model calls from one POST.
+- A failed LLM call → `-32603` (or `-32000` with `data.retryable = true` when the backend is
+  merely saturated), with the message from `WireFailure::text()` and the request `id` echoed
+  preserving its JSON type. The test asserts the two codes agree with `data.retryable`, and
+  greps the raw body for `http://`, `ollama`, `11434`, `retries`, `.rs:`, `anyhow` and
+  `/Users/` — anything derived from the error reaching the wire is the defect it exists for.
+
+The two caps are duplicated as constants at the top of the test file; they must be kept in
+step with `src/server/jsonrpc/mod.rs`.
 
 ## Known Issues
 

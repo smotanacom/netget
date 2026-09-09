@@ -72,9 +72,40 @@ two actions it should have used.
 Processed sequentially, response order preserved. Non-object members (`[1,2,3]`) get
 their own `-32600 / "id": null` entry per spec §6; they used to be dropped silently.
 
-**Each batch member is a separate model call and batch length is not capped.** A 10 000
-element batch is 10 000 sequential model calls on one held-open connection. Use a script
-or static handler for anything batch-heavy.
+**Each batch member is a separate model call, so batch length is capped at
+`MAX_BATCH_LEN` (128)** — an oversized batch is `-32600` with the limit named, refused
+before any model is consulted. Batch length is a direct amplification factor on the LLM
+backend and the body cap below does not bound it: at about forty bytes a member,
+`{"jsonrpc":"2.0","method":"a","id":1}`, a 4 MiB body still buys a hundred thousand
+sequential model calls from one unauthenticated POST. 128 is far above any real JSON-RPC
+batch; anything genuinely batch-heavy belongs behind a script or static handler, which
+costs no model call at all.
+
+### Request body size
+
+Capped at `MAX_REQUEST_BODY_BYTES` (4 MiB) via `http_body_util::Limited`; over the limit
+is `-32600` naming the limit. `req.collect()` was unbounded — hyper imposes no limit of
+its own — and the body is buffered whole, parsed into a `serde_json::Value` and then
+pretty-printed into the trace log, so one client could grow the process without bound.
+
+### Failure semantics
+
+| Outcome | Caller receives | Log tag |
+|---|---|---|
+| Handler returns `jsonrpc_error` | that code and message, verbatim | — (the model meant it) |
+| Handler runs but produces neither response action | `-32603` | `decision=model_no_answer` |
+| LLM call errors, backend saturated | `-32000`, `data.retryable = true` | `decision=fail_closed_llm_overloaded` |
+| LLM call errors, anything else | `-32603`, `data.retryable = false` | `decision=fail_closed_llm_error` |
+| Body or batch over the cap | `-32600` naming the limit | `decision=reject_oversized[_batch]` |
+
+The two failure codes are deliberately distinct: JSON-RPC 2.0 reserves -32000..=-32099 for
+implementation-defined server errors, and reporting a transient rate-limiter refusal as
+`-32603` tells the caller the server is broken when it is only busy. The peer-visible
+`message` is `WireFailure::text()` — a `&'static str`, so the backend URL, the model name
+and the `anyhow` context chain cannot reach the wire however the error is shaped; they go
+to the log line instead. A notification is answered with silence whichever it was, which is
+exactly why the tags matter: without them a swallowed failure left no trace at all.
+Covered by `tests/server/jsonrpc/llm_failure_test.rs`.
 
 ## Actions
 
@@ -147,19 +178,24 @@ for it.
 ## Limitations
 
 - **HTTP only** — no WebSocket or raw TCP transport.
-- **No authentication, no rate limiting, no batch-size cap.**
+- **No authentication and no rate limiting.** Body size and batch length are capped
+  (above); nothing else is.
 - **No routing** — every path is a JSON-RPC endpoint; there is no 404.
 - **Non-POST** returns HTTP 200 with an `-32600` body rather than `405 Method Not
   Allowed`, so a plain `GET /` looks like a working endpoint to a scanner.
 - **No `Content-Type` validation** on requests; any body is parsed as JSON.
-- **No request body size limit** — the whole body is buffered.
+- **No per-request timeout** — a slow body holds a connection task until the cap is hit.
 - **Notifications still cost a model call** whose output is discarded. Deliberate (it
   keeps logging and memory updates working), but it is not free.
 - **Per-connection tasks are untracked**, so `stop_server` does not abort in-flight
   requests. Only the accept loop is registered with `AppState::register_server_task`.
-- `track_method_call` maintains a `recent_methods` ring in connection state that
-  **nothing reads**, at the cost of a write lock per request. Byte and packet counters
-  are never updated, so connection stats read zero.
+- **Byte and packet counters are never updated**, so connection stats read zero.
+- `track_method_call` is **gone**. It maintained a ten-entry `recent_methods` ring inside
+  the connection's `protocol_info` that nothing in the tree read — not the dashboard, which
+  reaches `protocol_info` only through IMAP-specific accessors, not the MCP surface, not a
+  test — and it cost a write lock on the single global `AppState` `RwLock` on every request
+  plus a clone-and-reparse of the vector. The method name is already in the access log and
+  in the event's log template.
 
 ## References
 

@@ -34,6 +34,32 @@ const PARSE_ERROR: i32 = -32700;
 const INVALID_REQUEST: i32 = -32600;
 const INTERNAL_ERROR: i32 = -32603;
 
+/// Backend saturated — transient, so the caller should back off and retry.
+///
+/// JSON-RPC 2.0 reserves -32000..=-32099 for implementation-defined server errors. Reporting
+/// overload as -32603 tells the caller the server is broken when it is only busy, and the two
+/// have to stay distinguishable for a client's retry policy to be right. `xmlrpc` and the MCP
+/// server use the same code for the same reason.
+const SERVER_BUSY: i32 = -32000;
+
+/// Largest request body accepted, in bytes.
+///
+/// hyper imposes no limit of its own and the body was buffered whole, parsed into a
+/// `serde_json::Value` and then pretty-printed into the trace log — so one client could grow
+/// the process without bound.
+const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Largest batch accepted.
+///
+/// **Every batch member is a separate model call**, run sequentially on one held-open
+/// connection, so batch length is a direct amplification factor on the LLM backend: at the
+/// body cap above, a `{"jsonrpc":"2.0","method":"a","id":1}` member is about forty bytes, which
+/// is a hundred thousand model calls from a single unauthenticated POST. The body cap alone
+/// does not bound the expensive resource. 128 is far above any real JSON-RPC batch; a caller
+/// that genuinely wants more should be behind a script or static handler, which costs no model
+/// call at all.
+const MAX_BATCH_LEN: usize = 128;
+
 /// JSON-RPC 2.0 server that delegates to LLM
 pub struct JsonRpcServer;
 
@@ -181,15 +207,24 @@ async fn handle_jsonrpc_request(
         ));
     }
 
-    // Read request body
-    let body_bytes = match req.collect().await {
+    // Read request body, capped. hyper imposes no limit and the whole body is buffered,
+    // parsed and then pretty-printed into the trace log below.
+    let body_bytes = match http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            // Non-fatal: the client gets an error response (wire fallback).
+            // Non-fatal: the client gets an error response (wire fallback). The peer learns
+            // the limit, which is actionable; the codec's own message is not.
+            tracing::warn!("JSON-RPC request body rejected (decision=reject_oversized): {e}");
             log.warn(format!("Failed to read request body: {}", e));
             return Ok(build_error_response(
                 INVALID_REQUEST,
-                "Failed to read request body",
+                &format!(
+                    "Request body rejected (limit {} bytes)",
+                    MAX_REQUEST_BODY_BYTES
+                ),
                 None,
                 None,
             ));
@@ -217,6 +252,25 @@ async fn handle_jsonrpc_request(
     match request_value {
         Value::Array(requests) if !requests.is_empty() => {
             // Batch request
+            if requests.len() > MAX_BATCH_LEN {
+                tracing::warn!(
+                    "JSON-RPC batch of {} rejected (decision=reject_oversized_batch, limit={})",
+                    requests.len(),
+                    MAX_BATCH_LEN
+                );
+                log.warn(format!(
+                    "JSON-RPC batch of {} rejected (limit {})",
+                    requests.len(),
+                    MAX_BATCH_LEN
+                ));
+                return Ok(build_error_response(
+                    INVALID_REQUEST,
+                    &format!("Batch too large (limit {} requests)", MAX_BATCH_LEN),
+                    None,
+                    None,
+                ));
+            }
+
             log.debug(format!(
                 "Processing batch JSON-RPC request with {} items",
                 requests.len()
@@ -384,11 +438,6 @@ async fn process_single_request(
         method, is_notification
     ));
 
-    // Track method in connection state
-    if let Err(e) = track_method_call(app_state, server_id, connection_id, method).await {
-        log.warn(format!("Failed to track method call: {}", e));
-    }
-
     // Call LLM with method details
     let response_value = match call_llm_for_method(
         method,
@@ -405,14 +454,33 @@ async fn process_single_request(
     {
         Ok(result) => result,
         Err(e) => {
-            // Non-fatal: a non-notification gets an Internal error response.
-            log.warn(format!("LLM call failed: {}", e));
+            // Three outcomes an operator has to tell apart, and only a `decision=` tag can
+            // carry the difference here: the backend was saturated (transient), the backend
+            // erred (not), and — in `call_llm_for_method` below — the handler ran but answered
+            // with nothing usable. A notification is answered with silence whichever it was,
+            // so without these tags a swallowed failure left no trace at all.
+            let failure = crate::utils::WireFailure::classify(&e);
+            let (code, decision) = if failure.is_overloaded() {
+                (SERVER_BUSY, "fail_closed_llm_overloaded")
+            } else {
+                (INTERNAL_ERROR, "fail_closed_llm_error")
+            };
+            tracing::error!(
+                "JSON-RPC {} failed (decision={decision}, code={code}, notification={is_notification}): {e:#}",
+                method
+            );
+            log.warn(format!(
+                "JSON-RPC {} failed (decision={}): {}",
+                method, decision, e
+            ));
             if !is_notification {
+                // Category only — never the error text. See `crate::utils::wire_failure`.
                 return Some(json!({
                     "jsonrpc": "2.0",
                     "error": {
-                        "code": INTERNAL_ERROR,
-                        "message": crate::utils::WireFailure::classify(&e).text()
+                        "code": code,
+                        "message": failure.text(),
+                        "data": {"retryable": failure.is_overloaded()}
                     },
                     "id": id
                 }));
@@ -500,6 +568,20 @@ async fn call_llm_for_method(
         .find_map(|result| collect_jsonrpc_response(result));
 
     let Some(mut response) = response else {
+        // The handler ran without erroring and produced nothing usable. Distinct from a
+        // backend failure (logged as `fail_closed_*` by the caller) and from a handler that
+        // deliberately chose `jsonrpc_error` — which reaches the wire as the code it named.
+        // This used to be silent on both sinks, so an instruction the model could not follow
+        // looked identical to a broken backend.
+        tracing::warn!(
+            "JSON-RPC {} answered -32603 (decision=model_no_answer): handler produced neither \
+             jsonrpc_success nor jsonrpc_error",
+            method
+        );
+        log.warn(format!(
+            "JSON-RPC {} (decision=model_no_answer): no jsonrpc_success or jsonrpc_error",
+            method
+        ));
         return Ok(json!({
             "jsonrpc": "2.0",
             "error": {
@@ -533,39 +615,15 @@ fn collect_jsonrpc_response(result: &ActionResult) -> Option<Value> {
     }
 }
 
-/// Track method call in connection state
-async fn track_method_call(
-    app_state: &Arc<AppState>,
-    server_id: crate::state::ServerId,
-    connection_id: ConnectionId,
-    method: &str,
-) -> anyhow::Result<()> {
-    app_state
-        .with_server_mut(server_id, |server| {
-            if let Some(conn) = server.connections.get_mut(&connection_id) {
-                if let Some(obj) = conn.protocol_info.data.as_object_mut() {
-                    let mut recent_methods: Vec<String> = obj
-                        .get("recent_methods")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
-                    recent_methods.push(method.to_string());
-                    // Keep only last 10 methods
-                    if recent_methods.len() > 10 {
-                        recent_methods.remove(0);
-                    }
-                    obj.insert(
-                        "recent_methods".to_string(),
-                        serde_json::to_value(&recent_methods).unwrap_or(serde_json::json!([])),
-                    );
-                }
-            }
-        })
-        .await;
-
-    Ok(())
-}
-
 /// Build a JSON-RPC error response
+//
+// `track_method_call` used to sit here, maintaining a ten-entry `recent_methods` ring inside
+// the connection's `protocol_info`. Nothing in the tree read it — not the dashboard, which
+// reads `protocol_info` only through IMAP-specific accessors, not the MCP surface, not a test
+// — and it cost a write lock on the one global `AppState` `RwLock` on every single request,
+// plus a clone-and-reparse of the whole vector. It is deleted rather than left as a
+// throughput cost with no reader; the method name is already in the access log and in the
+// event's own log template.
 fn build_error_response(
     code: i32,
     message: &str,
