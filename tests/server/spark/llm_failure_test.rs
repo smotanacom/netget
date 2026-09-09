@@ -27,23 +27,24 @@ async fn test_spark_answers_error_when_llm_fails() -> E2EResult<()> {
             });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let client = reqwest::Client::new();
-    let response = tokio::time::timeout(
-        Duration::from_secs(25),
-        client
-            .get(format!(
-                "http://127.0.0.1:{}/api/v1/applications",
-                server.port
-            ))
-            .send(),
-    )
-    .await
-    .map_err(|_| {
-        "No Spark response within 25s - the server went silent on LLM failure, which is the exact \
-         defect this test exists to catch"
-    })??;
+    // Wait for the socket, not for a duration: `start_netget_server` returns when startup is
+    // parsed, not when the listener is bound, so the fixed 500ms this used to sleep was a
+    // guess that gets worse the more tests run alongside. A 5xx is a *successful* HTTP
+    // exchange, so only a transport failure retries — and the client's own 25s timeout is
+    // what catches the other half of the defect, a server that answers nothing at all.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .build()?;
+    let url = format!("http://127.0.0.1:{}/api/v1/applications", server.port);
+    let response = crate::helpers::retry(|| async { client.get(&url).send().await })
+        .await
+        .map_err(|e| {
+            format!(
+                "no Spark response: the server went silent on LLM failure, which is the exact \
+                 defect this test exists to catch ({e})"
+            )
+        })?;
 
     let status = response.status().as_u16();
     let text = response.text().await?;

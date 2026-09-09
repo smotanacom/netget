@@ -26,7 +26,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Body, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -46,6 +46,14 @@ use crate::server::snowflake::actions::{
     SnowflakeProtocol, SNOWFLAKE_LOGIN_EVENT, SNOWFLAKE_QUERY_EVENT, SNOWFLAKE_SESSION_EVENT,
 };
 use crate::state::app_state::AppState;
+
+/// Largest request body this server will buffer.
+///
+/// `read_json_body` used an unbounded `req.into_body().collect()`, so an unauthenticated
+/// POST to `/session/v1/login-request` could grow the process without limit. A login body
+/// is a few hundred bytes and a query body is one SQL statement; 4 MiB is far beyond what
+/// any driver sends.
+const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 /// Snowflake error code sent when the authentication backend (the LLM) is
 /// unavailable. 390100 is Snowflake's "incorrect username or password" — a
@@ -319,15 +327,25 @@ async fn handle_snowflake_request(
     response
 }
 
-/// Read a request body into a JSON value (empty object on failure).
+/// Read a request body into a JSON value, capped at [`MAX_REQUEST_BYTES`].
+///
+/// `Value::Null` on failure, which every caller treats as "no fields present" — and since
+/// each endpoint fails closed when the model cannot answer from those fields, an oversized
+/// or unreadable body can only ever lose a login, never grant one.
 async fn read_json_body(req: Request<Incoming>) -> Value {
-    match req.into_body().collect().await {
+    match Limited::new(req.into_body(), MAX_REQUEST_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => {
             let bytes = collected.to_bytes();
             serde_json::from_slice(&bytes).unwrap_or(Value::Null)
         }
         Err(e) => {
-            error!("Snowflake: failed to read request body: {}", e);
+            error!(
+                "Snowflake: request body rejected (limit {} bytes): {}",
+                MAX_REQUEST_BYTES, e
+            );
             Value::Null
         }
     }

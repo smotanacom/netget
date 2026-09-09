@@ -129,15 +129,21 @@ but they're not validated.
 4. **Wrong content-type**: LLM returns incorrect Content-Type header
 5. **Empty responses**: LLM returns no action or empty body
 
-**Mitigation**:
+**Mitigation**: none of the above applies in mocked mode, which is how these tests run. The
+mock supplies the exact action, so there is no "different but valid format" to tolerate.
 
-- Flexible response validation (accept various formats)
-- Retry helper for initial connection
-- Comprehensive prompts with clear expectations
-- Accept INFO-level "errors" (LLM returning different but valid format)
+**The mocked tests assert on rust-s3's parsed result, and this is the whole of the evidence
+behind the protocol's Beta rating.** Each operation is issued inside the `retry` helper and its
+rule is pinned to `expect_calls(1)`: a response rust-s3 rejects makes `retry` re-issue the
+request, the count goes above one, and `verify_mocks` fails. That property only holds for calls
+made *through* `retry` — `head_object` and `delete_object` were issued outside it, with the
+error swallowed into a `println!("[INFO] ...")`, so those two verbs were named in the rating
+while being asserted by nothing. They now go through `retry` like the rest, and the suite
+asserts the parsed values (bucket name and both keys from the listing, the exact object body,
+`Content-Length`/`Content-Type` from HeadObject, 200 on PutObject, 204 on DeleteObject).
 
-**Note**: Tests use `[INFO]` logging for "acceptable" errors where LLM returns valid S3 response but in unexpected
-format.
+Do not reintroduce an `Err(e) => println!("[INFO] ...")` arm here: it converts a rejected
+response into a passing test.
 
 ## Test Cases
 
@@ -185,9 +191,12 @@ format.
 ### XML Format Complexity
 
 **Issue**: S3 XML has specific structure with namespaces
-**Symptom**: rust-s3 may reject malformed XML
+**Symptom**: rust-s3 rejects malformed XML
 **Workaround**: LLM prompt includes XML format guidance
-**Status**: Occasional failures, retry helps
+**Status**: applies to `--use-ollama` runs only. In mocked mode the XML is built by
+`build_list_objects_xml` from a fixed action, so a rejection here is a real defect in that
+builder, not flakiness — the suite asserts `listing.name` and the parsed keys precisely so
+such a defect fails rather than retries.
 
 ### Binary Content
 
@@ -213,23 +222,25 @@ format.
 ## Test Execution
 
 ```bash
-# Build release binary first (REQUIRED)
-./cargo-isolated.sh build --release --all-features
-
 # Run all S3 tests
-./cargo-isolated.sh test --features s3 --test server::s3::e2e_test
+./cargo-isolated.sh test --features s3 --test server -- server::s3
 
 # Run only comprehensive test (best coverage, 7 LLM calls)
-./cargo-isolated.sh test --features s3 --test server::s3::e2e_test test_s3_comprehensive
+./cargo-isolated.sh test --features s3 --test server -- server::s3::e2e_test::test_s3_comprehensive
 
 # Run specific test
-./cargo-isolated.sh test --features s3 --test server::s3::e2e_test test_s3_get_object
+./cargo-isolated.sh test --features s3 --test server -- server::s3::e2e_test::test_s3_get_object
 
 # Run with output
-./cargo-isolated.sh test --features s3 --test server::s3::e2e_test -- --nocapture
+./cargo-isolated.sh test --features s3 --test server -- server::s3::e2e_test --nocapture
 ```
 
-**Important**: Must use `--test server::s3::e2e_test` (with module path) not `--test e2e_s3_test`.
+**Important**: `--test` names a cargo *target*. The target is `server` (`tests/server.rs`);
+`server::s3::e2e_test` is a module path **inside** it and belongs after `--`, as a filter.
+This file used to say the opposite, and `--test server::s3::e2e_test` matches no target —
+cargo prints the list of available targets and exits having run **zero** tests, which
+reads as a pass. No release build is needed either: the harness uses
+`CARGO_BIN_EXE_netget`, the binary cargo built for this test with these features.
 
 ## Test Output Example
 

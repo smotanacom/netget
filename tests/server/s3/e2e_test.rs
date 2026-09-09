@@ -3,8 +3,15 @@
 //! These tests spawn the actual NetGet binary and interact with it using rust-s3 client
 //! to validate S3 API functionality.
 //!
-//! MUST build release binary before running: `cargo build --release --all-features`
-//! Run with: `cargo test --features s3,s3 --test server::s3::e2e_test`
+//! Run with:
+//! `cargo test --no-default-features --features s3 --test server -- server::s3`
+//!
+//! Two corrections to what this header used to say. `--test` names a cargo *target*
+//! (`tests/server.rs`), not a module path, so `--test server::s3::e2e_test` matched no
+//! target and cargo listed the available targets and exited having run nothing. And no
+//! release build is needed first: the harness resolves the binary through
+//! `CARGO_BIN_EXE_netget`, which is the binary cargo built for *this* test with *these*
+//! features (`tests/helpers/common.rs`).
 
 #[cfg(feature = "s3")]
 mod tests {
@@ -150,95 +157,98 @@ mod tests {
         println!("Test 1: Listing buckets...");
         // Note: rust-s3 doesn't have a direct ListBuckets API, so we test bucket existence indirectly
 
-        // Test 2: List objects in bucket
+        // Test 2: List objects in bucket.
+        //
+        // Every assertion below is on rust-s3's *parsed* result, not on a status code: what
+        // is being proven is that an independent S3 client accepted and understood our
+        // ListBucketResult XML. Swallowing the error into a `[INFO]` println, as this used
+        // to, left the maturity rating resting on the mock call count alone.
         println!("Test 2: Listing objects in test-bucket...");
-        let list_result = retry(|| async { bucket.list("".to_string(), None).await }).await;
+        let results = retry(|| async { bucket.list("".to_string(), None).await })
+            .await
+            .expect("rust-s3 rejected our ListObjects response");
 
-        match list_result {
-            Ok(results) => {
-                println!(
-                    "[PASS] ListObjects succeeded, found {} results",
-                    results.len()
-                );
-                if !results.is_empty() {
-                    let objects: Vec<&str> = results[0]
-                        .contents
-                        .iter()
-                        .map(|obj| obj.key.as_str())
-                        .collect();
-                    println!("Objects: {:?}", objects);
-                }
-            }
-            Err(e) => println!("[INFO] ListObjects returned error (acceptable): {}", e),
-        }
+        let listing = results
+            .first()
+            .expect("ListObjects returned no ListBucketResult");
+        assert_eq!(
+            listing.name, "test-bucket",
+            "ListBucketResult must carry the bucket name"
+        );
+        let objects: Vec<&str> = listing
+            .contents
+            .iter()
+            .map(|obj| obj.key.as_str())
+            .collect();
+        assert!(
+            objects.contains(&"hello.txt") && objects.contains(&"data.json"),
+            "expected both mocked keys in the listing, got {:?}",
+            objects
+        );
+        println!("[PASS] ListObjects parsed by rust-s3: {:?}", objects);
 
-        // Test 3: Get existing object (hello.txt)
+        // Test 3: Get existing object (hello.txt) — the body must arrive byte for byte.
         println!("Test 3: Getting hello.txt...");
-        let get_result = retry(|| async { bucket.get_object("/hello.txt").await }).await;
-
-        match get_result {
-            Ok(data) => {
-                let content = String::from_utf8_lossy(&data.bytes());
-                println!("[PASS] GetObject succeeded, content: {}", content);
-                assert!(
-                    content.contains("Hello") || content.len() > 0,
-                    "Expected content in hello.txt"
-                );
-            }
-            Err(e) => println!(
-                "[INFO] GetObject returned error (LLM may not have data): {}",
-                e
-            ),
-        }
+        let data = retry(|| async { bucket.get_object("/hello.txt").await })
+            .await
+            .expect("rust-s3 rejected our GetObject response");
+        assert_eq!(
+            String::from_utf8_lossy(&data.bytes()),
+            "Hello, World!",
+            "GetObject body must be exactly what send_s3_object was given"
+        );
+        println!("[PASS] GetObject returned the exact mocked body");
 
         // Test 4: Put new object
         println!("Test 4: Putting new object test.txt...");
-        let put_result =
-            retry(|| async { bucket.put_object("/test.txt", b"Test content").await }).await;
+        let response = retry(|| async { bucket.put_object("/test.txt", b"Test content").await })
+            .await
+            .expect("rust-s3 rejected our PutObject response");
+        assert_eq!(
+            response.status_code(),
+            200,
+            "PutObject must return the status send_s3_write_result asked for"
+        );
+        println!("[PASS] PutObject acknowledged with 200");
 
-        match put_result {
-            Ok(response) => {
-                println!(
-                    "[PASS] PutObject succeeded with status: {}",
-                    response.status_code()
-                );
-                assert!(
-                    response.status_code() >= 200 && response.status_code() < 300,
-                    "Expected 2xx status code"
-                );
-            }
-            Err(e) => println!("[INFO] PutObject returned error: {}", e),
-        }
-
-        // Test 5: Head object (check existence)
+        // Test 5: Head object (check existence).
+        //
+        // HeadObject and DeleteObject below were the two operations this suite issued
+        // *without* `retry` and with the error swallowed into a println. That mattered:
+        // the whole reason `expect_calls(1)` is evidence is that a response rust-s3
+        // rejected makes `retry` re-issue the request and blow the count. Outside `retry`,
+        // a rejected response is one call and a silent pass — so these two verbs were
+        // named in the Beta rating while being asserted by nothing.
         println!("Test 5: Checking if hello.txt exists with HeadObject...");
-        let head_result = bucket.head_object("/hello.txt").await;
-
-        match head_result {
-            Ok((headers, status)) => {
-                println!("[PASS] HeadObject succeeded with status: {}", status);
-                println!("Headers: {:?}", headers);
-            }
-            Err(e) => println!("[INFO] HeadObject returned error: {}", e),
-        }
+        let (head, status) = retry(|| async { bucket.head_object("/hello.txt").await })
+            .await
+            .expect("rust-s3 rejected our HeadObject response");
+        assert_eq!(status, 200, "HeadObject must return 200");
+        assert_eq!(
+            head.content_length,
+            Some(13),
+            "HeadObject must carry the Content-Length send_s3_write_result asked for"
+        );
+        assert_eq!(
+            head.content_type.as_deref(),
+            Some("text/plain"),
+            "HeadObject must carry the Content-Type send_s3_write_result asked for"
+        );
+        println!("[PASS] HeadObject headers parsed by rust-s3");
 
         // Test 6: Delete object
         println!("Test 6: Deleting test.txt...");
-        let delete_result = bucket.delete_object("/test.txt").await;
+        let response = retry(|| async { bucket.delete_object("/test.txt").await })
+            .await
+            .expect("rust-s3 rejected our DeleteObject response");
+        assert_eq!(
+            response.status_code(),
+            204,
+            "DeleteObject must return the 204 send_s3_write_result asked for"
+        );
+        println!("[PASS] DeleteObject acknowledged with 204");
 
-        match delete_result {
-            Ok(response) => {
-                println!(
-                    "[PASS] DeleteObject succeeded with status: {}",
-                    response.status_code()
-                );
-            }
-            Err(e) => println!("[INFO] DeleteObject returned error: {}", e),
-        }
-
-        println!("\n[PASS] All S3 operations completed");
-        println!("Note: Some operations may return errors if LLM doesn't maintain state,");
-        println!("but the test verifies the protocol works correctly.");
+        println!("\n[PASS] All five S3 operations were accepted by rust-s3");
 
         // Verify mock expectations were met
         // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -303,24 +313,15 @@ mod tests {
         let bucket = create_s3_bucket(server.port, "my-bucket");
 
         // Get object
-        let result = retry(|| async { bucket.get_object("/data.txt").await }).await;
-
-        match result {
-            Ok(data) => {
-                let content = String::from_utf8_lossy(&data.bytes());
-                println!(
-                    "[PASS] GetObject succeeded, content length: {} bytes",
-                    content.len()
-                );
-                println!("Content preview: {}", &content[..content.len().min(100)]);
-            }
-            Err(e) => {
-                println!(
-                    "[INFO] GetObject error (acceptable if LLM returns different format): {}",
-                    e
-                );
-            }
-        }
+        let data = retry(|| async { bucket.get_object("/data.txt").await })
+            .await
+            .expect("rust-s3 rejected our GetObject response");
+        assert_eq!(
+            String::from_utf8_lossy(&data.bytes()),
+            "S3 Test Data",
+            "GetObject body must be exactly what send_s3_object was given"
+        );
+        println!("[PASS] GetObject returned the exact mocked body");
 
         // Verify mock expectations were met
         // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -393,40 +394,33 @@ mod tests {
 
         // Put object
         println!("Uploading file.txt...");
-        let put_result =
-            retry(|| async { bucket.put_object("/file.txt", b"Upload test content").await }).await;
-
-        match put_result {
-            Ok(response) => {
-                println!(
-                    "[PASS] PutObject succeeded with status: {}",
-                    response.status_code()
-                );
-            }
-            Err(e) => {
-                println!("[INFO] PutObject error: {}", e);
-            }
-        }
+        let response =
+            retry(|| async { bucket.put_object("/file.txt", b"Upload test content").await })
+                .await
+                .expect("rust-s3 rejected our PutObject response");
+        assert_eq!(response.status_code(), 200, "PutObject must return 200");
+        println!("[PASS] PutObject acknowledged with 200");
 
         // List objects
         println!("Listing objects...");
-        let list_result = bucket.list("".to_string(), None).await;
-
-        match list_result {
-            Ok(results) => {
-                println!("[PASS] ListObjects succeeded");
-                for result in &results {
-                    println!(
-                        "Bucket: {}, Objects: {}",
-                        result.name,
-                        result.contents.len()
-                    );
-                }
-            }
-            Err(e) => {
-                println!("[INFO] ListObjects error: {}", e);
-            }
-        }
+        let results = retry(|| async { bucket.list("".to_string(), None).await })
+            .await
+            .expect("rust-s3 rejected our ListObjects response");
+        let listing = results
+            .first()
+            .expect("ListObjects returned no ListBucketResult");
+        assert_eq!(listing.name, "uploads");
+        let objects: Vec<&str> = listing
+            .contents
+            .iter()
+            .map(|obj| obj.key.as_str())
+            .collect();
+        assert_eq!(
+            objects,
+            vec!["file.txt"],
+            "listing must be exactly what send_s3_object_list was given"
+        );
+        println!("[PASS] ListObjects parsed by rust-s3: {:?}", objects);
 
         // Verify mock expectations were met
         // Wait for the exchange the mocks describe, rather than trusting a fixed

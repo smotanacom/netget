@@ -133,19 +133,19 @@ async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle
     panic!("no access-log entry for {owner:?} containing {needle:?}");
 }
 
-/// The SQS client builds its config from `aws_config::defaults()`, whose credential and region
-/// chains would otherwise consult the ambient profile and the EC2 metadata service. Pin both to
-/// fixed test values so this test stays on loopback.
-fn pin_aws_env_to_loopback() {
-    std::env::set_var("AWS_ACCESS_KEY_ID", "netget-test");
-    std::env::set_var("AWS_SECRET_ACCESS_KEY", "netget-test-secret");
-    std::env::set_var("AWS_REGION", "us-east-1");
-    std::env::set_var("AWS_EC2_METADATA_DISABLED", "true");
-}
-
+/// Credentials come from this client's own startup parameters.
+///
+/// They used to come from four `std::env::set_var` calls, because the protocol declared no
+/// credential parameters and the SDK's default chain would otherwise have consulted the
+/// ambient profile and the EC2 metadata service. That was a test working around a production
+/// behaviour — and `set_var` is process-global in a test binary that runs at
+/// `--test-threads=100`, so it mutated `AWS_ACCESS_KEY_ID` and friends for every other test
+/// running alongside, racing any concurrent `getenv` inside the AWS SDK. The protocol now
+/// declares `access_key_id` and `secret_access_key`, which is both the honest fix here and
+/// the only way an operator can stop a model-created client signing with their real AWS
+/// identity.
 #[tokio::test]
 async fn injected_send_message_reaches_the_endpoint() {
-    pin_aws_env_to_loopback();
     let stub = spawn_http_stub(
         "200 OK",
         "application/x-amz-json-1.0",
@@ -163,6 +163,8 @@ async fn injected_send_message_reaches_the_endpoint() {
             "queue_url": format!("http://127.0.0.1:{}/000000000000/dashboard-marker", stub.port),
             "region": "us-east-1",
             "endpoint_url": format!("http://127.0.0.1:{}", stub.port),
+            "access_key_id": "netget-test",
+            "secret_access_key": "netget-test-secret",
         })),
         ..Default::default()
     }

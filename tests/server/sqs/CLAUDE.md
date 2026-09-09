@@ -227,6 +227,15 @@ let client = Client::new(&sdk_config);
 
 ## Expected Runtime
 
+**Mocked (the default): the three tests together finish in under two seconds.** They used to
+take about four seconds longer than that for no reason at all — eight fixed
+`sleep(500ms)`/`sleep(300ms)` calls sat between AWS SDK operations that are each already
+awaited, so the response, and therefore the mock call it provoked, had been recorded before
+the sleep began. They are gone, and each test now ends with `wait_for_mocks(30)` before
+`verify_mocks()`, which waits on the condition instead of guessing at a duration.
+
+The numbers below are for `--use-ollama`, where a real model answers every operation.
+
 **Total Suite**: ~25-35 seconds
 
 - Test 1 (Basic Operations): ~12-15 seconds (1 setup + 5 operations)
@@ -286,7 +295,7 @@ None currently identified. Tests are stable with proper Ollama setup.
 
 1. **Build NetGet with all features**:
    ```bash
-   ./cargo-isolated.sh build --release --all-features
+   ./cargo-isolated.sh build --no-default-features --features sqs
    ```
 
 2. **Ollama must be running** with SQS-capable model:
@@ -297,13 +306,13 @@ None currently identified. Tests are stable with proper Ollama setup.
 ### Run SQS Tests Only
 
 ```bash
-./cargo-isolated.sh test --features sqs --test server::sqs::e2e_test
+./cargo-isolated.sh test --features sqs --test server -- server::sqs
 ```
 
 ### Run Specific Test
 
 ```bash
-./cargo-isolated.sh test --features sqs --test server::sqs::e2e_test test_sqs_basic_queue_operations
+./cargo-isolated.sh test --features sqs --test server -- server::sqs::e2e_test::test_sqs_basic_queue_operations
 ```
 
 ### Expected Output

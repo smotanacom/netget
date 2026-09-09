@@ -25,10 +25,13 @@ Suite total ~8 LLM calls, under the ~10 budget. Localhost only; never contacts e
 - `/applications`, `/jobs`, `/stages`, `/executors` are top-level JSON **arrays** (asserted with
   `is_array()`), matching Spark's monitoring API.
 - `llm_failure_test`: LLM failure → 5xx JSON *object* with an `error` field, never `200 []`.
+  It waits for the socket by retrying the request rather than sleeping a fixed 500ms, and
+  the client carries its own 25s timeout so a server that answers *nothing* fails the test
+  instead of hanging it.
 
 ## Running
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features spark \
-    --test server::spark::e2e_test -- --test-threads=100
+    --test server -- server::spark::e2e_test --test-threads=100
 ```

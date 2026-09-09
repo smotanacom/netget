@@ -33,8 +33,12 @@ pub static SQS_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 pub static SQS_MESSAGE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "sqs_message_received",
-        "Messages received from SQS queue",
-        json!({"type": "placeholder", "event_id": "sqs_message_received"}),
+        "Messages received from SQS queue. An empty `messages` array means the poll returned \
+         nothing, which is the normal case for short polling — answer with `receive_messages` \
+         to keep waiting, or stop.",
+        // A real action, not `{"type": "placeholder"}`: this is the response example the
+        // model is prompted with, so a placeholder here taught it a verb that does not exist.
+        json!({"type": "delete_message", "receipt_handle": "AQEBw...=="}),
     )
     .with_parameters(vec![Parameter {
         name: "messages".to_string(),
@@ -49,7 +53,7 @@ pub static SQS_MESSAGE_SENT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "sqs_message_sent",
         "Message successfully sent to SQS queue",
-        json!({"type": "placeholder", "event_id": "sqs_message_sent"}),
+        json!({"type": "receive_messages", "max_messages": 5}),
     )
     .with_parameters(vec![Parameter {
         name: "message_id".to_string(),
@@ -93,6 +97,27 @@ impl Protocol for SqsClientProtocol {
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("http://localhost:9324"),
+            },
+            // Without these the SDK falls back to its default chain — environment,
+            // ~/.aws/credentials, then IMDS — so a client the model created would sign with
+            // the operator's real AWS identity and there was no way to scope it. Supplying
+            // them installs a static provider instead.
+            ParameterDefinition {
+                name: "access_key_id".to_string(),
+                description: "AWS access key ID. When this and secret_access_key are given, \
+                              they are used instead of the ambient AWS credential chain \
+                              (environment, ~/.aws/credentials, instance role)."
+                    .to_string(),
+                type_hint: "string".to_string(),
+                required: false,
+                example: json!("AKIAIOSFODNN7EXAMPLE"),
+            },
+            ParameterDefinition {
+                name: "secret_access_key".to_string(),
+                description: "AWS secret access key, used with access_key_id.".to_string(),
+                type_hint: "string".to_string(),
+                required: false,
+                example: json!("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
             },
         ]
     }
@@ -251,23 +276,17 @@ impl Protocol for SqsClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "SQS"
     }
+    /// The three statics themselves, not rebuilt copies.
+    ///
+    /// This used to construct three fresh `EventType`s with different descriptions, no
+    /// parameters and `{"type": "placeholder"}` response examples — so the documentation and
+    /// registry surfaces described one thing while the events actually raised at runtime
+    /// (the `LazyLock` statics above) described another.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "sqs_connected",
-                "Triggered when SQS client connects to queue",
-                json!({"type": "placeholder", "event_id": "sqs_connected"}),
-            ),
-            EventType::new(
-                "sqs_message_received",
-                "Triggered when messages are received from queue",
-                json!({"type": "placeholder", "event_id": "sqs_message_received"}),
-            ),
-            EventType::new(
-                "sqs_message_sent",
-                "Triggered when message is successfully sent",
-                json!({"type": "placeholder", "event_id": "sqs_message_sent"}),
-            ),
+            SQS_CLIENT_CONNECTED_EVENT.clone(),
+            SQS_MESSAGE_RECEIVED_EVENT.clone(),
+            SQS_MESSAGE_SENT_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {

@@ -10,8 +10,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
+use http_body_util::{BodyExt, Full, Limited};
+use hyper::body::{Body, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -26,6 +26,13 @@ use crate::server::connection::ConnectionId;
 use crate::server::SqsProtocol;
 use crate::state::app_state::AppState;
 use crate::{console_error, console_info};
+
+/// Largest request body this server will buffer.
+///
+/// The body was read with an unbounded `req.into_body().collect()`, so a single request
+/// could grow the process without limit. A real SQS message is capped at 256 KiB and a
+/// SendMessageBatch carries ten of them, so 4 MiB is well clear of anything an SDK sends.
+const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 /// SQS server that delegates queue operations to LLM
 pub struct SqsServer;
@@ -151,10 +158,53 @@ impl SqsServer {
     }
 }
 
-/// Handle a single SQS request with LLM
+/// Handle a single SQS request with LLM, then record what crossed the wire.
+///
+/// The rail's byte counters and the connection-scoped task prompts read
+/// `bytes_received`/`bytes_sent`, and this server left both at the zero it registered the
+/// connection with, so every SQS peer showed no traffic at all however much it moved.
 async fn handle_sqs_request_with_llm(
     req: Request<Incoming>,
-    _connection_id: ConnectionId,
+    connection_id: ConnectionId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<SqsProtocol>,
+    server_id: crate::state::ServerId,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let received = req.body().size_hint().lower();
+    let response = handle_sqs_request_inner(
+        req,
+        llm_client,
+        app_state.clone(),
+        status_tx.clone(),
+        protocol,
+        server_id,
+    )
+    .await;
+
+    let sent = response
+        .as_ref()
+        .ok()
+        .and_then(|resp| resp.body().size_hint().exact())
+        .unwrap_or(0);
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            Some(received),
+            Some(sent),
+            Some(1),
+            Some(1),
+        )
+        .await;
+    let _ = status_tx.send("__UPDATE_UI__".to_string());
+
+    response
+}
+
+async fn handle_sqs_request_inner(
+    req: Request<Incoming>,
     llm_client: OllamaClient,
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
@@ -175,12 +225,28 @@ async fn handle_sqs_request_with_llm(
         .unwrap_or("Unknown")
         .to_string();
 
-    // Read JSON body
-    let body_bytes = match req.into_body().collect().await {
+    // Read the JSON body, capped at MAX_REQUEST_BYTES. Refuse rather than continue with an
+    // empty body: an operation whose parameters were truncated away used to reach the model
+    // as a well-formed request with no arguments, and be answered as one.
+    let body_bytes = match Limited::new(req.into_body(), MAX_REQUEST_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            console_error!(status_tx, "Failed to read SQS request body: {}", e);
-            Bytes::new()
+            Log::new(Some(&status_tx)).warn(format!(
+                "SQS {} decision=fail_closed_body_rejected (limit {} bytes): {}",
+                operation, MAX_REQUEST_BYTES, e
+            ));
+            return Ok(build_sqs_response(
+                413,
+                &new_request_id(),
+                serde_json::json!({
+                    "__type": "InvalidParameterValue",
+                    "message": "request body rejected",
+                })
+                .to_string(),
+            ));
         }
     };
 
@@ -237,8 +303,19 @@ async fn handle_sqs_request_with_llm(
                                 data.get("status").and_then(|v| v.as_u64()).unwrap_or(200) as u16;
                             let body = data.get("body").and_then(|v| v.as_str()).unwrap_or("{}");
 
+                            // `decision=` is a stable grep target, as in `src/server/radius/`:
+                            // an operator has to be able to tell the model answering from
+                            // netget failing to reach one.
+                            let decision = if (400..=599).contains(&status) {
+                                "model_reject"
+                            } else {
+                                "model_answer"
+                            };
                             let log = Log::new(Some(&status_tx));
-                            log.debug(format!("SQS response: status={}", status));
+                            log.debug(format!(
+                                "SQS {} decision={} status={}",
+                                operation, decision, status
+                            ));
                             log.trace(format!("SQS response body: {}", body));
 
                             let request_id = new_request_id();
@@ -262,11 +339,11 @@ async fn handle_sqs_request_with_llm(
             // reads as "the queue is empty", a claim about the queue nothing supports.
             //
             // Fail closed with the same AWS error envelope the backend-error arm below uses.
-            Log::new(Some(&status_tx)).warn(
-                "SQS: no sqs_response action produced (decision=fail_closed_no_action); \
-                 answering 500 rather than an empty 200"
-                    .to_string(),
-            );
+            Log::new(Some(&status_tx)).warn(format!(
+                "SQS {} decision=fail_closed_no_action (no sqs_response action produced); \
+                 answering 500 rather than an empty 200",
+                operation
+            ));
 
             let request_id = new_request_id();
 
@@ -281,16 +358,39 @@ async fn handle_sqs_request_with_llm(
             ))
         }
         Err(e) => {
-            Log::new(Some(&status_tx))
-                .error(format!("LLM execution failed for SQS request: {}", e));
+            // netget could not reach a decision at all. The peer gets a category, the log
+            // gets the error — never the backend URL, the model name or netget's own retry
+            // machinery. The two categories map onto different codes so an SDK backs off
+            // instead of recording a permanent fault: `ServiceUnavailable` + 503 +
+            // Retry-After is retryable in every AWS SDK's default policy, `InternalFailure`
+            // + 500 is not. Collapsing both onto 500, as this used to, makes a transient
+            // backend saturation look permanent.
+            let failure = crate::utils::WireFailure::classify(&e);
+            Log::new(Some(&status_tx)).warn(format!(
+                "SQS {} decision=fail_closed_llm_error category={:?}: {}",
+                operation, failure, e
+            ));
 
-            let request_id = new_request_id();
+            let (status, aws_type) = match failure {
+                crate::utils::WireFailure::Overloaded => (503, "ServiceUnavailable"),
+                crate::utils::WireFailure::Unavailable => (500, "InternalFailure"),
+            };
 
-            Ok(build_sqs_response(
-                500,
-                &request_id,
-                r#"{"__type":"InternalFailure","message":"Internal server error"}"#.to_string(),
-            ))
+            let mut response = build_sqs_response(
+                status,
+                &new_request_id(),
+                serde_json::json!({
+                    "__type": aws_type,
+                    "message": failure.text(),
+                })
+                .to_string(),
+            );
+            if failure == crate::utils::WireFailure::Overloaded {
+                response
+                    .headers_mut()
+                    .insert("Retry-After", hyper::header::HeaderValue::from_static("5"));
+            }
+            Ok(response)
         }
     }
 }

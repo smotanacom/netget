@@ -1,5 +1,22 @@
 # SQS Client E2E Testing
 
+## What actually runs
+
+**One test runs by default: `command_channel_test.rs`**, which this file never mentioned. All
+five tests in `e2e_test.rs` are `#[ignore]`d — four have no `.with_mock()` at all and need
+`--use-ollama`, one needs LocalStack — so **the real LLM-call count for a default run is 0**,
+not the 13 counted below, and none of the "covered scenarios" listed further down is covered
+by anything that executes.
+
+`command_channel_test.rs` proves the dashboard's `[ send ]` path end to end against a loopback
+stub: an injected `send_message` becomes a real HTTP request whose body carries the message,
+an unknown verb is `Rejected`, and `disconnect` drops the handle. It passes credentials
+through the client's own startup parameters; it used to set four AWS environment variables
+with `std::env::set_var`, which is process-global in a binary that runs at
+`--test-threads=100`.
+
+Keep the numbers below as *targets* for the ignored suite, not as a description of coverage.
+
 ## Test Strategy
 
 Black-box E2E tests that verify SQS client functionality by spawning the actual NetGet binary and testing client

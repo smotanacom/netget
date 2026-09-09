@@ -10,8 +10,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
+use http_body_util::{BodyExt, Full, Limited};
+use hyper::body::{Body, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
@@ -25,6 +25,14 @@ use crate::logging::emit::Log;
 use crate::server::connection::ConnectionId;
 use crate::server::S3Protocol;
 use crate::state::app_state::AppState;
+
+/// Largest request body this server will buffer.
+///
+/// The body was read with an unbounded `req.into_body().collect()`, so a single PUT could
+/// grow the process without limit — nothing in HTTP/1.1 bounds a chunked body, and the
+/// content is never stored anyway (only its length reaches the model). `Limited` stops at
+/// the cap and errors, so the memory one request can claim is bounded by a constant.
+const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 
 /// S3 server that delegates API operations to LLM
 pub struct S3Server;
@@ -147,10 +155,53 @@ impl S3Server {
     }
 }
 
-/// Handle a single S3 request with LLM
+/// Handle a single S3 request with LLM, then record what crossed the wire.
+///
+/// The rail's byte counters and the connection-scoped task prompts read
+/// `bytes_received`/`bytes_sent`, and this server left both at the zero it registered the
+/// connection with, so every S3 peer showed no traffic at all however much it moved.
 async fn handle_s3_request_with_llm(
     req: Request<Incoming>,
-    _connection_id: ConnectionId,
+    connection_id: ConnectionId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<S3Protocol>,
+    server_id: crate::state::ServerId,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let received = req.body().size_hint().lower();
+    let response = handle_s3_request_inner(
+        req,
+        llm_client,
+        app_state.clone(),
+        status_tx.clone(),
+        protocol,
+        server_id,
+    )
+    .await;
+
+    let sent = response
+        .as_ref()
+        .ok()
+        .and_then(|resp| resp.body().size_hint().exact())
+        .unwrap_or(0);
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            Some(received),
+            Some(sent),
+            Some(1),
+            Some(1),
+        )
+        .await;
+    let _ = status_tx.send("__UPDATE_UI__".to_string());
+
+    response
+}
+
+async fn handle_s3_request_inner(
+    req: Request<Incoming>,
     llm_client: OllamaClient,
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
@@ -174,13 +225,28 @@ async fn handle_s3_request_with_llm(
         method, path, bucket, key, operation
     ));
 
-    // Read request body (for PUT operations)
-    let body_bytes = match req.into_body().collect().await {
+    // Read the request body (for PUT operations), capped at MAX_REQUEST_BYTES.
+    let body_bytes = match Limited::new(req.into_body(), MAX_REQUEST_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            // Non-fatal: falls back to an empty body and the request is still processed.
-            log.warn(format!("Failed to read S3 request body: {}", e));
-            Bytes::new()
+            // Refuse rather than continue with an empty body. A truncated or oversized
+            // upload used to be reported to the model as a PutObject carrying zero bytes,
+            // which the model would then acknowledge as a stored object.
+            log.warn(format!(
+                "S3 {} {} decision=fail_closed_body_rejected (limit {} bytes): {}",
+                operation, path, MAX_REQUEST_BYTES, e
+            ));
+            return Ok(Response::builder()
+                .status(StatusCode::PAYLOAD_TOO_LARGE)
+                .header("Content-Type", "application/xml")
+                .body(Full::new(Bytes::from(build_error_xml(
+                    "EntityTooLarge",
+                    "request body rejected",
+                ))))
+                .unwrap());
         }
     };
 
@@ -469,6 +535,21 @@ fn process_s3_action_result(
                         content_type
                     ));
 
+                    // `send_s3_object` documents an unusable content_type as being replaced
+                    // with application/octet-stream; `header_or_skip` alone would drop the
+                    // header entirely and answer with no Content-Type at all.
+                    let content_type = if hyper::header::HeaderValue::from_str(content_type).is_ok()
+                    {
+                        content_type
+                    } else {
+                        error!(
+                            "S3 content_type {:?} is not a valid header value; \
+                             sending application/octet-stream",
+                            content_type
+                        );
+                        "application/octet-stream"
+                    };
+
                     let mut builder = Response::builder().status(StatusCode::OK);
                     builder = header_or_skip(builder, "Content-Type", content_type);
                     if let Some(etag) = etag {
@@ -550,6 +631,11 @@ fn process_s3_action_result(
                     Log::new(Some(status_tx))
                         .debug(format!("Sending S3 write acknowledgement ({})", status));
 
+                    // Every header value here is model output, so each goes through
+                    // `header_or_skip`. Attaching one directly makes `Builder::body()` fail
+                    // instead, and the `unwrap_or_else` below then answers an empty 200 —
+                    // silently downgrading a 204 DeleteObject to a 200 because an ETag
+                    // contained a newline.
                     let mut builder = Response::builder().status(status);
                     for (field, header) in [
                         ("etag", "ETag"),
@@ -558,7 +644,7 @@ fn process_s3_action_result(
                         ("last_modified", "Last-Modified"),
                     ] {
                         if let Some(v) = data.get(field).and_then(|v| v.as_str()) {
-                            builder = builder.header(header, v);
+                            builder = header_or_skip(builder, header, v);
                         }
                     }
                     if let Some(v) = data.get("content_length").and_then(|v| v.as_u64()) {

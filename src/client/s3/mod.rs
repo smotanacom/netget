@@ -15,11 +15,22 @@ use crate::client::llm_budget::call_llm_for_client;
 use crate::client::s3::actions::S3_CLIENT_RESPONSE_RECEIVED_EVENT;
 use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ClientLlmResult;
-use crate::protocol::Event;
+use crate::protocol::{Event, StartupParams};
 use crate::state::app_state::AppState;
 use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 use crate::utils::truncate::truncate_for_log;
+
+/// Give a bare `host:port` a scheme. The AWS SDK requires an absolute URL, and an operator
+/// typing an address into the dashboard does not type one.
+fn normalize_endpoint(endpoint: &str) -> String {
+    let trimmed = endpoint.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    }
+}
 
 /// S3 client that interacts with AWS S3 or S3-compatible services
 pub struct S3Client;
@@ -32,47 +43,47 @@ impl S3Client {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<StartupParams>,
     ) -> Result<SocketAddr> {
         info!("S3 client {} initializing for {}", client_id, remote_addr);
 
-        // Parse endpoint URL and region from startup parameters
-        let (endpoint_url, region, access_key_id, secret_access_key) = app_state
-            .with_client_mut(client_id, |client| {
-                let endpoint = client
-                    .get_protocol_field("endpoint_url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&remote_addr)
-                    .to_string();
+        // Read the four parameters this protocol declares. They are read here, from
+        // `ctx.startup_params`, because there is nowhere else they could come from: the
+        // values used to be read out of `protocol_data`, which nothing populates before
+        // connect — `client_startup.rs` builds the instance with `protocol_data: Null` and
+        // the only writer is the block below, which runs *after* this read. So every S3
+        // client signed with `Credentials::new("", "", ...)`, was pinned to `us-east-1`,
+        // and could never use a custom endpoint, while the protocol advertised all four and
+        // marked two of them required.
+        let access_key_id = startup_params
+            .as_ref()
+            .map(|p| p.get_optional_string("access_key_id"))
+            .transpose()?
+            .flatten()
+            .unwrap_or_default();
 
-                let region = client
-                    .get_protocol_field("region")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("us-east-1")
-                    .to_string();
+        let secret_access_key = startup_params
+            .as_ref()
+            .map(|p| p.get_optional_string("secret_access_key"))
+            .transpose()?
+            .flatten()
+            .unwrap_or_default();
 
-                let access_key = client
-                    .get_protocol_field("access_key_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+        let region = startup_params
+            .as_ref()
+            .map(|p| p.get_optional_string("region"))
+            .transpose()?
+            .flatten()
+            .unwrap_or_else(|| "us-east-1".to_string());
 
-                let secret_key = client
-                    .get_protocol_field("secret_access_key")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                (endpoint, region, access_key, secret_key)
-            })
-            .await
-            .unwrap_or_else(|| {
-                (
-                    remote_addr.clone(),
-                    "us-east-1".to_string(),
-                    String::new(),
-                    String::new(),
-                )
-            });
+        // `remote_addr` is the fallback endpoint, so an operator who typed an address gets a
+        // client aimed at it; `endpoint_url` overrides when both are given.
+        let endpoint_url = startup_params
+            .as_ref()
+            .map(|p| p.get_optional_string("endpoint_url"))
+            .transpose()?
+            .flatten()
+            .unwrap_or_else(|| remote_addr.clone());
 
         // Build AWS SDK configuration
         use aws_config::BehaviorVersion;
@@ -91,13 +102,18 @@ impl S3Client {
             .region(Region::new(region.clone()))
             .credentials_provider(creds);
 
-        // Set custom endpoint if provided (for MinIO, LocalStack, etc.)
-        if !endpoint_url.is_empty() && endpoint_url != remote_addr {
-            config_builder = config_builder.endpoint_url(&endpoint_url);
+        // Set the endpoint whenever there is one. The old guard was
+        // `endpoint_url != remote_addr`, which could never be true once `endpoint_url`
+        // defaults to `remote_addr` — and was never true before either, because
+        // `endpoint_url` was always the `remote_addr` fallback.
+        if !endpoint_url.is_empty() {
+            config_builder = config_builder.endpoint_url(normalize_endpoint(&endpoint_url));
         }
 
+        // Built to prove the configuration is usable before the client is reported
+        // connected; each operation builds its own from the same stored fields.
         let config = config_builder.build();
-        let _s3_client = aws_sdk_s3::Client::from_conf(config);
+        let _ = aws_sdk_s3::Client::from_conf(config);
 
         // Store client metadata
         app_state
@@ -425,8 +441,11 @@ impl S3Client {
                     Err(e) => {
                         error!("S3 client {} operation {} failed: {}", client_id, name, e);
                         let _ = status_tx.send(format!("[ERROR] S3 operation failed: {}", e));
-                        ClientSendOutcome::Executed {
-                            detail: format!(
+                        // A failed operation is `Rejected`, not `Executed`: both used to be
+                        // `Executed`, so a refusal and a completed write rendered the same
+                        // way in the dashboard.
+                        ClientSendOutcome::Rejected {
+                            error: format!(
                                 "{} failed: {}",
                                 name,
                                 truncate_for_log(&e.to_string(), 200)
@@ -560,10 +579,41 @@ impl S3Client {
                 use crate::llm::actions::client_trait::{Client, ClientActionResult};
                 let protocol = crate::client::s3::actions::S3ClientProtocol::new();
                 for action in actions {
-                    let Ok(ClientActionResult::Custom { name, data }) =
-                        protocol.execute_action(action.clone())
-                    else {
-                        continue;
+                    // Every arm is accounted for. This was a `let ... else { continue }`,
+                    // which dropped `Disconnect` — the answer this protocol's own
+                    // static-mode startup example prescribes — and every executor error,
+                    // with no log line at all.
+                    let (name, data) = match protocol.execute_action(action.clone()) {
+                        Ok(ClientActionResult::Custom { name, data }) => (name, data),
+                        Ok(ClientActionResult::Disconnect) => {
+                            info!(
+                                "S3 client {} disconnecting: the model answered the response \
+                                 event with `disconnect`",
+                                client_id
+                            );
+                            app_state
+                                .update_client_status(client_id, ClientStatus::Disconnected)
+                                .await;
+                            app_state.remove_client_handle(client_id).await;
+                            let _ = status_tx
+                                .send(format!("[CLIENT] S3 client {client_id} disconnected"));
+                            let _ = status_tx.send("__UPDATE_UI__".to_string());
+                            return;
+                        }
+                        Ok(other) => {
+                            info!(
+                                "S3 client {} follow-up action {:?} needs no S3 operation",
+                                client_id, other
+                            );
+                            continue;
+                        }
+                        Err(e) => {
+                            error!(
+                                "S3 client {} could not execute follow-up action {}: {}",
+                                client_id, action, e
+                            );
+                            continue;
+                        }
                     };
                     match Self::run_operation_once(client_id, &name, data, &app_state).await {
                         Ok(v) => info!(

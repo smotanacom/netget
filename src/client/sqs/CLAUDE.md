@@ -86,7 +86,14 @@ Unlike streaming protocols (TCP, Redis), SQS uses a request-response pattern:
 2. Client executes AWS SDK call
 3. Result triggers new LLM call with event
 4. LLM processes result and generates next action
-5. Repeat until disconnect
+5. Repeat, **bounded by `MAX_FOLLOWUP_DEPTH` (4)**, then stop
+
+Step 5 used to say "repeat until disconnect", and that is exactly what it did: nothing
+bounded the cycle. `execute_actions -> apply_action -> send_message/receive_messages ->
+spawn_event_notification -> execute_actions` is a real loop — the model is told a message was
+sent and may answer by sending another — and a model that does so loops forever, one AWS call
+and one LLM call per turn. Boxing the recursive call made it compile; only a depth bound makes
+it terminate. When the cap is hit the chain stops with a WARN and a status line naming it.
 
 ## LLM Control Points
 
@@ -97,16 +104,24 @@ Unlike streaming protocols (TCP, Redis), SQS uses a request-response pattern:
     - Returns: message_id via `sqs_message_sent` event
 - **receive_messages**: Poll queue for messages (long polling supported)
     - Parameters: max_messages (1-10), wait_time_seconds (0-20), visibility_timeout
-    - Returns: array of messages via `sqs_message_received` event
+      (clamped to 0-43200 rather than cast: `as i32` wrapped, so a large value silently
+      became 0)
+    - Returns: array of messages via `sqs_message_received` event, **including when the poll
+      came back empty**. It used to fire only on a non-empty result, so a "drain the queue"
+      instruction stopped dead at the first empty response — which, with short polling, is
+      the normal case rather than the edge case
 - **delete_message**: Delete message using receipt handle
     - Parameters: receipt_handle (from received message)
-    - Confirms deletion success
+    - **Raises no event**: the result reaches the log and the dashboard, not the model. An
+      instruction that depends on knowing the delete succeeded will not get that turn
 - **purge_queue**: Delete all messages in queue
     - No parameters
     - Use with caution (irreversible)
 - **get_queue_attributes**: Get queue metadata
     - Parameters: attribute_names (optional list)
-    - Returns: queue attributes (message count, ARN, etc.)
+    - Returns queue attributes (message count, ARN, etc.) **to the log and the dashboard
+      only** — like `delete_message` and `purge_queue` it raises no event, so the model that
+      asked never learns the answer. This is the one gap worth closing next
 - **disconnect**: Close client
 
 ### Sync Actions (Response to Events)
@@ -167,19 +182,29 @@ Attributes are transmitted as typed values (String, Number, Binary).
 
 ## Authentication
 
-The AWS SDK supports multiple credential sources (in order of precedence):
+**Prefer the startup parameters.** `access_key_id` and `secret_access_key` are declared
+(optional, and only used together); when both are given they install a static credentials
+provider on the SQS client and the ambient chain is not consulted for them.
+
+They exist because of what happens otherwise. With them absent the SDK's default chain runs:
 
 1. Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 2. AWS credentials file: `~/.aws/credentials`
 3. IAM instance profile (EC2)
 4. IAM role (ECS, Lambda)
 
-For local testing with LocalStack:
+— so **a client the model created, pointed anywhere, signs with the operator's real AWS
+identity**, and nothing in the protocol let the caller scope or override it. On a machine
+with no credentials at all the chain additionally probes IMDS, inside `connect()`, which off
+EC2 costs seconds and cannot succeed.
 
-```bash
-export AWS_ACCESS_KEY_ID=test
-export AWS_SECRET_ACCESS_KEY=test
-export AWS_DEFAULT_REGION=us-east-1
+For local testing, pass them as parameters rather than exporting them — process-wide
+environment variables are shared with everything else running in the process:
+
+```json
+{ "queue_url": "http://localhost:9324/000000000000/q", "region": "us-east-1",
+  "endpoint_url": "http://localhost:9324",
+  "access_key_id": "test", "secret_access_key": "test" }
 ```
 
 ## Local Testing with LocalStack
@@ -217,19 +242,24 @@ NetGet startup with LocalStack:
 
 ## Error Handling
 
-AWS SDK errors are propagated to LLM via status messages:
+AWS SDK errors reach the log, the status stream and the injector's outcome — but **not the
+model**: no error event is raised anywhere in this client, so the list below describes what an
+operator sees, not what the model is told. The "The LLM can respond to errors by ..." list
+that used to follow described a capability that does not exist; a failed operation is simply
+never mentioned to it. What it *does* now reach the injector as is
+`ClientSendOutcome::Rejected`, not `Executed`, so a failure no longer renders in the dashboard
+exactly like a success.
+
+Errors surfaced:
 
 - **Authentication errors**: Invalid credentials, missing permissions
 - **Queue not found**: Invalid queue URL
 - **Throttling**: Too many requests (AWS rate limits)
 - **Network errors**: Connection failures, timeouts
 
-The LLM can respond to errors by:
-
-- Retrying with backoff
-- Switching to a different queue
-- Logging error and continuing
-- Disconnecting
+An LLM failure on an event is now logged too — `spawn_event_notification` swallowed it with a
+bare `let ... else { return }`, so an outage, a budget refusal or a fail-closed manual timeout
+on `sqs_message_received` produced no error, no status line and nothing in the log at all.
 
 ## Long Polling
 

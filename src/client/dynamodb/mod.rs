@@ -22,40 +22,74 @@ use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 use crate::utils::truncate::truncate_for_log;
 
+/// Turn a `host:port` (or already-schemed) target into an endpoint URL.
+///
+/// Returns `None` for an empty address, which is the only case where falling through to the
+/// SDK's default AWS endpoint is what the caller asked for.
+fn endpoint_url_from_remote_addr(remote_addr: &str) -> Option<String> {
+    let trimmed = remote_addr.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("http://{trimmed}"))
+    }
+}
+
 /// DynamoDB client that interacts with AWS DynamoDB or local instances
 pub struct DynamoDbClient;
 
 impl DynamoDbClient {
     /// Connect to a DynamoDB instance with integrated LLM actions
     pub async fn connect_with_llm_actions(
-        _remote_addr: String,
+        remote_addr: String,
         _llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
         startup_params: Option<StartupParams>,
     ) -> Result<SocketAddr> {
-        // Extract startup parameters
+        // All four parameters are declared `required: false`, so they must be read with
+        // `get_optional_string`. They were read with `get_string`, which *errors* when the
+        // key is absent — so passing any subset of them (the documented local-testing case
+        // is `endpoint_url` alone) failed the connect outright with "Required string
+        // parameter 'region' is missing". Only passing none of them, or all four, worked.
         let region = startup_params
             .as_ref()
-            .map(|p| p.get_string("region"))
+            .map(|p| p.get_optional_string("region"))
             .transpose()?
+            .flatten()
             .unwrap_or_else(|| "us-east-1".to_string());
 
         let endpoint_url = startup_params
             .as_ref()
-            .map(|p| p.get_string("endpoint_url"))
-            .transpose()?;
+            .map(|p| p.get_optional_string("endpoint_url"))
+            .transpose()?
+            .flatten();
 
         let access_key_id = startup_params
             .as_ref()
-            .map(|p| p.get_string("access_key_id"))
-            .transpose()?;
+            .map(|p| p.get_optional_string("access_key_id"))
+            .transpose()?
+            .flatten();
 
         let secret_access_key = startup_params
             .as_ref()
-            .map(|p| p.get_string("secret_access_key"))
-            .transpose()?;
+            .map(|p| p.get_optional_string("secret_access_key"))
+            .transpose()?
+            .flatten();
+
+        // `remote_addr` is what the operator or the model actually typed as the target, and
+        // it used to be dropped on the floor (`_remote_addr`): without an explicit
+        // `endpoint_url` the SDK's default resolver produces
+        // `https://dynamodb.<region>.amazonaws.com` and the default credential chain signs
+        // with whatever ambient credentials the machine has — so a client aimed at
+        // `localhost:8000` issued real reads and writes against real AWS. An address here
+        // now means what it says. `endpoint_url` still wins when both are given, and
+        // targeting AWS proper is done by passing that URL explicitly.
+        let endpoint_url = endpoint_url.or_else(|| endpoint_url_from_remote_addr(&remote_addr));
 
         info!(
             "DynamoDB client {} initializing for region {}",
@@ -135,14 +169,22 @@ impl DynamoDbClient {
         // go through run_operation_once, which raises no event.
         let conn_state = app_state.clone();
         let conn_status = status_tx.clone();
+        let conn_region = region.clone();
+        let conn_endpoint = endpoint_url.clone();
         let conn_task = tokio::spawn(async move {
             let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
                 return;
             };
             let protocol = crate::client::dynamodb::actions::DynamoDbClientProtocol::new();
+            // The event type declares `region` (required) and `endpoint`; it was raised with
+            // an empty object, so the model was documented into reading two fields that were
+            // never there.
             let event = Event::new(
                 &crate::client::dynamodb::actions::DYNAMODB_CLIENT_CONNECTED_EVENT,
-                serde_json::json!({}),
+                serde_json::json!({
+                    "region": conn_region,
+                    "endpoint": conn_endpoint,
+                }),
             );
             match crate::client::llm_budget::call_llm_for_client(
                 &conn_llm,
@@ -162,18 +204,32 @@ impl DynamoDbClient {
                     }
                     use crate::llm::actions::client_trait::{Client, ClientActionResult};
                     for action in result.actions {
-                        let Ok(ClientActionResult::Custom { name, data }) =
-                            protocol.execute_action(action.clone())
-                        else {
-                            continue;
-                        };
-                        if let Err(e) =
-                            Self::run_operation_once(client_id, &name, &data, &conn_state).await
-                        {
-                            error!(
-                                "DynamoDB client {} connect-time {} failed: {}",
-                                client_id, name, e
-                            );
+                        // Every arm is accounted for. This was a `let ... else { continue }`,
+                        // which swallowed `Disconnect` — the answer this protocol's own
+                        // static-mode startup example prescribes — along with every executor
+                        // error, with no log line at all: the model was asked, answered, and
+                        // was ignored in silence.
+                        match protocol.execute_action(action.clone()) {
+                            Ok(ClientActionResult::Custom { name, data }) => {
+                                if let Err(e) =
+                                    Self::run_operation_once(client_id, &name, &data, &conn_state)
+                                        .await
+                                {
+                                    error!(
+                                        "DynamoDB client {} connect-time {} failed: {}",
+                                        client_id, name, e
+                                    );
+                                }
+                            }
+                            Ok(other) => info!(
+                                "DynamoDB client {} connect-time action {:?} needs no DynamoDB \
+                                 operation",
+                                client_id, other
+                            ),
+                            Err(e) => error!(
+                                "DynamoDB client {} could not execute connect-time action {}: {}",
+                                client_id, action, e
+                            ),
                         }
                     }
                 }
@@ -342,15 +398,16 @@ impl DynamoDbClient {
     fn attribute_values_from(
         data: &serde_json::Value,
         field: &str,
-    ) -> Option<std::collections::HashMap<String, aws_sdk_dynamodb::types::AttributeValue>> {
-        let map = data.get(field)?.as_object()?;
+    ) -> Result<Option<std::collections::HashMap<String, aws_sdk_dynamodb::types::AttributeValue>>>
+    {
+        let Some(map) = data.get(field).and_then(|v| v.as_object()) else {
+            return Ok(None);
+        };
         let mut out = std::collections::HashMap::new();
         for (key, value) in map {
-            if let Some(attr) = Self::json_to_attribute_value(value) {
-                out.insert(key.clone(), attr);
-            }
+            out.insert(key.clone(), Self::json_to_attribute_value(key, value)?);
         }
-        Some(out)
+        Ok(Some(out))
     }
 
     /// Read a `{"id": {"S": "x"}}` key/item map from action data.
@@ -364,9 +421,7 @@ impl DynamoDbClient {
             .with_context(|| format!("Missing '{}' in DynamoDB action data", field))?;
         let mut out = std::collections::HashMap::new();
         for (key, value) in map {
-            if let Some(attr) = Self::json_to_attribute_value(value) {
-                out.insert(key.clone(), attr);
-            }
+            out.insert(key.clone(), Self::json_to_attribute_value(key, value)?);
         }
         Ok(out)
     }
@@ -439,7 +494,7 @@ impl DynamoDbClient {
             .set_expression_attribute_values(Self::attribute_values_from(
                 data,
                 "expression_attribute_values",
-            ))
+            )?)
             .send()
             .await
             .context("Query failed")?;
@@ -470,7 +525,7 @@ impl DynamoDbClient {
             .set_expression_attribute_values(Self::attribute_values_from(
                 data,
                 "expression_attribute_values",
-            ));
+            )?);
 
         if let Some(filter) = data.get("filter_expression").and_then(|v| v.as_str()) {
             request = request.filter_expression(filter);
@@ -511,7 +566,7 @@ impl DynamoDbClient {
             .set_expression_attribute_values(Self::attribute_values_from(
                 data,
                 "expression_attribute_values",
-            ))
+            )?)
             .return_values(aws_sdk_dynamodb::types::ReturnValue::AllNew)
             .send()
             .await
@@ -582,8 +637,15 @@ impl DynamoDbClient {
                     Err(e) => {
                         let _ = status_tx
                             .send(format!("[ERROR] DynamoDB operation {} failed: {}", name, e));
-                        ClientSendOutcome::Executed {
-                            detail: format!(
+                        // A failed operation is `Rejected`, not `Executed`. Both used to be
+                        // `Executed`, so in the dashboard a DynamoDB rejection, an
+                        // unconvertible attribute and a completed write rendered identically
+                        // and the difference sat in free text. `Rejected` is documented as
+                        // "unknown type, bad params", which is exactly what a conversion
+                        // failure is; for a service error it is at least honestly distinct
+                        // from success.
+                        ClientSendOutcome::Rejected {
+                            error: format!(
                                 "{} failed: {}",
                                 name,
                                 truncate_for_log(&e.to_string(), 200)
@@ -761,39 +823,77 @@ impl DynamoDbClient {
         Ok(config_loader.load().await)
     }
 
-    /// Convert JSON value to DynamoDB AttributeValue
+    /// Convert one typed attribute value (`{"S": "x"}`, `{"N": "1"}`, …) into the SDK type.
+    ///
+    /// Returns `Err` rather than `None`, and the callers propagate it. Both used to *skip*
+    /// what this could not convert, so a `put_item` carrying a Map or List attribute wrote
+    /// an item missing that attribute and answered `{"written": true}`, and a `get_item`
+    /// whose key used one sent a partial key — silently, with nothing logged. Refusing is
+    /// the fail-closed choice and the model is told what it got wrong.
     fn json_to_attribute_value(
+        name: &str,
         json: &serde_json::Value,
-    ) -> Option<aws_sdk_dynamodb::types::AttributeValue> {
+    ) -> Result<aws_sdk_dynamodb::types::AttributeValue> {
         use aws_sdk_dynamodb::types::AttributeValue;
 
-        match json {
-            serde_json::Value::Object(map) => {
-                // Expected format: {"S": "value"} or {"N": "123"} etc.
-                if let Some((type_key, value)) = map.iter().next() {
-                    match type_key.as_str() {
-                        "S" => value.as_str().map(|s| AttributeValue::S(s.to_string())),
-                        "N" => value.as_str().map(|s| AttributeValue::N(s.to_string())),
-                        "B" => value.as_str().map(|s| {
-                            // Base64 decode binary data
-                            if let Ok(bytes) = base64::Engine::decode(
-                                &base64::engine::general_purpose::STANDARD,
-                                s,
-                            ) {
-                                AttributeValue::B(Blob::new(bytes))
-                            } else {
-                                AttributeValue::B(Blob::new(Vec::new()))
-                            }
-                        }),
-                        "BOOL" => value.as_bool().map(AttributeValue::Bool),
-                        "NULL" => Some(AttributeValue::Null(true)),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
+        let map = json.as_object().with_context(|| {
+            format!(
+                "Attribute '{name}' must be a DynamoDB typed value such as {{\"S\": \"text\"}}, \
+                 got {json}"
+            )
+        })?;
+        if map.len() != 1 {
+            anyhow::bail!(
+                "Attribute '{name}' must carry exactly one type key (\"S\", \"N\", \"B\", \
+                 \"BOOL\" or \"NULL\"), got {json}"
+            );
+        }
+        let (type_key, value) = map.iter().next().expect("length checked above");
+
+        let wrong_shape = |expected: &str| {
+            anyhow::anyhow!("Attribute '{name}' has type {type_key} so its value must be {expected}, got {value}")
+        };
+
+        match type_key.as_str() {
+            "S" => Ok(AttributeValue::S(
+                value
+                    .as_str()
+                    .ok_or_else(|| wrong_shape("a string"))?
+                    .to_string(),
+            )),
+            "N" => Ok(AttributeValue::N(
+                value
+                    .as_str()
+                    .ok_or_else(|| wrong_shape("a string holding a number, e.g. \"123\""))?
+                    .to_string(),
+            )),
+            "B" => {
+                let encoded = value
+                    .as_str()
+                    .ok_or_else(|| wrong_shape("a base64 string"))?;
+                // A decode failure used to become an empty blob: an unreadable value was
+                // written to the table as a present, empty one.
+                let bytes = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    encoded,
+                )
+                .with_context(|| {
+                    format!("Attribute '{name}' is type B, so its value must be standard base64")
+                })?;
+                Ok(AttributeValue::B(Blob::new(bytes)))
             }
-            _ => None,
+            "BOOL" => Ok(AttributeValue::Bool(
+                value
+                    .as_bool()
+                    .ok_or_else(|| wrong_shape("true or false"))?,
+            )),
+            "NULL" => Ok(AttributeValue::Null(true)),
+            other => anyhow::bail!(
+                "Attribute '{name}' uses DynamoDB type {other:?}, which this client does not \
+                 support. Supported: S (string), N (number as string), B (base64 bytes), BOOL, \
+                 NULL. Maps (M), lists (L) and sets (SS/NS/BS) are not implemented — do not \
+                 send them rather than expecting them to be dropped."
+            ),
         }
     }
 
@@ -817,7 +917,12 @@ impl DynamoDbClient {
                 }
                 AttributeValue::Bool(b) => serde_json::json!({"BOOL": b}),
                 AttributeValue::Null(_) => serde_json::json!({"NULL": true}),
-                _ => serde_json::json!({"UNKNOWN": "unsupported_type"}),
+                // Not `{"UNKNOWN": "unsupported_type"}`: that reads as a typed attribute
+                // and the model would copy it back into a put_item, where it is now
+                // rejected. Say what it is instead.
+                other => serde_json::json!({
+                    "netget_unsupported_attribute_type": format!("{other:?}")
+                }),
             };
             json_map.insert(key.clone(), json_value);
         }
