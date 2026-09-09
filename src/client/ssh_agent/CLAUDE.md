@@ -33,7 +33,7 @@ Uses a custom SSH Agent protocol implementation for:
 ### Connection Model
 
 ```
-Connect to Unix Socket ($SSH_AUTH_SOCK or specified path)
+Connect to Unix Socket (the given path, else ./netget-ssh-agent.sock — never $SSH_AUTH_SOCK)
     ↓
 Split Stream (read/write halves)
     ↓
@@ -162,7 +162,7 @@ The LLM can use memory to:
 ## Limitations
 
 1. **Platform**: Unix/Linux/macOS only (Unix domain sockets)
-2. **Socket Path**: Requires valid socket path or $SSH_AUTH_SOCK
+2. **Socket Path**: Requires a valid socket path. Defaults to `./netget-ssh-agent.sock`, NetGet's own agent server, and deliberately never falls back to `$SSH_AUTH_SOCK` — see "Never the live agent by default" below.
 3. **Response Parsing**: Basic parsing, may not handle all edge cases
 4. **Queued Data**: Simplified queuing (discards queued responses)
 5. **Windows**: Not supported (would need named pipe implementation)
@@ -173,7 +173,7 @@ The LLM can use memory to:
 ### List Keys from Agent
 
 ```
-Connect to SSH Agent at $SSH_AUTH_SOCK
+Connect to SSH Agent at ./netget-ssh-agent.sock
 Request list of available identities
 Display the identities with their comments
 ```
@@ -220,3 +220,17 @@ See `tests/client/ssh_agent/CLAUDE.md` for testing strategy.
 - IETF SSH Agent Protocol: draft-ietf-sshm-ssh-agent-05
 - OpenSSH Agent: https://github.com/openssh/openssh-portable/blob/master/ssh-agent.c
 - NetGet docs: `/docs/SSH_AGENT_PROTOCOL_RESEARCH.md`
+
+## Never the live agent by default
+
+With no address given this client connects to `./netget-ssh-agent.sock` — NetGet's own agent
+server, whose keys are fabricated. It used to fall back to `$SSH_AUTH_SOCK`, which meant that
+starting a client with no address silently attached it to the operator's **real** running
+ssh-agent. From there the model could enumerate their actual identities and ask the agent to
+sign bytes of its own choosing with their actual private keys, with nothing in the request
+saying that was what was happening.
+
+Pointing this client at a real agent is still supported and is a legitimate thing to want. It
+just has to be asked for by path, either as `remote_addr` or as the `socket_path` startup
+parameter — which is now read (it was declared and ignored, so a caller who put the path in the
+parameter they were told to use connected somewhere else entirely).

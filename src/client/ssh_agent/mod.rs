@@ -37,6 +37,13 @@ const SSH_AGENTC_REMOVE_ALL_IDENTITIES: u8 = 19;
 
 const SSH_AGENT_FAILURE: u8 = 5;
 const SSH_AGENT_SUCCESS: u8 = 6;
+/// Where an SSH Agent client connects when no address is given.
+///
+/// Matches the `socket_path` default of NetGet's own SSH Agent server, so the pair works out
+/// of the box against fabricated keys. It is emphatically not `$SSH_AUTH_SOCK` - see
+/// `connect_with_llm_actions`.
+const DEFAULT_AGENT_SOCKET: &str = "./netget-ssh-agent.sock";
+
 const SSH_AGENT_IDENTITIES_ANSWER: u8 = 12;
 const SSH_AGENT_SIGN_RESPONSE: u8 = 14;
 
@@ -67,19 +74,21 @@ impl SshAgentClient {
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
     ) -> Result<SocketAddr> {
-        // Parse socket path
+        // Resolve the socket path.
+        //
+        // This deliberately does NOT fall back to `$SSH_AUTH_SOCK`. It used to, and that was
+        // the single most dangerous default in this protocol: with no address given, an
+        // LLM-driven client silently attached to the operator's *live* ssh-agent and could
+        // then enumerate their real identities and ask the agent to sign arbitrary bytes with
+        // their real private keys. Nothing about the request said that was happening, and the
+        // model - not the operator - chose what to sign.
+        //
+        // The default is now NetGet's own agent socket, matching the `socket_path` default in
+        // `src/server/ssh_agent/`, so an empty address pairs the client with a NetGet server
+        // whose keys are fabricated. Pointing this at a real agent is still possible and is
+        // still a legitimate thing to do - it just has to be asked for by name.
         let socket_path = if remote_addr.is_empty() {
-            // Try SSH_AUTH_SOCK environment variable
-            std::env::var("SSH_AUTH_SOCK")
-                .ok()
-                .and_then(|s| {
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(PathBuf::from(s))
-                    }
-                })
-                .unwrap_or_else(|| PathBuf::from("./ssh-agent.sock"))
+            PathBuf::from(DEFAULT_AGENT_SOCKET)
         } else {
             PathBuf::from(&remote_addr)
         };
