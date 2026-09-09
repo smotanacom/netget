@@ -177,12 +177,24 @@ impl Socks5Client {
                                     bytes,
                                 ),
                             ) => {
-                                if let Ok(_) = write_half_arc.lock().await.write_all(&bytes).await {
-                                    trace!(
+                                // The `Err` half used to be discarded outright, so a failed
+                                // write to the tunnel produced no log line at any level, no
+                                // status message and no state change -- the client reported
+                                // success having put nothing on the wire. The protocol's own
+                                // CLAUDE.md claimed these were "logged but not fatal"; only
+                                // the second half was true.
+                                match write_half_arc.lock().await.write_all(&bytes).await {
+                                    Ok(()) => trace!(
                                         "SOCKS5 client {} sent {} bytes through tunnel",
                                         client_id,
                                         bytes.len()
-                                    );
+                                    ),
+                                    Err(e) => error!(
+                                        "SOCKS5 client {} failed to write {} bytes to the tunnel: {}",
+                                        client_id,
+                                        bytes.len(),
+                                        e
+                                    ),
                                 }
                             }
                             Ok(
@@ -314,8 +326,9 @@ impl Socks5Client {
                                                 use crate::llm::actions::client_trait::Client;
                                                 match protocol.as_ref().execute_action(action) {
                                                     Ok(crate::llm::actions::client_trait::ClientActionResult::SendData(bytes)) => {
-                                                        if let Ok(_) = write_half_arc.lock().await.write_all(&bytes).await {
-                                                            trace!("SOCKS5 client {} sent {} bytes", client_id, bytes.len());
+                                                        match write_half_arc.lock().await.write_all(&bytes).await {
+                                                            Ok(()) => trace!("SOCKS5 client {} sent {} bytes", client_id, bytes.len()),
+                                                            Err(e) => error!("SOCKS5 client {} failed to write {} bytes to the tunnel: {}", client_id, bytes.len(), e),
                                                         }
                                                     }
                                                     Ok(crate::llm::actions::client_trait::ClientActionResult::Disconnect) => {
