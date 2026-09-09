@@ -396,3 +396,34 @@ test_state.stop().await?;
 ✅ **Isolation**: Single comprehensive test, easy to debug
 
 **Recommendation**: Promote SIP to **Beta** status after E2E tests pass consistently for 10+ runs.
+
+---
+
+## fail_closed_test.rs — can anything be admitted without the model saying so?
+
+REGISTER and INVITE decide who may register a location and who may place a call, so this is the
+file that answers the fail-open question. In-process (`netget::` APIs), **static handlers only,
+zero LLM calls** — `instruction: Some(String::new())` is load-bearing, because
+`ServerForm::create` substitutes a default instruction for `None` and that would make every case
+below an LLM-error test instead of the handler test it is.
+
+| test | what the handler answers | expected |
+|---|---|---|
+| `sip_register_with_no_response_action_refuses_rather_than_accepting` | a `set_memory` and nothing else | 500 |
+| `sip_invite_with_no_response_action_refuses_rather_than_accepting` | a `set_memory` and nothing else | 500, no SDP |
+| `sip_register_with_an_empty_action_list_refuses` | `[]` | 500 |
+| `sip_register_with_no_status_code_refuses` | `sip_register` with only `expires` | 500 |
+| `sip_register_with_an_explicit_status_code_is_honoured` | 200 / 403 | 200 and 403 |
+| `sip_never_answers_an_ack_even_when_the_model_does` | `{"type":"sip_ack"}` | **nothing on the wire** |
+
+Two of these guard closed holes: a missing `status_code` used to default to **200** (a forgotten
+field granting a registration), and an empty action list used to produce **silence** (not an
+accept, but not a refusal either — the UAC retransmits until timer F, 32 s).
+
+The fifth row is the control, and it is what makes the other five mean anything: without a case
+that *is* admitted, all of them would pass against a server that answers 500 to everything. The
+sixth row carries its own control for the same reason — an OPTIONS is answered first, so "no
+datagram arrived" is known to be about ACK rather than about a dead server.
+
+Every refusal is also asserted to echo Via (with branch), Call-ID and From: a refusal the UAC
+cannot match to its transaction is indistinguishable from a timeout.

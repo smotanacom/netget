@@ -65,10 +65,33 @@ impl Protocol for SipProtocol {
         ProtocolMetadataV2::builder()
             .connectionless()
             .state(DevelopmentState::Experimental)
-            .implementation("rsipstack v0.2.52 - RFC 3261 compliant SIP stack")
+            // Not rsipstack, and not a compliant stack. `Cargo.toml` declares `sip = []` -
+            // there is no SIP dependency at all. `mod.rs` hand-parses the request line and
+            // headers and hand-builds the status line. The old claim named a library version
+            // this build has never linked, which is exactly the sort of thing an operator
+            // reads as evidence of maturity.
+            .implementation(
+                "Manual line-based parser and response builder (no SIP library; Cargo declares \
+                 `sip = []`). Request line + headers + optional SDP body only: no transaction \
+                 layer, no retransmissions, no digest auth, no dialog state, UDP only",
+            )
             .llm_control("Registration decisions + call routing + SDP generation")
-            .e2e_testing("rvoip-sip-client - 1-2 LLM calls with scripting")
-            .notes("Perfect scripting candidate, VoIP signaling honeypot")
+            // No `rvoip-sip-client` exists in this tree. The evidence is a mocked-LLM UDP
+            // exchange plus netget's own SIP client - which makes it circular, and is why this
+            // stays Experimental rather than Beta.
+            .e2e_testing(
+                "Mocked-LLM UDP e2e over the six methods (tests/server/sip/e2e_test.rs), a \
+                 fail-closed 503/ACK-silence test, and an RTP interop test. No third-party SIP \
+                 client (the client side of tests/client/sip is netget's own), so this is not \
+                 independent-client evidence",
+            )
+            .notes(
+                "Scripting candidate, VoIP signaling honeypot. No registration database: the \
+                 model decides each REGISTER on its own and nothing is stored between requests \
+                 (protocols must not implement storage). REGISTER and INVITE are admission \
+                 decisions and fail closed - an LLM error is 503, an action with no \
+                 status_code or no SIP response action at all is 500, never a defaulted 200",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
@@ -450,8 +473,14 @@ fn sip_bye_action() -> ActionDefinition {
         parameters: vec![Parameter {
             name: "status_code".to_string(),
             type_hint: "number".to_string(),
-            description: "SIP status code (default 200)".to_string(),
-            required: false,
+            // Required, and there is no default. `build_sip_response` answers 500 when the
+            // field is absent rather than defaulting to 200 - a defaulted 200 would turn a
+            // forgotten field into an acceptance. The description used to promise a 200
+            // default the executor has never applied.
+            description: "SIP status code; 200 acknowledges the teardown. Required - an action \
+                          with no status_code is answered 500, not 200"
+                .to_string(),
+            required: true,
         }],
         example: json!({
             "type": "sip_bye",
@@ -489,8 +518,10 @@ fn sip_options_action() -> ActionDefinition {
             Parameter {
                 name: "status_code".to_string(),
                 type_hint: "number".to_string(),
-                description: "SIP status code (default 200)".to_string(),
-                required: false,
+                description: "SIP status code; 200 answers the capability query. Required - an \
+                              action with no status_code is answered 500, not 200"
+                    .to_string(),
+                required: true,
             },
             Parameter {
                 name: "allow_methods".to_string(),
@@ -519,8 +550,10 @@ fn sip_cancel_action() -> ActionDefinition {
         parameters: vec![Parameter {
             name: "status_code".to_string(),
             type_hint: "number".to_string(),
-            description: "SIP status code (default 200)".to_string(),
-            required: false,
+            description: "SIP status code; 200 confirms the cancellation. Required - an action \
+                          with no status_code is answered 500, not 200"
+                .to_string(),
+            required: true,
         }],
         example: json!({
             "type": "sip_cancel",
