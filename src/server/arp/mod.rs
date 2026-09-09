@@ -23,21 +23,17 @@ use crate::state::app_state::AppState;
 use crate::{console_error, console_info, console_trace};
 use actions::{ArpProtocol, ARP_REQUEST_RECEIVED_EVENT};
 
-/// Get LLM context and output format instructions for ARP stack
-pub fn get_llm_protocol_prompt() -> (&'static str, &'static str) {
-    let context = r#"You are handling ARP (Address Resolution Protocol) requests at Layer 2.
-ARP is used to map IP addresses to MAC addresses on local networks.
-You can respond to ARP requests (who has IP X.X.X.X?) with ARP replies containing MAC addresses.
-Common use cases: network reconnaissance detection, ARP spoofing simulation, custom IP-to-MAC mappings."#;
-
-    let output_format = r#"IMPORTANT: Respond with a JSON object:
-{
-  "output": "Ethernet frame containing ARP reply as hex (null if no response)",
-  "message": null  // Optional message for user
-}"#;
-
-    (context, output_format)
-}
+// `get_llm_protocol_prompt()` used to live here, and it was worse than dead. Nothing called
+// it (`grep -rn get_llm_protocol_prompt src/ tests/`), and the output format it prescribed —
+// `{"output": "Ethernet frame containing ARP reply as hex", "message": null}` — is not a shape
+// any executor in this tree parses. A model that had ever been shown it would have answered
+// with something `execute_action` refuses, and the peer would have got the silence this file
+// spends so much care distinguishing from a real decision. The model's actual prompt is built
+// from the action definitions in `actions.rs`.
+//
+// Deleted rather than corrected: a second, unreferenced description of a protocol is a thing
+// to drift, not a thing to maintain. `datalink` carried the identical function with the
+// identical falsehood and it went the same way in the same pass.
 
 /// ARP server that captures and responds to ARP requests
 pub struct ArpServer;
