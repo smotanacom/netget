@@ -52,6 +52,7 @@ tag, the same way `radius` separates its cases:
 | `decision=no_policy` | No instruction and no handler — static default, no LLM call at all |
 | `decision=model_reject` | The model answered with `ignore_arp` — a real decision not to reply |
 | `decision=model_no_answer` | The model returned no actions |
+| `decision=fail_closed_action_error` | The model answered, but every action it produced failed to execute (a MAC that does not parse, an IPv6 address where IPv4 is required) — no frame was built. Logged at ERROR, unlike the three above: this one is a fault, not a policy |
 | `decision=fail_closed_overloaded` | The LLM call errored and `WireFailure::classify` said the backend is saturated (retryable) |
 | `decision=fail_closed_llm_error` | The LLM call errored otherwise |
 

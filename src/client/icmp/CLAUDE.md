@@ -13,7 +13,7 @@ The ICMP (Internet Control Message Protocol) client implementation provides netw
   - Non-blocking I/O for async integration
 
 ### Packet Handling
-- **pnet_packet** (v0.34) - ICMP packet construction and parsing
+- **pnet_packet** (v0.35) - ICMP packet construction and parsing
   - Echo Request/Reply packet types
   - Destination Unreachable parsing
   - Time Exceeded parsing (for traceroute)
@@ -49,6 +49,17 @@ Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))
 - Receives ICMP replies destined for this host
 - Requires elevated privileges (`CAP_NET_RAW` or root)
 - Non-blocking mode with async polling
+- **`IP_HDRINCL` is set.** `build_echo_request` emits a complete IPv4 packet, header included.
+  Without the option the kernel prepends a header of its own and our 20 bytes become the front
+  of the ICMP *message*, so the target reads type 0x45 (69, unassigned) and no ping this client
+  ever sent could have been answered. It is also what makes the advertised `ttl` parameter mean
+  anything: with the kernel building the header, TTL is the kernel's to choose and traceroute
+  is impossible. `IcmpClient::apply_action` calls
+  `crate::server::icmp::prepare_ipv4_for_raw_send` immediately before `send_to`, which converts
+  `ip_len`/`ip_off` to host byte order on Darwin and FreeBSD and is a no-op on Linux — see the
+  server's CLAUDE.md for why that conversion exists. **None of this has been executed against a
+  kernel**; opening the socket needs root.
+- Source address is left as `0.0.0.0` so the kernel fills in the outgoing interface's address.
 
 ### Packet Flow
 1. **LLM Decision**: LLM returns `send_echo_request` action
@@ -129,15 +140,10 @@ Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))
 }
 ```
 
-#### Send Timestamp Request
-```json
-{
-  "type": "send_timestamp_request",
-  "destination_ip": "192.168.1.1",
-  "identifier": 5678,
-  "sequence": 1
-}
-```
+There is **no** `send_timestamp_request`. The action, its executor arm and the client-side
+parsing are all present in the source and all commented out: pnet 0.35 ships no `timestamp` /
+`timestamp_reply` packet types. Do not document or promise it. (This section used to show it
+as if it worked.)
 
 #### Wait for More Responses
 ```json
@@ -213,10 +219,14 @@ let rtt_ms = req.sent_at.elapsed().as_millis();
 ```
 
 ### Timeout Handling
-- Pending requests tracked in HashMap
-- TODO: Implement timeout timer (e.g., 5 seconds)
-- If no reply after timeout, fire `icmp_timeout` event
-- LLM decides whether to retry or give up
+Implemented, and no longer a TODO. The receive loop sweeps the pending map on every idle
+(`WouldBlock`) pass: any request older than `ICMP_REPLY_TIMEOUT_SECS` (5) is removed and raises
+`icmp_timeout` with `waited_ms`, so the model is told about the one outcome that matters most
+for a reachability check. A ping that gets no reply *is* the result.
+
+One edge worth knowing: the sweep only runs on the idle branch, so under a continuous inbound
+stream a timeout is noticed late. That is the right trade for a diagnostic client and is not a
+correctness problem, but do not describe the 5 seconds as a hard deadline.
 
 ## Limitations
 
@@ -227,9 +237,10 @@ let rtt_ms = req.sent_at.elapsed().as_millis();
 - Testing requires elevated permissions
 
 ### Platform Considerations
-- **Linux**: Full support with raw sockets
-- **macOS**: Full support (requires sudo)
-- **Windows**: Limited support (may require additional configuration)
+- **Linux**: root or `CAP_NET_RAW` (`setcap cap_net_raw+ep ./netget`)
+- **macOS**: root only — no capabilities model, and this uses `SOCK_RAW` rather than the
+  unprivileged `SOCK_DGRAM`/`IPPROTO_ICMP` path `ping(8)` uses
+- **Windows**: not shipped — `icmp` is excluded from the `dist-windows` feature set
 
 ### Kernel Interaction
 - Kernel may intercept ICMP Echo Replies before userspace
@@ -243,19 +254,33 @@ Not yet implemented:
 - ICMPv6 message types differ
 
 ### Timestamp Requests
-Not fully implemented:
-- Action defined but not executed
-- Would require timestamp packet construction
-- Future enhancement
+Not implemented at all — the action is not even advertised. See the note in the Actions
+section: pnet has no timestamp packet types.
 
-## State Machine
+### Numeric parameters are range-checked
+`identifier` and `sequence` are 16-bit, `ttl` is 8-bit. All three are optional with documented
+defaults, but **present-but-invalid is now an error rather than a silent fallback**:
+`as_u64().unwrap_or(1234)` turned `"identifier": "5678"` — a string, which a model produces
+readily — into 1234 without a word, and the reply could then never be matched to the request.
 
-### Client Connection States
-1. **Idle** - No LLM processing
-2. **Processing** - LLM call in progress
-3. **Accumulating** - Data queued during processing
+## There is no state machine, and there does not need to be
 
-Pattern prevents concurrent LLM calls on same client.
+This section used to describe an `Idle`/`Processing`/`Accumulating` cycle that "prevents
+concurrent LLM calls on same client". The enum existed, two of its three variants carried
+`#[allow(dead_code)]`, and the field was written once at construction and never read or
+transitioned. It has been deleted rather than wired up: what actually serialises this client is
+that its single receive loop awaits each `call_llm_for_client` inline, so a second event cannot
+be in flight. `ClientData` is now just the model's memory.
+
+**The memory is what the concurrency bug was actually about.** `call_llm_for_client(…,
+&client_data.lock().await.memory, …)` written inline in a `match` scrutinee keeps the guard
+alive for the whole `match`, and the `Ok` arm then locks again to store `memory_updates` —
+against a `tokio::sync::Mutex`, which is not reentrant. That is a permanent hang, and it fired
+on every successful call that returned memory, in all three places the client calls the model
+(connect, echo reply, timeout). One of the three even wrote `.memory.clone()`, which copies the
+string and does nothing about the lock. The fix is to snapshot the memory into a local and drop
+the guard *before* the call; the root CLAUDE.md states the rule as "never hold a guard across
+an `.await`", and a `match` scrutinee is the shape that hides it.
 
 ## Performance
 
@@ -315,6 +340,13 @@ Pattern prevents concurrent LLM calls on same client.
 ## Testing Notes
 
 See `tests/client/icmp/CLAUDE.md` for test strategy and E2E test details.
+
+**What is actually proven** (`tests/client/icmp/action_codec_test.rs`, unprivileged): the echo
+request's bytes, field by field at their RFC 791 / RFC 792 offsets with both checksums
+verified; that every advertised example is accepted by its own executor; the documented
+defaults; and that eight shapes of malformed action are refused rather than silently
+defaulted. `command_channel_test.rs` proves the unprivileged failure contract. **No test has
+ever sent an ICMP packet** — everything past `send_to` is unverified.
 
 ## Future Enhancements
 

@@ -267,13 +267,30 @@ impl Protocol for ArpClientProtocol {
         vec!["arp", "arp client", "address resolution", "layer 2"]
     }
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
-        use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
+        use crate::protocol::metadata::{
+            DevelopmentState, PrivilegeRequirement, ProtocolMetadataV2,
+        };
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            // Both pcap handles - the capture and the injection one - need root, read
+            // access to /dev/bpf* on macOS/BSD, or CAP_NET_RAW on Linux. `PacketCapture`,
+            // not `RawSockets`: this goes through libpcap, not a SOCK_RAW socket, and the
+            // datalink client (the same pcap shape) declares the same. Note that
+            // `client_startup` does not currently gate on this the way `server_startup`
+            // does, so it is documentation for the operator and the TUI rather than a
+            // check - `connect()` awaiting the pcap open is what actually refuses.
+            .privilege_requirement(PrivilegeRequirement::PacketCapture)
             .implementation("pcap + pnet for ARP packet capture and injection")
             .llm_control("Send ARP requests/replies, monitor ARP traffic")
-            .e2e_testing("Requires root privileges for packet injection")
+            .e2e_testing(
+                "tests/client/arp/command_channel_test.rs runs unprivileged in every ordinary \
+                 test run: it asserts that a capture which cannot open makes connect() return \
+                 Err rather than leaving the client Connected, and drives the injected-command \
+                 surface end to end (Sent/Rejected/Disconnected, and the access-log record) by \
+                 standing in for the pcap injection thread. Only the branch proving libpcap \
+                 itself accepted the frame needs root, and it is #[ignore]d.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

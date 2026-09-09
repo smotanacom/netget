@@ -96,29 +96,42 @@ impl Protocol for DataLinkProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            // Demoted from Beta. Beta means "works against a real client"; the capture path
-            // has never been observed working by any test. What the suite proves today is the
-            // startup contract, not the capture. See notes.
+            // Demoted from Beta in August 2026 and still Experimental. The capture path is no
+            // longer unproven — `datalink_captures_a_real_loopback_frame` was run on
+            // 2026-09-08 and passed — but the test that proves it is `#[ignore]`d behind BPF
+            // access, and this repo does not count an ignored test as evidence for a rating.
+            // See notes.
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PacketCapture)
+            // Layer 2 capture has no sessions: each frame stands alone and this server
+            // registers no connections at all. Declaring it keeps DataLink out of nothing it
+            // needs, and puts it with its siblings (`arp`, `icmp`, `isis` all declare it).
+            .connectionless()
             .implementation("libpcap (pcap crate) for Layer 2 packet capture")
             .llm_control("Observation only - no packet injection")
             .e2e_testing(
                 "tests/server/datalink/e2e_test.rs drives DataLinkServer::spawn_with_llm in \
                  process. Unprivileged, it asserts an unknown device and a missing capture \
-                 privilege both produce Err with the documented text. The real-capture test \
-                 (a UDP datagram on loopback, asserted byte-for-byte in the captured frame) \
-                 and the invalid-BPF-filter test are #[ignore]d because they need /dev/bpf* \
-                 (macOS/BSD) or CAP_NET_RAW (Linux).",
+                 privilege both produce Err with the documented text, and that the event the \
+                 model receives carries a real frame's fields (truncation, lengths). The \
+                 real-capture test (a UDP datagram on loopback, asserted byte-for-byte in the \
+                 captured hex) and the invalid-BPF-filter test are #[ignore]d because they \
+                 need /dev/bpf* (macOS/BSD) or CAP_NET_RAW (Linux); both were run under \
+                 --ignored on 2026-09-08 (macOS, access_bpf group) and passed.",
             )
             .notes(
                 "Requires root/CAP_NET_RAW (or /dev/bpf* access) for promiscuous mode. \
                  Startup failure is reported: spawn_with_llm awaits the pcap handle and the \
                  BPF filter, so a privilege failure lands in ServerStatus::Error rather than \
-                 Running. UNVERIFIED: no test has ever observed a frame being captured and \
-                 handed to the LLM - that requires the privileged, #[ignore]d test to be run. \
-                 Capture-only: there is no packet-injection action, so the model can analyse \
-                 frames but cannot answer them.",
+                 Running. Capture has been observed end to end (a loopback UDP datagram \
+                 reaching the event path byte-for-byte, 2026-09-08), but only through an \
+                 #[ignore]d test, which is why this stays Experimental. Capture-only: there is \
+                 no packet-injection action, so the model can analyse frames but cannot answer \
+                 them, and on an LLM failure nothing is written anywhere - the outcome is in \
+                 the log as decision=model_analysed / model_ignore / model_silent / \
+                 fail_closed_llm_error. Frames arriving while 32 are already awaiting the \
+                 model are dropped with a counted WARN rather than queued, and packet_hex is \
+                 the first 2048 bytes of the frame (packet_length is the true length).",
             )
             .build()
     }
@@ -306,14 +319,35 @@ pub static DATALINK_PACKET_CAPTURED_EVENT: LazyLock<EventType> = LazyLock::new(|
         Parameter {
             name: "packet_length".to_string(),
             type_hint: "number".to_string(),
-            description: "Length of the captured packet in bytes".to_string(),
+            description: "Full length of the captured frame in bytes, before any truncation"
+                .to_string(),
             required: true,
         },
         Parameter {
             name: "packet_hex".to_string(),
             type_hint: "string".to_string(),
-            description: "Hexadecimal representation of the packet data".to_string(),
+            description: format!(
+                "Hex of the frame's first {} bytes (dst MAC, src MAC, EtherType, payload). \
+                 A frame longer than that is cut here - see `truncated` - because the whole \
+                 of a {}-byte frame would be {} characters of prompt.",
+                crate::server::datalink::MAX_HEX_BYTES_TO_MODEL,
+                65535,
+                65535 * 2
+            ),
             required: false,
+        },
+        Parameter {
+            name: "captured_length".to_string(),
+            type_hint: "number".to_string(),
+            description: "Number of bytes actually encoded in packet_hex".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "truncated".to_string(),
+            type_hint: "boolean".to_string(),
+            description: "True when packet_hex is a prefix of the frame rather than all of it"
+                .to_string(),
+            required: true,
         },
     ])
     .with_actions(vec![show_message_action(), ignore_packet_action()])

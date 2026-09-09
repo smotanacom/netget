@@ -90,22 +90,31 @@ impl Protocol for IcmpProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::RawSockets)
+            .connectionless()
             .implementation("Raw IP sockets + pnet for ICMP packet handling")
             .llm_control("Full control - can respond to all ICMP message types")
             .e2e_testing(
-                "tests/capture_startup_reports_failure_test.rs asserts spawn() returns Err \
-                 without raw-socket privilege, unprivileged. tests/server/icmp/e2e_test.rs \
-                 crafts real echo requests with pnet and reads the replies off a raw socket, \
-                 but is #[ignore]d for privilege and has never been run in CI.",
+                "tests/server/icmp/packet_codec_test.rs is the only ICMP server test that runs \
+                 unprivileged: it asserts every emitted packet field-by-field against RFC 791 \
+                 and RFC 792, that hostile action JSON is refused rather than panicking, and \
+                 that each advertised example is accepted by its own executor. \
+                 tests/capture_startup_reports_failure_test.rs asserts spawn() returns Err \
+                 without raw-socket privilege. tests/server/icmp/e2e_test.rs crafts real echo \
+                 requests and reads the replies off a raw socket, but is #[ignore]d for \
+                 privilege and has never been run in CI.",
             )
             .notes(
                 "Requires root/CAP_NET_RAW for raw socket access. Startup failure is reported: \
                  spawn_with_llm awaits the SOCK_RAW sockets, so a privilege failure lands in \
-                 ServerStatus::Error rather than Running. UNVERIFIED: the echo path has only \
-                 ever been exercised by the #[ignore]d test. The 'interface' argument is \
-                 accepted and ignored - the socket receives ICMP from every interface. Note the \
-                 kernel answers echo requests itself, so a userspace reply is a second reply on \
-                 the wire.",
+                 ServerStatus::Error rather than Running. UNVERIFIED, and this is the whole \
+                 gap: no packet this server builds has ever been observed leaving a real \
+                 socket. Until this pass none could have been correct - the send socket did not \
+                 set IP_HDRINCL, so the kernel prepended its own header and every reply went out \
+                 with our IPv4 header sitting where the ICMP message belongs. That is fixed and \
+                 unit-tested up to the syscall, no further. The 'interface' argument is accepted \
+                 and ignored - the socket receives ICMP from every interface. Note the kernel \
+                 answers echo requests itself, so a userspace reply is a second reply on the \
+                 wire.",
             )
             .build()
     }
@@ -233,6 +242,36 @@ impl Server for IcmpProtocol {
     }
 }
 
+/// Largest payload that still fits an ICMP message inside one unfragmented IPv4 datagram:
+/// 65535 total, less the 20-byte IPv4 header and the 8-byte ICMP header.
+const MAX_ICMP_PAYLOAD: usize = 65535 - 20 - 8;
+
+/// Read a required 16-bit action parameter.
+///
+/// `as u16` on a `u64` truncates in silence: an identifier of 70000 becomes 4464 and the reply
+/// no longer matches any request the peer sent. Refusing is the honest answer, and the model is
+/// told the range.
+fn u16_field(action: &serde_json::Value, name: &str) -> Result<u16> {
+    let raw = action
+        .get(name)
+        .and_then(|v| v.as_u64())
+        .with_context(|| format!("Missing '{name}' parameter"))?;
+    u16::try_from(raw)
+        .with_context(|| format!("'{name}' must be a 16-bit ICMP field (0-65535), got {raw}"))
+}
+
+/// Read an 8-bit action parameter, with `default` used when it is absent.
+///
+/// Same reasoning as [`u16_field`]: an ICMP code of 300 silently became 44, which is not a code
+/// at all.
+fn u8_field(action: &serde_json::Value, name: &str, default: Option<u8>) -> Result<u8> {
+    let raw = match action.get(name).and_then(|v| v.as_u64()) {
+        Some(raw) => raw,
+        None => return default.with_context(|| format!("Missing '{name}' parameter")),
+    };
+    u8::try_from(raw).with_context(|| format!("'{name}' must be an ICMP code (0-255), got {raw}"))
+}
+
 impl IcmpProtocol {
     /// Execute send_echo_reply action
     fn execute_send_echo_reply(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -246,15 +285,8 @@ impl IcmpProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'destination_ip' parameter")?;
 
-        let identifier = action
-            .get("identifier")
-            .and_then(|v| v.as_u64())
-            .context("Missing 'identifier' parameter")? as u16;
-
-        let sequence = action
-            .get("sequence")
-            .and_then(|v| v.as_u64())
-            .context("Missing 'sequence' parameter")? as u16;
+        let identifier = u16_field(&action, "identifier")?;
+        let sequence = u16_field(&action, "sequence")?;
 
         let payload_hex = action
             .get("payload_hex")
@@ -266,6 +298,15 @@ impl IcmpProtocol {
         } else {
             hex::decode(payload_hex).context("Invalid hex in payload_hex")?
         };
+
+        // `set_total_length(ip_size as u16)` would wrap silently past this, producing a header
+        // whose length field disagrees with the buffer it describes.
+        anyhow::ensure!(
+            payload.len() <= MAX_ICMP_PAYLOAD,
+            "payload_hex decodes to {} bytes; an ICMP echo reply carries at most {}",
+            payload.len(),
+            MAX_ICMP_PAYLOAD
+        );
 
         // Parse IP addresses
         let source_ip_parsed: std::net::Ipv4Addr =
@@ -302,10 +343,7 @@ impl IcmpProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'destination_ip' parameter")?;
 
-        let code = action
-            .get("code")
-            .and_then(|v| v.as_u64())
-            .context("Missing 'code' parameter")? as u8;
+        let code = u8_field(&action, "code", None)?;
 
         let original_packet_hex = action
             .get("original_packet_hex")
@@ -346,7 +384,8 @@ impl IcmpProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'destination_ip' parameter")?;
 
-        let code = action.get("code").and_then(|v| v.as_u64()).unwrap_or(0) as u8; // Default to 0 (TTL exceeded in transit)
+        // Default 0 = TTL exceeded in transit.
+        let code = u8_field(&action, "code", Some(0))?;
 
         let original_packet_hex = action
             .get("original_packet_hex")

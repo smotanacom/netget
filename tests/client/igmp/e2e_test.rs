@@ -68,7 +68,7 @@ mod igmp_client_tests {
                 .and()
         });
 
-        let mut client = start_netget_client(client_config).await?;
+        let client = start_netget_client(client_config).await?;
 
         // Give client time to start and join the group
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -150,7 +150,7 @@ mod igmp_client_tests {
                 .and()
         });
 
-        let mut client = start_netget_client(client_config).await?;
+        let client = start_netget_client(client_config).await?;
 
         // Give client time to process
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -175,16 +175,30 @@ mod igmp_client_tests {
 
     /// Test IGMP client can send multicast data
     /// LLM calls: 2 (client startup, send)
+    ///
+    /// The send is asserted on the wire, against a real receiver. This test used to mock the
+    /// connected event with a `"data"` field where the action declares `"data_hex"`, so
+    /// `execute_action` refused it with "Missing data_hex", the datagram was never sent, and
+    /// the only assertions left — `client.protocol == "igmp"` and the mock call counts — were
+    /// satisfied by the *request* rather than by anything the client did with the answer. It
+    /// passed for exactly as long as it proved nothing.
+    ///
+    /// The destination is a loopback socket rather than a real group: `send_multicast` is a
+    /// plain `send_to` on the client's own socket, so this exercises the whole path, while a
+    /// real group would make the test depend on the host having a multicast-capable interface
+    /// and on IGMP snooping.
     #[tokio::test]
     async fn test_igmp_client_send_multicast() -> E2EResult<()> {
         let multicast_group = "239.255.1.3";
-        let multicast_port = 15001;
+        let sink = UdpSocket::bind("127.0.0.1:0").await?;
+        let sink_addr = sink.local_addr()?;
+        let multicast_port = sink_addr.port();
 
         let client_config = NetGetConfig::new(format!(
             "Start IGMP client. Send the string 'TEST' to multicast group {} port {}.",
             multicast_group, multicast_port
         ))
-        .with_mock(|mock| {
+        .with_mock(move |mock| {
             mock
                 // Mock 1: Client startup (user command)
                 .on_instruction_containing("Start IGMP client")
@@ -204,19 +218,31 @@ mod igmp_client_tests {
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "send_multicast",
-                        "multicast_addr": "239.255.1.3",
-                        "port": 15001,
-                        "data": "54455354" // "TEST" in hex
+                        // The parameter is `data_hex`, and the executor decodes it. A `data`
+                        // key here is silently not the field the action declares.
+                        "multicast_addr": sink_addr.ip().to_string(),
+                        "port": multicast_port,
+                        "data_hex": "54455354" // "TEST" in hex
                     }
                 ]))
                 .expect_calls(1)
                 .and()
         });
 
-        let mut client = start_netget_client(client_config).await?;
+        let client = start_netget_client(client_config).await?;
 
-        // Give client time to send
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Wait for the bytes, not for a sleep. Four bytes of "TEST" have to arrive at a
+        // socket this test owns; nothing else in this file proves the send happened.
+        let mut buf = vec![0u8; 64];
+        let received = tokio::time::timeout(Duration::from_secs(30), sink.recv_from(&mut buf))
+            .await
+            .is_ok();
+        assert!(
+            received,
+            "the IGMP client never sent its datagram. Output: {:?}",
+            client.get_output().await
+        );
+        assert_eq!(&buf[..4], b"TEST", "the decoded hex must reach the wire");
 
         // Verify client is IGMP protocol
         assert_eq!(client.protocol, "igmp", "Client should be IGMP protocol");

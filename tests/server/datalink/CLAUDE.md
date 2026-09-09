@@ -38,6 +38,7 @@ reason — cargo then reports *ignored*, which nobody mistakes for a pass.
 |---|---|---|
 | `datalink_unknown_interface_is_refused` | none | `spawn` returns `Err`; the message contains `no such capture device` and the device name |
 | `datalink_startup_outcome_matches_capture_privilege` | none | `Ok` **iff** the pcap handle really opened. Unprivileged: `Err`, mentioning `failed to open pcap capture`, the interface, and `/dev/bpf*` or `CAP_NET_RAW` |
+| `datalink_event_payload_reports_the_frame_and_any_truncation` | none | `packet_event_data` against literal ARP bytes: a short frame whole; a long one cut, with `truncated`/`captured_length` set and `packet_length` still true; the exact boundary uncut; and every field it emits declared on `datalink_packet_captured`. The only part of a pcap protocol that *can* be asserted with no handle |
 | `datalink_invalid_bpf_filter_is_refused` | capture | an uncompilable BPF expression fails startup with `invalid BPF filter` |
 | `datalink_captures_a_real_loopback_frame` | capture | a UDP datagram sent on loopback appears byte-for-byte in the captured hex, **and** the frame reaches the event path |
 
@@ -92,9 +93,13 @@ sudo -E ./cargo-isolated.sh test --no-default-features --features datalink \
 
 ## Coverage gaps
 
-- **Nothing has ever observed DataLink capture a frame.** `datalink_captures_a_real_loopback_frame`
-  is written but has not been run — it needs `/dev/bpf*`. This is why the protocol is
-  `Experimental` and not `Beta`; see `src/server/datalink/CLAUDE.md`.
+- **DataLink capture has now been observed, once, deliberately.**
+  `datalink_captures_a_real_loopback_frame` and `datalink_invalid_bpf_filter_is_refused` were run
+  with `--ignored` on 2026-09-08 (macOS 27, user in the `access_bpf` group) and both passed: a
+  loopback UDP datagram was captured, its bytes appeared in the hex the model would be shown, and
+  it reached the event path. The protocol stays `Experimental` because the test is `#[ignore]`d
+  and an ignored test is not evidence for a rating — see `src/server/datalink/CLAUDE.md` for why
+  no unprivileged capture test can exist.
 - Loopback framing differs by platform (DLT_NULL on macOS/BSD, Ethernet on Linux), so the capture
   test asserts on payload bytes, not on framing. Ethernet-header parsing is untested.
 - No test for BPF filters that compile but select nothing, for multiple interfaces, or for packet

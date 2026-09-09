@@ -1,7 +1,24 @@
 //! Data Link layer (Layer 2) server implementation using pcap
 //!
-//! This module provides functionality to capture and inject packets at the data link layer.
+//! This module provides functionality to capture packets at the data link layer.
 //! It uses libpcap to interact with network interfaces.
+//!
+//! # What the model is shown, and what it is not
+//!
+//! A captured frame is up to `snaplen` (65535) bytes. Handing all of that to the model as hex
+//! would be 131070 characters of prompt per packet — so `packet_hex` carries the first
+//! [`MAX_HEX_BYTES_TO_MODEL`] bytes and the event says, in `truncated` and `captured_length`,
+//! that it did. `packet_length` is always the real length.
+//!
+//! # Backpressure
+//!
+//! Every captured frame used to `runtime.spawn` an LLM task unconditionally. libpcap delivers
+//! frames as fast as the link does and an LLM turn takes seconds, so on any interface busier
+//! than the model is fast the spawned tasks — each holding a copy of the frame and its hex —
+//! accumulated without bound, all queued behind the same rate limiter. In-flight work is now
+//! capped by a semaphore ([`MAX_INFLIGHT_LLM_PACKETS`]) and frames arriving over that are
+//! dropped with a counted WARN. Dropping a frame is what a capture tool does under load;
+//! growing the heap until the process dies is not.
 
 pub mod actions;
 
@@ -10,31 +27,56 @@ use bytes::Bytes;
 use pcap::{Capture, Device};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, info, warn};
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::ollama_client::OllamaClient;
 use crate::protocol::Event;
 use crate::state::app_state::AppState;
-use crate::{console_debug, console_error, console_info, console_trace};
+use crate::utils::truncate_for_log;
+use crate::{console_debug, console_error, console_info, console_trace, console_warn};
 use actions::{DataLinkProtocol, DATALINK_PACKET_CAPTURED_EVENT};
 
-/// Get LLM context and output format instructions for DataLink stack
-pub fn get_llm_protocol_prompt() -> (&'static str, &'static str) {
-    let context = r#"You are handling Data Link layer (Layer 2) packets via pcap.
-You can capture and inject Ethernet frames, handle ARP requests/responses, and work with raw MAC addresses.
-Common use cases: ARP spoofing detection, custom Ethernet protocols, network monitoring."#;
+/// How many bytes of a captured frame are hex-encoded into the event handed to the model.
+///
+/// 2 KiB covers every layer-2 header plus a useful slice of payload and costs at most 4096
+/// prompt characters. The full length is always reported in `packet_length`.
+pub const MAX_HEX_BYTES_TO_MODEL: usize = 2048;
 
-    let output_format = r#"IMPORTANT: Respond with a JSON object:
-{
-  "output": "Ethernet frame data as hex (null if no response to inject)",
-  "message": null  // Optional message for user
-}"#;
+/// How many bytes of frame hex reach the TRACE line / status stream.
+///
+/// The status channel is unbounded (see the repo CLAUDE.md), so a per-packet full hex dump is
+/// exactly the high-frequency message that must not go on it.
+const MAX_HEX_BYTES_TO_LOG: usize = 512;
 
-    (context, output_format)
+/// Maximum number of captured frames being handled by the LLM at once. Frames arriving while
+/// this many are outstanding are dropped rather than queued.
+const MAX_INFLIGHT_LLM_PACKETS: usize = 32;
+
+/// The event payload the model is given for one captured frame.
+///
+/// Pure, and public, so it can be asserted against literal frame bytes without a capture
+/// handle — the only part of this protocol that can be tested at all without BPF access.
+pub fn packet_event_data(frame: &[u8]) -> serde_json::Value {
+    let shown = frame.len().min(MAX_HEX_BYTES_TO_MODEL);
+    serde_json::json!({
+        "packet_length": frame.len(),
+        "packet_hex": hex::encode(&frame[..shown]),
+        "captured_length": shown,
+        "truncated": shown < frame.len(),
+    })
 }
 
-/// Data Link layer server that captures and injects packets
+// `get_llm_protocol_prompt()` used to live here. It was called by nothing (`grep -rn
+// get_llm_protocol_prompt src/ tests/`) and what it told the model was false in both halves:
+// "You can capture and inject Ethernet frames … handle ARP requests/responses" of a
+// capture-only protocol, and an output format —
+// `{"output": "Ethernet frame data as hex (null if no response to inject)"}` — that is neither
+// the shape the executor parses nor a capability this protocol has. The model's real prompt
+// comes from the action definitions in `actions.rs`. Deleted rather than corrected: a second,
+// unreferenced description of the protocol is a thing to drift, not a thing to maintain.
+
+/// Data Link layer server that captures packets
 pub struct DataLinkServer;
 
 impl DataLinkServer {
@@ -90,6 +132,9 @@ impl DataLinkServer {
         // Retained by this function; the capture task takes ownership of `app_state`.
         let app_state_reg = app_state.clone();
 
+        // Bounds the number of frames being handled by the LLM at once; see the module docs.
+        let inflight = Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_LLM_PACKETS));
+
         let interface_clone = interface.clone();
         let protocol_clone = protocol.clone();
         tokio::task::spawn_blocking(move || {
@@ -130,6 +175,7 @@ impl DataLinkServer {
             };
 
             let runtime = tokio::runtime::Handle::current();
+            let mut dropped: u64 = 0;
 
             // Capture loop. The pcap read timeout (1000ms, set above) is what bounds how long
             // a stop takes to be noticed on an idle interface.
@@ -149,9 +195,37 @@ impl DataLinkServer {
                         // DEBUG: Log summary
                         console_debug!(status_tx, "Datalink received {} bytes", data.len());
 
-                        // TRACE: Log full payload (always hex for datalink)
-                        let hex_str = hex::encode(&data);
-                        console_trace!(status_tx, "Datalink data (hex): {}", hex_str);
+                        // TRACE: bounded hex preview. The status channel is unbounded, so the
+                        // full dump of every frame must not go on it.
+                        console_trace!(
+                            status_tx,
+                            "Datalink data (hex): {}",
+                            truncate_for_log(
+                                &hex::encode(&data),
+                                MAX_HEX_BYTES_TO_LOG.saturating_mul(2)
+                            )
+                        );
+
+                        // Backpressure: refuse to start another LLM turn when
+                        // MAX_INFLIGHT_LLM_PACKETS are already outstanding.
+                        let permit = match inflight.clone().try_acquire_owned() {
+                            Ok(p) => p,
+                            Err(_) => {
+                                dropped += 1;
+                                if dropped == 1 || dropped % 100 == 0 {
+                                    console_warn!(
+                                        status_tx,
+                                        "DataLink dropped {} captured frame(s) on {}: \
+                                         {} already awaiting the model. Narrow the BPF filter \
+                                         or use a script/static handler for high-rate capture.",
+                                        dropped,
+                                        interface_clone,
+                                        MAX_INFLIGHT_LLM_PACKETS
+                                    );
+                                }
+                                continue;
+                            }
+                        };
 
                         let llm_clone = llm_client.clone();
                         let state_clone = app_state.clone();
@@ -160,20 +234,19 @@ impl DataLinkServer {
 
                         // Spawn async task to handle packet with LLM
                         runtime.spawn(async move {
-                            // Build event data
-                            let hex_str = hex::encode(&data);
+                            // Released when this turn ends, freeing a slot for the next frame.
+                            let _permit = permit;
+
+                            let full_len = data.len();
                             let event = Event::new(
                                 &DATALINK_PACKET_CAPTURED_EVENT,
-                                serde_json::json!({
-                                    "packet_length": data.len(),
-                                    "packet_hex": hex_str
-                                }),
+                                packet_event_data(&data),
                             );
 
-                            debug!("Datalink calling LLM for packet ({} bytes)", data.len());
+                            debug!("Datalink calling LLM for packet ({} bytes)", full_len);
                             let _ = status_clone.send(format!(
                                 "[DEBUG] Datalink calling LLM for packet ({} bytes)",
-                                data.len()
+                                full_len
                             ));
 
                             match call_llm(
@@ -192,24 +265,64 @@ impl DataLinkServer {
                                         let _ = status_clone.send(format!("[INFO] {}", message));
                                     }
 
+                                    // DataLink writes nothing to the wire in any case, so the
+                                    // three outcomes are indistinguishable on the interface and
+                                    // must be told apart in the log. Grep `decision=`.
+                                    let named_ignore =
+                                        execution_result.raw_actions.iter().any(|a| {
+                                            a.get("type").and_then(|v| v.as_str())
+                                                == Some("ignore_packet")
+                                        });
+                                    let decision = if named_ignore {
+                                        "model_ignore"
+                                    } else if execution_result.raw_actions.is_empty() {
+                                        "model_silent"
+                                    } else {
+                                        "model_analysed"
+                                    };
                                     debug!(
-                                        "Datalink got {} protocol results",
+                                        "Datalink packet ({} bytes) decision={} ({} actions, \
+                                         {} protocol results)",
+                                        full_len,
+                                        decision,
+                                        execution_result.raw_actions.len(),
                                         execution_result.protocol_results.len()
                                     );
                                     let _ = status_clone.send(format!(
-                                        "[DEBUG] Datalink got {} protocol results",
-                                        execution_result.protocol_results.len()
+                                        "[DEBUG] Datalink packet decision={} ({} actions)",
+                                        decision,
+                                        execution_result.raw_actions.len()
                                     ));
 
                                     let _ = status_clone.send(format!(
                                         "→ Datalink packet processed: {} bytes",
-                                        data.len()
+                                        full_len
                                     ));
                                 }
                                 Err(e) => {
-                                    error!("Datalink LLM call failed: {}", e);
-                                    let _ =
-                                        status_clone.send(format!("✗ Datalink LLM error: {}", e));
+                                    // Nothing is written to the interface, because DataLink
+                                    // has nothing it *could* write: it is capture-only and
+                                    // declares no injection action. The failure is therefore
+                                    // reported to the operator only, with the category kept
+                                    // separate from the error text so a saturated backend
+                                    // (retry worthwhile) is distinguishable from a broken one.
+                                    let category = if crate::utils::WireFailure::classify(&e)
+                                        .is_overloaded()
+                                    {
+                                        "overloaded"
+                                    } else {
+                                        "unavailable"
+                                    };
+                                    warn!(
+                                        "Datalink packet ({} bytes) decision=fail_closed_llm_error \
+                                         category={}: {}",
+                                        full_len, category, e
+                                    );
+                                    let _ = status_clone.send(format!(
+                                        "✗ Datalink packet decision=fail_closed_llm_error \
+                                         category={}: {}",
+                                        category, e
+                                    ));
                                 }
                             }
                         });
@@ -223,6 +336,15 @@ impl DataLinkServer {
                         break;
                     }
                 }
+            }
+
+            if dropped > 0 {
+                console_warn!(
+                    status_tx,
+                    "DataLink capture on {} ended having dropped {} frame(s) to backpressure",
+                    interface_clone,
+                    dropped
+                );
             }
 
             drop(cap);

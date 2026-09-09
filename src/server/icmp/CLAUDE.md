@@ -13,7 +13,7 @@ The ICMP (Internet Control Message Protocol) server implementation provides a ne
   - Requires `CAP_NET_RAW` capability or root access
 
 ### Packet Handling
-- **pnet_packet** (v0.34) - ICMP packet parsing and construction
+- **pnet_packet** (v0.35) - ICMP packet parsing and construction
   - Comprehensive ICMP packet types (Echo, Destination Unreachable, Time Exceeded, Timestamp, etc.)
   - Automatic checksum calculation
   - Type-safe packet builders and parsers
@@ -38,7 +38,13 @@ Follows the same pattern as **ARP server** (`src/server/arp/mod.rs`):
 - No persistent connections
 - Each ICMP message triggers LLM independently
 - No state machine per connection
-- "Connection" tracking is per-packet for TUI display
+- **No connection tracking at all.** This server never calls `add_connection` or
+  `update_connection_stats`, so the dashboard shows it with no peers and no `↓/↑` counters.
+  That is a gap, not a design: an operator watching an ICMP honeypot sees nothing but the log.
+  `metadata()` declares `.connectionless()` so that if per-remote entries are ever added, the
+  10-second idle sweep reaps them (see the root CLAUDE.md, "The 10-second idle sweep"). An
+  earlier version of this file claimed "'Connection' tracking is per-packet for TUI display";
+  there was none.
 
 ### Socket Configuration
 ```rust
@@ -46,7 +52,34 @@ Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))
 ```
 - Receives all ICMP packets destined for this host
 - Requires elevated privileges (`CAP_NET_RAW` or root)
-- Non-blocking mode with timeout for graceful shutdown
+- Non-blocking mode, polled with a 10 ms sleep, so `StopSignal` ends the loop within ~10 ms
+
+### `IP_HDRINCL` — the thing that makes the send path mean anything
+
+`build_echo_reply` and its siblings return a **complete IPv4 packet**, header included. A
+`SOCK_RAW`/`IPPROTO_ICMP` socket does not know that unless it is told: with `IP_HDRINCL` off
+the kernel builds its own header and treats everything handed to `send_to` as the ICMP
+*message*, so our 20-byte header lands where the ICMP type byte belongs and the peer reads
+type 0x45 (69, unassigned). **Every reply this server produced before August 2026 was that.**
+The send socket now sets `set_header_included_v4(true)`; pnet's own Layer3 transport channel
+sets the same option for the same reason.
+
+Two consequences worth carrying:
+
+- **Darwin and FreeBSD want `ip_len` and `ip_off` in host byte order** on such a socket. XNU's
+  `rip_output` compares `ip->ip_len` against the real mbuf length, so a network-order 28 reads
+  as 7168 and the send fails with `EINVAL`. `prepare_ipv4_for_raw_send` (in `mod.rs`) does that
+  conversion immediately before `send_to` and zeroes the now-stale header checksum for the
+  kernel to refill. It is a no-op on Linux. This mirrors `pnet_transport::send_to_impl`.
+  **After that call the buffer is no longer a well-formed RFC 791 header — nothing may parse
+  it again.**
+- The receive path still tolerates **IP-in-IP**: a peer that made the same mistake sends us
+  `kernel header | its header | ICMP`. That is what the "IP-in-IP encapsulation on loopback"
+  branch in the receive loop unwraps, and loopback had nothing to do with it — the source of
+  that traffic was this repo's own `#[ignore]`d e2e test, which had the identical bug and has
+  been fixed too.
+
+None of this has been executed. Opening the socket needs root; see "Maturity" below.
 
 ### Packet Flow
 1. **Receive**: Raw socket receives IP packets
@@ -107,9 +140,13 @@ Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))
   "source_ip": "192.168.1.1",
   "destination_ip": "192.168.1.50",
   "code": 1,
-  "original_packet_hex": "4500003c..."
+  "original_packet_hex": "4500001c1c460000401160abc0a80132cb007105a1120035000860b6"
 }
 ```
+`original_packet_hex` is the RFC 792 quotation: the offending IPv4 header plus the next 64
+bits, and it is **decoded, not passed through** — the executor `hex::decode`s it, refuses
+non-hex, and the builder truncates to 28 bytes (and does not panic on fewer). Nothing is
+elided in the advertised example; a model that copies it emits a datagram a peer can match.
 
 #### Send Time Exceeded (Traceroute)
 ```json
@@ -118,9 +155,10 @@ Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))
   "source_ip": "10.0.0.1",
   "destination_ip": "192.168.1.50",
   "code": 0,
-  "original_packet_hex": "4500003c..."
+  "original_packet_hex": "4500001c1c47000001119faac0a80132cb007105a112829a0008de50"
 }
 ```
+`code` is the only optional numeric field, defaulting to 0 (TTL exceeded in transit).
 
 #### Ignore ICMP
 ```json
@@ -128,6 +166,19 @@ Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))
   "type": "ignore_icmp"
 }
 ```
+
+### Numeric fields are range-checked, not truncated
+
+`identifier` and `sequence` are 16-bit; `code` is 8-bit. Reading them with `as u64(...) as u16`
+truncates in silence — an identifier of 70000 becomes 4464 and the reply matches no request the
+peer ever sent. `u16_field` / `u8_field` in `actions.rs` refuse out-of-range and non-numeric
+values with an error naming the field and the range, which is something the model can act on.
+
+The **events** hand these back as JSON numbers, matching the `number` type hint the event
+declares and the `as_u64()` the executor uses. They used to be stringified
+(`identifier.to_string()`), which broke this protocol's own scripted startup example: it copies
+`event["identifier"]` straight into the action, and the action was refused with "Missing
+'identifier' parameter".
 
 ## ICMP Message Types Supported
 
@@ -169,6 +220,33 @@ Calculated using `pnet::packet::icmp::checksum()`:
 - Covers entire ICMP packet (header + payload)
 - Uses ones' complement sum algorithm
 - Essential for packet validity
+
+## Maturity: `Experimental`, precisely
+
+**Proven**, unprivileged, by `tests/server/icmp/packet_codec_test.rs`:
+
+* every packet the server can build, field by field at its RFC 791 / RFC 792 offset, with both
+  checksums *verified* rather than compared to a constant;
+* that a short or oversized quoted datagram is handled rather than panicking;
+* that every advertised action example is accepted by its own executor;
+* that thirteen shapes of hostile action JSON — non-hex payloads, out-of-range identifiers, a
+  stringified number, an IPv6 address, a payload larger than a datagram — are **refused**, not
+  truncated and not panicking;
+* what `prepare_ipv4_for_raw_send` does on the platform being compiled for.
+
+**Not proven, and not to be claimed:**
+
+* **the raw socket transport, which has never been executed.** Nothing in this repo has opened
+  `SOCK_RAW`/`IPPROTO_ICMP` outside an `#[ignore]`d test, so no reply has been observed leaving
+  a socket, and the `IP_HDRINCL` fix above is reasoned from kernel sources and pnet's
+  long-standing workaround rather than measured.
+* the Darwin/FreeBSD host-byte-order conversion, against a real kernel.
+* the `interface` argument, which is accepted and ignored (below).
+* received `total_length` on BSD, which arrives in host byte order; pnet clamps the payload
+  slice to the buffer, so this degrades to "use everything captured" rather than a wrong slice.
+
+**Path to Beta**: run `tests/server/icmp/e2e_test.rs` under `sudo` against a real independent
+client — `ping(8)` is the obvious one — and assert the reply. Nothing less counts.
 
 ## Limitations
 

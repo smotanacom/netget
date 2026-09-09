@@ -127,13 +127,14 @@ Capture is always in **promiscuous mode**:
 
 ### 7. State Machine for LLM Processing
 
-Uses standard client state machine (Idle → Processing → Accumulating):
+Uses a two-state machine (Idle → Processing → Idle). There is **no `Accumulating` state and
+no queue** — `ConnectionState` in `mod.rs` has exactly `Idle` and `Processing`, and a packet
+that arrives while the model is thinking is **dropped**, with a `debug!` line saying so. That
+is acceptable for ARP (it is naturally low-volume, and a dropped observation is not a dropped
+answer) but it is not the queueing machine `src/server/tcp/` implements, and this file used to
+claim it was.
 
-- **Idle**: Ready to process next packet
-- **Processing**: LLM is analyzing current packet
-- **Accumulating**: LLM still processing, queue incoming packets
-
-**Rationale**: Prevents concurrent LLM calls on same client, ensures ordered processing.
+**Rationale**: Prevents concurrent LLM calls on the same client.
 
 ### 8. Dual Logging
 
@@ -269,8 +270,8 @@ ARP is stateless at the protocol level:
 
 - Each ARP packet spawned in separate tokio task (if state is Idle)
 - State machine prevents concurrent LLM calls for same client
-- Packets received during Processing are queued (Accumulating state)
-- Ollama lock serializes LLM calls across all clients
+- Packets received during Processing are dropped, not queued (see State Machine above)
+- LLM concurrency is bounded by `--llm-max-concurrent` / `--llm-max-queued`
 
 ### Dashboard injection (`[ send ]`)
 
@@ -293,21 +294,37 @@ same `build_packet_for_custom_result`. Each queued frame carries an optional
 | `Rejected { error }` | unknown verb, or MAC/IP fields that cannot become a frame |
 | `Disconnected` | an injected `stop_capture` |
 
-**Unprivileged runs land in `Executed`, deliberately.** libpcap needs root (`/dev/bpf*` on
-macOS, `CAP_NET_RAW` on Linux); when the capture fails to open, the blocking task returns and
-the queue's receiver is gone, so the reply says the frame was built but not injected and why.
-Note what is *not* done: on that failure path the handle is deliberately left registered, so
-an injection gets that specific explanation instead of the generic "this client has no
-command channel". The handle is removed when the capture loop exits and on an injected
-`stop_capture`.
+**An unprivileged run has no client to inject into, deliberately.** libpcap needs root
+(`/dev/bpf*` on macOS, `CAP_NET_RAW` on Linux). `start_with_llm_actions` awaits the pcap open
+over a oneshot and returns `Err` if it fails, so `connect()` reports the failure — naming the
+device and the privilege — and `client_startup` records `ClientStatus::Error`. It used to
+return `Ok` regardless, which left the client sitting in `Connected` having opened nothing:
+the client-side twin of the fire-and-forget `spawn_blocking` that left the ARP, DataLink and
+ICMP *servers* `Running` with no capture.
 
-**Known gap**: `stop_capture` marks the client disconnected but the pcap capture loop does
-not poll the client's status (unlike the IS-IS client's), so it keeps running until the
-client is removed. Fixing that is a change to the capture loop, not to the command channel.
+There is no third option worth reaching for. `client_startup::connect_client` overwrites the
+status with `ClientStatus::Connected` on **any** `Ok(..)`, so "return Ok but show an error" is
+not expressible; the choice is `Err` or a lie. The `Executed { detail }` outcome remains for
+the case the capture opened and later stopped.
 
-Test: `tests/client/arp/command_channel_test.rs` (zero LLM calls). The privileged half -
-`Sent { bytes_sent: 42 }` from a real acknowledged injection - is `#[ignore]`d there because
-it needs root.
+**The started-event answer is executed, not counted.** Both LLM entry points — the
+`arp_client_started` event and every captured packet — go through one `execute_client_actions`.
+The started-event arm used to be `for _action in actions { debug!(..) }`: a client told to send
+a gratuitous ARP announcement on start put nothing on the wire and reported success. That is
+the defect the root `CLAUDE.md` describes under "clients that ask the model what to do and then
+throw the answer away", and `tests/client_event_wiring_test.rs` now guards against its return.
+
+**Shutdown**: the capture loop polls a `crate::utils::StopSignal` every iteration, and the
+parked task registered with `register_client_task` trips it when the client is removed. The
+pcap read timeout (1000ms) bounds how long that takes on an idle interface. Before this the
+loop had no exit at all and kept capturing — and kept calling the LLM — until the process
+exited.
+
+Tests: `tests/client/arp/command_channel_test.rs` (zero LLM calls). It covers the startup
+contract, the rejection paths, and — by driving `ArpClient::command_loop` directly with a
+stand-in for the pcap injection thread — every outcome including `Sent { bytes_sent: 42 }`, all
+unprivileged. `injected_arp_request_is_transmitted` is still `#[ignore]`d: it is the only thing
+that proves libpcap itself accepted the frame, and that needs root.
 
 ## Known Limitations
 
@@ -430,7 +447,7 @@ Log which IPs are alive based on ARP replies
 ### Concurrency
 
 - Each ARP packet processed in separate task (if state is Idle)
-- Ollama lock serializes LLM calls
+- LLM concurrency is bounded by `--llm-max-concurrent`
 - pcap capture runs in dedicated blocking thread
 - No CPU bottleneck (LLM API is bottleneck)
 

@@ -21,10 +21,22 @@ returned `Ok(())`. Its `e2e_testing` metadata read "libpcap for packet validatio
 described no test in the tree. Beta means *works against a real client*, and nothing here had
 ever demonstrated that a single frame reached the LLM.
 
-The suite is now real (see **Testing** below) but the capture path is still unproven, because
-the one test that proves it needs privileges. **Promote to `Beta` when
-`datalink_captures_a_real_loopback_frame` has actually been run and passed** - and update
-`metadata().notes` in `actions.rs` at the same time, since it currently says UNVERIFIED.
+**The capture path is no longer unproven, and the rating still does not move.**
+`datalink_captures_a_real_loopback_frame` was run on 2026-09-08 (macOS 27, user in the
+`access_bpf` group, `cargo test … --ignored`) and passed, along with
+`datalink_invalid_bpf_filter_is_refused` — so a UDP datagram put on loopback really is captured
+by libpcap, really does reach the event path, and its bytes really do appear in what the model
+would be shown. The `UNVERIFIED` wording that used to sit in `metadata().notes` was true when
+written and is gone.
+
+It stays `Experimental` because the test that demonstrates this is `#[ignore]`d, and this repo
+does not count an ignored test as evidence for a rating — that rule is what keeps `bluetooth_ble`
+and `tor_relay` where they are, and DataLink gets no exemption. Note also that "works against a
+real client" does not translate cleanly here: DataLink answers nothing, so the nearest thing to
+an independent peer is the host's own network stack emitting a frame, which is exactly what the
+ignored test uses. **What would move it**: a capture test that runs unprivileged in the ordinary
+suite. There is no such thing on macOS or Linux — the handle needs the privilege — so the honest
+position is that this protocol's central function is only ever exercised deliberately.
 
 ## Testing
 
@@ -36,6 +48,7 @@ is an unroutable address, so reaching a model would itself be a failure):
 |---|---|---|
 | `datalink_unknown_interface_is_refused` | none | `spawn` returns `Err` naming the device |
 | `datalink_startup_outcome_matches_capture_privilege` | none | `Ok` **iff** the pcap handle really opened; the unprivileged branch asserts the refusal text names `/dev/bpf*` or `CAP_NET_RAW` |
+| `datalink_event_payload_reports_the_frame_and_any_truncation` | none | `packet_event_data` against literal ARP bytes: a short frame whole, a long one cut with `truncated`/`captured_length` set, and every field it emits declared on the event |
 | `datalink_invalid_bpf_filter_is_refused` | capture | an uncompilable BPF expression fails startup |
 | `datalink_captures_a_real_loopback_frame` | capture | a UDP datagram put on loopback appears byte-for-byte in the captured hex **and** reaches the event path |
 
@@ -159,13 +172,27 @@ listen on interface eth0 via datalink with filter "arp"
 - `tcp port 80` - Only HTTP traffic
 - `host 192.168.1.1` - Only packets to/from specific IP
 
-### 6. Hex Encoding
+### 6. Hex Encoding, and the cap on it
 
-Packets always passed to LLM as hex strings:
+Packets are passed to the LLM as hex strings:
 
 - Binary data (MAC addresses, EtherType, payload) not human-readable
 - Hex format: "00112233445566778899aabbccddeeff..."
 - LLM must parse hex to understand packet structure
+
+**`packet_hex` is the first `MAX_HEX_BYTES_TO_MODEL` (2048) bytes, not the whole frame.** The
+snaplen is 65535, and all of that as hex is 131070 characters of prompt for one packet — which
+is both unaffordable and useless, since nothing a model decides about a frame depends on its
+1400th byte. The event therefore carries four fields, not two: `packet_length` (the true
+length, always), `packet_hex` (the prefix), `captured_length` (how much of it that is) and
+`truncated`. A model told a 9000-byte frame was 2048 bytes long would draw wrong conclusions
+from it, so the length and the prefix are reported separately.
+
+`packet_event_data()` builds this and is pure and public, which is what lets
+`datalink_event_payload_reports_the_frame_and_any_truncation` assert it against literal frame
+bytes with no capture handle. The TRACE line is capped separately and much lower (512 bytes),
+because the status channel is unbounded and a per-packet full hex dump is exactly the
+high-frequency message the repo's logging rule forbids on it.
 
 **Example ARP Request Hex**:
 
@@ -189,6 +216,11 @@ DataLink is stateless:
 - No sessions (unlike HTTP)
 - Each packet is independent event
 - LLM processes each packet separately
+
+`metadata()` declares `.connectionless()`, as `arp`, `icmp` and `isis` do. It changes nothing
+today — this server registers no connections for `cleanup_old_connections` to sweep — but the
+flag is a statement about the protocol, and the four capture protocols should not disagree
+about what they are.
 
 **UI Display**: "Connection" in UI is just placeholder (not protocol requirement).
 
@@ -219,10 +251,30 @@ The LLM responds to DataLink events with actions:
 - `ignore_packet` - Don't process packet (no action)
 - Common actions: `update_instruction`, etc.
 
-**Future Actions** (not yet implemented):
+**Future Actions** (not yet implemented — and note that neither is advertised anywhere, which
+is the point; an action named in a doc but absent from `get_sync_actions()` is a wish, not a
+capability):
 
 - `send_frame` - Inject Ethernet frame (hex-encoded)
 - `log_packet` - Log packet to file for later analysis
+
+### Failure semantics: silence on the wire, `decision=` in the log
+
+DataLink is one of the deliberately silent protocols, and for the strongest possible reason —
+it is **capture-only**. There is no injection action, so there is no reply it *could* fabricate
+when the model fails. The distinction the wire cannot carry lives in the log instead, one tag
+per captured packet (grep `decision=`):
+
+| tag | meaning |
+|---|---|
+| `decision=model_analysed` | the model answered with actions (a `show_message`, typically) |
+| `decision=model_ignore` | the model explicitly chose `ignore_packet` — an analysis result |
+| `decision=model_silent` | the model was asked and returned no actions |
+| `decision=fail_closed_llm_error` | the LLM call errored; also logs `category=overloaded` vs `category=unavailable` from `WireFailure::classify`, and the full error |
+
+The error text goes to the log and the status stream and nowhere else. Nothing is written to
+the interface in any of the four cases, so the tags are the only way to tell a working
+observation from a broken backend.
 
 ### Example LLM Responses
 
@@ -285,12 +337,20 @@ DataLink has no connection concept:
 7. Actions executed (show_message, ignore_packet, etc.)
 8. Loop continues for next packet
 
-### Concurrent Packet Processing
+### Concurrent Packet Processing, and the bound on it
 
-- Each packet spawned in separate tokio task
-- No queueing (unlike TCP protocols)
-- Packets from different sources processed in parallel
-- Ollama lock serializes LLM calls but not pcap capture
+- Each packet is handled in its own tokio task; packets from different sources run in parallel
+- **At most `MAX_INFLIGHT_LLM_PACKETS` (32) at once.** A semaphore permit is taken in the
+  capture loop and released when the turn ends; a frame that cannot get one is **dropped**, with
+  a WARN on the first and every hundredth. libpcap delivers frames as fast as the link does and
+  an LLM turn takes seconds, so the previous unconditional `runtime.spawn` grew the heap by a
+  copy of every frame plus its hex for as long as the traffic lasted. Dropping is what a capture
+  tool does under load.
+- There is still no *queue*: a dropped frame is gone, deliberately. Narrow the BPF filter, or
+  answer `datalink_packet_captured` with a script or static handler, if you need to keep up.
+- The real serialisation is `--llm-max-concurrent` / `--llm-queue-timeout` / `--llm-max-queued`.
+  (`--ollama-lock` is inert and its plumbing is deleted — do not reason about concurrency from
+  it, as an earlier version of this file did.)
 
 ## Known Limitations
 
@@ -426,23 +486,26 @@ Display command type and sequence number for each packet
 ### Throughput
 
 - **Low traffic** (<1 pkt/sec): All packets processed
-- **Medium traffic** (1-10 pkt/sec): Some packets may queue (async spawning helps)
-- **High traffic** (>10 pkt/sec): Many packets dropped (LLM too slow)
+- **Medium traffic**: up to 32 frames can be in front of the model at once
+- **High traffic**: frames over that are dropped at the capture loop and counted in a WARN —
+  they are not queued, and the log says how many went
 
 **Best Use Cases**: Low-traffic protocols (ARP, custom protocols), not high-traffic (HTTP, streaming).
 
 ### Concurrency
 
-- Each packet processed in separate task
-- Ollama lock serializes LLM calls
-- pcap capture runs in dedicated blocking thread
+- Each packet processed in its own task, at most 32 concurrently (semaphore)
+- LLM concurrency is bounded by `--llm-max-concurrent` and the queue flags, not by
+  `--ollama-lock`, which does nothing
+- pcap capture runs in dedicated blocking thread and is stopped through `StopSignal`
 - No CPU bottleneck (LLM API is bottleneck)
 
 ### Memory
 
 - Each packet allocates buffer (~1500 bytes typical, 65535 max)
-- Hex encoding allocates string (2× packet size)
-- Minimal memory overhead (<10MB total)
+- Hex encoding allocates a string of 2× the *shown* bytes, capped at 2048 bytes (4096 chars)
+- Bounded overall by the 32-permit semaphore: 32 × (frame + its hex prefix), not "however many
+  frames arrive before the model catches up"
 
 ## Security Considerations
 

@@ -3,15 +3,28 @@
 //! These tests verify ARP server functionality by starting NetGet with ARP prompts
 //! and using pnet to send real ARP requests.
 //!
-//! **REQUIRES ROOT/ADMIN**: ARP requires CAP_NET_RAW, root, or BPF device access
-//! for layer-2 packet capture, so the test is `#[ignore]`d; run it under `sudo`
-//! (or after ChmodBPF / `setcap cap_net_raw+ep`) to exercise it.
+//! **This test cannot pass as written, and `sudo` does not fix it.** It targets the
+//! loopback interface, and ARP's `spawn()` refuses loopback outright: `arp` is an
+//! Ethernet-only BPF keyword, so on DLT_NULL/DLT_LOOP libpcap compiles the filter to
+//! "expression rejects all packets" and errors. That refusal is deliberate and is
+//! asserted in both privilege branches by
+//! `tests/capture_startup_reports_failure_test.rs::arp_spawn_refuses_loopback_and_says_why`.
+//! Running it needs a real Ethernet or Wi-Fi interface **and** root — and it would then
+//! inject ARP frames onto that live segment, which is why it is not pointed at one.
 //!
-//! Note that the `Device::list().is_err()` guard below does **not** detect the
-//! missing privilege: on macOS any unprivileged user can enumerate capture
-//! devices, and it is opening one that fails. NetGet's own capability probe
-//! (`src/privilege.rs`) opens a handle for exactly this reason. Until the guard
-//! is rewritten to match, the `#[ignore]` is what keeps this test honest.
+//! The `#[ignore]` reason used to say "run under sudo to exercise", which was true when
+//! the test was written and stopped being true when ARP started refusing loopback. Both
+//! are corrected here rather than the test being deleted: the scenario it describes —
+//! two mapped IPs answered, a third ignored — is the right one, and it is what a rewrite
+//! against a real interface should assert.
+//!
+//! Meanwhile the ARP server's evidence that actually runs is
+//! `tests/server/arp/frame_codec_test.rs`, which needs no interface and no privilege.
+//!
+//! Note also that the `Device::list().is_err()` guard below does **not** detect a missing
+//! privilege: on macOS any unprivileged user can enumerate capture devices, and it is
+//! opening one that fails. NetGet's own capability probe (`src/privilege.rs`) opens a
+//! handle for exactly this reason.
 
 #![cfg(feature = "arp")]
 
@@ -69,7 +82,7 @@ fn build_arp_request(sender_mac: MacAddr, sender_ip: Ipv4Addr, target_ip: Ipv4Ad
 }
 
 #[tokio::test]
-#[ignore = "Requires layer-2 packet capture privileges (root, CAP_NET_RAW, or BPF device access): without them server_startup refuses ARP with \"Cannot start ARP server: Layer-2 packet capture\", netget starts no server, and the harness fails with \"No servers or clients started\". Run under sudo to exercise. The in-test Device::list() guard does not catch this - enumerating capture devices succeeds unprivileged."]
+#[ignore = "Cannot pass as written, with or without privilege, and sudo does not help. It targets the loopback interface, and ARP spawn() refuses loopback outright: `arp` is an Ethernet-only BPF keyword and libpcap rejects the filter on DLT_NULL/DLT_LOOP, which tests/capture_startup_reports_failure_test.rs::arp_spawn_refuses_loopback_and_says_why asserts in both privilege branches. Unprivileged it fails one step earlier, at the capture open. Exercising it needs a real Ethernet or Wi-Fi interface AND root, and it would inject ARP frames onto that live segment - which is why it is not pointed at one by default. tests/server/arp/frame_codec_test.rs is the ARP server evidence that actually runs."]
 async fn test_arp_responder() -> E2EResult<()> {
     // Check if we can access pcap (requires privileges)
     if Device::list().is_err() {

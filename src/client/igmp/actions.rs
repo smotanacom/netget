@@ -51,7 +51,15 @@ pub static IGMP_CLIENT_DATA_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(
         Parameter {
             name: "data_length".to_string(),
             type_hint: "number".to_string(),
-            description: "Length of data in bytes".to_string(),
+            description: "Full length of the datagram in bytes, even when data_hex is truncated"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "data_truncated".to_string(),
+            type_hint: "boolean".to_string(),
+            description: "True when data_hex shows only the first 2048 bytes of a larger datagram"
+                .to_string(),
             required: true,
         },
         Parameter {
@@ -338,21 +346,32 @@ impl Client for IgmpClientProtocol {
                     .as_str()
                     .ok_or_else(|| anyhow!("Missing multicast_addr"))?;
 
+                // Validated to a real IPv4 address here rather than at send time: the send
+                // path builds "addr:port" and parses it, so an unusable value would surface
+                // as a parse failure naming a synthesised string instead of the field the
+                // model actually got wrong.
+                let multicast_ip: Ipv4Addr = multicast_addr
+                    .parse()
+                    .context("Invalid multicast address")?;
+
                 let port = action["port"]
                     .as_u64()
                     .ok_or_else(|| anyhow!("Missing or invalid port"))?;
+                let port = u16::try_from(port)
+                    .map_err(|_| anyhow!("port {port} is outside the 0-65535 range"))?;
 
                 let data_hex = action["data_hex"]
                     .as_str()
                     .ok_or_else(|| anyhow!("Missing data_hex"))?;
 
-                // Decode hex data
+                // Decode hex data. The parameter is documented as hex, so it is decoded here;
+                // the bytes on the wire are never the ASCII of the hex string.
                 let data = hex::decode(data_hex).context("Invalid hex data")?;
 
                 Ok(ClientActionResult::Custom {
                     name: "send_multicast".to_string(),
                     data: json!({
-                        "multicast_addr": multicast_addr,
+                        "multicast_addr": multicast_ip.to_string(),
                         "port": port,
                         "data": data,
                     }),

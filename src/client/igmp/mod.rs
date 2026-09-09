@@ -22,19 +22,34 @@ use crate::state::app_state::AppState;
 use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 
-/// Connection state for LLM processing
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
-enum ClientState {
-    Idle,
-    Processing,
-    Accumulating,
+/// How much of a received datagram is hex-encoded into the `igmp_data_received` event.
+///
+/// A UDP datagram can be 64 KiB, which is 128 KiB of hex — enough to fill a model's whole
+/// context with one multicast frame, and to do it again for every frame that arrives. The
+/// event carries the true `data_length` and a `data_truncated` flag either way, so the model
+/// is told what it is not being shown rather than quietly given a prefix.
+const MAX_EVENT_PAYLOAD_BYTES: usize = 2048;
+
+/// Hex for the event, plus whether it was cut short.
+fn payload_hex(data: &[u8]) -> (String, bool) {
+    if data.len() <= MAX_EVENT_PAYLOAD_BYTES {
+        (hex::encode(data), false)
+    } else {
+        (hex::encode(&data[..MAX_EVENT_PAYLOAD_BYTES]), true)
+    }
 }
 
-/// Per-client data for LLM handling
+/// Per-client data for LLM handling.
+///
+/// There is deliberately no Idle/Processing/Accumulating state machine here. The one the other
+/// protocols carry exists to stop two concurrent readers making concurrent LLM calls on one
+/// connection; this client has a single receive task that awaits its LLM round-trip inline
+/// before it calls `recv_from` again, so `Processing` could never be observed. The version that
+/// had one queued nothing (the queue was only ever reachable from the unreachable arm) and
+/// ended each pass by *clearing* the queue, so had it ever fired it would have silently dropped
+/// the datagrams it collected. Datagrams that arrive during an LLM call wait in the kernel
+/// socket buffer, which is where they belong.
 struct IgmpClientData {
-    state: ClientState,
-    queued_data: Vec<(Vec<u8>, SocketAddr)>,
     memory: String,
     joined_groups: HashSet<Ipv4Addr>,
 }
@@ -79,8 +94,6 @@ impl IgmpClient {
 
         // Initialize client data
         let client_data = Arc::new(Mutex::new(IgmpClientData {
-            state: ClientState::Idle,
-            queued_data: Vec::new(),
             memory: String::new(),
             joined_groups: HashSet::new(),
         }));
@@ -156,12 +169,26 @@ impl IgmpClient {
                                     "IGMP client {} action failed after connect: {}",
                                     client_id, e
                                 );
+                                let _ = status_tx.send(format!(
+                                    "[CLIENT] IGMP client {} action failed after connect: {}",
+                                    client_id, e
+                                ));
                             }
                         }
-                        Err(e) => warn!(
-                            "IGMP client {} could not execute action after connect: {}",
-                            client_id, e
-                        ),
+                        Err(e) => {
+                            // On the status stream as well as in the log: this is where a
+                            // model's malformed answer to `igmp_connected` lands, and until
+                            // it was surfaced a client told to join a group could report a
+                            // clean start having joined nothing.
+                            warn!(
+                                "IGMP client {} could not execute action after connect: {}",
+                                client_id, e
+                            );
+                            let _ = status_tx.send(format!(
+                                "[CLIENT] IGMP client {} rejected an action after connect: {}",
+                                client_id, e
+                            ));
+                        }
                     }
                 }
             }
@@ -205,133 +232,113 @@ impl IgmpClient {
                             peer_addr
                         );
 
-                        // Handle data with LLM
-                        let mut client_data_lock = client_data_clone.lock().await;
+                        // Ask the model what to do about this datagram and apply its answer.
+                        // No state machine guards this: the same task does the `recv_from`
+                        // and awaits the LLM call, so nothing else can be mid-call here
+                        // (see `IgmpClientData`).
+                        let Some(instruction) =
+                            app_state_clone.get_instruction_for_client(client_id).await
+                        else {
+                            continue;
+                        };
 
-                        match client_data_lock.state {
-                            ClientState::Idle => {
-                                // Process immediately
-                                client_data_lock.state = ClientState::Processing;
-                                drop(client_data_lock);
+                        let memory = {
+                            let data_lock = client_data_clone.lock().await;
+                            data_lock.memory.clone()
+                        };
 
-                                // Get current instruction and memory
-                                let instruction =
-                                    app_state_clone.get_instruction_for_client(client_id).await;
+                        let (data_hex, truncated) = payload_hex(&data);
+                        let event = Event::new(
+                            &IGMP_CLIENT_DATA_RECEIVED_EVENT,
+                            serde_json::json!({
+                                "data_hex": data_hex,
+                                "data_length": n,
+                                "data_truncated": truncated,
+                                "source_addr": peer_addr.to_string(),
+                            }),
+                        );
 
-                                if let Some(instruction) = instruction {
-                                    let memory = {
-                                        let data_lock = client_data_clone.lock().await;
-                                        data_lock.memory.clone()
-                                    };
+                        match call_llm_for_client(
+                            &llm_client_clone,
+                            &app_state_clone,
+                            client_id.to_string(),
+                            &instruction,
+                            &memory,
+                            Some(&event),
+                            protocol.as_ref(),
+                            &status_tx_clone,
+                        )
+                        .await
+                        {
+                            Ok(ClientLlmResult {
+                                actions,
+                                memory_updates,
+                            }) => {
+                                if let Some(mem) = memory_updates {
+                                    client_data_clone.lock().await.memory = mem;
+                                }
 
-                                    // Create event
-                                    let event = Event::new(
-                                        &IGMP_CLIENT_DATA_RECEIVED_EVENT,
-                                        serde_json::json!({
-                                            "data_hex": hex::encode(&data),
-                                            "data_length": n,
-                                            "source_addr": peer_addr.to_string(),
-                                        }),
-                                    );
-
-                                    // Call LLM
-                                    match call_llm_for_client(
-                                        &llm_client_clone,
-                                        &app_state_clone,
-                                        client_id.to_string(),
-                                        &instruction,
-                                        &memory,
-                                        Some(&event),
-                                        protocol.as_ref(),
-                                        &status_tx_clone,
-                                    )
-                                    .await
-                                    {
-                                        Ok(ClientLlmResult {
-                                            actions,
-                                            memory_updates,
-                                        }) => {
-                                            // Update memory
-                                            if let Some(mem) = memory_updates {
-                                                client_data_clone.lock().await.memory = mem;
-                                            }
-
-                                            // Execute actions
-                                            for action in actions {
-                                                match protocol.as_ref().execute_action(action) {
-                                                    Ok(result) => {
-                                                        match Self::apply_action(
+                                for action in actions {
+                                    match protocol.as_ref().execute_action(action) {
+                                        Ok(result) => {
+                                            match Self::apply_action(
+                                                client_id,
+                                                result,
+                                                &socket_clone,
+                                                &client_data_clone,
+                                                &status_tx_clone,
+                                            )
+                                            .await
+                                            {
+                                                Ok(Applied::Disconnect) => {
+                                                    info!(
+                                                        "IGMP client {} disconnecting",
+                                                        client_id
+                                                    );
+                                                    app_state_clone
+                                                        .remove_client_handle(client_id)
+                                                        .await;
+                                                    app_state_clone
+                                                        .update_client_status(
                                                             client_id,
-                                                            result,
-                                                            &socket_clone,
-                                                            &client_data_clone,
-                                                            &status_tx_clone,
+                                                            ClientStatus::Disconnected,
                                                         )
-                                                        .await
-                                                        {
-                                                            Ok(Applied::Disconnect) => {
-                                                                info!(
-                                                                    "IGMP client {} disconnecting",
-                                                                    client_id
-                                                                );
-                                                                app_state_clone
-                                                                    .remove_client_handle(client_id)
-                                                                    .await;
-                                                                app_state_clone
-                                                                    .update_client_status(
-                                                                        client_id,
-                                                                        ClientStatus::Disconnected,
-                                                                    )
-                                                                    .await;
-                                                                let _ = status_tx_clone.send(
-                                                                    "__UPDATE_UI__".to_string(),
-                                                                );
-                                                                return;
-                                                            }
-                                                            Ok(_) => {}
-                                                            Err(e) => {
-                                                                error!("IGMP client {} action failed: {}", client_id, e);
-                                                                let _ = status_tx_clone.send(format!(
-                                                                    "[CLIENT] IGMP client {} action failed: {}",
-                                                                    client_id, e
-                                                                ));
-                                                            }
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        warn!("Action execution error for IGMP client {}: {}", client_id, e);
-                                                    }
+                                                        .await;
+                                                    let _ = status_tx_clone
+                                                        .send("__UPDATE_UI__".to_string());
+                                                    return;
+                                                }
+                                                Ok(_) => {}
+                                                Err(e) => {
+                                                    error!(
+                                                        "IGMP client {} action failed: {}",
+                                                        client_id, e
+                                                    );
+                                                    let _ = status_tx_clone.send(format!(
+                                                        "[CLIENT] IGMP client {} action failed: {}",
+                                                        client_id, e
+                                                    ));
                                                 }
                                             }
                                         }
                                         Err(e) => {
-                                            error!(
-                                                "LLM error for IGMP client {}: {}",
+                                            // Visible, not only in the log file: an action the
+                                            // protocol cannot execute means the model's answer
+                                            // never reached the wire, and nothing else says so.
+                                            warn!(
+                                                "Action execution error for IGMP client {}: {}",
                                                 client_id, e
                                             );
+                                            let _ = status_tx_clone.send(format!(
+                                                "[CLIENT] IGMP client {} rejected an action: {}",
+                                                client_id, e
+                                            ));
                                         }
                                     }
                                 }
-
-                                // Process queued data if any
-                                let mut client_data_lock = client_data_clone.lock().await;
-                                if !client_data_lock.queued_data.is_empty() {
-                                    client_data_lock.queued_data.clear();
-                                }
-                                client_data_lock.state = ClientState::Idle;
                             }
-                            ClientState::Processing => {
-                                // Queue data for later processing
-                                client_data_lock.queued_data.push((data, peer_addr));
-                                trace!("IGMP client {} queued data (processing state)", client_id);
-                            }
-                            ClientState::Accumulating => {
-                                // Already accumulating, just add to queue
-                                client_data_lock.queued_data.push((data, peer_addr));
-                                trace!(
-                                    "IGMP client {} queued data (accumulating state)",
-                                    client_id
-                                );
+                            Err(e) => {
+                                error!("LLM error for IGMP client {}: {}", client_id, e);
                             }
                         }
                     }
