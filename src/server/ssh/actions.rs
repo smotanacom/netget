@@ -74,21 +74,39 @@ impl Protocol for SshProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            // Not Beta: there is no E2E test for SSH at all, and until recently the SFTP
-            // subsystem advertised no actions whatsoever, so no handler could answer an SFTP
-            // request. Raise this to Beta once tests/server/ssh exists and passes.
-            // Beta: exercised against a real, independent client — russh —
-            // covering a real SSH client completing auth and a channel exchange. Not Stable: Stable additionally wants spec
-            // compliance and scripting support reviewed, which has not been done here.
-            .state(DevelopmentState::Beta)
+            // Experimental, not Beta. Beta means "works against real clients", evidenced by a
+            // test that a third-party implementation completed a real exchange. No such test
+            // exists here: `tests/server/ssh` drives the server with a bare `TcpStream` and
+            // asserts on the version-exchange banner, and its own comment records that the
+            // `ssh2` client "has timing/compatibility issues with russh server" — i.e. the one
+            // third-party client that was tried does not complete a session.
+            //
+            // russh is not the missing evidence either. It is the library this server is
+            // *built on*, so driving it with russh would be the circular case
+            // `tests/server/websocket/e2e_test.rs` describes, not an independent peer.
+            //
+            // Promote to Beta when a real SSH client (openssh's `ssh`/`sftp`, or `ssh2`)
+            // completes auth and a channel exchange in a test that is neither `#[ignore]`d nor
+            // skipped when the binary is absent.
+            .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(22))
-            .implementation("russh v0.40, russh-sftp v2.0; ephemeral Ed25519 host key")
+            .implementation("russh v0.45, russh-sftp v2.1; ephemeral Ed25519 host key")
             .llm_control("Auth decisions, shell banner and output, SFTP reads and listings")
-            .e2e_testing("openssh client (ssh/sftp) by hand - no automated test exists")
+            .e2e_testing(
+                "No third-party SSH client completes a session in the automated suite. \
+                 tests/server/ssh drives the socket directly (banner, version exchange, \
+                 concurrent connects, script-vs-LLM routing) and tests/server/ssh/llm_failure_test \
+                 covers the fail-closed paths. Interactive checks with openssh ssh/sftp were \
+                 done by hand and are not reproducible in CI.",
+            )
             .notes(
-                "Shell and SFTP only: no port forwarding, no X11, no keyboard-interactive. \
-                 SFTP is read-only (write/remove/mkdir/rmdir/rename are not implemented). Host \
-                 key is regenerated on every start, so clients warn about a changed key.",
+                "FAILS CLOSED: an LLM error, a handler that returns no ssh_auth_decision, and \
+                 a malformed decision all deny, logged as decision=fail_closed_* and never as \
+                 decision=model_reject. Shell and SFTP only: no port forwarding, no X11, no \
+                 keyboard-interactive. SFTP is read-only (write/remove/mkdir/rmdir/rename are \
+                 not implemented) and serves no real filesystem — every listing, stat and byte \
+                 comes from the model. Host key is regenerated on every start, so clients warn \
+                 about a changed key.",
             )
             .build()
     }

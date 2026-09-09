@@ -13,17 +13,45 @@ SFTP tree contains. Nothing is read from or written to the real filesystem.
 
 ### Why Experimental, not Beta
 
-`Beta` means "human reviewed, works with real clients". Two things block that:
+`Beta` means "human reviewed, **works against real clients**", evidenced by a test in which a
+third-party implementation completed a real exchange. There is no such test here.
 
-1. **There is no E2E test.** `tests/server/ssh/` does not exist. This is the single largest gap
-   in the protocol — 2,700 lines handling attacker-controlled crypto and channel data, with no
-   automated coverage.
-2. **SFTP could not work at all until recently.** `sftp_operation` declared *zero* actions and
-   its example response was `{"type": "placeholder"}`, so no handler was ever told what to
-   return. The handler code read fields (`entries`, `content`, `handle`) that nothing in the
-   prompt described. That vocabulary now exists (below), but it is untested.
+`tests/server/ssh/` does now exist and is substantial — banner, version exchange, concurrent
+connections, script-vs-LLM routing, SFTP, and `llm_failure_test.rs` for the fail-closed paths —
+but every one of those drives the server through a bare `TcpStream`. The one third-party client
+that was tried, `ssh2`, does not complete a session: `test.rs` records that it "has
+timing/compatibility issues with russh server". So NetGet is still only checking NetGet.
 
-Raise the state to `Beta` once `tests/server/ssh/` exists and passes against a real client.
+**russh would not close the gap either.** It is the library this server is built on, so using it
+as the peer is the circular case `tests/server/websocket/e2e_test.rs` describes — it would prove
+russh round-trips through itself. (The code briefly claimed `Beta` on exactly that reasoning,
+while its own `e2e_testing` field said "no automated test exists" three lines below. Both the
+rating and the contradiction are gone.)
+
+Raise to `Beta` when a real SSH client — openssh's `ssh`/`sftp`, or a working `ssh2` — completes
+auth and a channel exchange in a test that is neither `#[ignore]`d nor skipped when the binary
+is absent.
+
+### Fail-closed
+
+`llm_auth_decision` returns `Ok(false)` on every path that is not an explicit grant, and the
+three cases stay distinct in the log because they are identical on the wire
+(SSH_MSG_USERAUTH_FAILURE):
+
+| Situation | Result | Logged decision |
+|---|---|---|
+| Handler returns `ssh_auth_decision` with `allowed: true` | accept | `decision=model_accept` |
+| Handler returns `ssh_auth_decision` with `allowed: false` | deny | `decision=model_reject` |
+| Handler returns no `ssh_auth_decision`, or one without `allowed` | **deny** | `decision=fail_closed_no_answer` |
+| LLM call errors or times out | **deny** | `decision=fail_closed_backend_error` + `category=` |
+
+Nothing NetGet writes can produce an accept: `Auth::Accept` is reached only from
+`allowed == true`. russh's own `Handler` defaults for `auth_none`, `auth_password`,
+`auth_publickey` and `auth_keyboard_interactive` are all `Auth::Reject`, so a method this server
+does not override cannot let anyone in either.
+
+One gap worth knowing: `auth_publickey` asks the model with the username alone — the offered
+public key is not in the event, so a handler cannot distinguish two keys for the same user.
 
 ## Architecture
 
