@@ -212,6 +212,12 @@ jobs:
         with:
           key: test-${{ env.CI_FEATURES }}
 
+      # The dns suite drives ISC BIND's `dig` as an independent client, and that test
+      # deliberately FAILS rather than skips when dig is absent - a skip-when-missing gate
+      # is a silent pass, not evidence. dns is in CI_FEATURES, so the binary must be here.
+      - name: install dig (required by the dns real-client test)
+        run: sudo apt-get update && sudo apt-get install -y bind9-dnsutils
+
       - name: cargo test
         run: |
           cargo test --locked --no-default-features --features "$CI_FEATURES" \
