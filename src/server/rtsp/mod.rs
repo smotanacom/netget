@@ -474,8 +474,18 @@ impl RtspServer {
         let transport = req.headers.get("transport").cloned().unwrap_or_default();
         let client_rtp_port = parse_client_rtp_port(&transport);
 
-        // Bind a UDP socket for outbound RTP on the loopback interface.
-        let rtp_socket = match UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await {
+        // Bind a UDP socket for outbound RTP on the address family the client reached us on.
+        //
+        // This used to hardcode 127.0.0.1, which works for a loopback test and for nothing else:
+        // a client on another host got a SETUP that succeeded, a Transport header naming a real
+        // server_port, a 200 OK to its PLAY — and then every `send_to` failed, because a
+        // loopback-bound socket cannot reach an off-host address. The session looked established
+        // and no media ever arrived, which is the worst shape a failure can take.
+        let bind_addr = match remote_addr.ip() {
+            std::net::IpAddr::V4(_) => SocketAddr::from(([0u8, 0, 0, 0], 0)),
+            std::net::IpAddr::V6(_) => SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+        };
+        let rtp_socket = match UdpSocket::bind(bind_addr).await {
             Ok(s) => Arc::new(s),
             Err(e) => {
                 Log::new(Some(status_tx))
@@ -555,17 +565,41 @@ impl RtspServer {
         };
 
         // Media description from the play action (VNC-style: structured, not bytes).
-        let codec = action
+        //
+        // A *malformed* description is refused rather than substituted. Both of these used to
+        // swallow the parse error and fall back to PCMU/440 Hz, so a model that asked for
+        // `content:"dtmf"` and forgot `digits`, or named a codec this engine cannot synthesize,
+        // got a confident 200 OK and a tone it never asked for — with the reason discarded. An
+        // absent field still takes the documented default; only a value that fails to parse is
+        // an error, and RTSP has a status code for it.
+        let codec = match action
             .as_ref()
             .and_then(|a| a.get("payload_type"))
             .and_then(|v| v.as_str())
-            .map(AudioCodec::parse)
-            .unwrap_or(Ok(AudioCodec::Pcmu))
-            .unwrap_or(AudioCodec::Pcmu);
-        let content = action
-            .as_ref()
-            .and_then(|a| media::parse_audio_content(a).ok())
-            .unwrap_or(media::AudioContent::Tone { hz: 440.0 });
+        {
+            Some(pt) => match AudioCodec::parse(pt) {
+                Ok(c) => c,
+                Err(e) => {
+                    Log::new(Some(status_tx)).warn(format!(
+                        "RTSP PLAY decision=fail_closed_bad_action; refusing to stream: {}",
+                        e
+                    ));
+                    return build_response(400, "Bad Request", &req.cseq, &[], None, None);
+                }
+            },
+            None => AudioCodec::Pcmu,
+        };
+        let content = match action.as_ref().map(media::parse_audio_content) {
+            Some(Ok(c)) => c,
+            Some(Err(e)) => {
+                Log::new(Some(status_tx)).warn(format!(
+                    "RTSP PLAY decision=fail_closed_bad_action; refusing to stream: {}",
+                    e
+                ));
+                return build_response(400, "Bad Request", &req.cseq, &[], None, None);
+            }
+            None => media::AudioContent::Tone { hz: 440.0 },
+        };
         let duration_ms = action
             .as_ref()
             .and_then(|a| a.get("duration_ms"))
@@ -730,9 +764,15 @@ fn parse_client_rtp_port(transport: &str) -> Option<u16> {
 /// Parse one complete RTSP request from `buf`. Returns the request and how many bytes it
 /// consumed, or None if the buffer does not yet hold a full message.
 fn parse_rtsp_request(buf: &[u8]) -> Option<(RtspRequest, usize)> {
-    let text = std::str::from_utf8(buf).ok()?;
-    let header_end = text.find("\r\n\r\n")?;
-    let header_block = &text[..header_end];
+    // Locate the header terminator on the BYTES, and decode only the header block.
+    //
+    // This used to run `std::str::from_utf8` over the whole buffer first, which made the parser
+    // fail on anything the buffer merely happened to end in the middle of: a multi-byte
+    // character split across two TCP segments, or a binary body, invalidated the entire buffer
+    // — including a complete request sitting in front of it. The connection then stalled with a
+    // fully-formed request unanswered until the 1 MiB overflow closed it.
+    let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let header_block = std::str::from_utf8(&buf[..header_end]).ok()?;
     let mut lines = header_block.split("\r\n");
 
     let request_line = lines.next()?;

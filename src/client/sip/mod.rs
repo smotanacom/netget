@@ -38,6 +38,10 @@ struct ClientData {
     from_tag: Option<String>,
     to_tag: Option<String>,
     cseq: u32,
+    /// This socket's own address, for Via and Contact. Held here because
+    /// `execute_sip_action` is reached from three places (connect, read loop, injected
+    /// command) and all three already take the `ClientData` lock to build a request.
+    local_addr: SocketAddr,
 }
 
 /// SIP client that connects to a remote SIP server
@@ -59,10 +63,16 @@ impl SipClient {
 
         // Bind to local UDP socket (ephemeral port)
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-        let local_addr = socket.local_addr()?;
 
         // Connect UDP socket to remote address
         socket.connect(remote_sock_addr).await?;
+
+        // Read the local address *after* connect. Before it, the socket is bound to
+        // 0.0.0.0 and `local_addr()` says so; after it, the kernel has picked the outbound
+        // interface and reports the address a peer would actually see. This is the address
+        // that goes in Via and Contact, so taking it a line too early put a wildcard on the
+        // wire.
+        let local_addr = socket.local_addr()?;
 
         info!(
             "SIP client {} connected to {} (local: {})",
@@ -85,6 +95,7 @@ impl SipClient {
             from_tag: None,
             to_tag: None,
             cseq: 1,
+            local_addr,
         }));
 
         // Call LLM with initial connected event
@@ -301,31 +312,58 @@ impl SipClient {
                                         client_id
                                     );
 
-                                    let client_data_lock = client_data_clone.lock().await;
-                                    let ack_request = Self::build_ack_request(
-                                        &response,
-                                        client_data_lock.call_id.as_ref().unwrap(),
-                                        client_data_lock.from_tag.as_ref().unwrap(),
-                                        client_data_lock.cseq - 1, // Use same CSeq as INVITE
-                                    );
-                                    drop(client_data_lock);
-
-                                    match socket_clone.send(&ack_request).await {
-                                        Ok(sent) => {
-                                            info!(
-                                                "SIP client {} sent ACK ({} bytes)",
-                                                client_id, sent
-                                            );
-                                            let _ = status_clone.send(format!(
-                                                "[CLIENT] SIP client {} sent ACK",
-                                                client_id
-                                            ));
+                                    // Both of these were `.unwrap()`, and both are `None` until
+                                    // this client has itself sent a request. A datagram whose
+                                    // CSeq says `INVITE` and whose status line says 200 — which
+                                    // any peer can send unprompted — therefore panicked the read
+                                    // loop, inside a `tokio::spawn` that swallows the panic: the
+                                    // client stayed "Connected" and went permanently deaf.
+                                    // There is no dialog to acknowledge in that case, so the
+                                    // honest answer is to log it and send nothing.
+                                    let ack = {
+                                        let d = client_data_clone.lock().await;
+                                        match (d.call_id.as_ref(), d.from_tag.as_ref()) {
+                                            (Some(call_id), Some(from_tag)) => {
+                                                Some(Self::build_ack_request(
+                                                    &response,
+                                                    call_id,
+                                                    from_tag,
+                                                    // Same CSeq as the INVITE. Saturating
+                                                    // because `cseq` is unsigned and nothing
+                                                    // guarantees a request preceded this.
+                                                    d.cseq.saturating_sub(1),
+                                                    d.local_addr,
+                                                ))
+                                            }
+                                            _ => None,
                                         }
-                                        Err(e) => {
-                                            error!(
-                                                "SIP client {} ACK send error: {}",
-                                                client_id, e
-                                            );
+                                    };
+                                    match ack {
+                                        None => warn!(
+                                            "SIP client {} got an INVITE 200 OK with no local \
+                                             dialog (no Call-ID or From tag yet); this client \
+                                             sent no INVITE, so no ACK is owed",
+                                            client_id
+                                        ),
+                                        Some(ack_request) => {
+                                            match socket_clone.send(&ack_request).await {
+                                                Ok(sent) => {
+                                                    info!(
+                                                        "SIP client {} sent ACK ({} bytes)",
+                                                        client_id, sent
+                                                    );
+                                                    let _ = status_clone.send(format!(
+                                                        "[CLIENT] SIP client {} sent ACK",
+                                                        client_id
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    error!(
+                                                        "SIP client {} ACK send error: {}",
+                                                        client_id, e
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -585,13 +623,23 @@ impl SipClient {
                             client_data_lock.from_tag = Some(Self::generate_tag());
                         }
 
+                        // `expect` rather than `unwrap`: both were just filled in above, so
+                        // this cannot be reached, and saying so is cheaper than making the
+                        // reader prove it.
                         let request = Self::build_sip_request(
                             &name,
                             &data,
-                            client_data_lock.call_id.as_ref().unwrap(),
-                            client_data_lock.from_tag.as_ref().unwrap(),
+                            client_data_lock
+                                .call_id
+                                .as_ref()
+                                .expect("Call-ID generated above"),
+                            client_data_lock
+                                .from_tag
+                                .as_ref()
+                                .expect("From tag generated above"),
                             client_data_lock.to_tag.as_ref(),
                             client_data_lock.cseq,
+                            client_data_lock.local_addr,
                         );
 
                         client_data_lock.cseq += 1;
@@ -719,6 +767,7 @@ impl SipClient {
         from_tag: &str,
         to_tag: Option<&String>,
         cseq: u32,
+        local_addr: SocketAddr,
     ) -> Vec<u8> {
         let from = data["from"].as_str().unwrap_or("sip:user@localhost");
         let to = data["to"].as_str().unwrap_or("sip:server@localhost");
@@ -740,10 +789,20 @@ impl SipClient {
         // Build request line
         let mut request = format!("{} {} SIP/2.0\r\n", sip_method, request_uri);
 
-        // Add Via header
-        request.push_str("Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-netget-");
-        request.push_str(&Self::generate_branch());
-        request.push_str("\r\n");
+        // Add Via header.
+        //
+        // This is our own address, not the literal `127.0.0.1:5060` it used to be. Via is where
+        // an RFC 3261 server sends the response, so a hardcoded loopback address meant every
+        // reply from a real server went to port 5060 on the server's own loopback and this
+        // client never saw it. It worked only against netget's own SIP server, which answers
+        // the datagram's source address instead. `;rport` (RFC 3581) additionally asks the
+        // server to reply to the source address and port it actually observed, which is what
+        // makes this work from behind NAT.
+        request.push_str(&format!(
+            "Via: SIP/2.0/UDP {};rport;branch=z9hG4bK-netget-{}\r\n",
+            local_addr,
+            Self::generate_branch()
+        ));
 
         // Add From header (with tag)
         request.push_str(&format!("From: <{}>;tag={}\r\n", from, from_tag));
@@ -763,7 +822,10 @@ impl SipClient {
 
         // Add Contact header (for REGISTER/INVITE)
         if sip_method == "REGISTER" || sip_method == "INVITE" {
-            let contact = data["contact"].as_str().unwrap_or("sip:user@127.0.0.1");
+            // Default Contact is this socket's own address for the same reason as Via: a
+            // server that calls back a hardcoded 127.0.0.1 reaches itself, not us.
+            let default_contact = format!("sip:user@{}", local_addr);
+            let contact = data["contact"].as_str().unwrap_or(&default_contact);
             request.push_str(&format!("Contact: <{}>\r\n", contact));
         }
 
@@ -800,6 +862,7 @@ impl SipClient {
         call_id: &str,
         from_tag: &str,
         cseq: u32,
+        local_addr: SocketAddr,
     ) -> Vec<u8> {
         // Extract URIs from response headers
         let from_uri = Self::extract_uri(&response.from).unwrap_or("sip:user@localhost");
@@ -811,10 +874,20 @@ impl SipClient {
         // Build request line
         let mut request = format!("ACK {} SIP/2.0\r\n", request_uri);
 
-        // Add Via header
-        request.push_str("Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-netget-");
-        request.push_str(&Self::generate_branch());
-        request.push_str("\r\n");
+        // Add Via header.
+        //
+        // This is our own address, not the literal `127.0.0.1:5060` it used to be. Via is where
+        // an RFC 3261 server sends the response, so a hardcoded loopback address meant every
+        // reply from a real server went to port 5060 on the server's own loopback and this
+        // client never saw it. It worked only against netget's own SIP server, which answers
+        // the datagram's source address instead. `;rport` (RFC 3581) additionally asks the
+        // server to reply to the source address and port it actually observed, which is what
+        // makes this work from behind NAT.
+        request.push_str(&format!(
+            "Via: SIP/2.0/UDP {};rport;branch=z9hG4bK-netget-{}\r\n",
+            local_addr,
+            Self::generate_branch()
+        ));
 
         // Add From header (with tag)
         request.push_str(&format!("From: <{}>;tag={}\r\n", from_uri, from_tag));
@@ -847,10 +920,16 @@ impl SipClient {
 
         let trimmed = header_value.trim();
 
-        // Check for angle brackets
+        // Check for angle brackets.
+        //
+        // The closing bracket is searched for *after* the opening one. Searching the whole
+        // string for '>' independently panicked whenever a '>' appeared first — which a peer
+        // can arrange with a display name such as `"a>b" <sip:x@y>` — because `&s[start+1..end]`
+        // with `start > end` is a slice whose start is past its end. Remotely triggerable, in
+        // the read loop, inside a `tokio::spawn` that swallows the panic.
         if let Some(start) = trimmed.find('<') {
-            if let Some(end) = trimmed.find('>') {
-                return Some(&trimmed[start + 1..end]);
+            if let Some(offset) = trimmed[start + 1..].find('>') {
+                return Some(&trimmed[start + 1..start + 1 + offset]);
             }
         }
 

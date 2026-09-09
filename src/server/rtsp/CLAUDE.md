@@ -91,3 +91,41 @@ Test: `tests/server/rtsp/peer_inject_test.rs` (zero LLM calls).
 
 Default 8554 (unprivileged), privilege `None`. RFC's 554 is privileged; pass `port: 554` explicitly
 if you hold the privilege — this implementation does not hardcode or require it.
+
+## Three defects this file used to describe as working
+
+- **The RTP socket was bound to `127.0.0.1`.** SETUP succeeded, the Transport header named a real
+  `server_port`, PLAY answered 200 — and then every `send_to` failed for any client not on
+  loopback, because a loopback-bound socket cannot reach an off-host address. The session looked
+  established and no media ever arrived, which is the worst shape a failure can take. It now
+  binds the unspecified address of the family the client reached us on.
+- **`parse_rtsp_request` decoded the whole read buffer as UTF-8 before looking for the header
+  terminator.** Anything the buffer merely happened to contain past the end of a valid request
+  invalidated the request too — a multi-byte character split across two TCP segments, a binary
+  body, a second pipelined request still arriving. The connection then sat with a fully-formed
+  request unanswered until the 1 MiB overflow closed it: a head-of-line stall that reads as a
+  hung server. The terminator is now found on the bytes and only the header block is decoded.
+  `tests/server/rtsp/parser_test.rs` holds it.
+- **A malformed media description on PLAY was silently replaced with a 440 Hz PCMU tone.** Both
+  `AudioCodec::parse` and `media::parse_audio_content` had their errors discarded with `.ok()`,
+  so a model asking for `content:"dtmf"` and forgetting `digits`, or naming a codec this engine
+  cannot synthesize, got a confident `200 OK` and a tone it never asked for — with the reason
+  thrown away. A value that fails to parse is now `400 Bad Request` plus
+  `decision=fail_closed_bad_action`; an *absent* field still takes its documented default.
+
+## What the model gates and what it does not
+
+RTSP framing — CSeq, Transport, Session, RTP-Info, the status line — is owned by `mod.rs` and is
+deterministic. The model shapes the DESCRIBE SDP, chooses status codes, and decides what PLAY
+streams. An absent action still takes the method default (200, and a `default_sdp`), which is
+right for a control protocol whose whole job is to hand out a well-formed session; it is *not*
+the SIP situation, where a default would be an admission decision. A model refusal is an explicit
+non-2xx and is logged `decision=model_reject`, distinct from `decision=model_no_answer` and from
+the `fail_closed_llm_*` pair.
+
+## Transport is UDP unicast only
+
+`handle_setup` always answers `RTP/AVP;unicast;client_port=..-..`, whatever the client's
+Transport header asked for. Interleaved (`RTP/AVP/TCP`) and multicast are not implemented, so a
+client that requests one gets a UDP session it did not ask for rather than `461 Unsupported
+Transport`.

@@ -70,6 +70,15 @@ impl HlsResponse {
     }
 }
 
+/// How long a peer may take to finish sending its request headers.
+///
+/// HLS clients send one short GET and nothing else, so this is generous for every legitimate
+/// case and still bounds a connection that sends a byte at a time.
+const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Longest request path carried into the log, the status stream and the model's prompt.
+const MAX_PATH_LEN: usize = 512;
+
 /// Why the peer got what it got, for the log only.
 ///
 /// The three failure cases a reader of `netget.log` must be able to tell apart: the model
@@ -192,8 +201,20 @@ impl HlsServer {
         let mut chunk = [0u8; 8192];
 
         // Read one HTTP request (headers up to the blank line; HLS clients send GETs with no body).
+        //
+        // Bounded by a deadline as well as by size. Without it a peer that connects and sends
+        // one byte — or nothing at all — parks this task and its socket for as long as it cares
+        // to keep the connection open, which is the whole of slowloris. 64 KiB caps how much a
+        // peer can make us buffer; the deadline caps how long it can make us wait.
+        let deadline = tokio::time::Instant::now() + HEADER_READ_TIMEOUT;
         let (method, path) = loop {
-            let n = read_half.read(&mut chunk).await?;
+            let n = match tokio::time::timeout_at(deadline, read_half.read(&mut chunk)).await {
+                Ok(r) => r?,
+                Err(_) => anyhow::bail!(
+                    "HLS request headers not complete within {}s",
+                    HEADER_READ_TIMEOUT.as_secs()
+                ),
+            };
             if n == 0 {
                 return Ok(());
             }
@@ -205,6 +226,10 @@ impl HlsServer {
                 anyhow::bail!("HLS request headers too large");
             }
         };
+        // The path is peer-supplied and can be the better part of 64 KiB. It reaches the log,
+        // the status stream and — as event data — the model's prompt, so it is bounded once
+        // here rather than at each of those.
+        let path = crate::utils::truncate_for_log(&path, MAX_PATH_LEN);
         console_trace!(status_tx, "HLS {} {}", method, path);
 
         // Refresh connection stats (bytes/packets in) so the dashboard rail shows real traffic
@@ -543,11 +568,15 @@ fn reason_phrase(status: u16) -> &'static str {
 /// Parse the method and path from a partial HTTP request. Returns None until the request line and
 /// header terminator (`\r\n\r\n`) are present.
 fn parse_request_line(buf: &[u8]) -> Option<(String, String)> {
-    let text = std::str::from_utf8(buf).ok()?;
-    if !text.contains("\r\n\r\n") {
-        return None;
-    }
-    let first = text.lines().next()?;
+    // Terminator located on the bytes, and only the request line decoded. Running
+    // `from_utf8` over the whole buffer rejected a request whose headers were valid because
+    // something later in the buffer was not — including a read that merely happened to stop in
+    // the middle of a multi-byte character — and the loop then waited for bytes that would
+    // never make it valid. The request line itself must still be UTF-8; a path that is not is
+    // a request this server cannot route.
+    let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&buf[..header_end]).ok()?;
+    let first = head.lines().next()?;
     let mut parts = first.split_whitespace();
     let method = parts.next()?.to_string();
     let path = parts.next()?.to_string();

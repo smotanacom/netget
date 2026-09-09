@@ -31,6 +31,29 @@ impl Default for RtpProtocol {
 }
 
 impl Protocol for RtpProtocol {
+    /// One parameter, read by [`crate::server::rtp::RtpConfig::from_params`].
+    ///
+    /// RTP is the one protocol here where the model genuinely cannot be on the per-packet path,
+    /// so the ceiling is configuration rather than a constant.
+    fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
+        use crate::llm::actions::ParameterDefinition;
+        vec![ParameterDefinition {
+            name: "llm_max_per_minute".to_string(),
+            type_hint: "number".to_string(),
+            description: format!(
+                "Ceiling on model consultations per rolling minute (default {}). A single G.711 \
+                 stream is 50 packets per second, so without a ceiling one stream is 50 LLM \
+                 calls a second. Datagrams over the ceiling are dropped and nothing is sent, \
+                 logged as decision=fail_closed_rate_limited. A script or static event handler \
+                 is never charged against this, so 0 - forbidding model consultation entirely - \
+                 is the right value for a server driven wholly by handlers.",
+                crate::server::rtp::DEFAULT_LLM_MAX_PER_MINUTE
+            ),
+            required: false,
+            example: json!(30),
+        }]
+    }
+
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         vec![send_rtp_audio_action(), send_rtcp_sender_report_action()]
     }
@@ -148,13 +171,15 @@ impl Server for RtpProtocol {
         Box<dyn std::future::Future<Output = anyhow::Result<std::net::SocketAddr>> + Send>,
     > {
         Box::pin(async move {
-            use crate::server::rtp::RtpServer;
+            use crate::server::rtp::{RtpConfig, RtpServer};
+            let cfg = RtpConfig::from_params(&ctx.startup_params)?;
             RtpServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
                 ctx.server_id,
+                cfg,
             )
             .await
         })
@@ -274,7 +299,11 @@ fn send_rtp_audio_action() -> ActionDefinition {
             Parameter {
                 name: "duration_ms".to_string(),
                 type_hint: "number".to_string(),
-                description: "Stream length in milliseconds (1-30000). Default 1000.".to_string(),
+                description: "Stream length in milliseconds (1-30000). Default 1000. Ignored \
+                              for content=dtmf, whose length is 200 ms per digit, and for \
+                              content=raw, whose length is the decoded payload; both are held \
+                              to the same 30 s ceiling."
+                    .to_string(),
                 required: false,
             },
             Parameter {

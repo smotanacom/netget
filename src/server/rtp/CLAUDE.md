@@ -49,6 +49,50 @@ Media is the one place binary is unavoidable. Prefer the structured description.
 truly needed, they are **hex-encoded and decoded for real** (`hex::decode`), never sniffed and never
 base64 — the `send_tcp_data` lesson.
 
+## The model is behind a budget, because RTP is high-rate
+
+A single G.711 stream is **50 packets per second**. One `call_llm` per inbound datagram — which
+is what this used to do — exhausts the model budget in seconds; and because one consultation can
+authorize up to 30 s of outbound media from a 12-byte request, a spoofed source address makes the
+server an amplifier as well. Two gates now stand in front of `call_llm`, in the shape
+`src/server/tuntap/` established:
+
+```text
+  datagram ─▶ GATE 1  a deterministic handler answers  ── yes ──▶ no model call, never charged
+             │        (script / static / manual rule)
+             └─▶ GATE 2  a rolling per-minute budget   ── over ──▶ dropped, nothing sent,
+                         (`llm_max_per_minute`, 30)                decision=fail_closed_rate_limited
+```
+
+- **`llm_max_per_minute`** is the one startup parameter (`RtpConfig::from_params`), default 30.
+  `0` forbids model consultation outright, which is the right setting for a server driven wholly
+  by handlers.
+- Gate 1 is what makes a low ceiling usable rather than crippling: script and static handlers are
+  the intended way to run RTP at rate, and they are never charged.
+- It is a **sliding window**, not a leaky bucket, so "never more than N in any minute" is
+  literally true rather than an average that permits bursts.
+- Over-budget datagrams get the same silence as every other RTP failure. They are counted, and
+  the refusals are reported once per burst rather than once per packet — the status channel is
+  unbounded, so a line per dropped packet would be its own denial of service.
+
+`tests/server/rtp/budget_test.rs` measures all of it, including the control that makes the zeros
+mean something: at `llm_max_per_minute: 0` a static handler still streams.
+
+## One connection entry per peer, not per datagram
+
+The accept loop used to `add_connection_to_server` and push `__UPDATE_UI__` for **every**
+datagram, so a 50 pps stream added 50 rows and 50 messages a second to the unbounded status
+channel — and `send_rtp_audio`'s remote-address lookup then picked the first of a hundred
+identical entries. `RtpServer::track_peer` bumps the existing entry for a peer and creates one
+only for a peer it has not seen. The `.connectionless()` idle sweep reclaims them.
+
+## Duration caps apply however the content was described
+
+`synthesize` refuses anything past `MAX_DURATION_MS` (30 s). DTMF takes its length from the digit
+count (200 ms each) rather than from `duration_ms`, so the cap did not constrain it and a long
+`digits` string from a script or static handler allocated without bound; it is now held to the
+same 30 s ceiling (150 digits).
+
 ## Fail-closed
 
 On LLM failure the server sends nothing (RTP has no error frame) and logs on both channels. It never

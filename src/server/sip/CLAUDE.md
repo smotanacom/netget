@@ -292,49 +292,39 @@ feature the field is ignored and SIP remains signaling-only.
 
 ## Connection and State Management
 
-### Dialog Tracking
+### Dialog tracking: there isn't any
 
-**Per-Dialog State** (`ProtocolConnectionInfo::Sip`):
+This section used to show a `ProtocolConnectionInfo::Sip` variant with `dialog_id`, tags and a
+four-state machine. **No such type exists** — `ProtocolConnectionInfo` is a generic
+`serde_json::Value` wrapper (see `state/server.rs`), and this server stores
+`ProtocolConnectionInfo::empty()` on every entry. The RFC 3261 §12 states below are what SIP
+defines, not what NetGet tracks.
 
-```rust
-Sip {
-    dialog_id: Option<String>,    // Call-ID + From tag + To tag
-    from: Option<String>,          // Caller SIP URI
-    to: Option<String>,            // Callee SIP URI
-    state: String,                 // idle/early/confirmed/terminated
-    call_id: Option<String>,       // Call-ID header value
-}
-```
+What the connection entries are actually for: one entry per **peer address**, carrying byte and
+packet counters for the dashboard rail. SIP declares `.connectionless()`, so the 10-second idle
+sweep reclaims them — correct here, because each SIP request is answered on its own and the
+next datagram from a peer is not understood in the light of the last one. Correlating requests
+into a dialog is the model's job, from the `call_id`, `from` and `to` the event carries.
 
-**Dialog States** (RFC 3261 Section 12):
+### There is no registration database, by design
 
-- **Idle**: No dialog exists
-- **Early**: INVITE sent, waiting for final response (180 Ringing)
-- **Confirmed**: Session active (200 OK + ACK exchanged)
-- **Terminated**: BYE sent/received, dialog closed
+This section used to describe a `HashMap<String, ContactBinding>` and a five-step flow that
+stored and expired bindings. **None of it exists, and none of it should**: "protocols must not
+implement storage" (see the root `CLAUDE.md`) — the model supplies all state, and the sanctioned
+exception is the generic SQLite facility the model opts into at runtime, not a table compiled
+into a protocol.
 
-**Dialog Creation**: INVITE + 200 OK + ACK establishes confirmed dialog
+What actually happens on a REGISTER:
 
-### Registration Database
+1. Client sends REGISTER with a Contact header.
+2. The event carries `contact` and `expires` to the model (or to a script/static rule).
+3. The decision is a status code, and that status code is the whole of the response.
+4. Nothing is remembered. The next REGISTER is decided from scratch.
 
-**In-Memory Storage**: HashMap<String, ContactBinding>
-
-- Key: SIP URI (e.g., "sip:alice@example.com")
-- Value: Contact URI (e.g., "sip:alice@192.0.2.1:5060"), Expires timestamp
-
-**Registration Flow**:
-
-1. Client sends REGISTER with Contact header
-2. LLM decides to accept/reject
-3. If accepted, store binding in database
-4. Return 200 OK with Expires header
-5. After expiration, remove binding
-
-**Call Routing** (future):
-
-- Lookup callee in registration database
-- Forward INVITE to registered Contact URI
-- Proxy mode: relay SIP messages between parties
+A server that needs to remember bindings across requests does it through the model's memory or
+through `create_database`/`execute_sql`, both of which the operator can see and the model
+chooses. **Call routing and proxy mode are not implemented** and are not "future work pending a
+database" — they would need outbound dialog state this server does not keep.
 
 ## Protocol Validation
 
@@ -346,7 +336,11 @@ Sip {
 4. **CSeq Header**: Format is `number METHOD` (e.g., "1 REGISTER")
 5. **Content-Length**: Must match body length if body present
 
-**Invalid Requests**: Return 400 Bad Request (unlike STUN, SIP requires error responses)
+**Invalid Requests**: none of the checks above are implemented, and **an unparseable
+message is answered with nothing at all** — `parse_sip_message` returns `Err`, the handler logs
+a WARN and returns. No 400 is ever built. (The list above describes RFC 3261, not this server.)
+A message that parses is dispatched on its method with no further validation; a missing Via,
+From, To, Call-ID or CSeq simply comes back empty in the response.
 
 ### Response Generation
 
@@ -676,6 +670,51 @@ destinations.
 4. Keep action-based API unchanged (transparent to LLM)
 
 **Estimated Effort**: 2-3 days for full rsipstack integration
+
+## Fail-closed: nothing reaches a 2xx without the model naming one
+
+REGISTER and INVITE are **admission decisions** — they say who may register a location and who
+may place a call — so the only question that matters is whether anything can reach a 200 without
+an explicit model decision. Four ways in were closed, and
+`tests/server/sip/fail_closed_test.rs` holds each of them open to inspection:
+
+| what the model did | what the peer gets | log |
+|---|---|---|
+| named a 2xx status code | that status code | `decision=model_answer` |
+| named a non-2xx status code | that status code | `decision=model_reject` |
+| returned a SIP action with **no** `status_code` | 500 | `decision=fail_closed_malformed_action` |
+| returned **no SIP response action** (only a common action, or nothing) | 500 | `decision=model_silent` |
+| the LLM call failed | 503 + `Retry-After` | `decision=` in the 503 section below |
+
+Two of those used to be holes. A missing `status_code` defaulted to **200**, so a forgotten
+field granted a registration; and an empty action list produced **silence**, which is not an
+accept but is not a refusal either — the UAC retransmits on timer E and gives up at timer F 32
+seconds later, and the operator's log said only "no action taken".
+
+The reply is also selected **by action name** (`is_sip_response_action`) rather than by taking
+`raw_actions.first()`. A model that returns `set_memory` alongside its reply used to have the
+`set_memory` framed into a status line while the real answer was ignored.
+
+`build_sip_response` no longer panics on a non-object action either. It used to
+`.expect("Action should be an object")` — inside a `tokio::spawn` that swallows the panic, so
+the peer got silence and the log got nothing.
+
+### ACK is never answered
+
+RFC 3261 §17 makes ACK a message that takes no response at all. The **LLM-failure** path always
+knew that; the **success** path did not, and framed a response for an ACK like any other method
+— in practice a `500`, because `{"type":"sip_ack"}` carries no `status_code`. The reply path now
+returns before building anything when the method is ACK, whatever the model said.
+
+### Media is only ever streamed back to the caller
+
+With the `rtp` feature, an accepted INVITE can stream real RTP to the `m=audio` target in the
+caller's SDP (see [RTP media flow](#rtp-media-flow-rtp-feature)). That target is now **required
+to be the source address of the INVITE**. SIP runs on UDP, so the source is trivially spoofable
+and the SDP body names its own destination: one 400-byte INVITE claiming `c=IN IP4 <victim>`
+would otherwise have NetGet stream seconds of G.711 at a third party it never heard from. A
+mismatch is refused and logged `decision=refused_media_redirect`; a real UAC advertises its own
+address, so the legitimate case is unaffected.
 
 ## Failure behaviour: 503 Service Unavailable
 
