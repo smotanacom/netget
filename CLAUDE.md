@@ -1110,6 +1110,13 @@ Read before assuming a subsystem is sound:
   at connect and dropped it), and pass `tls_built_in_root_certs(false)` when
   `danger_accept_invalid_certs` is set, since nothing will be checked against those roots.
 
+- **`nfsserve` 0.10.2 has a pre-auth remote DoS and we have not fixed it.** It resizes
+  buffers from a wire-supplied 31/32-bit length with no cap, so a **~40-byte unauthenticated**
+  `MOUNTPROC3_MNT` carrying a `dirpath` length of `0xFFFFFFFF` asks for 4 GiB and Rust aborts
+  the process on allocation failure. There is a second amplification path where MOUNT path
+  components drive LLM calls. Fixing it needs a listener-side guard or a patched crate — it was
+  documented rather than half-done. **Do not expose the `nfs` server to an untrusted network.**
+
 - **Fail-open defaults are the most dangerous pattern in this codebase.** When the LLM returns
   nothing usable, a protocol must not fall through to a permissive default. OAuth2 did: no
   action meant a hardcoded authorization code, a hardcoded access token, and introspection
@@ -1247,6 +1254,14 @@ Read before assuming a subsystem is sound:
   idle TCP-style connection — a telnet peer parked >10s for a human's manual answer, a BGP
   session between keepalives — was removed from state and drawn as `(closed)` while its socket
   was alive, and every later stat update and the real close targeted an entry that was gone.
+  **The opposite error is worse, and TFTP had it.** Declaring `.connectionless()` on a UDP
+  protocol that carries a *transfer* is actively harmful: a transfer is idle for the whole of
+  an LLM call, so the sweep evicted live transfers out from under themselves. "UDP" is not the
+  test — **"has no connection concept" is.** DNS, mDNS, SSDP and LLMNR answer one datagram and
+  forget you; TFTP, DHCP-style leases and anything with a session do not. If a peer's next
+  packet has to be understood in the light of its last one, it is not connectionless, whatever
+  transport it rides on.
+
   It now runs only where `ProtocolMetadataV2::connectionless` is set (`.connectionless()` on the
   builder; the 22 UDP/raw servers declare it). A new connectionless protocol that forgets the
   flag leaks idle entries until its server stops — mild; the old default was the dangerous one.
