@@ -294,7 +294,7 @@ async fn test_doh_server() -> E2EResult<()> {
             .and()
     });
 
-    let mut server = helpers::start_netget_server(server_config).await?;
+    let server = helpers::start_netget_server(server_config).await?;
 
     println!("DoH server started on port {}", server.port);
 

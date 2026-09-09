@@ -240,7 +240,7 @@ async fn test_dot_server() -> E2EResult<()> {
                 .and()
         });
 
-    let mut server = crate::helpers::start_netget_server(server_config).await?;
+    let server = crate::helpers::start_netget_server(server_config).await?;
 
     // Extract server port
     let port = server.port;
