@@ -66,11 +66,14 @@ impl Protocol for SshAgentClientProtocol {
         vec![ParameterDefinition {
             name: "socket_path".to_string(),
             type_hint: "string".to_string(),
-            description:
-                "Path to SSH Agent Unix socket (default: $SSH_AUTH_SOCK or ./ssh-agent.sock)"
-                    .to_string(),
+            description: "Path to the SSH Agent Unix socket. Defaults to ./netget-ssh-agent.sock, \
+                 which is NetGet's own agent server. It deliberately does NOT default to \
+                 $SSH_AUTH_SOCK: that would attach this client to the operator's real \
+                 running agent and let it sign with their real private keys. Give the path \
+                 explicitly if that is genuinely what you want."
+                .to_string(),
             required: false,
-            example: json!("./ssh-agent.sock"),
+            example: json!("./netget-ssh-agent.sock"),
         }]
     }
 
@@ -210,8 +213,17 @@ impl Protocol for SshAgentClientProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("SSH Agent client using custom protocol implementation")
             .llm_control("Full control over agent operations and key management")
-            .e2e_testing("OpenSSH agent, NetGet SSH Agent server")
-            .notes("Connects to existing SSH agents via Unix sockets")
+            .e2e_testing(
+                "tests/client/ssh_agent/command_channel_test.rs runs; the e2e suite in \
+                 tests/client/ssh_agent/CLAUDE.md is aspirational and no third-party agent \
+                 drives this client in an automated test.",
+            )
+            .notes(
+                "Speaks to any agent on a Unix socket. Defaults to ./netget-ssh-agent.sock, \
+                 NOT $SSH_AUTH_SOCK: pointed at a real agent this client can enumerate the \
+                 operator's identities and have them sign model-chosen bytes, so reaching a \
+                 live agent has to be asked for by path.",
+            )
             .build()
     }
 
@@ -220,7 +232,7 @@ impl Protocol for SshAgentClientProtocol {
     }
 
     fn example_prompt(&self) -> &'static str {
-        "Connect to SSH Agent at $SSH_AUTH_SOCK; list all identities; use first key to sign 'Hello World'"
+        "Connect to the SSH Agent on ./netget-ssh-agent.sock; list all identities; use the first key to sign 'Hello World'"
     }
 
     fn group_name(&self) -> &'static str {
@@ -234,14 +246,14 @@ impl Protocol for SshAgentClientProtocol {
             // LLM mode: LLM controls SSH agent operations
             json!({
                 "type": "open_client",
-                "remote_addr": "./ssh-agent.sock",
+                "remote_addr": "./netget-ssh-agent.sock",
                 "base_stack": "ssh-agent",
                 "instruction": "List all identities and sign 'Hello World' with the first key"
             }),
             // Script mode: Code-based agent operations
             json!({
                 "type": "open_client",
-                "remote_addr": "./ssh-agent.sock",
+                "remote_addr": "./netget-ssh-agent.sock",
                 "base_stack": "ssh-agent",
                 "event_handlers": [{
                     "event_pattern": "ssh_agent_client_response_received",
@@ -255,7 +267,7 @@ impl Protocol for SshAgentClientProtocol {
             // Static mode: Fixed identity request
             json!({
                 "type": "open_client",
-                "remote_addr": "./ssh-agent.sock",
+                "remote_addr": "./netget-ssh-agent.sock",
                 "base_stack": "ssh-agent",
                 "event_handlers": [
                     {
@@ -289,8 +301,25 @@ impl Client for SshAgentClientProtocol {
         ctx: ConnectContext,
     ) -> Pin<Box<dyn Future<Output = Result<SocketAddr>> + Send>> {
         Box::pin(async move {
+            // `socket_path` was declared here and read by nothing: `connect` used
+            // `remote_addr` alone, so a caller that put the path in the parameter it was
+            // told to use had it silently dropped and connected somewhere else entirely.
+            // An advertised knob that does nothing when turned is worse than no knob.
+            let socket_path = ctx
+                .startup_params
+                .as_ref()
+                .map(|p| p.get_optional_string("socket_path"))
+                .transpose()?
+                .flatten()
+                .filter(|s| !s.is_empty());
+
+            let target = match socket_path {
+                Some(path) => path,
+                None => ctx.remote_addr,
+            };
+
             crate::client::ssh_agent::SshAgentClient::connect_with_llm_actions(
-                ctx.remote_addr,
+                target,
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,

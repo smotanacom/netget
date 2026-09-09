@@ -182,6 +182,7 @@ impl SshServer {
                         let status_tx_clone = status_tx.clone();
 
                         // Spawn connection handler
+                        let app_state_close = app_state.clone();
                         tokio::spawn(async move {
                             Log::new(Some(&status_tx_clone))
                                 .debug(format!("SSH: Starting SSH protocol for {}", peer_addr));
@@ -198,6 +199,20 @@ impl SshServer {
                                         peer_addr, e
                                     ));
                                 }
+                            }
+
+                            // Mark the connection closed in AppState. Without this the entry
+                            // added above stays `Active` for the life of the server: the rail
+                            // showed every SSH session that had ever connected as still live,
+                            // and a connection-scoped scheduled task on a session that ended
+                            // hours ago was never cleaned up. SSH is connection-oriented, so
+                            // the 10-second idle sweep does not run over it and cannot
+                            // compensate — this is the only place the entry can be retired.
+                            if let Some(server_id_val) = server_id {
+                                app_state_close
+                                    .close_connection_on_server(server_id_val, connection_id)
+                                    .await;
+                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
                             }
                         });
                     }

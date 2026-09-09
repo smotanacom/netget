@@ -164,9 +164,19 @@ impl Protocol for SshClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("russh library for SSH protocol")
+            .implementation("russh 0.45; password authentication only")
             .llm_control("Execute commands and read output")
-            .e2e_testing("OpenSSH server as test target")
+            .e2e_testing(
+                "tests/client/ssh/command_channel_test.rs runs. All five tests in \
+                 tests/client/ssh/e2e_test.rs need an external OpenSSH server and are \
+                 #[ignore]d, so no automated test connects this client to a real server.",
+            )
+            .notes(
+                "Password authentication only: no public-key, no keyboard-interactive, and \
+                 no key file or agent is ever read - the credentials come from startup \
+                 parameters. The host key is accepted unconditionally (no known_hosts \
+                 check), so this client is not safe against an active network attacker.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

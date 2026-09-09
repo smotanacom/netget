@@ -684,7 +684,10 @@ impl Protocol for RadiusProtocol {
                 "Validated against FreeRADIUS 3.2.10 radclient, an independent \
                  implementation, which accepts the Response Authenticator and decrypts \
                  User-Password. Codec additionally checked against RFC 2865 §7.1/§7.2 \
-                 literal example bytes.",
+                 literal example bytes. NOTE: tests/server/radius/real_client_test.rs prints \
+                 SKIPPED and passes when radclient is absent, so on a runner without \
+                 FreeRADIUS this evidence is not actually produced. That soft gate is the \
+                 only thing between this rating and Beta — see the file header.",
             )
             .notes(
                 "FAILS CLOSED: no LLM answer, an unusable answer, or an LLM error all \

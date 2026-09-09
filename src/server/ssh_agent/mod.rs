@@ -367,7 +367,10 @@ impl SshAgentServer {
                     let _ = status_tx.send(msg);
                 }
 
-                // Execute protocol actions
+                // Execute protocol actions. There is no pending agent request at this
+                // point - the client has connected but asked nothing - so the fail-closed
+                // rule below does not apply here: writing an unsolicited SSH_AGENT_FAILURE
+                // would answer a request that was never made.
                 for action in execution_result.protocol_results {
                     if let Err(e) = Self::execute_action_result(
                         action,
@@ -514,9 +517,11 @@ impl SshAgentServer {
                     let _ = status_tx.send(msg);
                 }
 
-                // Execute actions
+                // Execute actions, tracking whether the request ends up answered.
+                let mut answered = false;
+                let mut execution_failed = false;
                 for action in execution_result.protocol_results {
-                    if let Err(e) = Self::execute_action_result(
+                    match Self::execute_action_result(
                         action,
                         connection_id,
                         server_id,
@@ -526,12 +531,56 @@ impl SshAgentServer {
                     )
                     .await
                     {
-                        error!("Failed to execute action: {}", e);
+                        Ok(true) => answered = true,
+                        Ok(false) => {}
+                        Err(e) => {
+                            error!("Failed to execute action: {}", e);
+                            execution_failed = true;
+                        }
                     }
+                }
+
+                // FAIL CLOSED. An SSH agent request is a question the client blocks on; if
+                // the model answered with nothing usable, saying nothing leaves `ssh` or
+                // `ssh-add` waiting on a read that will never complete, which the user reads
+                // as a hung agent rather than as a refusal. SSH_AGENT_FAILURE is the
+                // protocol's only way to say no, so it is what silence has to become.
+                //
+                // The decision token keeps the three cases apart the way `src/server/radius/`
+                // does. `send_failure` from the model is decision=model_reject and is logged
+                // by nothing here; these two are the server's own decision and must never be
+                // mistaken for it.
+                if !answered {
+                    let decision = if execution_failed {
+                        "fail_closed_action_error"
+                    } else {
+                        "fail_closed_no_action"
+                    };
+                    let message = format!(
+                        "SSH Agent request on connection {}: decision={} (denied because no \
+                         usable answer was produced)",
+                        connection_id, decision
+                    );
+                    error!("{}", message);
+                    let _ = status_tx.send(message);
+                    Self::send_failure(connection_id, &connections).await;
                 }
             }
             Err(e) => {
-                error!("LLM error: {}", e);
+                // The backend is unreachable. An unanswerable request is refused, never left
+                // to hang, and the error itself stays in the log - the agent wire format has
+                // no field that could carry it to the peer anyway.
+                let category = crate::utils::WireFailure::classify(&e);
+                error!(
+                    "SSH Agent request on connection {}: decision=fail_closed_llm_error \
+                     category={:?}: {}",
+                    connection_id, category, e
+                );
+                let _ = status_tx.send(format!(
+                    "SSH Agent request on connection {}: decision=fail_closed_llm_error \
+                     category={:?}",
+                    connection_id, category
+                ));
                 Self::send_failure(connection_id, &connections).await;
             }
         }
@@ -690,7 +739,12 @@ impl SshAgentServer {
         Ok(result)
     }
 
-    /// Execute action result
+    /// Execute one action the model produced.
+    ///
+    /// Returns `true` when the pending agent request has been *answered* - a reply written to
+    /// the socket, or the connection torn down. The caller uses that to enforce the
+    /// fail-closed rule: an agent request that draws no answer at all leaves `ssh`/`ssh-add`
+    /// blocked on a read that never completes, which is indistinguishable from a hung agent.
     async fn execute_action_result(
         action: ActionResult,
         connection_id: ConnectionId,
@@ -698,7 +752,7 @@ impl SshAgentServer {
         connections: &Arc<Mutex<HashMap<ConnectionId, ConnectionData>>>,
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         match action {
             ActionResult::Custom { name, data } => match name.as_str() {
                 "send_identities_list" => {
@@ -706,21 +760,26 @@ impl SshAgentServer {
                         .as_array()
                         .context("Missing 'identities' field")?;
                     Self::send_identities_list(connection_id, identities, connections).await;
+                    Ok(true)
                 }
                 "send_sign_response" => {
                     let signature_hex = data["signature_hex"]
                         .as_str()
                         .context("Missing 'signature_hex' field")?;
                     Self::send_sign_response(connection_id, signature_hex, connections).await;
+                    Ok(true)
                 }
                 "send_success" => {
                     Self::send_success(connection_id, connections).await;
+                    Ok(true)
                 }
                 "send_failure" => {
                     Self::send_failure(connection_id, connections).await;
+                    Ok(true)
                 }
-                _ => {
-                    debug!("Unknown custom action: {}", name);
+                other => {
+                    debug!("Unknown custom action: {}", other);
+                    Ok(false)
                 }
             },
             ActionResult::CloseConnection => {
@@ -730,10 +789,14 @@ impl SshAgentServer {
                     .await;
                 let _ = status_tx.send(format!("✗ SSH Agent connection {} closed", connection_id));
                 let _ = status_tx.send("__UPDATE_UI__".to_string());
+                Ok(true)
             }
-            _ => {}
+            // WaitForMore is a deliberate "say nothing yet": the model wants the rest of a
+            // pipelined request before answering. It is the one non-answer that must NOT be
+            // turned into a failure.
+            ActionResult::WaitForMore => Ok(true),
+            _ => Ok(false),
         }
-        Ok(())
     }
 
     /// Send SSH_AGENT_IDENTITIES_ANSWER

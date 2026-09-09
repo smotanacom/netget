@@ -504,11 +504,24 @@ impl Protocol for SshAgentProtocol {
             // Unix domain socket, so no privileged port is involved.
             .implementation("Custom SSH Agent wire parser over a Unix domain socket")
             .llm_control("Identity listings, signing decisions, key lifecycle, lock/unlock")
-            .e2e_testing("ssh-add against SSH_AUTH_SOCK - no automated test exists")
+            .e2e_testing(
+                "tests/server/ssh_agent drives the real binary over its Unix socket with a \
+                 hand-written agent client and a mocked model, covering REQUEST_IDENTITIES, \
+                 SIGN_REQUEST, ADD_IDENTITY and a pipelined multi-operation session. That \
+                 client is written from the wire format inside the test, so it is an \
+                 independent reading of the protocol, not an independent implementation - \
+                 the same class of evidence as dhcp's in-test RFC 2131 decoder. No \
+                 third-party agent client drives it, and none usefully could: see notes.",
+            )
             .notes(
-                "Virtual agent: no private keys exist, so signatures are fabricated and will \
-                 not verify against a real client. ADD_IDENTITY parsing assumes the Ed25519 \
-                 key layout. Lock/unlock and key constraints are reported but never enforced.",
+                "FAILS CLOSED: an LLM error, an answer with no usable action, and an action \
+                 whose fields will not decode all send SSH_AGENT_FAILURE, logged as \
+                 decision=fail_closed_*. Saying nothing is not an option - the client blocks \
+                 on the read - and it is never SSH_AGENT_SUCCESS. Virtual agent: no private \
+                 keys exist, so signatures are fabricated and will not verify, which is why \
+                 a real `ssh` cannot complete a login through this agent and why its rating \
+                 cannot rest on one. ADD_IDENTITY parsing assumes the Ed25519 key layout. \
+                 Lock/unlock and key constraints are reported but never enforced.",
             )
             .build()
     }
@@ -652,17 +665,11 @@ impl Server for SshAgentProtocol {
                 data: json!({}),
             }),
             "wait_for_more" => Ok(ActionResult::WaitForMore),
-            "modify_instruction" => {
-                let instruction = action["instruction"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'instruction' field"))?
-                    .to_string();
-                // ModifyInstruction is handled as a Custom action
-                Ok(ActionResult::Custom {
-                    name: "modify_instruction".to_string(),
-                    data: json!({ "instruction": instruction }),
-                })
-            }
+            // No `modify_instruction` arm. It is advertised by nothing (see
+            // get_async_actions), and the Custom result it used to build had no branch in
+            // execute_action_result, so it was accepted and did nothing - the shape a
+            // round-trip check passes and a user never gets any use from. Rejecting the name
+            // now routes it through the fail-closed rule as decision=fail_closed_action_error.
             "close_connection" => {
                 // CloseConnection is a unit variant
                 Ok(ActionResult::CloseConnection)

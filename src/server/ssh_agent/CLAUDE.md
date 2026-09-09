@@ -121,8 +121,29 @@ key blob, so a handler can identify the key without decoding hex itself.
 | `close_connection`      | nothing — drops the socket   | any |
 | `wait_for_more`         | nothing                      | rarely correct |
 
-Returning **no** action sends nothing, and the client blocks. Refuse explicitly with
-`send_failure`.
+Returning **no** action is refused, not ignored. An agent request is a question the client
+blocks on, so an answer with nothing usable in it, an action whose fields will not decode, and
+an outright LLM error all send `SSH_AGENT_FAILURE` and log a `decision=fail_closed_*` token:
+
+| Situation | Wire result | Logged decision |
+|---|---|---|
+| Handler returns `send_success` / a real reply | that reply | (none; the reply is the record) |
+| Handler returns `send_failure` | `SSH_AGENT_FAILURE` | (none; the model's own refusal) |
+| Handler returns no usable action | **`SSH_AGENT_FAILURE`** | `decision=fail_closed_no_action` |
+| An action's fields will not decode | **`SSH_AGENT_FAILURE`** | `decision=fail_closed_action_error` |
+| LLM call errors or times out | **`SSH_AGENT_FAILURE`** | `decision=fail_closed_llm_error` + `category=` |
+
+`wait_for_more` is the one non-answer that stays silent, deliberately: it means "I want the
+rest of a pipelined request before deciding". Nothing on any path produces
+`SSH_AGENT_SUCCESS` or an identity list unless a handler asked for it by name, so an LLM
+outage cannot become an affirmative answer. `tests/server/ssh_agent/e2e_test.rs`'s
+`unanswered_request_fails_closed` pins this; it was verified to fail when the rule is disabled.
+
+Refusing explicitly with `send_failure` is still better practice — it distinguishes a decision
+from an outage in the log.
+
+The `ssh_agent_connection_opened` event is exempt: no request is pending there, so an
+unsolicited `SSH_AGENT_FAILURE` would answer a question the client never asked.
 
 There are no async (user-triggered) actions. `modify_instruction` produced an
 `ActionResult::Custom` that the executor ignored — the common `update_instruction` action does
