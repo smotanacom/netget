@@ -111,7 +111,31 @@ Accumulating ─(more responses)─> Accumulating
 Processing/Accumulating ─(LLM complete)─> Idle
 ```
 
-This prevents concurrent LLM calls for the same client.
+**In this client `Processing` and `Accumulating` are unreachable, and it is worth knowing why
+before relying on them.** The house pattern this is copied from — `src/server/tcp/mod.rs` — has
+one task per connection reading the socket and a *separate* path that can arrive with more data
+mid-call, so its queue really fills. Here the single receive task is itself parked on
+`call_llm_for_client`, so nothing can push into `queued_responses` while the state is anything
+but `Idle`. Nothing else shares `ClientData`: the connect path touches only `memory`, and the
+injected-command loop does not touch it at all.
+
+The consequence is that this machine prevents nothing today, because there is nothing to
+prevent. The drain is nonetheless written correctly (oldest first, `Idle` only once the queue is
+empty) rather than left as the `clear()` it used to be, so the arms mean what they say if a
+second producer is ever added. Do not read the diagram as evidence that bursty input is handled
+— it has never been exercised.
+
+### Memory is read under a snapshot, deliberately
+
+Both LLM calls take `client_data.lock().await.memory.clone()` into a local *before* the
+`match`, which reads like a redundant clone and is not. A `MutexGuard` built inside a `match`
+scrutinee lives until the end of the whole `match` expression, so passing
+`&client_data.lock().await.memory` as an argument would hold the guard across the LLM await and
+then deadlock on the arm's own `client_data.lock()` when the model returns a memory update.
+That is the defect that was found in the NNTP client read loop; both sites here had the same
+shape. It is latent rather than live only because `call_llm_for_client` currently hardcodes
+`memory_updates: None` (`src/llm/action_helper.rs`) — the moment client memory updates are
+implemented, the unfixed form hangs the receive loop for good.
 
 ## LLM Integration
 

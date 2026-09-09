@@ -528,10 +528,21 @@ pub static BGP_NOTIFICATION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "bgp_notification",
         "BGP NOTIFICATION received. RFC 4271 forbids replying to one, so the session closes \
-         regardless of what is returned and nothing is written to the socket.",
+         regardless of what is returned and nothing is written to the socket. Record what \
+         matters with set_memory or append_to_log.",
         json!({ "type": "wait_for_more" }),
     )
-    .with_actions(bgp_response_actions())
+    // No wire verbs, deliberately. `on_notification` discards whatever the handler returns —
+    // it has to, because RFC 4271 section 4.5 forbids answering a NOTIFICATION — so the four
+    // `send_bgp_*` verbs this used to advertise could never reach the socket, which is the
+    // "advertised but structurally inert" shape the root CLAUDE.md warns about.
+    //
+    // `wait_for_more` stays rather than `.with_no_actions()`, because a *server* narrows: its
+    // tool list is built from this list alone, so dropping it would leave the declared response
+    // example (`wait_for_more`) teaching an action the model was never offered. The common
+    // actions (set_memory, append_to_log) are added by `call_llm` regardless, so a handler can
+    // still record what it saw.
+    .with_actions(vec![wait_for_more_action()])
     .with_log_template(
         LogTemplate::new()
             .with_info("BGP NOTIFICATION code={error_code} subcode={error_subcode}")

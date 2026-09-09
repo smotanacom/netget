@@ -243,26 +243,55 @@ impl RipServer {
                                     ));
 
                                     for protocol_result in execution_result.protocol_results {
-                                        if let Some(output_data) =
-                                            protocol_result.get_all_output().first()
-                                        {
-                                            let _ =
-                                                socket_clone.send_to(output_data, peer_addr).await;
-
-                                            // Summary + full payload FileOnly: the
-                                            // send_rip_* action template already reports the
-                                            // send to the TUI.
-                                            log.debug(format!(
-                                                "RIP sent {} bytes to {}",
-                                                output_data.len(),
-                                                peer_addr
-                                            ));
-                                            log.trace(format!(
-                                                "RIP sent (hex): {}",
-                                                hex::encode(output_data)
-                                            ));
-                                        } else {
+                                        let outputs = protocol_result.get_all_output();
+                                        if outputs.is_empty() {
                                             log.debug("RIP protocol result has no output data");
+                                            continue;
+                                        }
+                                        // Every datagram the action produced, not just the
+                                        // first: `get_all_output` flattens
+                                        // `ActionResult::Multiple`, and taking `.first()`
+                                        // dropped the rest without saying so.
+                                        for output_data in &outputs {
+                                            match socket_clone.send_to(output_data, peer_addr).await
+                                            {
+                                                Ok(sent) => {
+                                                    // Summary + full payload FileOnly: the
+                                                    // send_rip_* action template already
+                                                    // reports the send to the TUI.
+                                                    log.debug(format!(
+                                                        "RIP sent {} bytes to {}",
+                                                        sent, peer_addr
+                                                    ));
+                                                    log.trace(format!(
+                                                        "RIP sent (hex): {}",
+                                                        hex::encode(output_data)
+                                                    ));
+                                                    // Keeps the rail's ↑ counter honest; the
+                                                    // entry was added with packets_sent 0 and
+                                                    // nothing ever updated it.
+                                                    state_clone
+                                                        .update_connection_stats(
+                                                            server_id,
+                                                            connection_id,
+                                                            None,
+                                                            Some(sent as u64),
+                                                            None,
+                                                            Some(1),
+                                                        )
+                                                        .await;
+                                                }
+                                                // The send failing is the one case where the
+                                                // old `let _ =` was actively misleading: it
+                                                // discarded the error and then logged
+                                                // "RIP sent N bytes" as if it had worked.
+                                                Err(e) => log.warn(format!(
+                                                    "RIP could not send {} bytes to {}: {}",
+                                                    output_data.len(),
+                                                    peer_addr,
+                                                    e
+                                                )),
+                                            }
                                         }
                                     }
                                 }

@@ -9,16 +9,24 @@ Routing Information Protocol version 2 (RIPv2) server implementing RFC 2453. RIP
 A RIP response is **not wire-determined** — which routes to advertise (and their metrics, incl.
 16 = withdraw) is routing policy, like DNS/DHCP. So with **no operator policy** (no server
 instruction and no per-event handler), the server applies the spec-safe **static default of
-advertising nothing** and answers with **no LLM round-trip** (gated by `should_call_llm` in
+advertising nothing** and answers with **no LLM round-trip** (gated by `operator_wants_dynamic` in
 `mod.rs` = `has_instruction || has_handler`). There is no mechanical RIP reply to synthesise —
 RIP has no Hello/keepalive machinery. The LLM is consulted **only when the operator opts in** with
 the routing policy (an instruction or a handler); the LLM-driven route material below describes
 that opt-in path.
 
-**Status**: Experimental (fully implemented, needs testing)
-**Protocol Spec
-**: [RFC 2453 (RIPv2)](https://datatracker.ietf.org/doc/html/rfc2453), [RFC 1058 (RIPv1)](https://datatracker.ietf.org/doc/html/rfc1058)
-**Port**: UDP 520
+**Status**: Experimental. Nothing has ever pointed a real RIP implementation at this server —
+the tests build RIP datagrams by hand from RFC 2453, which is an independent *reading* of the
+spec, not an independent implementation. That is the `dhcp` situation, and it is the reason this
+is not Beta.
+
+**Protocol spec**: [RFC 2453 (RIPv2)](https://datatracker.ietf.org/doc/html/rfc2453),
+[RFC 1058 (RIPv1)](https://datatracker.ietf.org/doc/html/rfc1058)
+
+**Port**: UDP 520. `PrivilegeRequirement::PrivilegedPort(520)` is declared and is live rather
+than decorative — 520 really is below 1024. It does not obstruct testing: `server_startup.rs`
+only enforces a `PrivilegedPort` when `port > 0 && port < 1024`, so the suite's ephemeral ports
+run the whole event -> LLM -> action path unprivileged.
 
 ## Library Choices
 
@@ -289,6 +297,17 @@ RIP protocol requires multiple routers:
 - E2E tests cover basic request/response
 - No tests for route convergence or loop prevention
 - No tests for triggered updates or periodic updates
+
+**No third-party RIP implementation has ever been pointed at this server.** The peers in
+`tests/server/rip/` are RIP datagrams assembled by hand from RFC 2453 inside the test itself —
+an independent reading of the spec, not an independent implementation, which is the same
+footing `dhcp` is on and why the rating stays Experimental. Promoting it means driving it with
+something like FRRouting's `ripd`, not adding more hand-built datagrams.
+
+`tests/server/rip/action_validation_test.rs` covers the executor's own contract instead: that a
+metric survives to the wire unchanged across 1-16, that a value outside that range or a
+`route_tag` too large for its 2-byte slot is refused rather than truncated, and that both
+`send_rip_response` and `send_rip_request` hold the same 25-entry ceiling.
 
 ### No Production Use
 

@@ -61,6 +61,18 @@ timer that only ticks between model calls is not a timer.
   raises `Shutdown`.
 - **A hold time of 0 disables both.** No ticker is spawned at all; a zero-second interval would
   busy-loop and expire immediately.
+- **Before the peer's OPEN there is no ticker yet**, so the read loop applies its own deadline
+  (`OPEN_HOLD_TIME`, 240s — the value RFC 4271 section 8.2.2 suggests for the Hold Timer in
+  OpenSent). `spawn_timers` is reached only from the OPEN handler, so until this existed the one
+  phase the peer controls entirely was covered by no timer at all: a peer that accepted the
+  connection and then said nothing parked `read_exact` indefinitely.
+
+**Both reads are under the select, and that was not always true.** The header read was; the
+*body* read was a bare `read_exact`. A peer that sent a valid 19-octet header announcing a
+4096-octet message and then stopped parked there forever, and hold-timer expiry could not break
+it out — `Shutdown` was raised, the NOTIFICATION went out, and the read loop never noticed. Half
+a message is not worth preserving, so abandoning a cancelled body read is fine: every path out
+of that select ends the session.
 
 `Shutdown` is a copy of the server's: an `AtomicBool` plus a `Notify`. The flag is the source of
 truth, because `notify_waiters` only wakes tasks already waiting and a signal raised during an
@@ -110,14 +122,32 @@ without a model call.
 | Event | Fires | Reply path |
 |---|---|---|
 | `bgp_connected` | session reached Established | `wait_for_more`, `send_keepalive`, `send_notification`, `disconnect` — all reach the socket |
-| `bgp_update_received` | peer announced or withdrew routes | none: this client cannot answer an UPDATE, and returned actions are logged as discarded rather than silently dropped |
-| `bgp_notification_received` | peer is tearing down | none; RFC 4271 forbids answering a NOTIFICATION |
+| `bgp_update_received` | peer announced or withdrew routes | the same four, all reaching the socket. No route can be announced back — there is no such action — but the session verbs work |
+| `bgp_notification_received` | peer is tearing down | none; RFC 4271 forbids answering a NOTIFICATION. Anything returned is logged as discarded rather than silently dropped |
 
-`get_async_actions` and `get_sync_actions` return the same list. That is not laziness:
-`call_llm_for_client` builds the model's tool list from **`get_async_actions` alone**, so an
-action declared only in `get_sync_actions` is never offered and, because the client path
-advertises no common actions either, is rejected as unknown if the model returns it anyway.
-`wait_for_more` was in exactly that position.
+**`bgp_update_received` used to have no reply path**, on the reasoning that "this client
+announces nothing, so an UPDATE handler cannot reply on the wire". That conflates announcing
+*routes* with answering at all: the whole vocabulary here is `send_keepalive` /
+`send_notification` / `disconnect` / `wait_for_more`, none of which is a route announcement, and
+tearing the peering down over a prefix the operator will not accept is the obvious thing a
+monitor wants to do with an UPDATE. So every action a handler returned for that event was
+executed nowhere — the "asks the model what to do and then throws the answer away" defect from
+the root CLAUDE.md, softened only by a `warn!`. `tests/client/bgp/update_reply_test.rs` is the
+regression test, with a `wait_for_more` control so the teardown case proves something.
+
+`get_async_actions` and `get_sync_actions` return the same list, and a client **cannot** narrow
+per event even if it wanted to: `client_llm_action_set`
+(`src/llm/actions/client_trait.rs`) offers the model `get_async_actions` ∪ `get_sync_actions` ∪
+the firing event's own actions, because `call_llm_for_client` serves both the initial
+instruction and every network event through one entry point. Two consequences worth knowing:
+
+- Declaring the list twice is redundant rather than load-bearing. (It was load-bearing once —
+  the tool list really was built from `get_async_actions` alone, which is how `wait_for_more`
+  came to be invisible — but that was fixed centrally and this file described the old
+  behaviour for some time afterwards.)
+- `with_no_actions()` on `bgp_notification_received` does **not** stop the four verbs being
+  offered for it. It records the intent; the read loop still has to log whatever comes back as
+  discarded rather than assume it cannot happen.
 
 ## Startup parameters
 
@@ -149,9 +179,15 @@ message naming the parameter rather than becoming a different valid-looking valu
 ## Testing
 
 `tests/client/bgp/` — see its CLAUDE.md. Two mocked E2E tests driving a mocked NetGet BGP server
-over a real socket, plus `hold_timer_test.rs`, which drives this client directly against a raw
-socket peer that speaks BGP by hand: one test goes silent and asserts the NOTIFICATION octets and
-the close, one keeps keepaliving and asserts the session survives past two hold times.
+over a real socket, plus two suites that drive this client directly against a raw socket peer
+that speaks BGP by hand:
+
+- `hold_timer_test.rs` — one test goes silent and asserts the NOTIFICATION octets and the close,
+  one keeps keepaliving and asserts the session survives past two hold times.
+- `update_reply_test.rs` — a static `bgp_update_received` handler answering `disconnect` puts
+  Cease / Administrative Shutdown on the wire and ends the session, with a `wait_for_more`
+  control that must leave it up. No model is involved: the answer comes from
+  `try_execute_client_event_handler`, which runs before the budget is debited.
 
 ## References
 

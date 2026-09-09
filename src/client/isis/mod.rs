@@ -176,7 +176,19 @@ impl IsisClient {
         ));
         app_state.register_client_task(client_id, cmd_task).await;
 
-        // pcap is blocking, so we run it in a blocking task
+        // pcap is blocking, so we run it in a blocking task.
+        //
+        // `JoinHandle::abort()` cannot interrupt a thread parked in `next_packet()`, so the
+        // capture loop is stopped cooperatively: it polls this flag every iteration, and the
+        // task registered with `register_client_task` below trips it when `remove_client`
+        // aborts it. The capture opens pcap with `.timeout(1000)`, so a stop is observed
+        // within ~1s. See `crate::utils::shutdown`, and the identical arrangement in
+        // `crate::server::isis`.
+        let stop = crate::utils::StopSignal::new();
+        let stop_in_loop = stop.clone();
+        // Retained by this function; the capture task takes ownership of `app_state`.
+        let app_state_reg = app_state.clone();
+
         let interface_clone = interface_name.clone();
         let handle_state = app_state.clone();
         let handle_status_tx = status_tx.clone();
@@ -226,6 +238,16 @@ impl IsisClient {
 
             // Capture loop
             loop {
+                // Checked before the blocking read as well as after it, so a stop arriving
+                // while the loop is between packets is not missed.
+                if stop_in_loop.is_stopped() {
+                    info!(
+                        "ISIS client {} stopping capture (client removed)",
+                        client_id
+                    );
+                    break;
+                }
+
                 match cap.next_packet() {
                     Ok(packet) => {
                         let data = packet.data;
@@ -357,14 +379,28 @@ impl IsisClient {
                     }
                 }
 
-                // Check if client is still active
+                // Check if client is still active.
+                //
+                // The `None` arm is the one that matters: `remove_client` *deletes* the
+                // entry rather than marking it `Disconnected`, so a version of this that
+                // only inspected `Some(client)` kept capturing — and kept calling the LLM —
+                // forever after the client was removed. The `StopSignal` above covers the
+                // same case; this is the cheap second check on the path that already reads
+                // the client.
                 let runtime = tokio::runtime::Handle::current();
-                if let Some(client) = runtime.block_on(app_state.get_client(client_id)) {
-                    if matches!(
-                        client.status,
-                        ClientStatus::Disconnected | ClientStatus::Error(_)
-                    ) {
+                match runtime.block_on(app_state.get_client(client_id)) {
+                    Some(client)
+                        if matches!(
+                            client.status,
+                            ClientStatus::Disconnected | ClientStatus::Error(_)
+                        ) =>
+                    {
                         info!("ISIS client {} stopping capture", client_id);
+                        break;
+                    }
+                    Some(_) => {}
+                    None => {
+                        info!("ISIS client {} stopping capture (client gone)", client_id);
                         break;
                     }
                 }
@@ -377,6 +413,14 @@ impl IsisClient {
             runtime.block_on(handle_state.remove_client_handle(client_id));
             let _ = handle_status_tx.send("__UPDATE_UI__".to_string());
         });
+
+        // The blocking capture task's own `JoinHandle` is deliberately not registered:
+        // aborting it would do nothing, because Tokio cannot unwind a thread parked in
+        // `next_packet()`. Registering the parked task instead makes `remove_client` trip
+        // the flag the loop polls, which is what actually stops it.
+        app_state_reg
+            .register_client_task(client_id, stop.park_task())
+            .await;
 
         // Return a dummy SocketAddr (pcap doesn't have socket addresses)
         Ok("0.0.0.0:0".parse().unwrap())

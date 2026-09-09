@@ -1,138 +1,14 @@
-//! E2E tests for RIP client
+//! RIP wire-format tests for the client's own codec.
 //!
-//! These tests verify the RIP client can query routing tables from RIP routers.
+//! These are codec round-trips, not end-to-end evidence: `RipMessage` encodes and `RipMessage`
+//! decodes, so they assert only that one implementation agrees with itself. They are still
+//! worth having — they pin the byte layout of RFC 2453 §4 against hand-written literals — but
+//! the protocol path is exercised by `llm_path_test.rs`, which drives the real client against
+//! a stub router and a mocked model.
 
 #[cfg(all(test, feature = "rip"))]
-mod rip_client_e2e_tests {
-    use netget::llm::OllamaClient;
-    use netget::state::app_state::AppState;
-    use netget::state::{ClientId, ClientInstance, ClientStatus};
+mod rip_client_codec_tests {
     use std::net::Ipv4Addr;
-    use std::sync::Arc;
-    use tokio::net::UdpSocket;
-    use tokio::sync::mpsc;
-    use tokio::time::{sleep, Duration};
-
-    /// Mock RIP router that responds to requests
-    async fn start_mock_rip_router(port: u16) -> anyhow::Result<()> {
-        let socket = UdpSocket::bind(format!("127.0.0.1:{}", port)).await?;
-        println!("[MOCK] RIP router listening on port {}", port);
-
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 1500];
-
-            while let Ok((n, peer)) = socket.recv_from(&mut buf).await {
-                println!("[MOCK] Received {} bytes from {}", n, peer);
-
-                // Parse RIP request (basic validation)
-                if n >= 24 && buf[0] == 1 {
-                    // Command = Request
-                    let version = buf[1];
-                    println!("[MOCK] RIP request version {}", version);
-
-                    // Build RIP response with 3 routes
-                    let mut response = Vec::new();
-
-                    // Command (Response = 2), Version, Must be zero
-                    response.push(2); // Response
-                    response.push(version); // Same version as request
-                    response.extend_from_slice(&[0, 0]); // Must be zero
-
-                    // Route 1: 10.0.0.0/8 via 192.168.1.254 metric 2
-                    response.extend_from_slice(&[0, 2]); // Address family (AF_INET)
-                    response.extend_from_slice(&[0, 0]); // Route tag
-                    response.extend_from_slice(&Ipv4Addr::new(10, 0, 0, 0).octets()); // IP
-                    response.extend_from_slice(&Ipv4Addr::new(255, 0, 0, 0).octets()); // Mask
-                    response.extend_from_slice(&Ipv4Addr::new(192, 168, 1, 254).octets()); // Next hop
-                    response.extend_from_slice(&2u32.to_be_bytes()); // Metric
-
-                    // Route 2: 172.16.0.0/16 via 192.168.1.253 metric 5
-                    response.extend_from_slice(&[0, 2]); // Address family
-                    response.extend_from_slice(&[0, 0]); // Route tag
-                    response.extend_from_slice(&Ipv4Addr::new(172, 16, 0, 0).octets());
-                    response.extend_from_slice(&Ipv4Addr::new(255, 255, 0, 0).octets());
-                    response.extend_from_slice(&Ipv4Addr::new(192, 168, 1, 253).octets());
-                    response.extend_from_slice(&5u32.to_be_bytes());
-
-                    // Route 3: 192.168.2.0/24 via 192.168.1.1 metric 1
-                    response.extend_from_slice(&[0, 2]); // Address family
-                    response.extend_from_slice(&[0, 0]); // Route tag
-                    response.extend_from_slice(&Ipv4Addr::new(192, 168, 2, 0).octets());
-                    response.extend_from_slice(&Ipv4Addr::new(255, 255, 255, 0).octets());
-                    response.extend_from_slice(&Ipv4Addr::new(192, 168, 1, 1).octets());
-                    response.extend_from_slice(&1u32.to_be_bytes());
-
-                    println!(
-                        "[MOCK] Sending {} byte response with 3 routes",
-                        response.len()
-                    );
-                    if let Err(e) = socket.send_to(&response, peer).await {
-                        eprintln!("[MOCK] Failed to send response: {}", e);
-                    }
-                }
-            }
-        });
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore] // Requires Ollama running
-    async fn test_rip_client_query() {
-        // Start mock RIP router
-        let rip_port = 15520; // Use non-privileged port
-        start_mock_rip_router(rip_port)
-            .await
-            .expect("Failed to start mock RIP router");
-
-        sleep(Duration::from_millis(100)).await;
-
-        // Initialize test dependencies
-        let app_state = Arc::new(AppState::new());
-        let llm_client = OllamaClient::new("http://localhost:11434".to_string());
-        let (status_tx, mut status_rx) = mpsc::unbounded_channel();
-
-        // Create client instance
-        let client = ClientInstance::new(
-            ClientId::new(0), // overwritten by add_client with the real allocated id
-            format!("127.0.0.1:{}", rip_port),
-            "RIP".to_string(),
-            "Query RIP router for routing table using RIPv2".to_string(),
-        );
-
-        let client_id = app_state.add_client(client).await;
-
-        // Start client connection
-        use netget::cli::client_startup::start_client_by_id;
-        match start_client_by_id(&app_state, client_id, &llm_client, &status_tx).await {
-            Ok(_) => println!("Client started successfully"),
-            Err(e) => panic!("Failed to start client: {:?}", e),
-        }
-
-        // Wait for LLM to process
-        sleep(Duration::from_secs(10)).await;
-
-        // Check status messages
-        let mut found_response = false;
-        while let Ok(msg) = status_rx.try_recv() {
-            println!("[STATUS] {}", msg);
-            if msg.contains("RIP") || msg.contains("route") {
-                found_response = true;
-            }
-        }
-
-        assert!(found_response, "Should have received RIP response messages");
-
-        // Verify client is still connected
-        let final_client = app_state.get_client(client_id).await.unwrap();
-        assert!(
-            matches!(
-                final_client.status,
-                ClientStatus::Connected | ClientStatus::Disconnected
-            ),
-            "Client should be connected or cleanly disconnected"
-        );
-    }
 
     #[tokio::test]
     async fn test_rip_packet_encoding() {

@@ -71,9 +71,10 @@ pub static BGP_CLIENT_UPDATE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new
     EventType::new(
         "bgp_update_received",
         "BGP UPDATE received from the peer, decoded into withdrawn_routes, nlri, origin, \
-         next_hop, as_path and the full path_attributes list. This client is a monitor and \
-         cannot answer an UPDATE on the wire; record what matters with set_memory or \
-         append_to_log.",
+         next_hop, as_path and the full path_attributes list. This client announces no routes, \
+         so there is no way to answer an UPDATE with one — but the session verbs do reach the \
+         wire: reply with wait_for_more to keep monitoring, or send_notification / disconnect \
+         to tear the peering down over what the peer just advertised.",
         json!({"type": "wait_for_more"}),
     )
     .with_parameters(vec![
@@ -126,7 +127,7 @@ pub static BGP_CLIENT_UPDATE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new
             required: false,
         },
     ])
-    .with_no_actions()
+    .with_actions(bgp_client_response_actions())
 });
 
 /// BGP NOTIFICATION message received event
@@ -174,10 +175,17 @@ pub static BGP_CLIENT_NOTIFICATION_RECEIVED_EVENT: LazyLock<EventType> = LazyLoc
 
 /// Everything a BGP client handler can answer a session event with.
 ///
-/// One list, used for both the async and the sync set. `call_llm_for_client`
-/// (`src/llm/action_helper.rs`) builds the model's tool list from `get_async_actions` alone,
-/// so an action that lives only in `get_sync_actions` is never offered — which is what
-/// happened to `wait_for_more` here.
+/// One list, used for both the async and the sync set. A client cannot narrow its vocabulary
+/// per event even if it wanted to: `client_llm_action_set`
+/// (`src/llm/actions/client_trait.rs`) offers the model `get_async_actions` ∪ `get_sync_actions`
+/// ∪ the firing event's own actions, because `call_llm_for_client` serves both the initial
+/// instruction and every network event through one entry point. Declaring the same list twice
+/// is therefore redundant rather than load-bearing — but it is also what keeps the declaration
+/// honest about what the model will actually be offered.
+///
+/// The corollary matters for [`BGP_CLIENT_NOTIFICATION_RECEIVED_EVENT`]: its `with_no_actions()`
+/// does *not* stop these verbs being offered, so the read loop still has to log anything the
+/// model returns for it as discarded rather than assume it cannot happen.
 fn bgp_client_response_actions() -> Vec<ActionDefinition> {
     vec![
         ActionDefinition {

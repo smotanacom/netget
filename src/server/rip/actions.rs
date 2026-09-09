@@ -176,8 +176,11 @@ impl RipProtocol {
 
         // Route entries (20 bytes each)
         for route in routes {
-            let afi = route.get("afi").and_then(|v| v.as_u64()).unwrap_or(2) as u16; // IPv4 = 2
-            let route_tag = route.get("route_tag").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            // Each of these is a fixed-width wire field. Truncating with `as` would put a
+            // different number on the wire than the model asked for and say nothing, so an
+            // out-of-range value is refused instead.
+            let afi = Self::wire_u16(route, "afi", 2)?; // IPv4 = 2
+            let route_tag = Self::wire_u16(route, "route_tag", 0)?;
             let ip_str = route
                 .get("ip_address")
                 .and_then(|v| v.as_str())
@@ -190,7 +193,18 @@ impl RipProtocol {
                 .get("next_hop")
                 .and_then(|v| v.as_str())
                 .unwrap_or("0.0.0.0");
-            let metric = route.get("metric").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+            // RFC 2453 §3.4.2: 1-15 is a reachable distance, 16 is infinity (withdraw).
+            // Nothing above 16 is meaningful, and a value that overflowed a u32 used to be
+            // silently truncated into one that was.
+            let metric = route.get("metric").and_then(|v| v.as_u64()).unwrap_or(1);
+            if !(1..=16).contains(&metric) {
+                return Err(anyhow::anyhow!(
+                    "Invalid RIP metric {} for {}: must be 1-15 (reachable) or 16 (unreachable)",
+                    metric,
+                    ip_str
+                ));
+            }
+            let metric = metric as u32;
 
             // Parse IP addresses
             let ip_parts = Self::parse_ipv4(ip_str)?;
@@ -222,9 +236,15 @@ impl RipProtocol {
         packet.push(0); // Unused
 
         if let Some(routes_array) = routes {
+            // Same 25-entry ceiling as a Response: RFC 2453 §3.6 sizes a RIP datagram at
+            // 4 + 25*20 = 504 bytes. This was checked on the Response path only, so a Request
+            // could be built oversize.
+            if routes_array.len() > 25 {
+                return Err(anyhow::anyhow!("Too many routes (max 25 per packet)"));
+            }
             // Request specific routes
             for route in routes_array {
-                let afi = route.get("afi").and_then(|v| v.as_u64()).unwrap_or(2) as u16;
+                let afi = Self::wire_u16(route, "afi", 2)?;
                 let ip_str = route
                     .get("ip_address")
                     .and_then(|v| v.as_str())
@@ -251,6 +271,20 @@ impl RipProtocol {
         }
 
         Ok(ActionResult::Output(packet))
+    }
+
+    /// Read a fixed-width 16-bit wire field, refusing a value that would not survive the cast.
+    fn wire_u16(route: &serde_json::Value, field: &str, default: u16) -> Result<u16> {
+        match route.get(field) {
+            None | Some(serde_json::Value::Null) => Ok(default),
+            Some(v) => {
+                let n = v
+                    .as_u64()
+                    .with_context(|| format!("'{field}' must be a non-negative number"))?;
+                u16::try_from(n)
+                    .with_context(|| format!("'{field}' value {n} does not fit in 16 bits"))
+            }
+        }
     }
 
     fn parse_ipv4(ip_str: &str) -> Result<[u8; 4]> {
@@ -350,7 +384,7 @@ fn send_rip_response_action() -> ActionDefinition {
             Parameter {
                 name: "routes".to_string(),
                 type_hint: "array".to_string(),
-                description: "Array of route entries to advertise. Each route must have: ip_address (string), subnet_mask (string, default 255.255.255.0), next_hop (string, default 0.0.0.0), metric (number 1-15, default 1), afi (number, default 2 for IPv4), route_tag (number, default 0)".to_string(),
+                description: "Array of route entries to advertise, at most 25. Each route must have: ip_address (string), subnet_mask (string, default 255.255.255.0), next_hop (string, default 0.0.0.0), metric (number 1-15 = hop count, or 16 = unreachable/withdraw the route; default 1), afi (number, default 2 for IPv4), route_tag (number 0-65535, default 0)".to_string(),
                 required: true,
             },
         ],
@@ -387,7 +421,7 @@ fn send_rip_request_action() -> ActionDefinition {
             Parameter {
                 name: "routes".to_string(),
                 type_hint: "array".to_string(),
-                description: "Optional array of specific routes to request. Omit to request entire table.".to_string(),
+                description: "Optional array of specific routes to request, at most 25, each with an ip_address (string). Omit to request the entire table.".to_string(),
                 required: false,
             },
         ],
