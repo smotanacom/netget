@@ -108,7 +108,11 @@ Connection flow:
 #### POST Method (RFC 8484 Section 4.1)
 
 - DNS query sent as request body
-- Content-Type: `application/dns-message`
+- Content-Type: `application/dns-message`, matched per RFC 9110 §8.3 -
+  case-insensitively, and ignoring any parameters after `;`. It used to be a
+  byte-for-byte `!=` against the canonical spelling, so `Application/DNS-Message`
+  and `application/dns-message; charset=utf-8` were both rejected as "Invalid
+  Content-Type": a conformant client turned away for being conformant
 - Binary DNS packet (not encoded)
 - More efficient for large queries
 - Used by DoH client libraries
@@ -147,7 +151,8 @@ Event parameters:
 
 - `query_id` (number) - DNS transaction ID from request packet
 - `domain` (string) - Domain name being queried
-- `query_type` (string) - Record type (A, AAAA, MX, TXT, etc.)
+- `query_type` (string) - Record type (A, AAAA, MX, TXT, etc.), rendered with
+  `Display` rather than `{:?}` for the same reason DoT's is
 - `peer_addr` (string) - Client IP address and port
 - `method` (string) - HTTP method used (GET or POST)
 
@@ -211,9 +216,14 @@ a caller that asked for port 0 would be told the port was 0. The accept loop's
 1. **Accept**: TCP listener accepts connection on port 443
 2. **TLS Handshake**: `TlsAcceptor::accept()` performs TLS negotiation
 3. **HTTP/2 Setup**: hyper establishes HTTP/2 connection
-4. **Request Loop**: Handle multiple HTTP requests over same connection. DoH
-   adds no entry to `ServerInstance.connections`, so DoH connections are
-   invisible to the TUI connection list and to per-connection scheduled tasks
+4. **Request Loop**: Handle multiple HTTP requests over same connection. A
+   `ConnectionId` is allocated and a `ConnectionState` added to
+   `ServerInstance.connections` *before* the TLS handshake, `update_connection_stats`
+   is called for every query in and answer out, and `close_connection_on_server`
+   runs however the connection ends. None of this existed before September 2026:
+   DoH drew an empty peer list however many clients were talking to it, and
+   `{client_ip}` in the `doh_query` template rendered empty because `call_llm` was
+   passed `None` for the connection
 5. **Close**: Connection ends when client closes or error occurs
 
 ### State Management
@@ -266,6 +276,20 @@ All limitations from standard DNS protocol apply:
 - No connection limits
 - Vulnerable to DoS attacks without external rate limiting
 
+Two unbounded resources were closed in September 2026, and they were worse than
+"no rate limiting":
+
+- **The request body was read with `req.collect()`, which has no cap.** Over an
+  established HTTP/2 connection a peer could POST gigabytes to `/dns-query` and
+  NetGet buffered all of it before deciding it was not a DNS message. It is now
+  read through `http_body_util::Limited` at `MAX_DOH_BODY_BYTES` (65535 - a DNS
+  message cannot be larger) and anything over gets `413`.
+- **The TLS handshake had no timeout**, so connecting and then saying nothing held
+  a task open forever. Bounded at 10s.
+
+Per-connection tasks are also registered with `AppState::register_server_task` now,
+so `stop_server` aborts them; unregistered, they outlived the server.
+
 ### 6. No Caching
 
 - No HTTP cache headers
@@ -273,6 +297,26 @@ All limitations from standard DNS protocol apply:
 - Each request hits LLM or script
 
 **Future Enhancement**: Add cache-control headers based on DNS TTL.
+
+## Failure behaviour: SERVFAIL in a 200, not a 5xx
+
+When `call_llm` returns `Err`, the query is answered with a **DNS SERVFAIL message**
+carried in a `200 application/dns-message` - the same answer plain DNS and DoT put on
+the wire, built by the same `dns::actions::build_servfail`, so the transaction id and
+question section are echoed and the client accepts it.
+
+RFC 8484 §4.2.1 makes 200 the status for "this HTTP transaction carried a DNS
+message"; whether that message is an answer or a failure is DNS's business. This used
+to return `500 "LLM error"`, which tells a DoH client the *resolver endpoint* is
+broken and makes real clients mark the server down and fail over - a much heavier
+reaction than the transient backend hiccup that caused it.
+
+The HTTP-level failure is reserved for the case where no DNS message can be built at
+all: `503` + `Retry-After` for `WireFailure::Overloaded`, `500` for `Unavailable`,
+carrying the category text and never the error itself. Which of the two applied is
+recorded in the log as `decision=fail_closed_llm_overload` /
+`decision=fail_closed_llm_error`, the way `src/server/radius/` does it, because
+SERVFAIL is the same bytes whatever went wrong.
 
 ## Example Prompts
 
