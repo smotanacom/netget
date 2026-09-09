@@ -48,6 +48,15 @@ use hyper_util::rt::TokioIo;
 const ALLOWED_METHODS: &str = "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, \
                                COPY, MOVE, LOCK, UNLOCK";
 
+/// Largest request body this server will read, in bytes.
+///
+/// WebDAV has no authentication step, so anything a peer can reach it can also `PUT` to. The
+/// body used to be read with a bare `.collect()`, which is unbounded: a single request decided
+/// how much memory this process allocated, and the whole of it was then interpolated into the
+/// model's prompt. 8 MiB is far past any real `PROPFIND`/`PROPPATCH` body and still bounded.
+/// A larger body gets `413 Payload Too Large` before any of it reaches the model.
+const MAX_REQUEST_BODY: usize = 8 * 1024 * 1024;
+
 /// WebDAV server whose entire filesystem is supplied by the LLM
 pub struct WebDavServer;
 
@@ -174,6 +183,10 @@ struct WebDavRequest {
     path: String,
     headers: HashMap<String, String>,
     body: Bytes,
+    /// The peer sent (or declared) more body than `MAX_REQUEST_BODY`. The request is refused
+    /// with 413 without a model call: there is no content decision to make about a body the
+    /// server declined to read.
+    body_too_large: bool,
 }
 
 async fn extract_request(req: Request<Incoming>) -> WebDavRequest {
@@ -191,11 +204,33 @@ async fn extract_request(req: Request<Incoming>) -> WebDavRequest {
         }
     }
 
-    let body = match req.into_body().collect().await {
-        Ok(collected) => collected.to_bytes(),
+    // Refuse on the declared length before reading a byte where the client gave one, then
+    // bound the stream itself for the chunked case where it did not. Checking only the
+    // remainder-after-headers, or only the declared value, is the mistake that let thirty
+    // bytes on the wire buffer toward gigabytes elsewhere in this tree.
+    let declared_too_large = headers
+        .get("content-length")
+        .and_then(|v| v.parse::<u64>().ok())
+        .is_some_and(|len| len > MAX_REQUEST_BODY as u64);
+
+    if declared_too_large {
+        return WebDavRequest {
+            method,
+            path,
+            headers,
+            body: Bytes::new(),
+            body_too_large: true,
+        };
+    }
+
+    let limited = http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY);
+    let (body, body_too_large) = match limited.collect().await {
+        Ok(collected) => (collected.to_bytes(), false),
         Err(e) => {
-            error!("WebDAV: failed to read request body: {}", e);
-            Bytes::new()
+            // `Limited` reports the cap as an error indistinguishable from a transport
+            // failure, and both end the request the same way here: nothing usable was read.
+            warn!("WebDAV: request body rejected: {}", e);
+            (Bytes::new(), true)
         }
     };
 
@@ -204,6 +239,7 @@ async fn extract_request(req: Request<Incoming>) -> WebDavRequest {
         path,
         headers,
         body,
+        body_too_large,
     }
 }
 
@@ -394,6 +430,18 @@ async fn handle_webdav_request_inner(
     protocol: Arc<WebDavProtocol>,
 ) -> Response<Full<Bytes>> {
     let request = extract_request(req).await;
+
+    if request.body_too_large {
+        Log::new(Some(&status_tx)).warn(format!(
+            "WebDAV {} {} -> 413 (body over {} bytes, no LLM call)",
+            request.method, request.path, MAX_REQUEST_BODY
+        ));
+        return build_safe_response(
+            413,
+            vec![("Content-Type".to_string(), "text/plain".to_string())],
+            "WebDAV request body too large".to_string(),
+        );
+    }
 
     Log::new(Some(&status_tx)).debug(format!(
         "WebDAV request: {} {} ({} bytes)",
