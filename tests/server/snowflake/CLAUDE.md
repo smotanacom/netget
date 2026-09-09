@@ -23,7 +23,15 @@ Cited driver expectations:
 | `test_snowflake_login_and_query` | startup + login + query | 3 |
 | `test_snowflake_login_refused` | startup + refused login | 2 |
 
-**Total: 5** (under the ~10 budget). Each finishes `server.verify_mocks().await?`.
+**Total: 7** (under the ~10 budget). Each finishes `server.verify_mocks().await?`.
+
+`llm_failure_test` is the third test and covers the case the other two cannot: not a
+model *denial* (that is `test_snowflake_login_refused`) but netget failing to reach a
+model at all. Those two must not be the same thing, and the dangerous direction is
+one-way — a login endpoint that fell open on an outage would issue a session to anyone
+who asked while the backend was down. It asserts `success:false` with `data:null`, and
+that the `message` on the wire carries none of the backend URL, model name or retry
+wording; a Snowflake driver prints that string to a human.
 
 ## What each asserts
 

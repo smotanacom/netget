@@ -15,6 +15,26 @@ for a query. **There is no storage**: no session table, no row store in Rust.
 > with `reqwest` (see the tests), not a genuine driver on a live connection. TLS
 > termination is out of scope — the server speaks plaintext HTTP; front it with a
 > TLS proxy if a driver insists on HTTPS.
+>
+> `reqwest` is a generic HTTP client: it proves the server answers HTTP and that
+> the JSON envelope has the fields a connector reads. It cannot prove a connector
+> *accepts* them, so `Experimental` is the ceiling here until one does. That is the
+> same rule that keeps `spark` at Experimental, and it is why this is not `Beta`
+> however green the suite is.
+
+## Authentication
+
+**Nothing is verified.** The password reaches the model only as `has_password`
+(a bool), and every later request reports `has_auth_token` — likewise a bool, true
+for *any* `Authorization: Snowflake Token="..."` value, including one the server
+never issued. The server compares no token against anything. Whether a session is
+granted is entirely the model's decision from the login name, account and those
+booleans, and whether a query is answered is its decision from `has_auth_token`.
+
+An instruction like "log clients in" therefore admits everyone. That is the
+protocol working as designed — netget is a roleplaying server, not a warehouse —
+but it means **no authentication property may be inferred from a successful
+login here**.
 
 ## Endpoints, events and actions
 
@@ -51,6 +71,15 @@ there are no advertised-but-unreachable events.
   token-request; omit for logout).
 - `snowflake_error` — `code` (string, e.g. `"390100"`), `message`. The only way
   to refuse a login/query. Client gets HTTP 200 with `success:false`.
+
+### Request bodies are capped
+
+`read_json_body` reads through `http_body_util::Limited` at `MAX_REQUEST_BYTES`
+(4 MiB); it used to be an unbounded `collect()`, so an unauthenticated POST to the
+login endpoint could grow the process without limit. An over-cap or unreadable body
+becomes `Value::Null`, which every endpoint treats as "no fields present" — and
+since each one fails closed when the model cannot answer from those fields, a
+rejected body can only ever lose a login, never grant one.
 
 ## Fail-closed behaviour (the OAuth2/LDAP lesson)
 
