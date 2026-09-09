@@ -20,7 +20,7 @@ etc.). It uses the official AWS SDK for Rust (`aws-sdk-s3`) to perform bucket an
 
 ```toml
 aws-config = "1.5"
-aws-sdk-s3 = "1.55"
+aws-sdk-s3 = "1.90"   # Cargo.toml, not 1.55; feature name is `s3`, not `s3-client`
 ```
 
 ## Architecture
@@ -41,8 +41,18 @@ The client stores configuration in protocol_data:
 
 - `endpoint`: S3 endpoint URL (AWS or custom like MinIO)
 - `region`: AWS region (e.g., us-east-1)
-- `access_key_id`: AWS access key (from startup params)
-- `secret_access_key`: AWS secret key (from startup params)
+- `access_key_id`: AWS access key, read from `ctx.startup_params` at connect
+- `secret_access_key`: AWS secret key, read from `ctx.startup_params` at connect
+
+Both are then mirrored into `protocol_data`, which is where each operation re-reads them.
+That mirror used to be the *only* source: `connect()` dropped `ctx.startup_params` on the
+floor and read `protocol_data`, which nothing populates before connect — `client_startup.rs`
+builds the instance with `protocol_data: Null` and the only writer is the block that runs
+after the read. So every S3 client signed with `Credentials::new("", "", ...)`, was pinned to
+`us-east-1`, and could never reach a custom endpoint, while the protocol advertised all four
+parameters and marked two of them required.
+`tests/client/s3/command_channel_test.rs::startup_credentials_reach_the_signature` pins it by
+looking for the access key id and region in the `Authorization` header the stub receives.
 
 **No connection state machine** (Idle/Processing/Accumulating) is needed because operations are request-response style
 with no streaming or persistent connections.
@@ -202,7 +212,11 @@ Same as async actions, allowing the LLM to chain operations:
 2. **Action parsed** in `execute_action()` → returns `ClientActionResult::Custom`
 3. **Operation executed** in `execute_operation()` via AWS SDK
 4. **LLM called with result** via `s3_response_received` event
-5. **LLM decides next action** (or waits for user input)
+5. **LLM decides next action** (or waits for user input) — but only once. Follow-ups from
+   `s3_response_received` are dispatched through `run_operation_once`, which raises no event,
+   so the chain is exactly one step deep. That is the "non-notifying path" the root
+   `CLAUDE.md` names, chosen here to keep the async type non-recursive for `tokio::spawn`'s
+   `Send` bound; the prescribed fix is a boxed call with a depth bound, not silence.
 
 ## Limitations
 
@@ -212,10 +226,19 @@ Same as async actions, allowing the LLM to chain operations:
 
 **Solution:** For text files, pass content as-is. For binary files:
 
-- **Upload:** Accept base64-encoded body, decode before uploading (not implemented yet)
-- **Download:** Return base64-encoded body for binary content (not implemented yet)
+- **Upload:** `put_object` takes `encoding: "base64"` and decodes `body` into the object's
+  bytes; `"utf8"` (the default) stores the characters as written. There is no sniffing — a
+  string can be valid text and valid base64 at once, and only the sender knows which it means.
+- **Download:** `get_object` returns the bytes base64-encoded when they are not valid UTF-8,
+  and says which in the event.
 
-**Current limitation:** Only text content is well-supported. Binary upload/download needs enhancement.
+Both are implemented. This section used to say neither was — and the `encoding` half was
+*half* true in a way worth remembering: `put_object` read and decoded the field correctly,
+but `execute_action` never copied `encoding` out of the model's action into the operation's
+data, so the value never arrived, the `"utf8"` default always won, and a model following the
+documentation stored literal base64 ASCII in the object. That is the `send_tcp_data` defect
+recreated one layer up, in the executor rather than the operation, and a declared-example test
+cannot catch it: the example round-trips fine because the extra field is simply ignored.
 
 ### 2. Large Files
 

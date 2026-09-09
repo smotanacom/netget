@@ -162,13 +162,13 @@ All tests use the compiled `netget` binary as a black box:
 
 ```bash
 # With MinIO running on localhost:9000
-./cargo-isolated.sh test --no-default-features --features s3-client --test client::s3::e2e_test
+./cargo-isolated.sh test --no-default-features --features s3 --test client -- client::s3
 ```
 
 ### Run Specific Test
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features s3-client test_s3_client_connect -- --exact
+./cargo-isolated.sh test --no-default-features --features s3 --test client -- client::s3::e2e_test::s3_client_tests::test_s3_client_connect --exact --ignored
 ```
 
 ### Run with AWS S3
@@ -179,8 +179,25 @@ export AWS_ACCESS_KEY_ID=your_access_key
 export AWS_SECRET_ACCESS_KEY=your_secret_key
 export AWS_REGION=us-east-1
 
-./cargo-isolated.sh test --no-default-features --features s3-client --test client::s3::e2e_test
+./cargo-isolated.sh test --no-default-features --features s3 --test client -- client::s3
 ```
+
+## What actually runs
+
+**One test runs by default: `command_channel_test.rs`.** All four tests in `e2e_test.rs` are
+`#[ignore]`d (three need MinIO or LocalStack, one needs `--use-ollama`), so every budget and
+coverage figure below describes tests that do not execute. The LLM-call budget for a default
+run is **zero**, not the seven counted below.
+
+`command_channel_test.rs` — which this file never mentioned — proves the dashboard's
+`[ send ]` path end to end against a loopback stub: an injected `list_buckets` becomes a real
+HTTP request, an unknown verb is `Rejected`, `disconnect` drops the handle, and the
+credentials and region from the startup parameters appear in the `Authorization` header the
+stub receives.
+
+Two corrections to the commands below: the feature is **`s3`**, not `s3-client`, which does not
+exist in `Cargo.toml` — every command in this file used to fail on that alone. And `--test`
+names a cargo *target* (`client`, i.e. `tests/client.rs`); the module path goes after `--`.
 
 ## Known Issues & Limitations
 
@@ -260,7 +277,7 @@ jobs:
           ./mc alias set local http://localhost:9000 minioadmin minioadmin
           ./mc mb local/test-bucket
       - name: Run S3 client tests
-        run: ./cargo-isolated.sh test --no-default-features --features s3-client
+        run: ./cargo-isolated.sh test --no-default-features --features s3 --test client -- client::s3
 ```
 
 ## Test Maintenance

@@ -150,8 +150,8 @@ async fn injected_list_buckets_reaches_the_endpoint() {
 
     let client_id = ClientForm {
         protocol: "s3".to_string(),
-        // The S3 client stores `remote_addr` as its endpoint, so every operation is
-        // pointed at the loopback stub and never at AWS.
+        // `remote_addr` is the endpoint unless `endpoint_url` overrides it, so every
+        // operation is pointed at the loopback stub and never at AWS.
         remote_addr: Some(format!("http://127.0.0.1:{}", stub.port)),
         instruction: Some("test client".to_string()),
         ..Default::default()
@@ -241,6 +241,82 @@ async fn injected_list_buckets_reaches_the_endpoint() {
     assert!(
         !state.has_client_handle(client_id).await,
         "the command handle outlived the disconnected client"
+    );
+
+    state.remove_client(client_id).await;
+}
+
+/// The declared startup parameters must reach the signature.
+///
+/// All four (`access_key_id`, `secret_access_key`, `region`, `endpoint_url`) were declared —
+/// two of them `required: true` — and read out of `protocol_data`, which nothing populates
+/// before connect: `client_startup.rs` builds the instance with `protocol_data: Null` and the
+/// only writer runs *after* the read. So every S3 client signed with
+/// `Credentials::new("", "", ...)` and was pinned to `us-east-1` no matter what the caller
+/// passed, and no S3-compatible service could have authenticated it.
+///
+/// SigV4 itself is the AWS SDK's job; what this pins is that netget hands it the operator's
+/// values. The access key id and the region both appear in the `Credential=` scope of the
+/// `Authorization` header, so the stub can see them.
+#[tokio::test]
+async fn startup_credentials_reach_the_signature() {
+    let stub = spawn_http_stub(
+        "200 OK",
+        "application/xml",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListAllMyBucketsResult \
+         xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Owner><ID>netget</ID>\
+         </Owner><Buckets/></ListAllMyBucketsResult>",
+    )
+    .await;
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let client_id = ClientForm {
+        protocol: "s3".to_string(),
+        // Deliberately not the stub: `endpoint_url` must win over `remote_addr`, and if it
+        // is ignored the request goes nowhere the stub can see it.
+        remote_addr: Some("example.invalid:9000".to_string()),
+        instruction: Some("test client".to_string()),
+        startup_params: Some(serde_json::json!({
+            "access_key_id": "NETGETTESTKEYID",
+            "secret_access_key": "netget-test-secret",
+            "region": "eu-west-3",
+            "endpoint_url": format!("http://127.0.0.1:{}", stub.port),
+        })),
+        ..Default::default()
+    }
+    .create(
+        &state,
+        netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string()),
+        tx.clone(),
+    )
+    .await
+    .expect("create s3 client with startup parameters");
+
+    wait_for_client_handle(&state, client_id).await;
+
+    let outcome = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({"type": "list_buckets"}),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("send_to_client list_buckets");
+    assert!(
+        matches!(outcome, ClientSendOutcome::Executed { .. }),
+        "expected Executed, got {outcome:?}"
+    );
+
+    assert!(
+        stub.saw("NETGETTESTKEYID"),
+        "the access key id from the startup parameters never reached the signature: {:?}",
+        stub.seen.lock().unwrap()
+    );
+    assert!(
+        stub.saw("eu-west-3"),
+        "the region from the startup parameters never reached the signature: {:?}",
+        stub.seen.lock().unwrap()
     );
 
     state.remove_client(client_id).await;

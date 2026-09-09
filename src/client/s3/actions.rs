@@ -512,6 +512,7 @@ impl Client for S3ClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                ctx.startup_params,
             )
             .await
         })
@@ -548,12 +549,32 @@ impl Client for S3ClientProtocol {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
+                // `encoding` has to travel with the body. `put_object` reads it and decodes
+                // properly, but this arm never copied it across, so `data["encoding"]` was
+                // always absent, the "utf8" default always won, and a model following the
+                // documented `encoding: "base64"` stored the literal base64 ASCII in the
+                // object — the exact `send_tcp_data` defect, recreated one layer up, in the
+                // executor rather than the operation. Validated here so an unusable value is
+                // an action failure the model is told about rather than a surprise later.
+                let encoding = action
+                    .get("encoding")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("utf8");
+                if !matches!(encoding, "utf8" | "base64") {
+                    anyhow::bail!(
+                        "Unknown encoding {encoding:?} for put_object; use \"utf8\" (the \
+                         default, storing the characters of `body` as written) or \"base64\" \
+                         (decoding `body` into the object's bytes)."
+                    );
+                }
+
                 Ok(ClientActionResult::Custom {
                     name: "s3_put_object".to_string(),
                     data: json!({
                         "bucket": bucket,
                         "key": key,
                         "body": body,
+                        "encoding": encoding,
                         "content_type": content_type,
                     }),
                 })
