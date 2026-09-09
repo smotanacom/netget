@@ -204,13 +204,18 @@ Handler response reporting an error:
 `tests/server/mcp/e2e_test.rs` drives raw JSON-RPC over `reqwest` — **no MCP SDK client is used
 anywhere in the repo**, which is why the SSE-transport gap above went unnoticed.
 
-**4 of its 9 tests fail, and did so before any of the above changes**
-(`test_mcp_initialize`, `test_mcp_resources_list`, `test_mcp_tools_list`,
-`test_mcp_prompts_list`). Their mocks return `{"type": "send_jsonrpc_response", ...}`, which is
-an action of the *jsonrpc* protocol and not of MCP, so `execute_action` rejects it, the retry
-loop exhausts, and the client gets `-32603`. The fix belongs in the test file — the mocks should
-return `mcp_initialize_response`, `mcp_resources_list_response`, `mcp_tools_list_response` and
-`mcp_prompts_list_response` — and is not made here.
+All 9 pass, plus `llm_failure_test.rs`. This file used to say four of them failed, with their
+mocks returning `{"type": "send_jsonrpc_response", ...}` — a *jsonrpc* action, not an MCP one.
+That was fixed in the test file and the claim here outlived it; re-run before believing any
+similar statement.
+
+`tests/client/mcp/e2e_test.rs` also exercises this server, from the other side: NetGet's MCP
+client completes the handshake against it and drives `tools/list` → `tools/call` and
+`resources/list` → `resources/read`. Those three tests were `#[ignore]`d for lack of mocks
+until September 2026, which is how the client came to be sending `initialized` instead of
+`notifications/initialized` — this server drops the bare name into
+`debug!("Unknown MCP notification")` and a notification has no reply, so nothing failed
+visibly on either side.
 
 ## References
 

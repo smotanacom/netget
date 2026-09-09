@@ -359,7 +359,16 @@ impl McpClient {
             .context("Missing result in initialize response")
     }
 
-    /// Send initialized notification to MCP server
+    /// Send the `notifications/initialized` notification to the MCP server.
+    ///
+    /// The method name is `notifications/initialized`, not `initialized`. MCP namespaces every
+    /// notification under `notifications/`, and this client sent the bare name — so phase 3 of
+    /// the handshake was an unrecognised notification to every server it ever talked to,
+    /// **including NetGet's own MCP server**, whose router matches `notifications/initialized`
+    /// and drops anything else into a `debug!("Unknown MCP notification")`. Nothing failed
+    /// visibly because a notification has no reply, which is exactly why it survived: the
+    /// client logged "Sending MCP initialized notification", got a 204, and declared the
+    /// handshake complete.
     async fn send_initialized_notification(
         http_client: &reqwest::Client,
         base_url: &str,
@@ -367,7 +376,7 @@ impl McpClient {
     ) -> Result<()> {
         let notification = JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
-            method: "initialized".to_string(),
+            method: "notifications/initialized".to_string(),
             params: Some(json!({})),
         };
 
@@ -680,25 +689,40 @@ impl McpClient {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<Value> {
-        let (base_url, request_id): (String, i64) = app_state
+        // Read the two fields and bump the counter under one guard, then decide.
+        //
+        // These were `.expect("Missing base_url")` / `.expect("Missing request_id")` *inside*
+        // the `with_client_mut` closure, so a client whose protocol fields had not been set —
+        // or had been reset — panicked while the `AppState` write guard was held. The panic
+        // landed inside the spawned command loop or notify task, which swallows it, so the
+        // symptom was a client that silently stopped answering: no error, no log line, and
+        // `[ send ]` timing out on a request that was never made.
+        let (base_url, request_id) = app_state
             .with_client_mut(client_id, |client| {
                 let url = client
                     .get_protocol_field("base_url")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .expect("Missing base_url");
+                    .map(|s| s.to_string());
 
                 let id = client
                     .get_protocol_field("request_id")
-                    .and_then(|v| v.as_i64())
-                    .expect("Missing request_id");
+                    .and_then(|v| v.as_i64());
 
-                client.set_protocol_field("request_id".to_string(), json!(id + 1));
+                if let Some(id) = id {
+                    client.set_protocol_field("request_id".to_string(), json!(id + 1));
+                }
 
                 (url, id)
             })
             .await
             .context("Client not found")?;
+
+        let base_url = base_url.context(
+            "MCP client has no base_url; it was never initialized or its state was reset",
+        )?;
+        let request_id = request_id.context(
+            "MCP client has no request_id; it was never initialized or its state was reset",
+        )?;
 
         let (method, params) = match action_name {
             "mcp_list_resources" => ("resources/list".to_string(), None),
@@ -730,14 +754,18 @@ impl McpClient {
                     .get("name")
                     .and_then(|v| v.as_str())
                     .context("Missing name in get_prompt")?;
-                let arguments = data.get("arguments").cloned();
-                (
-                    "prompts/get".to_string(),
-                    Some(json!({
-                        "name": name,
-                        "arguments": arguments
-                    })),
-                )
+                // `arguments` is omitted when absent rather than sent as `null`: MCP declares
+                // it optional, and a server that validates the field against its declared
+                // object type rejects an explicit null. `Some(json!({... "arguments": None}))`
+                // serialised to exactly that.
+                let mut params = serde_json::Map::new();
+                params.insert("name".to_string(), json!(name));
+                if let Some(arguments) = data.get("arguments") {
+                    if !arguments.is_null() {
+                        params.insert("arguments".to_string(), arguments.clone());
+                    }
+                }
+                ("prompts/get".to_string(), Some(Value::Object(params)))
             }
             _ => return Err(anyhow::anyhow!("Unknown MCP action: {}", action_name)),
         };

@@ -10,45 +10,70 @@ verify client connection, initialization, and MCP operations (tools, resources, 
 ### Black-Box Testing
 
 - Spawn real `netget` binary with MCP server and client instances
-- Use actual Ollama LLM (not mocked)
-- Verify behavior via output inspection
+- **Both ends are mocked** with `.with_mock()`, so the tests run by default and the assertions
+  are about the exchange (`verify_mocks`) rather than about a substring in the output
 - Tests are protocol-agnostic (don't inspect internal state)
+
+### These three tests were all `#[ignore]`d, and that is how a real defect survived
+
+Until September 2026 every test in `e2e_test.rs` carried `#[ignore]` with the note "No
+`.with_mock()` configured: requires `--use-ollama`". That left the MCP **client** with no
+running e2e coverage at all — only `command_channel_test.rs`, which points the client's LLM at
+an unreachable URL and never exercises the handshake or an operation. An `#[ignore]`d test is
+not evidence (root CLAUDE.md, rubric point 6).
+
+What lived in the gap: the client sent phase 3 of the handshake as method `initialized`, where
+MCP namespaces every notification under `notifications/`. NetGet's own MCP server matches
+`notifications/initialized` and drops anything else into a `debug!("Unknown MCP notification")`
+— and a notification has no reply, so the client logged that it had sent one, got its 204, and
+declared the handshake complete. `test_mcp_client_initialize` now asserts on the **server's**
+log line, the only place the difference is visible; reverting the client to the bare name fails
+it.
+
+### Two traps in mocking this client
+
+- **`wait_for_more` is not an MCP client action.** Answering an event with it makes the
+  executor reject the action, the LLM repair loop re-ask, and the event fire a second time —
+  which surfaces as `expected 2, got 3` on an unrelated rule.
+  `tests/helpers/mock_action_names.rs` catches the statically-declared form and says so
+  usefully, but it cannot see inside a `respond_with_actions_from_event` closure. Use
+  `show_message` to terminate a chain.
+- **The initialize mock must include `serverInfo`.** `connect()` fails with "Missing serverInfo
+  in initialize response" without it, so an incomplete mock fails the handshake rather than the
+  assertion under test.
 
 ### Test Environment
 
-- **LLM Required**: Yes (all tests call Ollama)
+- **LLM Required**: No — a per-test in-process mock LLM serves both binaries
 - **Network**: Localhost only (127.0.0.1)
 - **Ports**: Dynamic allocation via `{AVAILABLE_PORT}` placeholder
-- **Concurrency**: Tests use a per-test in-process mock LLM
 
 ## LLM Call Budget
 
-**Total: < 10 LLM calls across all tests**
+Counted per process, since server and client each run their own mock.
 
-### Test 1: `test_mcp_client_initialize` - 2 LLM calls
+### Test 1: `test_mcp_client_initialize` — 2 server + 2 client
 
-1. Server startup (LLM declares MCP capabilities)
-2. Client connection (LLM receives connected event)
+Server: startup, `mcp_initialize`. Client: startup, `mcp_client_connected`.
 
-**Rationale**: Minimal initialization test verifies three-phase handshake works.
+**Rationale**: verifies the three-phase handshake, including that phase 3 reached the
+server's router.
 
-### Test 2: `test_mcp_client_call_tool` - 3 LLM calls
+### Test 2: `test_mcp_client_call_tool` — 4 server + 4 client
 
-1. Server startup (LLM declares tools)
-2. Client connection (LLM lists tools)
-3. Client tool call (LLM calls calculate tool)
+Server: startup, `mcp_initialize`, `mcp_tools_list`, `mcp_tools_call`. Client: startup,
+`mcp_client_connected`, and `mcp_response_received` twice — **one** rule branching on the
+event, because two rules on the same event with no way to tell them apart is first-match-wins
+and the second would report zero calls.
 
-**Rationale**: Tests complete tool workflow: list → call → response.
+**Rationale**: tests the whole tool workflow, and the second server call exists only because
+the client acted on the first one's response.
 
-### Test 3: `test_mcp_client_read_resource` - 3 LLM calls
+### Test 3: `test_mcp_client_read_resource` — 4 server + 4 client
 
-1. Server startup (LLM declares resources)
-2. Client connection (LLM lists resources)
-3. Client resource read (LLM reads specific resource)
+The same shape for `resources/list` → `resources/read`.
 
-**Rationale**: Tests resource workflow: list → read → response.
-
-**Total Budget: 2 + 3 + 3 = 8 LLM calls** ✅
+**Total: 20 calls across three tests and six processes** — under 10 per process.
 
 ## Test Coverage
 
