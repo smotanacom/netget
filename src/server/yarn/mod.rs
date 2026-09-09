@@ -161,8 +161,80 @@ impl YarnServer {
     }
 }
 
+/// Approximate the bytes this request cost on the wire.
+///
+/// hyper hands us a parsed `Request`, so the original head is gone; this
+/// reconstructs its size from the parts that survive. It is an estimate, and
+/// deliberately so — the alternative is a `↓` counter frozen at 0, which reads as
+/// "this peer sent nothing" rather than "we did not measure".
+fn approximate_request_bytes(req: &Request<Incoming>) -> u64 {
+    use hyper::body::Body;
+    let head: usize = req.method().as_str().len()
+        + req.uri().to_string().len()
+        + 12 // " HTTP/1.1\r\n" plus the blank line terminating the head
+        + req
+            .headers()
+            .iter()
+            .map(|(name, value)| name.as_str().len() + value.len() + 4)
+            .sum::<usize>();
+    head as u64 + req.body().size_hint().lower()
+}
+
+/// Record one request/response exchange against the connection's counters, then
+/// return the response unchanged.
+///
+/// `update_connection_stats` is what the dashboard rail's `↓ ↑` columns and the
+/// connection-scoped task prompts read, and it is what keeps `last_activity`
+/// moving. Without it a busy YARN server draws every peer as idle having sent
+/// and received nothing.
 #[allow(clippy::too_many_arguments)]
 async fn handle_yarn_request(
+    req: Request<Incoming>,
+    connection_id: ConnectionId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<YarnProtocol>,
+    server_id: crate::state::ServerId,
+    banner: Arc<(String, String)>,
+) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    let bytes_received = approximate_request_bytes(&req);
+    let response = handle_yarn_request_inner(
+        req,
+        connection_id,
+        llm_client,
+        app_state.clone(),
+        status_tx,
+        protocol,
+        server_id,
+        banner,
+    )
+    .await;
+
+    let bytes_sent = response
+        .as_ref()
+        .ok()
+        .and_then(|resp| {
+            use hyper::body::Body;
+            resp.body().size_hint().exact()
+        })
+        .unwrap_or(0);
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            Some(bytes_received),
+            Some(bytes_sent),
+            Some(1),
+            Some(1),
+        )
+        .await;
+
+    response
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_yarn_request_inner(
     req: Request<Incoming>,
     _connection_id: ConnectionId,
     llm_client: OllamaClient,
@@ -175,11 +247,43 @@ async fn handle_yarn_request(
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
 
-    let body_bytes = match req.into_body().collect().await {
+    // Bounded. `POST /ws/v1/cluster/apps` carries a real body, `Incoming` has no
+    // default limit, and this body is buffered whole *and* interpolated into the LLM
+    // prompt below — so without a cap an unauthenticated submit of arbitrary length
+    // allocates twice over. `Limited` errors as soon as the cap is passed rather than
+    // after buffering the whole thing.
+    //
+    // Falling back to an empty body would be worse than refusing: the model would be
+    // asked to act on a submission it never saw, and would answer as if it had.
+    let body_bytes = match http_body_util::Limited::new(
+        req.into_body(),
+        crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES,
+    )
+    .collect()
+    .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            console_error!(status_tx, "Failed to read YARN request body: {}", e);
-            Bytes::new()
+            console_error!(
+                status_tx,
+                "YARN {} {} decision=refused_body_too_large (limit {} bytes) -> 413: {}",
+                method,
+                path,
+                crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES,
+                e
+            );
+            return Ok(build_yarn_response(
+                413,
+                yarn_remote_exception(
+                    413,
+                    "WebApplicationException",
+                    &format!(
+                        "request body exceeds {} bytes",
+                        crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES
+                    ),
+                ),
+                None,
+            ));
         }
     };
     let body_str = String::from_utf8_lossy(&body_bytes).to_string();
