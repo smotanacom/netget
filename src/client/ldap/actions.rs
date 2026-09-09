@@ -316,7 +316,17 @@ impl Protocol for LdapClientProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("ldap3 crate with full directory operations")
             .llm_control("Full control over bind, search, add, modify, delete operations")
-            .e2e_testing("Docker OpenLDAP container")
+            .e2e_testing(
+                "tests/client/ldap/command_channel_test.rs runs. The three tests in \
+                 tests/client/ldap/e2e_test.rs need a Docker OpenLDAP container and are all \
+                 #[ignore]d, so nothing in the default suite drives this client against a \
+                 real directory.",
+            )
+            .notes(
+                "ldap3's synchronous LdapConn owns the socket, so every verb runs on \
+                 spawn_blocking and NetGet never sees the wire bytes. Bind credentials come \
+                 from the model or the operator; no key material or system account is read.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
