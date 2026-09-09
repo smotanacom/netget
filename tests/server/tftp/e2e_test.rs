@@ -478,7 +478,11 @@ async fn test_tftp_aborts_a_read_transfer_with_error_mid_stream() -> E2EResult<(
     let (block_number, data) =
         parse_data_packet(&buffer[..n]).expect("Failed to parse DATA packet");
     assert_eq!(block_number, 1);
-    assert_eq!(data.len(), 512, "block 1 must be full so the transfer continues");
+    assert_eq!(
+        data.len(),
+        512,
+        "block 1 must be full so the transfer continues"
+    );
 
     client.send_to(&build_ack_packet(1), peer_addr).await?;
 
@@ -490,7 +494,10 @@ async fn test_tftp_aborts_a_read_transfer_with_error_mid_stream() -> E2EResult<(
     );
     let (error_code, error_msg) =
         parse_error_packet(&buffer[..n]).expect("Failed to parse ERROR packet");
-    assert_eq!(error_code, 2, "the handler's error code must survive to the wire");
+    assert_eq!(
+        error_code, 2,
+        "the handler's error code must survive to the wire"
+    );
     assert_eq!(error_msg, "Access violation");
 
     // Nothing may follow the ERROR. RFC 1350 ends a transfer there, and the server used to

@@ -174,10 +174,7 @@ where
         // calling `consume`.
         let (newline_at, available_len) = {
             let available = reader.fill_buf().await?;
-            (
-                available.iter().position(|&b| b == b'\n'),
-                available.len(),
-            )
+            (available.iter().position(|&b| b == b'\n'), available.len())
         };
 
         if available_len == 0 {
