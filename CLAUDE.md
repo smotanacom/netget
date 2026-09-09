@@ -105,7 +105,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   fourteen that are each driven by the protocol's own third-party client in a test that is **not**
   `#[ignore]`d — `amqp` (lapin), `cassandra` (scylla), `coap` (coap-lite), `imap` (async-imap),
   `ldap` (ldap3), `mongodb` (official driver), `mssql` (tiberius), `mysql` (mysql_async),
-  `postgresql` (tokio-postgres), `redis` (redis-rs), `ssh` (russh), `sqs` (aws-sdk-sqs), `webdav`
+  `postgresql` (tokio-postgres), `redis` (redis-rs), `sqs` (aws-sdk-sqs), `webdav`
   (reqwest_dav), `zookeeper` (zookeeper-async). Each protocol's `metadata()` names its client.
   **August 28 2026 added two more**: `npm` (the real npm CLI — `npm view` resolves the packument
   and `npm install` unpacks the served tarball into `node_modules/`) and `mqtt` (rumqttc, taken
@@ -175,7 +175,24 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   a generic HTTP client (`reqwest` proves an HTTP server answers, not that the protocol on top is
   right — `couchdb`, `openapi`, `spark`, `xmlrpc`, `yarn`,
   `jsonrpc`, `oauth2`, `saml_sp`, `proxy`, `http2`); anything with no independent peer at
-  all (`memcached`, `named_pipe`, `pty`, `radius`, `socket_file`, `stdio`).
+  all (`memcached`, `named_pipe`, `pty`, `socket_file`, `stdio`).
+
+  **Two entries above were wrong in opposite directions, corrected September 2026.**
+  `ssh` was listed as Beta "driven by russh" — but **russh is the server's own
+  library**, so that is the circular-evidence case this file names elsewhere, not a
+  third-party peer. Its own `metadata()` carried two contradictory comments in one
+  block and an `e2e_testing` field three lines below still reading "no automated test
+  exists". The code is now `Experimental`, which is what `src/server/ssh/CLAUDE.md`
+  had said all along.
+
+  `radius` was listed as having **no independent peer at all**, which is the opposite
+  error: `tests/server/radius/real_client_test.rs` drives FreeRADIUS `radclient`, and
+  radclient verifies our Response Authenticator, so it checks the one thing that
+  matters. It stays Experimental for a *different* reason — the test **skips loudly
+  when radclient is absent**, and a skip-when-missing gate is a silent pass rather
+  than evidence. Converting it to hard-fail is one line and the shape `npm` uses, and
+  is all that stands between radius and Beta; it would make FreeRADIUS a requirement
+  wherever the suite runs, which is why it has not been done unilaterally.
 
   **`rss` was on that list for circular evidence and is now Beta**, by the fix the list itself
   prescribed. The server builds its XML with the `rss` crate's `ChannelBuilder` and the test
