@@ -38,15 +38,14 @@ impl CassandraProtocol {
 // Implement Protocol trait (common functionality)
 impl Protocol for CassandraProtocol {
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
-        vec![
-                crate::llm::actions::ParameterDefinition {
-                    name: "send_first".to_string(),
-                    type_hint: "boolean".to_string(),
-                    description: "Whether the server should send the first message after connection (not typically needed for this protocol)".to_string(),
-                    required: false,
-                    example: serde_json::json!(false),
-                },
-            ]
+        // Deliberately empty. `send_first` was declared here and parsed in `spawn()`, but it
+        // reached `CassandraServer::spawn_with_llm_actions` as `_send_first` and was
+        // discarded — and could never have been honoured: the native protocol is strictly
+        // client-first, a driver opens with STARTUP or OPTIONS and any unsolicited server
+        // frame is a protocol violation. Undeclaring it makes `server_startup` log an
+        // explicit "does not support send_first" instead of accepting a knob that does
+        // nothing. Same exit as `nntp`, `elasticsearch` and `mongodb`.
+        vec![]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         // No user-triggered actions. `list_cassandra_connections` used to be declared here and
@@ -182,20 +181,12 @@ impl Server for CassandraProtocol {
     > {
         Box::pin(async move {
             use crate::server::cassandra::CassandraServer;
-            let send_first = ctx
-                .startup_params
-                .as_ref()
-                .map(|p| p.get_optional_bool("send_first"))
-                .transpose()?
-                .flatten()
-                .unwrap_or(false);
 
             CassandraServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
-                send_first,
                 ctx.server_id,
             )
             .await
@@ -664,7 +655,13 @@ pub static CASSANDRA_QUERY_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "consistency".to_string(),
             type_hint: "string".to_string(),
-            description: "Consistency level (ONE, QUORUM, ALL, etc.)".to_string(),
+            // This was reported as the literal "ONE" for every query regardless of what the
+            // client asked for. It is now the level read off the frame; `UNKNOWN` means the
+            // code was outside the defined set, never a guess.
+            description: "Consistency level the client requested, read from the frame: ANY, \
+                          ONE, TWO, THREE, QUORUM, ALL, LOCAL_QUORUM, EACH_QUORUM, SERIAL, \
+                          LOCAL_SERIAL, LOCAL_ONE, or UNKNOWN if the code is not one of those"
+                .to_string(),
             required: false,
         },
     ])
@@ -748,6 +745,15 @@ pub static CASSANDRA_EXECUTE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             type_hint: "array".to_string(),
             description: "Bound parameter values".to_string(),
             required: true,
+        },
+        Parameter {
+            name: "consistency".to_string(),
+            type_hint: "string".to_string(),
+            description: "Consistency level the client requested, read from the frame: ANY, \
+                          ONE, TWO, THREE, QUORUM, ALL, LOCAL_QUORUM, EACH_QUORUM, SERIAL, \
+                          LOCAL_SERIAL, LOCAL_ONE, or UNKNOWN if the code is not one of those"
+                .to_string(),
+            required: false,
         },
     ])
     .with_actions(vec![
