@@ -405,6 +405,77 @@ fn refuses_datagrams_that_are_not_answerable_requests() {
     assert!(packet::parse_request(&vec![0u8; packet::MAX_DATAGRAM + 1]).is_err());
 }
 
+/// A positive answer always carries the *queried* name, so an answer that names a different
+/// one is refused rather than silently corrected.
+///
+/// This is a fail-open hole that was open: `name` and `suffix` are declared **required** on
+/// `send_netbios_name_response`, but the NAME field on the wire comes from the request, so
+/// the executor read them and threw them away (`let _ = parse_name(&action)`). A model
+/// answering a query for `FILESERVER<0x20>` with `{"name": "PRINTER", "suffix": 0}` therefore
+/// emitted a perfectly valid positive answer **for FILESERVER<0x20>**, carrying PRINTER's
+/// addresses, while the action's own log template printed `-> NetBIOS name PRINTER<0x00>`.
+/// The querier caches that for the TTL. Guessing which of the two the model meant is not
+/// available to us, so the answer is refused and nothing goes on the wire.
+#[test]
+fn a_positive_answer_may_not_name_a_different_name_than_the_query() {
+    use netget::llm::actions::protocol_trait::Server;
+    use netget::server::netbios_ns::actions::{NetbiosNsProtocol, RequestContext};
+
+    let context = |name: &str, suffix: u8| RequestContext {
+        trn_id: 0x1234,
+        opcode: packet::OPCODE_QUERY,
+        recursion_desired: false,
+        name_field: packet::encode_name_field(name, suffix, None).unwrap(),
+        question_name: name.to_string(),
+        question_suffix: suffix,
+        default_ttl: 3600,
+        default_node_type: NodeType::B,
+    };
+    let answer = |name: &str, suffix: serde_json::Value| {
+        serde_json::json!({
+            "type": "send_netbios_name_response",
+            "name": name,
+            "suffix": suffix,
+            "addresses": ["10.1.2.3"],
+        })
+    };
+
+    let protocol = NetbiosNsProtocol::for_request(context("FILESERVER", 0x20));
+
+    // Matching name and suffix: answered.
+    protocol
+        .execute_action(answer("FILESERVER", serde_json::json!(0x20)))
+        .expect("an answer naming the queried name is the normal case");
+
+    // A different name entirely.
+    let wrong_name = protocol
+        .execute_action(answer("PRINTER", serde_json::json!(0x20)))
+        .expect_err("answering for a different host must not produce a datagram");
+    let message = format!("{wrong_name:#}");
+    assert!(
+        message.contains("FILESERVER") && message.contains("PRINTER"),
+        "the refusal must name both the question and what the model said: {message}"
+    );
+
+    // Same name, different service. `FILESERVER<0x00>` and `FILESERVER<0x20>` are two names.
+    protocol
+        .execute_action(answer("FILESERVER", serde_json::json!(0x00)))
+        .expect_err("a different suffix is a different name, not a detail");
+
+    // The suffix must be unambiguous, for the same reason: a bare "20" spells both 32 (hex,
+    // the conventional NetBIOS notation) and 20 (decimal), and those are two names.
+    let ambiguous = protocol
+        .execute_action(answer("FILESERVER", serde_json::json!("20")))
+        .expect_err("a bare digit string must be refused rather than guessed at");
+    assert!(
+        format!("{ambiguous:#}").contains("0x20"),
+        "the refusal must name the unambiguous spelling"
+    );
+    protocol
+        .execute_action(answer("FILESERVER", serde_json::json!("0x20")))
+        .expect("an explicit hex spelling is accepted");
+}
+
 // ===========================================================================================
 // Layer 2 — end to end through the real binary, LLM mocked
 // ===========================================================================================

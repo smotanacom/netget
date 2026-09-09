@@ -727,6 +727,50 @@ pub fn encode_node_status_response(
     Ok(out)
 }
 
+/// Read a `suffix` action parameter.
+///
+/// **One copy, shared by the server's actions and the client's, because the two disagreeing
+/// silently is a wrong-name bug rather than a wrong-value one.** `FILESERVER<0x20>` and
+/// `FILESERVER<0x14>` are different names, so a suffix that decodes to the wrong octet does
+/// not fail — it resolves, or answers for, a name nobody asked about.
+///
+/// Accepted: a number `0..=255`, or a string with an explicit `0x` prefix. A **bare** digit
+/// string such as `"20"` is refused, deliberately: NetBIOS suffixes are written in hex by
+/// convention (`<20>` is the file server) while JSON strings of digits read as decimal, and
+/// `"20"` is simultaneously a valid spelling of 32 and of 20 with only the sender knowing
+/// which. That is the same ambiguity the root `CLAUDE.md` records for `send_tcp_data`'s
+/// text-or-hex field, and the same answer: make the sender say which, rather than sniff.
+pub fn parse_suffix_value(value: Option<&serde_json::Value>) -> Result<u8> {
+    let Some(value) = value else { return Ok(0) };
+    match value {
+        serde_json::Value::Null => Ok(0),
+        serde_json::Value::Number(n) => {
+            let n = n
+                .as_u64()
+                .context("'suffix' must be a whole number between 0 and 255")?;
+            u8::try_from(n).context("'suffix' must be between 0 and 255")
+        }
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            match trimmed
+                .strip_prefix("0x")
+                .or_else(|| trimmed.strip_prefix("0X"))
+            {
+                Some(hex) => u8::from_str_radix(hex, 16).with_context(|| {
+                    format!("'suffix' string '{s}' is not a hex octet (0x00-0xff)")
+                }),
+                None => bail!(
+                    "'suffix' string '{s}' is ambiguous: NetBIOS suffixes are conventionally \
+                     written in hex, but a bare string of digits reads as decimal, so '{s}' \
+                     could mean two different names. Give a number (32) or an explicit hex \
+                     string (\"0x20\")."
+                ),
+            }
+        }
+        other => bail!("'suffix' must be a number (32) or a hex string (\"0x20\"), got {other}"),
+    }
+}
+
 /// Parse `"00:11:22:33:44:55"` (or `-` separated) into six octets.
 ///
 /// A MAC reaches the model as a formatted string, never as a byte array — models cannot

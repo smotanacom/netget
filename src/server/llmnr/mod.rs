@@ -43,6 +43,16 @@ use tracing::{debug, error, info, trace, warn};
 /// 4 KiB covers every query a name resolver produces and bounds a hostile datagram.
 const MAX_MESSAGE_LEN: usize = 4096;
 
+/// How long a TCP querier may hold a connection open without sending anything.
+///
+/// RFC 4795 §2.4's TCP path is a single question and a single answer; there is no session to
+/// keep alive. Without a deadline, a peer that connects and then says nothing parks a task
+/// that `register_server_task` can never prune, because it never finishes — so N idle
+/// connections cost N permanent tasks and N file descriptors for a protocol that has no
+/// concept of an idle connection. Thirty seconds is far longer than any real querier waits
+/// and short enough that the cost of a stalled peer is bounded.
+const TCP_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// How this responder arrived at what it did (or did not) put on the wire.
 ///
 /// The whole point of this enum is that **"the model said stay silent" and "the model could
@@ -293,10 +303,20 @@ impl Responder {
     async fn serve_tcp_connection(&self, mut stream: TcpStream, peer_addr: SocketAddr) {
         loop {
             let mut len_buf = [0u8; 2];
-            match stream.read_exact(&mut len_buf).await {
-                Ok(_) => {}
+            // Every read is bounded. A peer that opens a connection and then goes quiet —
+            // between frames, or half way through one — must not hold this task forever; see
+            // TCP_IDLE_TIMEOUT.
+            match tokio::time::timeout(TCP_IDLE_TIMEOUT, stream.read_exact(&mut len_buf)).await {
+                Ok(Ok(_)) => {}
                 // EOF or a half-written frame: the querier is done. Not an error.
-                Err(_) => break,
+                Ok(Err(_)) => break,
+                Err(_) => {
+                    debug!(
+                        "LLMNR closing an idle TCP connection from {} after {:?}",
+                        peer_addr, TCP_IDLE_TIMEOUT
+                    );
+                    break;
+                }
             }
             let len = u16::from_be_bytes(len_buf) as usize;
             if len == 0 || len > MAX_MESSAGE_LEN {
@@ -308,8 +328,17 @@ impl Responder {
             }
 
             let mut data = vec![0u8; len];
-            if stream.read_exact(&mut data).await.is_err() {
-                break;
+            match tokio::time::timeout(TCP_IDLE_TIMEOUT, stream.read_exact(&mut data)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => break,
+                Err(_) => {
+                    warn!(
+                        "LLMNR closing a TCP connection from {}: {} octets were announced but \
+                         did not arrive within {:?}",
+                        peer_addr, len, TCP_IDLE_TIMEOUT
+                    );
+                    break;
+                }
             }
 
             let outcome = self

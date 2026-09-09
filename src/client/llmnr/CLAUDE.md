@@ -118,8 +118,18 @@ model is never handed a question it has no vocabulary to answer.
 No raw bytes or base64 anywhere: the model gets names, addresses and reasons, never a packet.
 
 `llmnr_conflicting_responses` is additionally logged at WARN on **both** channels at its emit
-site, naming the responders and what each claimed. `LogTemplate` has no warn level, so that WARN
-is written explicitly in `report_outcome` rather than in the template.
+site. The tracing line names each responder and what it claimed; the status-channel line carries
+the name, the record type and the responder count, because that is the width the rail has.
+`LogTemplate` has no warn level, so both are written explicitly in `report_outcome` rather than
+in the template.
+
+`llmnr_query_timeout`'s `discarded_count` is the true number of rejected datagrams, but
+`discard_reasons` keeps only the first `MAX_RECORDED_DISCARDS` (10). Rejecting a datagram costs
+no LLM call, so the collection loop processes as many as arrive — and the querier sits on an
+ephemeral port on a link where the query it just sent was multicast to everyone. Uncapped, one
+flood inside the response window would allocate a `String` and send an unbounded status message
+per datagram, and then put the whole transcript into the model's prompt. The reasons repeat once
+a flood is under way, so ten shows the pattern; the count is not softened.
 
 ## Startup parameters
 

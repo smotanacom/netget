@@ -677,7 +677,11 @@ pub static LLMNR_QUERY_TIMEOUT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "discard_reasons".to_string(),
             type_hint: "array".to_string(),
-            description: "One plain-language reason per discarded datagram.".to_string(),
+            description: "One plain-language reason per discarded datagram, for the first ten \
+                          only. When discarded_count is larger than this list, the rest were \
+                          counted but not transcribed - the reasons repeat once a flood is \
+                          under way, and discarded_count is the number to reason about."
+                .to_string(),
             required: true,
         },
     ])

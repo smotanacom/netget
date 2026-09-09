@@ -191,7 +191,8 @@ impl NetbiosNsServer {
                     }
                 };
 
-                Self::record_connection(&state, server_id, local_addr, peer_addr, n).await;
+                let connection_id =
+                    Self::record_connection(&state, server_id, local_addr, peer_addr, n).await;
                 let _ = status_tx.send("__UPDATE_UI__".to_string());
 
                 debug!(
@@ -213,6 +214,7 @@ impl NetbiosNsServer {
                     Self::handle_request(
                         request,
                         peer_addr,
+                        connection_id,
                         sock,
                         llm,
                         st,
@@ -244,13 +246,17 @@ impl NetbiosNsServer {
     /// The protocol declares `.connectionless()`, so these entries are reaped by
     /// `AppState::cleanup_old_connections` after ten idle seconds — nothing else would ever
     /// close them.
+    ///
+    /// Returns the id so the reply can be counted against the request that provoked it: the
+    /// rail's `↑` counter reads `bytes_sent`, and an entry that only ever counts the inbound
+    /// side shows every answered query as a datagram received and nothing sent.
     async fn record_connection(
         state: &Arc<AppState>,
         server_id: ServerId,
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
         bytes: usize,
-    ) {
+    ) -> ConnectionId {
         use crate::state::server::{
             ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
         };
@@ -270,6 +276,7 @@ impl NetbiosNsServer {
             protocol_info: ProtocolConnectionInfo::empty(),
         };
         state.add_connection_to_server(server_id, conn_state).await;
+        connection_id
     }
 
     /// Raise the event, ask the model, then apply the silence rule.
@@ -277,6 +284,7 @@ impl NetbiosNsServer {
     async fn handle_request(
         request: NbnsRequest,
         peer_addr: SocketAddr,
+        connection_id: ConnectionId,
         socket: Arc<UdpSocket>,
         llm_client: crate::llm::ollama_client::OllamaClient,
         state: Arc<AppState>,
@@ -306,6 +314,8 @@ impl NetbiosNsServer {
             opcode,
             recursion_desired: header.recursion_desired(),
             name_field: request.question_name.raw.clone(),
+            question_name: request.question_name.name.clone(),
+            question_suffix: request.question_name.suffix,
             default_ttl,
             default_node_type,
         });
@@ -346,6 +356,17 @@ impl NetbiosNsServer {
                     peer_addr,
                     hex::encode(&reply)
                 );
+                state
+                    .update_connection_stats(
+                        server_id,
+                        connection_id,
+                        None,
+                        Some(sent as u64),
+                        None,
+                        Some(1),
+                    )
+                    .await;
+                let _ = status_tx.send("__UPDATE_UI__".to_string());
             }
             Err(e) => {
                 Log::new(Some(&status_tx)).error(format!(

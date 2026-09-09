@@ -160,6 +160,12 @@ whatever the UDP socket was given, and if some other process already holds it fo
 the TCP half is better than failing the whole server. The failure is logged at WARN, not
 hidden.
 
+Every TCP read is bounded by `TCP_IDLE_TIMEOUT` (30s), on the length prefix and on the body
+alike. The exchange is one question and one answer — there is no session to keep alive — so a
+peer that connects and says nothing, or announces a length and never sends it, would otherwise
+park a task that `register_server_task` can never prune, since it never finishes. That is a
+task and a file descriptor per idle connection, on a protocol with no idle connections.
+
 ### Deviation: unicast UDP queries are answered
 
 RFC 4795 §2.4 ends with *"Unicast UDP queries MUST be silently discarded."* **This server

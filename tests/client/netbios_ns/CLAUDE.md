@@ -3,7 +3,16 @@
 `./cargo-isolated.sh test --no-default-features --features netbios-ns --test client netbios_ns \
     -- --test-threads=100`
 
-**11 tests, 11 passing.** 8 pure (no network, no LLM), 3 that spawn the real binary.
+**12 tests.** Nine pure (no network, no LLM), three `#[tokio::test]` — of which only **two**
+spawn the real binary; `the_stand_in_responder_behaves_as_the_tests_assume` is a fixture guard
+with NetGet entirely out of the picture.
+
+Two of the nine pure tests are about the **suffix contract** and are easy to overlook:
+`the_suffix_is_a_field_and_changes_only_the_last_two_characters` pins that a bare `"20"` is
+refused rather than read as one of the two names it could spell, and
+`the_two_halves_read_a_suffix_the_same_way` pins that this client and the NBNS server parse a
+suffix through one shared function. They exist because the two halves once disagreed on exactly
+that input — see `src/client/netbios_ns/CLAUDE.md`.
 
 The layering here is not decoration: the strength of each layer is exactly what the protocol's
 `DevelopmentState` turns on, and the file is ordered strongest-evidence-first so that is hard

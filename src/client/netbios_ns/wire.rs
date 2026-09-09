@@ -418,33 +418,15 @@ fn parse_nbstat_rdata(name: String, suffix: u8, rdata: &[u8]) -> Result<NodeStat
 
 /// Read a `suffix` field from an action.
 ///
-/// Accepts a number (`32`) or a hex string (`"0x20"`), which is the same contract the NBNS
-/// **server**'s actions use, so a suffix observed in an event can be handed straight back.
-/// A bare decimal string (`"32"`) is also accepted; `"20"` therefore means twenty, not 0x20 —
-/// stated here because the ambiguity is real and only the sender knows which was meant.
+/// Delegates to [`crate::server::netbios_ns::packet::parse_suffix_value`], which is the same
+/// function the NBNS **server**'s actions call — so a suffix observed in an event can be
+/// handed straight back, and there is no second copy to drift. Defaulting to 0 when the
+/// field is absent is this half's own contract: a query with no suffix asks about the
+/// workstation service, which is what `nmblookup NAME` does.
+///
+/// A number or an explicit `"0x20"` is accepted; a bare `"20"` is refused as ambiguous. See
+/// that function for why sniffing it would produce the wrong *name*, not merely the wrong
+/// number.
 pub fn parse_suffix(value: Option<&serde_json::Value>) -> Result<u8> {
-    let Some(value) = value else { return Ok(0) };
-    match value {
-        serde_json::Value::Null => Ok(0),
-        serde_json::Value::Number(n) => {
-            let n = n
-                .as_u64()
-                .context("'suffix' must be a whole number between 0 and 255")?;
-            u8::try_from(n).context("'suffix' must be between 0 and 255")
-        }
-        serde_json::Value::String(s) => {
-            let s = s.trim();
-            let parsed = match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-                Some(hex) => u8::from_str_radix(hex, 16).ok(),
-                None => s.parse::<u8>().ok(),
-            };
-            parsed.with_context(|| {
-                format!(
-                    "'suffix' string '{s}' is not a service suffix; use a number (32) or a hex \
-                     string (\"0x20\")"
-                )
-            })
-        }
-        other => bail!("'suffix' must be a number or a hex string, got {other}"),
-    }
+    pkt::parse_suffix_value(value)
 }

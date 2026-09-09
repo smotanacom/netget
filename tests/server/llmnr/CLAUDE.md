@@ -43,9 +43,12 @@ three separate paths.
 
 ## Test 1 — `test_llmnr_answers_only_for_names_it_owns`
 
-One server, four queries, four mock rules. Shared deliberately: the LLM-call budget is per
-suite, and the four rules key on names with no substring relation (`printer.local.`,
-`stranger.local.`, `broken.local.`), so first-match-wins cannot misroute them.
+One server, four queries, four mock rules — one for startup and **three keyed on names**.
+Shared deliberately: the LLM-call budget is per suite, and the three names have no
+substring relation (`printer.local.`, `stranger.local.`, `broken.local.`), so
+first-match-wins cannot misroute them. That is a property of the names chosen, not
+something `and_event_data_contains` enforces — it matches on substring, so a fourth name
+like `printer2.local.` would silently be answered by the `printer.local.` rule.
 
 | step | query | expected |
 |---|---|---|
@@ -127,8 +130,13 @@ Seven, under the ~10 guideline. Both tests finish with `wait_for_mocks(30)` and 
   unreliable on macOS, so the server treats a join failure as non-fatal and the tests do not
   depend on one. Nothing here exercises a datagram that actually arrived via the group.
 * **IPv6.** No `FF02::1:3` path is tested; `join_multicast_v6` has never run.
-* **PTR and AAAA answers.** Only the A path is exercised end to end. Both are covered by
-  `executable_examples_test` at the executor level, which is weaker.
+* **PTR and AAAA answers. Nothing in the tree executes either, at any level.** This entry
+  used to claim `executable_examples_test` covered them; it does not. That test runs each
+  action's own `example`, and `send_llmnr_response`'s example is `record_type: "A"`. The
+  AAAA JSON exists only as an `EventType` *alternative* example, which nothing executes
+  (`protocol_examples_test` checks it has a `"type"` field and stops there), and PTR
+  appears in no example anywhere. So `parse_record_type`'s AAAA and PTR arms and their
+  rdata construction have never been run by a test — the A path is the only path.
 * **The `C`/`T` bits in an inbound query.** They are parsed into the event and never asserted
   on; no test sets them.
 * **QDCOUNT/OPCODE discard rules.** Implemented and logged, untested.

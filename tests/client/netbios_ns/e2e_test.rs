@@ -167,6 +167,49 @@ fn the_suffix_is_a_field_and_changes_only_the_last_two_characters() {
     assert_eq!(wire::parse_suffix(None).unwrap(), 0);
     assert!(wire::parse_suffix(Some(&serde_json::json!("beef"))).is_err());
     assert!(wire::parse_suffix(Some(&serde_json::json!(256))).is_err());
+
+    // A BARE digit string is refused rather than guessed at. "20" is a valid spelling of
+    // both 32 (hex, the conventional NetBIOS notation for the file server) and 20 (decimal),
+    // and the two select DIFFERENT NAMES — FILESERVER<0x20> is not FILESERVER<0x14>. A
+    // parser that picks one silently answers for, or asks about, a name nobody named.
+    let ambiguous = wire::parse_suffix(Some(&serde_json::json!("20")));
+    assert!(
+        ambiguous.is_err(),
+        "a bare '20' must be refused, not read as one of the two names it could mean"
+    );
+    let message = format!("{:#}", ambiguous.unwrap_err());
+    assert!(
+        message.contains("0x20"),
+        "the refusal must name the unambiguous form the sender should have used: {message}"
+    );
+}
+
+/// Client and server read a suffix through **one** function, so they cannot disagree.
+///
+/// This is the assertion that would have failed before the two were merged: the client read a
+/// bare `"20"` as decimal 20 and the server read it as hex 0x20, while a doc comment in
+/// `wire.rs` claimed they used "the same contract". Same input, two different NetBIOS names,
+/// in the same session, on a protocol whose whole hazard is answering for the wrong name.
+#[test]
+fn the_two_halves_read_a_suffix_the_same_way() {
+    for value in [
+        serde_json::json!(0),
+        serde_json::json!(32),
+        serde_json::json!("0x1b"),
+        serde_json::json!("0X20"),
+        serde_json::json!("20"),
+        serde_json::json!("beef"),
+        serde_json::json!(256),
+        serde_json::json!(true),
+    ] {
+        let via_client = wire::parse_suffix(Some(&value));
+        let via_shared = packet::parse_suffix_value(Some(&value));
+        assert_eq!(
+            via_client.as_ref().ok().copied(),
+            via_shared.as_ref().ok().copied(),
+            "client and server must agree on suffix {value}"
+        );
+    }
 }
 
 // ===========================================================================================
