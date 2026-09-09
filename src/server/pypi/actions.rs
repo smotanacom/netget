@@ -56,7 +56,16 @@ impl Protocol for PypiProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("PEP 503 Simple Repository API on hyper HTTP server")
             .llm_control("Package availability, version lists, and file serving")
-            .e2e_testing("pip install command - target < 10 LLM calls")
+            .e2e_testing(
+                "Mocked E2E only. tests/server/pypi/ asserts the PEP 503 index and project \
+                 pages carry the anchors and #sha256= fragments pip parses, and that a \
+                 project the index does not serve comes back 404 rather than a 200 carrying \
+                 the index. One step drives the real `pip index versions` and asserts it \
+                 reached the index and named the project - but it SKIPS LOUDLY when pip is \
+                 absent rather than failing, so it is not evidence and PyPI is rated as if \
+                 it did not exist. No third-party client has installed a distribution from \
+                 this server: that needs a real wheel, which the model cannot author",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

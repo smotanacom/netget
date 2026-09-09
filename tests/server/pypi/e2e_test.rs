@@ -80,6 +80,21 @@ Use scripting mode to handle all requests without LLM calls after initial setup.
             .on_event("pypi_request")
             .respond_with_actions_from_event(|event_data| {
                 let path = event_data["path"].as_str().unwrap_or("");
+
+                // A project this index does not serve gets a real 404. Without this
+                // branch the `else` below answered `/simple/nonexistent-package/` with
+                // the **package index** under a 200, so Test 5 — which is named for a
+                // 404 — asked for a status the mock actively prevented, and then
+                // asserted nothing so nobody noticed.
+                if path.contains("nonexistent") {
+                    return serde_json::json!([{
+                        "type": "send_pypi_response",
+                        "status": 404,
+                        "headers": {"Content-Type": "text/html"},
+                        "body": "<!DOCTYPE html><html><body>Not Found</body></html>"
+                    }]);
+                }
+
                 let body = if path.contains("hello-world") {
                     // Package page for hello-world
                     r#"<!DOCTYPE html><html><body><a href="../../packages/h/hello-world/hello_world-1.0.0-py3-none-any.whl#sha256=abc123def456">hello_world-1.0.0-py3-none-any.whl</a></body></html>"#
@@ -197,11 +212,20 @@ Use scripting mode to handle all requests without LLM calls after initial setup.
     );
     println!("✓ example-pkg package page contains wheel file");
 
-    // Test 4: Try to install hello-world with pip (dry-run)
-    // Note: We don't actually install because we'd need a minimal valid wheel file,
-    // which is complex for LLM to generate. Instead, we verify pip can fetch the metadata.
-    println!("\n[Test 4] Test pip can fetch package metadata (pip download --dry-run equivalent)");
-    println!("  Using pip to query hello-world from custom index");
+    // Test 4: pip resolves the project page this server served.
+    //
+    // Every arm of this step used to `println!` and continue — pip missing, pip
+    // failing, pip timing out and pip returning the wrong thing were indistinguishable
+    // from success, including the "success" arm, which said "! pip query completed but
+    // may not have found package metadata". It cost 30 seconds and proved nothing.
+    //
+    // It now asserts. It does **not** hard-fail when pip is absent, and that is a
+    // deliberate difference from npm's real-CLI test: `pip index versions` is an
+    // experimental pip subcommand, PyPI's maturity rating rests on nothing here, and
+    // making pip a suite-wide requirement is not worth an assertion this weak. What it
+    // must not do is claim to have tested something it skipped, so the skip is loud and
+    // the rating stays Experimental.
+    println!("\n[Test 4] pip resolves hello-world from the served index");
 
     // Create a temporary directory for pip cache
     let temp_dir = std::env::temp_dir().join(format!("netget-pypi-test-{}", test_state.port));
@@ -232,29 +256,37 @@ Use scripting mode to handle all requests without LLM calls after initial setup.
             println!("pip stdout:\n{}", stdout);
             println!("pip stderr:\n{}", stderr);
 
-            // Check if pip successfully found the package
-            // pip index versions will show available versions if it can fetch the simple API
-            if stdout.contains("hello-world")
-                || stdout.contains("Available versions")
-                || stderr.contains("1.0.0")
-            {
-                println!("✓ pip successfully queried hello-world from PyPI server");
-            } else {
-                println!("! pip query completed but may not have found package metadata");
-                println!("  This could be expected if LLM didn't generate exact HTML format");
-            }
+            // pip reached the index and parsed the project page: it either lists the
+            // version it found in the PEP 503 anchor, or says the project has no
+            // matching distribution — both mean the page was fetched and understood.
+            // What it must not do is fail to reach the index at all.
+            assert!(
+                !stderr.contains("Could not fetch URL")
+                    && !stderr.contains("Connection refused")
+                    && !stderr.contains("Temporary failure"),
+                "pip could not reach the NetGet index:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            );
+            assert!(
+                stdout.contains("hello-world")
+                    || stdout.contains("1.0.0")
+                    || stderr.contains("hello-world"),
+                "pip reached the index but never mentioned the project it serves:\n\
+                 stdout:\n{stdout}\nstderr:\n{stderr}"
+            );
+            println!("✓ pip resolved hello-world from the NetGet index");
         }
         Ok(Ok(Err(e))) => {
-            println!("! pip command not available or failed: {}", e);
-            println!("  This is expected in CI environments without pip");
+            // Loud, and it does not claim a pass: see the note above this step.
+            println!("SKIPPED: pip is not installed ({e}); this step asserted nothing");
         }
-        Ok(Err(_)) => {
-            println!("! pip command spawn failed");
-            println!("  This is expected in CI environments without pip");
+        Ok(Err(e)) => {
+            panic!("the pip task itself panicked, which is a test bug, not a missing pip: {e}");
         }
         Err(_) => {
-            println!("! pip command timed out after 30s");
-            println!("  Skipping pip test - server may not be responding correctly");
+            panic!(
+                "pip did not return within 30s against a local index — that is a hang, \
+                    not an absent binary"
+            );
         }
     }
 
@@ -285,11 +317,15 @@ Use scripting mode to handle all requests without LLM calls after initial setup.
 
     let status_code = String::from_utf8_lossy(&output.stdout);
     println!("HTTP status code: {}", status_code);
-    // Note: The LLM might not return 404 reliably, so we just check it responds
-    println!(
-        "✓ Server responded to non-existent package request (status: {})",
-        status_code
+    // Asserted, not printed. "we just check it responds" was not a check: any status,
+    // including the 200-with-the-package-index this mock used to return, satisfied it.
+    // A refusal the model makes deliberately must reach the client as a refusal.
+    assert_eq!(
+        status_code.trim(),
+        "404",
+        "a project the index does not serve must come back 404, not {status_code}"
     );
+    println!("✓ Non-existent package answered 404");
 
     // Cleanup
     std::fs::remove_dir_all(&temp_dir).ok();
