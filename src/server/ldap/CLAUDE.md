@@ -1,6 +1,11 @@
 # LDAP Protocol Implementation
 
-**Status**: `DevelopmentState::Experimental`.
+**Status**: `DevelopmentState::Beta`. The evidence is `tests/server/ldap/e2e_test.rs`, which
+drives the server with **ldap3** — a real, independent LDAP client — through bind, search, add,
+modify and delete. It is not `#[ignore]`d and does not skip when anything is missing, so it runs
+on every pass. Not Stable: filters and scope are parsed but not evaluated, and no third-party
+client has been taken through SASL or StartTLS because neither exists here.
+(This line said `Experimental` while the code said `Beta`; the code was right.)
 **Privilege**: `PrivilegeRequirement::PrivilegedPort(389)` — 389 is below 1024 and is where
 every LDAP client looks by default, so the preflight check in `server_startup.rs` fires rather
 than letting the bind fail with a bare EPERM.
@@ -8,6 +13,43 @@ than letting the bind fail with a bare EPERM.
 LDAPv3 (RFC 4511) over TCP, with hand-written ASN.1 BER coding — no LDAP crate. That makes this
 the highest-risk parsing in the file/directory protocol group, and the section on decoding
 below is the important part of this document.
+
+## Fail-closed
+
+LDAP decides who is who, so silence must never be consent. In `LdapSession::respond_via_llm`:
+
+| Situation | Wire result | Logged decision |
+|---|---|---|
+| Model returns a BindResponse with resultCode success | that response | `decision=model_accept` |
+| Model returns a BindResponse with any other code | that response | `decision=model_reject` |
+| Model returns no usable action, bind | **invalidCredentials (49)** | `decision=fail_closed_no_action` |
+| Model returns no usable action, add/modify/delete | **unwillingToPerform (53)** | `decision=fail_closed_no_action` |
+| Model returns no usable action, search | empty-but-successful result set | `decision=fail_closed_no_action` |
+| LLM call errors | **unavailable (52)**, or **busy (51)** when overloaded | `decision=fail_closed_llm_error` |
+
+Two things make the distinction structural rather than a matter of reading bytes back:
+
+1. `respond_via_llm` returns a `Decided` alongside the step, so the bind path can only report
+   `model_accept`/`model_reject` for a response the **model itself** produced. Inferring it from
+   the encoded resultCode cannot tell a model's refusal from the server's substituted one, and
+   conflating those is exactly what turned an outage into an approval in OAuth2.
+2. The LLM-failure codes (51/52) are deliberately different from every per-operation default.
+   `unavailable` is never a success, so a backend outage can never be mistaken for a valid
+   empty answer — which is the one thing the search default could otherwise be confused with.
+
+`self.authenticated` is state the model is *shown*, not a gate NetGet enforces: the model
+decides what a bound-or-not session may do. Nothing in `actions.rs` can synthesise a successful
+BindResponse; only `ldap_bind_response` with an explicit `result_code` of 0 produces one.
+
+## Connection tracking
+
+Peers are registered with `add_connection_to_server` in the accept loop and retired with
+`close_connection_on_server` when the session ends, and `record_bytes` keeps the counters and
+`last_activity` current on every read and write. LDAP is connection-oriented and so does **not**
+declare `.connectionless()`; the 10-second idle sweep therefore does not touch these entries,
+which makes the explicit close the only thing that retires one. Before this the server
+registered nothing at all: the dashboard rail showed an LDAP server with no peers while clients
+were bound to it, and no connection-scoped scheduled task could be created.
 
 ## No storage
 

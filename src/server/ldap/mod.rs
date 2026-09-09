@@ -80,6 +80,41 @@ impl LdapServer {
                             connection_id, remote_addr
                         ));
 
+                        // Register the peer in AppState. Without this the dashboard rail
+                        // showed an LDAP server with no peers at all while clients were bound
+                        // to it, `[ message this peer ]` had nothing to act on, and no
+                        // connection-scoped scheduled task could ever be created. LDAP is
+                        // connection-oriented, so it must not declare `.connectionless()` and
+                        // the 10-second idle sweep deliberately does not touch these entries -
+                        // the close below is the only thing that retires one.
+                        {
+                            use crate::state::server::{
+                                ConnectionState as ServerConnectionState, ConnectionStatus,
+                                ProtocolConnectionInfo,
+                            };
+                            let now = std::time::Instant::now();
+                            let local_addr = stream.local_addr().unwrap_or(local_addr);
+                            app_state
+                                .add_connection_to_server(
+                                    server_id,
+                                    ServerConnectionState {
+                                        id: connection_id,
+                                        remote_addr,
+                                        local_addr,
+                                        bytes_sent: 0,
+                                        bytes_received: 0,
+                                        packets_sent: 0,
+                                        packets_received: 0,
+                                        last_activity: now,
+                                        status: ConnectionStatus::Active,
+                                        status_changed_at: now,
+                                        protocol_info: ProtocolConnectionInfo::empty(),
+                                    },
+                                )
+                                .await;
+                            let _ = status_tx.send("__UPDATE_UI__".to_string());
+                        }
+
                         let llm_clone = llm_client.clone();
                         let state_clone = app_state.clone();
                         let status_clone = status_tx.clone();
@@ -103,6 +138,11 @@ impl LdapServer {
                                 Log::new(Some(&status_clone))
                                     .error(format!("LDAP session error: {}", e));
                             }
+
+                            state_clone
+                                .close_connection_on_server(server_id, connection_id)
+                                .await;
+                            let _ = status_clone.send("__UPDATE_UI__".to_string());
 
                             Log::new(Some(&status_clone))
                                 .info(format!("LDAP connection {} closed", connection_id));
@@ -190,6 +230,7 @@ impl LdapSession {
                     ));
                     self.stream.write_all(&response).await?;
                     self.stream.flush().await?;
+                    self.record_bytes(0, response.len() as u64).await;
                 }
 
                 if close_after {
@@ -213,10 +254,30 @@ impl LdapSession {
                 }
             };
             Log::new(Some(&self.status_tx)).trace(format!("LDAP received {} bytes", n));
+            self.record_bytes(n as u64, 0).await;
             buffer.extend_from_slice(&chunk[..n]);
         }
 
         Ok(())
+    }
+
+    /// Keep the connection's byte counters and `last_activity` current.
+    ///
+    /// The rail's down/up figures and every connection-scoped scheduled-task prompt read
+    /// these, and a connection-oriented server has to maintain them itself: the 10-second
+    /// idle sweep that would otherwise touch `last_activity` runs only over protocols that
+    /// declare `.connectionless()`, which LDAP is not.
+    async fn record_bytes(&self, received: u64, sent: u64) {
+        self.app_state
+            .update_connection_stats(
+                self.server_id,
+                self.connection_id,
+                (received > 0).then_some(received),
+                (sent > 0).then_some(sent),
+                (received > 0).then_some(1),
+                (sent > 0).then_some(1),
+            )
+            .await;
     }
 
     /// Decode one complete LDAPMessage and dispatch on its protocolOp.
@@ -289,7 +350,7 @@ impl LdapSession {
         default: Vec<u8>,
         msg_id: i32,
         response_tag: u8,
-    ) -> SessionStep {
+    ) -> (SessionStep, Decided) {
         let execution_result = match call_llm(
             &self.llm_client,
             &self.app_state,
@@ -317,16 +378,26 @@ impl LdapSession {
                 } else {
                     (RESULT_UNAVAILABLE, "Server unavailable")
                 };
-                Log::new(Some(&self.status_tx)).info(format!(
-                    "LDAP result {} ({}) for msg_id {}",
-                    code, diagnostic, msg_id
+                // The `decision=` token is the only thing that separates the three
+                // outcomes for an operator, because two of them can reach the wire as the
+                // same result code. Keep them distinct the way `src/server/radius/` does:
+                // conflating "the model denied" with "the model never answered" is the
+                // OAuth2 failure mode, and on a directory server that decides who is who it
+                // is the difference between a policy denial and an unnoticed outage.
+                Log::new(Some(&self.status_tx)).error(format!(
+                    "LDAP msg_id {} on connection {}: decision=fail_closed_llm_error \
+                     result={} ({})",
+                    msg_id, self.connection_id, code, diagnostic
                 ));
-                return SessionStep::Respond(encode_ldap_result(
-                    msg_id,
-                    response_tag,
-                    code,
-                    diagnostic,
-                ));
+                return (
+                    SessionStep::Respond(encode_ldap_result(
+                        msg_id,
+                        response_tag,
+                        code,
+                        diagnostic,
+                    )),
+                    Decided::ByServer,
+                );
             }
         };
 
@@ -345,13 +416,21 @@ impl LdapSession {
         }
 
         match (output, close) {
-            (Some(data), false) => SessionStep::Respond(data),
-            (Some(data), true) => SessionStep::RespondAndClose(data),
-            (None, true) => SessionStep::Close,
+            (Some(data), false) => (SessionStep::Respond(data), Decided::ByModel),
+            (Some(data), true) => (SessionStep::RespondAndClose(data), Decided::ByModel),
+            (None, true) => (SessionStep::Close, Decided::ByModel),
             (None, false) => {
-                Log::new(Some(&self.status_tx))
-                    .warn("LDAP: LLM returned no response action, sending default");
-                SessionStep::Respond(default)
+                // Silence is not consent. Every per-operation default is a refusal
+                // (invalidCredentials for a bind, unwillingToPerform for a write); the one
+                // exception is search, whose default is an empty-but-successful result set,
+                // and an empty result set discloses nothing. Either way this is the
+                // *server's* decision, never the model's, and the token says so.
+                Log::new(Some(&self.status_tx)).error(format!(
+                    "LDAP msg_id {} on connection {}: decision=fail_closed_no_action \
+                     (handler returned no response action; sending the refusal default)",
+                    msg_id, self.connection_id
+                ));
+                (SessionStep::Respond(default), Decided::ByServer)
             }
         }
     }
@@ -407,20 +486,32 @@ impl LdapSession {
         // encoded bytes back out of the response, which is what this used to do.
         let default =
             encode_bind_response(msg_id, RESULT_INVALID_CREDENTIALS, "Invalid credentials");
-        let step = self
+        let (step, decided) = self
             .respond_via_llm(event, default, msg_id, RESPONSE_BIND)
             .await;
 
-        if let SessionStep::Respond(ref response) | SessionStep::RespondAndClose(ref response) =
-            step
-        {
-            if bind_succeeded(response) {
-                self.authenticated = true;
-                self.bind_dn = Some(dn.clone());
-                Log::new(Some(&self.status_tx)).info(format!(
-                    "LDAP connection {} authenticated as {}",
-                    self.connection_id, dn
-                ));
+        // `Decided::ByServer` has already logged its own fail_closed_* token, and its
+        // response is a refusal by construction. Only a response the model itself produced
+        // may be reported as the model's decision - reading success back out of the bytes
+        // alone cannot tell the two apart, which is precisely the conflation that turned an
+        // LLM outage into an approval in OAuth2.
+        if decided == Decided::ByModel {
+            if let SessionStep::Respond(ref response) | SessionStep::RespondAndClose(ref response) =
+                step
+            {
+                if bind_succeeded(response) {
+                    self.authenticated = true;
+                    self.bind_dn = Some(dn.clone());
+                    Log::new(Some(&self.status_tx)).info(format!(
+                        "LDAP bind for {:?} on connection {}: decision=model_accept",
+                        dn, self.connection_id
+                    ));
+                } else {
+                    Log::new(Some(&self.status_tx)).info(format!(
+                        "LDAP bind for {:?} on connection {}: decision=model_reject",
+                        dn, self.connection_id
+                    ));
+                }
             }
         }
 
@@ -501,7 +592,8 @@ impl LdapSession {
         let default = encode_search_done(msg_id, RESULT_SUCCESS, "");
         Ok(self
             .respond_via_llm(event, default, msg_id, RESPONSE_SEARCH_DONE)
-            .await)
+            .await
+            .0)
     }
 
     async fn handle_add_request(&mut self, msg_id: i32, data: &[u8]) -> Result<SessionStep> {
@@ -540,7 +632,8 @@ impl LdapSession {
         );
         Ok(self
             .respond_via_llm(event, default, msg_id, RESPONSE_ADD)
-            .await)
+            .await
+            .0)
     }
 
     async fn handle_modify_request(&mut self, msg_id: i32, data: &[u8]) -> Result<SessionStep> {
@@ -606,7 +699,8 @@ impl LdapSession {
         );
         Ok(self
             .respond_via_llm(event, default, msg_id, RESPONSE_MODIFY)
-            .await)
+            .await
+            .0)
     }
 
     async fn handle_delete_request(&mut self, msg_id: i32, data: &[u8]) -> Result<SessionStep> {
@@ -633,7 +727,8 @@ impl LdapSession {
         );
         Ok(self
             .respond_via_llm(event, default, msg_id, RESPONSE_DELETE)
-            .await)
+            .await
+            .0)
     }
 
     async fn handle_unbind_request(&mut self) -> Result<SessionStep> {
@@ -678,6 +773,20 @@ impl LdapSession {
 
 /// What the session should do after handling one message.
 #[cfg(feature = "ldap")]
+/// Who chose the response the peer is about to receive.
+///
+/// The wire cannot always carry the distinction - a refusal the model chose and a refusal the
+/// server substituted can be the same LDAP result code - so it has to survive in the type and
+/// reach the log. See the `decision=` tokens in `respond_via_llm`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decided {
+    /// The model produced the response.
+    ByModel,
+    /// The model produced nothing usable, or the LLM call failed; the server refused on its
+    /// own and has already logged a `decision=fail_closed_*` token.
+    ByServer,
+}
+
 enum SessionStep {
     Respond(Vec<u8>),
     RespondAndClose(Vec<u8>),
