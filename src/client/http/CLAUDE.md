@@ -20,8 +20,8 @@ control over method, path, headers, and body, and interpret responses.
 ```
 ┌──────────────────────────────────────────┐
 │  HttpClient::connect_with_llm_actions    │
-│  - Initialize reqwest client             │
 │  - Store base URL in protocol_data       │
+│  - Warm the per-host reqwest client      │
 │  - Mark as Connected                     │
 └──────────────────────────────────────────┘
          │
@@ -120,6 +120,41 @@ LLMs can construct structured requests and interpret JSON/text responses.
       what makes that true — `reqwest::RequestBuilder::header` *appends*, so applying both
       sets in turn would put two values on the wire.
 
+### The reqwest client is built once per host, on `spawn_blocking`
+
+`HttpClient::http_client(url)` returns a cached `reqwest::Client`, keyed by host. Three
+things depend on that, and all three are recorded in root `CLAUDE.md` as measured:
+
+- `Client::builder().build()` sets up the rustls stack and loads the platform root store.
+  On macOS that reads the keychain through Security.framework — synchronous and serialised
+  across processes — so it runs on `spawn_blocking`. On the async runtime it parks a tokio
+  worker, which is how the `doh` client's whole runtime stalled.
+- Keeping the client keeps its connection pool, so requests after the first skip a fresh
+  TCP + TLS handshake.
+- **The literal-IP resolver bypass.** `reqwest` hands the URL host to its DNS resolver
+  unconditionally and `hyper-util`'s `GaiResolver` does not special-case a dotted quad, so
+  `http://127.0.0.1:8080` performs a real `getaddrinfo` — measured at **8.25 s** through
+  mDNSResponder under ~100 concurrent processes. `ClientBuilder::resolve` is a **per-host**
+  override, which is exactly why the cache is keyed by host: one process-wide client cannot
+  carry an override for a host it was never told about. This client is pointed at a literal
+  IP more often than not, so it is the common case.
+
+`crate::llm::ollama_client::host_of` does the host extraction — the part that is easy to get
+wrong, and did get wrong once by leaving the port attached, which silently disabled the
+bypass. The override itself is four lines here rather than a call to
+`without_dns_for_literal_ip`, which is private and hard-wires reqwest's default TLS backend
+(native-tls on macOS: the keychain path the first bullet is about).
+
+### Follow-up depth
+
+`notify_response` is recursive and bounded by `MAX_FOLLOWUP_DEPTH` (4). A model that reads a
+response and asks for another request gets the *result* of that request reported back to it,
+up to four exchanges deep. It used to stop after one hop — the follow-up ran through a
+deliberately non-notifying path — which is the "run through a deliberately non-notifying
+path" defect root `CLAUDE.md` lists under known systemic issues. The fix is the one that
+file prescribes: box the recursive future with an explicit `+ Send` (it is awaited inside a
+`tokio::spawn`) and cap the depth.
+
 ### Dual Logging
 
 ```rust
@@ -158,11 +193,14 @@ status_tx.send("[CLIENT] HTTP request sent");                          // → TU
 
 ## Limitations
 
-- **No Streaming** - Full response buffered in memory
+- **No Streaming** - Full response buffered in memory, with **no size cap**: a server
+  that streams without end grows the buffer until the process dies. (The HTTP/3 client
+  bounds this at 8 MiB; this one does not, because `reqwest::Response::text()` gives no
+  incremental hook without rewriting the read as a stream.)
 - **No File Uploads** - Body is text/JSON only
 - **No Cookie Jar** - Each request independent
-- **No Custom TLS Config** - Uses reqwest defaults
-- **No Connection Pooling** - Each request creates new connection
+- **No Custom TLS Config** - rustls is selected explicitly (`use_rustls_tls`), but there
+  is no startup parameter for CA roots, client certificates, or verification policy
 
 ## Usage Examples
 

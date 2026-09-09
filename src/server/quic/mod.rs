@@ -29,13 +29,30 @@ enum StreamState {
     Accumulating,
 }
 
-/// Per-stream data for LLM handling
+/// Per-stream data for LLM handling.
+///
+/// There is deliberately no `memory` field. One used to sit here, read at the top of
+/// each pass and written straight back unchanged at the bottom — it was never put into
+/// an event, never passed to `call_llm`, and never read by anything else. Per-server
+/// memory lives in `AppState` and `call_llm` reads it from there.
 struct StreamData {
     state: StreamState,
     queued_data: Vec<u8>,
-    memory: String,
     send_stream: Arc<Mutex<quinn::SendStream>>,
 }
+
+/// How many bytes may pile up for one stream while an LLM call is in flight.
+///
+/// Data that arrives mid-call is queued and merged into the next turn, and nothing else
+/// bounds it: a peer that keeps writing while the model thinks grows this `Vec` for as
+/// long as it likes. The queue only exists to hold a message that was split across
+/// reads, so a megabyte is far past any legitimate use — and the merged buffer is what
+/// ends up in an LLM prompt, where it is useless long before that.
+///
+/// Over the cap the stream is reset with `H3_EXCESSIVE_LOAD`, whose RFC 9114 meaning is
+/// exactly this ("the peer is exhibiting a behavior that might be generating excessive
+/// load"). The connection and its other streams are untouched.
+const MAX_STREAM_QUEUE_BYTES: usize = 1024 * 1024;
 
 /// RFC 9114 `H3_INTERNAL_ERROR` — netget could not produce an answer.
 const H3_INTERNAL_ERROR: u32 = 0x0102;
@@ -294,7 +311,6 @@ impl QuicServer {
             StreamData {
                 state: StreamState::Idle,
                 queued_data: Vec::new(),
-                memory: String::new(),
                 send_stream: send_stream_arc.clone(),
             },
         );
@@ -396,11 +412,11 @@ impl QuicServer {
                         .all(|&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
                     {
                         let data_str = String::from_utf8_lossy(&data);
-                        let preview = if data_str.len() > 100 {
-                            format!("{}...", &data_str[..100])
-                        } else {
-                            data_str.to_string()
-                        };
+                        // `truncate_for_log` rather than `&s[..100]`: the ASCII guard above
+                        // makes byte-slicing safe *today*, but the guard and the slice are
+                        // twenty lines apart and a byte-index cut on a `&str` is the panic
+                        // shape CLAUDE.md records (fixed tree-wide in b9aa1058).
+                        let preview = crate::utils::truncate_for_log(&data_str, 100);
                         log.debug(format!(
                             "QUIC received {} bytes on stream {}: {}",
                             n, stream_id, preview
@@ -467,11 +483,43 @@ impl QuicServer {
             }
         };
 
-        // If processing, queue the data
+        // If processing, queue the data — bounded, so a peer that keeps writing while the
+        // model thinks cannot grow this buffer without limit.
         if current_state == StreamState::Processing {
-            streams.lock().await.entry(stream_id).and_modify(|s| {
-                s.queued_data.extend_from_slice(&data);
-            });
+            let over_limit = {
+                let mut streams_lock = streams.lock().await;
+                match streams_lock.get_mut(&stream_id) {
+                    Some(stream) => {
+                        if stream.queued_data.len() + data.len() > MAX_STREAM_QUEUE_BYTES {
+                            true
+                        } else {
+                            stream.queued_data.extend_from_slice(&data);
+                            false
+                        }
+                    }
+                    // Stream went away while we were between locks.
+                    None => return,
+                }
+            };
+
+            if over_limit {
+                let log = Log::new(Some(&status_tx));
+                log.warn(format!(
+                    "Stream {} queued more than {} bytes while an LLM call was in flight                      (decision=refused_queue_too_large, h3_error_code=0x{:x}); resetting",
+                    stream_id, MAX_STREAM_QUEUE_BYTES, H3_EXCESSIVE_LOAD
+                ));
+                let send_stream = {
+                    let streams_lock = streams.lock().await;
+                    streams_lock.get(&stream_id).map(|s| s.send_stream.clone())
+                };
+                if let Some(send_stream) = send_stream {
+                    let mut send = send_stream.lock().await;
+                    let _ = send.reset(quinn::VarInt::from_u32(H3_EXCESSIVE_LOAD));
+                }
+                streams.lock().await.remove(&stream_id);
+                return;
+            }
+
             Log::new(Some(&status_tx)).debug(format!(
                 "Queued {} bytes for stream {}",
                 data.len(),
@@ -500,15 +548,6 @@ impl QuicServer {
         };
 
         loop {
-            // Get memory
-            let memory = {
-                let streams_lock = streams.lock().await;
-                streams_lock
-                    .get(&stream_id)
-                    .map(|s| s.memory.clone())
-                    .unwrap_or_default()
-            };
-
             // Get send_stream for context
             let send_stream = {
                 let streams_lock = streams.lock().await;
@@ -552,13 +591,6 @@ impl QuicServer {
                 Ok(execution_result) => {
                     debug!("LLM QUIC response received");
 
-                    // Update memory
-                    streams
-                        .lock()
-                        .await
-                        .entry(stream_id)
-                        .and_modify(|s| s.memory = memory.clone());
-
                     // Display messages
                     for msg in execution_result.messages {
                         let _ = status_tx.send(msg);
@@ -601,11 +633,8 @@ impl QuicServer {
                                         .all(|&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
                                     {
                                         let data_str = String::from_utf8_lossy(&output_data);
-                                        let preview = if data_str.len() > 100 {
-                                            format!("{}...", &data_str[..100])
-                                        } else {
-                                            data_str.to_string()
-                                        };
+                                        let preview =
+                                            crate::utils::truncate_for_log(&data_str, 100);
                                         log.debug(format!(
                                             "QUIC sent {} bytes on stream {}: {}",
                                             output_data.len(),

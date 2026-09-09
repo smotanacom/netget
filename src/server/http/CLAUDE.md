@@ -42,14 +42,22 @@ There are no async actions: HTTP is purely reactive.
   design: action parameters must not carry encoded bytes.
 - **Non-UTF-8 request bodies are lossy.** The raw bytes are not exposed to the
   model in any form; `body_is_binary` tells it the text is not the real payload.
-- **Request bodies are fully buffered**, with no size cap, before the LLM call.
+- **Request bodies are fully buffered**, bounded by
+  `http_common::MAX_REQUEST_BODY_BYTES` (8 MiB), before the LLM call. A larger body is
+  refused with `413` and costs no LLM call — it is refused rather than truncated,
+  because a truncated body is indistinguishable from a complete one to the model.
 - `Content-Length` and `Date` are set by hyper; setting them in `headers` is
   ignored or harmful. Header names/values that are not legal HTTP (e.g.
   containing CR/LF) are dropped rather than injected.
 
 ### Failure behavior
 
-- LLM call fails → `500 Internal Server Error`.
+- LLM call fails → the *category* reaches the client, never the error text
+  (`crate::utils::WireFailure`). An **overloaded** backend → `503` + `Retry-After: 1`,
+  so the client backs off instead of recording a permanent fault; anything else → `500`.
+  The log carries `decision=fail_closed_llm_overloaded` / `decision=fail_closed_llm_error`
+  alongside the full error. This is the behaviour root `CLAUDE.md` tells other protocols
+  to copy; `tests/server/http/failure_semantics_test.rs` pins it.
 - Model emits no `send_http_response` → the server's `default_response` startup param
   if set, otherwise an empty `200`. The `send_http_response` action and `http_request`
   event descriptions now tell the model to always answer and to honor the client's
@@ -146,6 +154,9 @@ problems are logged at `error!` and pushed to the status stream as
 - `tests/server/http/test.rs` — 7 mocked E2E scenarios (simple GET, JSON API,
   routing, headers, methods, error responses, logging) driven through the real
   binary with `reqwest`. Declared in `tests/server/http/mod.rs`.
+- `tests/server/http/failure_semantics_test.rs` — 3 scenarios: 500 on backend failure,
+  no internal detail in the failure body, and 413 (with no LLM call) for a body over the
+  size cap.
 - `tests/server/http/e2e_scheduled_tasks_test.rs` — scheduled-task coverage.
 - `tests/http_request_filter_test.rs` — pure filter unit tests.
 
@@ -156,7 +167,10 @@ problems are logged at `error!` and pushed to the status stream as
 
 **Gaps**: no test covers TLS/HTTPS, the h2c upgrade path, the request filter
 end-to-end through a running server (only the pure unit tests), a non-UTF-8
-request body, or a model response with an invalid status/header.
+request body, a model response with an invalid status/header, or the `503` +
+`Retry-After` branch specifically (the mock's HTTP 500 classifies as `Unavailable`,
+so the tests exercise the `500` side; provoking an overload needs a saturated
+rate limiter).
 
 ## Example prompts
 
@@ -197,9 +211,11 @@ instruction — same result, no LLM call:
 
 One LLM call per request unless a script/static handler matches or the request is
 filtered out; 2-5 s per call with `qwen3-coder:30b`. Requests are handled
-concurrently (a task each), but the Ollama lock serializes the model calls, so
-throughput is effectively one request at a time. Keep-alive avoids repeated TCP
-handshakes. Everything is buffered in memory.
+concurrently (a task each); how many model calls run at once is bounded by
+`--llm-max-concurrent` (default 1, so throughput is effectively one request at a time),
+with `--llm-queue-timeout` and `--llm-max-queued` bounding the wait. Do **not** reason
+about this from `--ollama-lock` — that flag is accepted and inert, and its plumbing was
+deleted. Keep-alive avoids repeated TCP handshakes. Everything is buffered in memory.
 
 ## Not implemented
 

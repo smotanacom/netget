@@ -156,13 +156,21 @@ LLMs can construct structured requests and interpret JSON/text responses.
     - Close quinn endpoint
 8. **LLM Response**: May trigger follow-up requests
 
-### Stream Priorities
+### Stream priorities — RFC 9218, and **lower is more urgent**
 
-HTTP/3 supports stream priorities (0-7, higher = more urgent):
+`priority` on `send_http3_request` is sent as the RFC 9218 `priority: u=N` request header,
+urgency 0-7. **0 is the most urgent and 7 the least**; the RFC default is 3, and omitting
+the parameter sends no header at all, which is not the same as sending `u=3`. It is a hint
+the *server* uses when scheduling responses and may ignore.
 
-- LLM can specify priority per request
-- Allows control over resource loading order
-- Currently passed but not fully utilized (quinn handles scheduling)
+Two things this section used to get wrong, both now fixed in the code and the action
+descriptions:
+
+- It said "higher = more urgent", which is backwards. A model asking for high priority
+  would have de-prioritised its own request.
+- It said the value was "passed but not fully utilized". It was passed through four call
+  sites and read only by an `info!` — nothing reached the wire, the same shape as the
+  `enable_0rtt` startup parameter that was removed for being inert.
 
 ### Startup Parameters
 
@@ -194,7 +202,13 @@ status_tx.send("[CLIENT] HTTP/3 request sent");                           // →
 - **TLS Handshake Failed**: Certificate issues (currently bypassed)
 - **HTTP/3 Negotiation Failed**: Server doesn't support HTTP/3
 - **Request Failed**: Log error, return Err, don't crash client
-- **Timeout**: quinn handles with connection timeout
+- **Timeout**: `HTTP3_REQUEST_TIMEOUT` (30 s) bounds the whole exchange — handshake, h3
+  session setup, request and response. There was **no** bound: `quinn` gives up on a peer
+  that stops acknowledging, but a server that completes the handshake and then never
+  answers left `recv_response()` pending forever, and the dashboard's `[ send ]` waited on
+  an exchange that could not resolve.
+- **Oversized response**: the body is capped at `MAX_RESPONSE_BODY_BYTES` (8 MiB); past
+  that the exchange is abandoned with an error rather than buffering until the process dies
 - **LLM Error**: Log, continue accepting actions
 
 ## Features
@@ -211,8 +225,10 @@ status_tx.send("[CLIENT] HTTP/3 request sent");                           // →
 - ✅ Custom headers
 - ✅ Request body (JSON, text, etc.)
 - ✅ Response parsing (status, headers, body)
-- ✅ Stream priorities (LLM-controlled)
-- ✅ Certificate verification bypass (testing mode)
+- ✅ Stream priorities (LLM-controlled, RFC 9218 `priority` header)
+- ⚠️ **Certificate verification is disabled and cannot be enabled.** `SkipServerVerification`
+  accepts any chain and there is no startup parameter for it — this is not a "testing mode",
+  it is the only mode.
 
 ### URL Handling
 
@@ -231,13 +247,15 @@ status_tx.send("[CLIENT] HTTP/3 request sent");                           // →
     - There is no startup parameter for it: see Startup Parameters
 
 - **No Streaming** - Full response buffered in memory
-    - Same limitation as HTTP/1.1 client
+    - Bounded at `MAX_RESPONSE_BODY_BYTES` (8 MiB); the HTTP/1.1 and HTTP/2 clients have
+      no such cap, because `reqwest::Response::text()` gives no incremental hook
 
 - **No File Uploads** - Body is text/JSON only
 
-- **Certificate Verification Disabled** - For testing
-    - Should be configurable via startup params
-    - Currently uses `SkipServerVerification`
+- **Certificate Verification Disabled** - and not configurable
+    - `SkipServerVerification` accepts any chain, unconditionally
+    - There is no startup parameter for it, so "for testing" understates it: every
+      request this client makes is unauthenticated at the TLS layer
 
 - **No Connection Migration** - Client doesn't handle IP changes
     - QUIC supports this but not implemented
@@ -266,7 +284,7 @@ status_tx.send("[CLIENT] HTTP/3 request sent");                           // →
 
 **User**: "Post user data to /api/users with high priority"
 
-**LLM Action**:
+**LLM Action** — note `priority: 1`, not 7: RFC 9218 urgency counts *down*.
 
 ```json
 {
@@ -277,7 +295,7 @@ status_tx.send("[CLIENT] HTTP/3 request sent");                           // →
     "Content-Type": "application/json"
   },
   "body": "{\"name\": \"Alice\", \"email\": \"alice@example.com\"}",
-  "priority": 7
+  "priority": 1
 }
 ```
 
@@ -295,7 +313,7 @@ status_tx.send("[CLIENT] HTTP/3 request sent");                           // →
   "headers": {
     "Authorization": "Bearer eyJhbGc..."
   },
-  "priority": 6
+  "priority": 1
 }
 ```
 
@@ -303,11 +321,19 @@ status_tx.send("[CLIENT] HTTP/3 request sent");                           // →
 
 See `tests/client/http3/CLAUDE.md` for E2E testing approach.
 
-### Test Servers
+### Test servers — there are none, and that is the honest state
 
-- **Cloudflare QUIC**: https://cloudflare-quic.com
-- **Google**: https://quic.nginx.org (if available)
-- **Local**: nginx with HTTP/3 support
+Root `CLAUDE.md` forbids tests contacting external endpoints, and NetGet has no HTTP/3
+server of its own (`src/server/quic/` speaks raw QUIC under ALPN `h3` with no RFC 9114
+framing, so this client cannot talk to it — see `src/server/quic/CLAUDE.md`). All three
+tests in `tests/client/http3/e2e_test.rs` are therefore `#[ignore]`d, and the only coverage
+that runs is `tests/client/http3/command_channel_test.rs`, which exercises injected actions
+and never opens a QUIC connection.
+
+**Nothing in this repository has ever asserted this client against a real HTTP/3 server.**
+`metadata().e2e_testing` says so. Giving it real coverage means adding an HTTP/3 *server*
+protocol — the plan for which is written up in `src/server/quic/CLAUDE.md` under "If a real
+HTTP/3 server is wanted".
 
 ## Implementation Challenges
 
@@ -329,11 +355,13 @@ See `tests/client/http3/CLAUDE.md` for E2E testing approach.
 - Connection pooling would be better
 - Trade-off: simplicity vs performance
 
-### 4. Stream ID Access
+### 4. Stream ID access — resolved
 
-- h3/quinn don't expose stream IDs easily
-- Using placeholder `0` for now
-- May need to track manually
+`h3`'s `RequestStream::id()` does expose it. Only the *index* is public (`StreamId`'s inner
+`u64` is private outside the crate's own tests; the wire id of a client bidirectional stream
+is `index << 2`), so `http3_response_received.stream_id` now carries the index. It used to
+be a hardcoded `0` under a `// TODO`, i.e. a field the model was told was the stream id and
+could never use to tell two responses apart.
 
 ### 5. 0-RTT Implementation
 
@@ -409,12 +437,16 @@ See `tests/client/http3/CLAUDE.md` for E2E testing approach.
 registered before `connect()` returns, and the old "poll `get_client()` every 5 s" task is
 gone — its removal check is one arm of the command loop's `select!`.
 
-**This is currently the only way anything reaches `Http3Client::make_request`.** The HTTP/3
-client raises no connected event: `HTTP3_CLIENT_CONNECTED_EVENT` is declared in `actions.rs`
-and never emitted, and nothing else called `make_request`, so before the command channel the
-client recorded its target and then did nothing. Wiring an `http3_connected` LLM call is the
-remaining gap — and note that `tests/client/http3/e2e_test.rs` mocks `http3_connected` with
-`expect_calls(1)`, so those tests cannot pass until it is.
+`connect()` also raises `http3_connected` from its own registered task, so an instruction
+given at creation reaches the wire without the dashboard. That call is registered *after*
+the command channel deliberately: a dashboard-created client defaults to a `*` manual rule,
+so the connected event can park for minutes waiting for a human, and `[ send ]` has to keep
+working for the whole park.
+
+The exchange the connect instruction produces **is** reported back to the model as
+`http3_response_received`. It used to be dropped, so a model told at creation to fetch
+something made the request and then never learned what came back. Follow-ups are bounded by
+`MAX_FOLLOWUP_DEPTH` (4).
 
 **Outcome semantics — `Executed`, never `Sent`.** h3/quinn own the datagrams and report no
 wire byte count for the request. The command loop **awaits** the QUIC exchange and reports

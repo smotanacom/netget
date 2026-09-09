@@ -52,6 +52,64 @@ enum Applied {
 pub struct Http2Client;
 
 impl Http2Client {
+    /// The HTTP/2 client for one host, built once and kept.
+    ///
+    /// This used to be built **per request**, plus one more at connect that was bound to
+    /// `_http_client` and immediately dropped — both on the async runtime. Three costs,
+    /// all of which root `CLAUDE.md` records as measured rather than theoretical:
+    ///
+    /// - `reqwest::Client::builder().build()` sets up the rustls stack and loads the
+    ///   platform root store. On macOS that reads the keychain through Security.framework,
+    ///   synchronously and serialised across processes; called on the async runtime it
+    ///   parks a tokio worker, which is how the `doh` client's whole runtime stalled. It
+    ///   now runs on `spawn_blocking`.
+    /// - A fresh client per request means a fresh connection pool per request, so every
+    ///   request paid for a new TCP + TLS handshake — the opposite of what HTTP/2 is for.
+    /// - **The literal-IP resolver bypass.** `reqwest` hands the URL host to its resolver
+    ///   unconditionally and `hyper-util`'s `GaiResolver` does not special-case a dotted
+    ///   quad, so `http://127.0.0.1:8080` performs a real `getaddrinfo` — measured at 8.25
+    ///   seconds through mDNSResponder under ~100 concurrent processes. `ClientBuilder::
+    ///   resolve` is a per-host override, which is why this cache is keyed by host rather
+    ///   than being one process-wide client.
+    ///
+    /// `http2_prior_knowledge()` is kept: this client speaks cleartext h2c and does not
+    /// negotiate via ALPN, which is what makes it usable against NetGet's own HTTP/2
+    /// server (that server never advertises ALPN).
+    async fn http2_client(url: &str) -> Result<reqwest::Client> {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+
+        static CLIENTS: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+        let clients = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+
+        let host = crate::llm::ollama_client::host_of(url).to_string();
+        if let Some(client) = clients.lock().ok().and_then(|map| map.get(&host).cloned()) {
+            return Ok(client);
+        }
+
+        let build_host = host.clone();
+        let built = tokio::task::spawn_blocking(move || {
+            let mut builder = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .http2_prior_knowledge();
+            // Only when the host *is* an address. A hostname is left alone: resolving it
+            // is the resolver's job, and /etc/hosts may legitimately redirect it.
+            if let Ok(ip) = build_host.parse::<std::net::IpAddr>() {
+                // The port is irrelevant — hyper overwrites it from the URL.
+                builder = builder.resolve(&build_host, std::net::SocketAddr::new(ip, 0));
+            }
+            builder.build().context("Failed to build HTTP/2 client")
+        })
+        .await
+        .context("HTTP/2 client build task panicked")??;
+
+        match clients.lock() {
+            Ok(mut map) => Ok(map.entry(host).or_insert(built).clone()),
+            // Poisoned only if another thread panicked holding the map; the client is
+            // still usable, it just does not get cached.
+            Err(_) => Ok(built),
+        }
+    }
     /// Connect to an HTTP/2 server with integrated LLM actions
     pub async fn connect_with_llm_actions(
         remote_addr: String,
@@ -69,12 +127,10 @@ impl Http2Client {
             client_id, remote_addr
         );
 
-        // Build reqwest client with HTTP/2 enabled
-        let _http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .http2_prior_knowledge() // Force HTTP/2 (without ALPN negotiation)
-            .build()
-            .context("Failed to build HTTP/2 client")?;
+        // Warm the client for this host rather than building one and dropping it: this
+        // used to bind to `_http_client`, a full rustls stack constructed at connect time
+        // and discarded, while `perform_request` built another one for every request.
+        Self::http2_client(&remote_addr).await?;
 
         // `default_headers` is declared as "headers included in all requests" and nothing
         // read it, so setting it changed nothing. Stored here, merged in `perform_request`.
@@ -471,11 +527,9 @@ impl Http2Client {
             client_id, method, url
         );
 
-        // Build request with HTTP/2 enabled
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .http2_prior_knowledge() // Force HTTP/2
-            .build()?;
+        // Keyed on the *request* URL, not the base: `path` may be an absolute URL
+        // pointing at a different host, and that host needs its own resolver override.
+        let http_client = Self::http2_client(&url).await?;
 
         let mut request = match method.to_uppercase().as_str() {
             "GET" => http_client.get(&url),
@@ -610,13 +664,10 @@ impl Http2Client {
                         app_state.set_memory_for_client(client_id, mem).await;
                     }
 
-                    // Execute what the model asked for. These were discarded, so a model that
-                    // read a response and wanted to follow it with another request was
-                    // silently ignored -- the entire purpose of raising the event.
-                    //
-                    // They run through `perform_request`, which raises no event: that bounds
-                    // the loop, and avoids making notify -> apply -> make -> notify a
-                    // self-referential async chain that rustc cannot prove `Send`.
+                    // Execute what the model asked for, and report each result back to it
+                    // until the depth bound above. These used to be discarded, so a model
+                    // that read a response and wanted to follow it with another request
+                    // was silently ignored — the entire purpose of raising the event.
                     use crate::llm::actions::client_trait::{Client, ClientActionResult};
                     for action in actions {
                         let Ok(ClientActionResult::Custom { name, data }) =

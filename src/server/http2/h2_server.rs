@@ -6,7 +6,7 @@ use http::{Request, Response, StatusCode};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::llm::action_helper::call_llm;
@@ -19,7 +19,7 @@ use crate::server::Http2Protocol;
 use crate::state::app_state::AppState;
 
 use super::actions::HTTP2_REQUEST_EVENT;
-use super::push::{PendingPush, PushManager};
+use super::push::PendingPush;
 
 /// HTTP/2 server with full server push support
 pub struct H2Server;
@@ -325,13 +325,24 @@ pub async fn handle_h2_request(
         }
     }
 
-    // Read request body from h2::RecvStream
+    // Read request body from h2::RecvStream, bounded by the same cap HTTP/1.1 uses.
+    // `release_capacity` re-opens the flow-control window after every chunk, so without
+    // a total limit a peer can stream an unbounded amount into this Vec — and the body
+    // ends up in an LLM prompt, where anything past a few kilobytes is cost with no
+    // benefit. Over the cap the stream is answered 413 and never reaches the model.
     let mut body_stream = request.into_body();
     let mut body_bytes = Vec::new();
+    let mut body_too_large = false;
 
     loop {
         match body_stream.data().await {
             Some(Ok(chunk)) => {
+                if body_bytes.len() + chunk.len()
+                    > crate::server::http_common::MAX_REQUEST_BODY_BYTES
+                {
+                    body_too_large = true;
+                    break;
+                }
                 body_bytes.extend_from_slice(&chunk);
                 // Release flow control capacity for this chunk
                 let _ = body_stream.flow_control().release_capacity(chunk.len());
@@ -346,6 +357,39 @@ pub async fn handle_h2_request(
                 break;
             }
         }
+    }
+
+    if body_too_large {
+        warn!(
+            "HTTP/2 {} {} decision=refused_body_too_large: over {} bytes",
+            method,
+            uri,
+            crate::server::http_common::MAX_REQUEST_BODY_BYTES
+        );
+        let _ = status_tx.send(format!("→ HTTP/2 {} {} → 413", method, uri));
+        let body = format!(
+            "Payload Too Large: request bodies are limited to {} bytes\n",
+            crate::server::http_common::MAX_REQUEST_BODY_BYTES
+        );
+        let body_len = body.len() as u64;
+        let response = build_h2_response_head(
+            413,
+            [("content-type".to_string(), "text/plain".to_string())],
+            "HTTP/2 payload too large",
+        );
+        let mut stream = send_response.send_response(response, false)?;
+        stream.send_data(Bytes::from(body), true)?;
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                None,
+                Some(body_len),
+                None,
+                Some(1),
+            )
+            .await;
+        return Ok(());
     }
 
     // Record the inbound message against the *connection* (streams are not in the
@@ -418,26 +462,27 @@ pub async fn handle_h2_request(
         }
     }
 
-    // Create event for LLM
+    // Create event for LLM.
+    //
+    // Request bodies are attacker-controlled and need not be UTF-8. Action/event design
+    // rules forbid handing the model raw bytes or base64, so the body is always presented
+    // as (lossily) decoded text — but a non-UTF-8 body is flagged explicitly rather than
+    // silently mangled into U+FFFD, so the model knows the text it sees is not the real
+    // payload. Same contract as HTTP/1.1.
+    let body_is_binary = std::str::from_utf8(&body_bytes).is_err();
     let body_text = String::from_utf8_lossy(&body_bytes);
-    let event = Event::new(
-        &HTTP2_REQUEST_EVENT,
-        serde_json::json!({
-            "method": method,
-            "uri": uri,
-            "version": version,
-            "headers": headers,
-            "body": if body_text.is_empty() { "" } else { body_text.as_ref() },
-            "body_bytes": body_bytes.len()
-        }),
-    );
-
-    // Create push manager for this request
-    let push_manager = Arc::new(Mutex::new(PushManager::new()));
-    let _push_manager_clone = push_manager.clone();
-
-    // Store push manager in app state for action access
-    // (This would require extending AppState, for now we'll use a simpler approach)
+    let mut event_data = serde_json::json!({
+        "method": method,
+        "uri": uri,
+        "version": version,
+        "headers": headers,
+        "body": if body_text.is_empty() { "" } else { body_text.as_ref() },
+        "body_bytes": body_bytes.len()
+    });
+    if body_is_binary {
+        event_data["body_is_binary"] = serde_json::Value::Bool(true);
+    }
+    let event = Event::new(&HTTP2_REQUEST_EVENT, event_data);
 
     // Call LLM to generate response
     match call_llm(
@@ -619,9 +664,43 @@ pub async fn handle_h2_request(
                 }
             }
 
-            // Nothing usable came back. Refuse rather than emitting the pre-set 200, which a
-            // client cannot tell from a real, empty answer.
+            // Nothing usable came back.
+            //
+            // If the operator configured a `default_response`, that is a deliberate
+            // answer for exactly this case and it is used — the parameter is declared by
+            // `request_handling_startup_parameters()`, which HTTP/2 advertises, and until
+            // now HTTP/2 read it nowhere, so setting it changed nothing here.
+            //
+            // With no `default_response`, refuse rather than emitting the pre-set 200,
+            // which a client cannot tell from a real, empty answer.
             if !produced_response {
+                if let Some((status, hdrs, body)) = filter.default_response_parts() {
+                    warn!(
+                        "HTTP/2 {} {} decision=default_response: actions ran but none \
+                         yielded a response; answering the configured default ({})",
+                        method, uri, status
+                    );
+                    let _ = status_tx.send(format!(
+                        "→ HTTP/2 {} {} → {} (configured default_response)",
+                        method, uri, status
+                    ));
+                    let body_len = body.len() as u64;
+                    let response = build_h2_response_head(status, hdrs, "HTTP/2 default_response");
+                    let mut stream = send_response.send_response(response, false)?;
+                    stream.send_data(Bytes::from(body), true)?;
+                    app_state
+                        .update_connection_stats(
+                            server_id,
+                            connection_id,
+                            None,
+                            Some(body_len),
+                            None,
+                            Some(1),
+                        )
+                        .await;
+                    return Ok(());
+                }
+
                 warn!(
                     "HTTP/2 {} {} decision=fail_closed_no_action: actions ran but none \
                      yielded a response",
@@ -677,21 +756,54 @@ pub async fn handle_h2_request(
                 .await;
         }
         Err(e) => {
-            error!("LLM error generating HTTP/2 response: {}", e);
-            let _ = status_tx.send(format!("✗ LLM error for {} {}: {}", method, uri, e));
+            // Same split HTTP/1.1 makes in `http_common::build_error_response`, which root
+            // CLAUDE.md names as the shape to copy: an *overloaded* backend is transient
+            // and gets 503 + `Retry-After` so the client backs off, anything else gets 500
+            // and is treated as a permanent fault. HTTP/2 answered a flat 500 for both,
+            // so a client could not tell "come back in a second" from "this is broken".
+            //
+            // Only the category reaches the peer; `e` is logged and never rendered onto
+            // the wire.
+            let failure = crate::utils::WireFailure::classify(&e);
+            let (status, decision) = match failure {
+                crate::utils::WireFailure::Overloaded => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "fail_closed_llm_overloaded",
+                ),
+                crate::utils::WireFailure::Unavailable => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "fail_closed_llm_error")
+                }
+            };
+            error!(
+                "HTTP/2 {} {} decision={} status={}: {}",
+                method,
+                uri,
+                decision,
+                status.as_u16(),
+                e
+            );
+            let _ = status_tx.send(format!(
+                "✗ LLM error for {} {} → {}: {}",
+                method,
+                uri,
+                status.as_u16(),
+                e
+            ));
 
-            const ERROR_BODY: &str = "Internal Server Error";
-            let response = Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(())?;
+            let error_body = failure.prefixed_text();
+            let mut builder = Response::builder().status(status);
+            if failure.is_overloaded() {
+                builder = builder.header(http::header::RETRY_AFTER, "1");
+            }
+            let response = builder.body(())?;
             let mut stream = send_response.send_response(response, false)?;
-            stream.send_data(Bytes::from(ERROR_BODY), true)?;
+            stream.send_data(Bytes::from(error_body), true)?;
             app_state
                 .update_connection_stats(
                     server_id,
                     connection_id,
                     None,
-                    Some(ERROR_BODY.len() as u64),
+                    Some(error_body.len() as u64),
                     None,
                     Some(1),
                 )

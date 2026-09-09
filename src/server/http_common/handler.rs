@@ -21,12 +21,36 @@ pub struct RequestData {
     pub body_bytes: Bytes,
 }
 
-/// Extract request data from hyper Request
+/// How much of a request body is read before the request is refused with 413.
+///
+/// The body is buffered whole and then embedded in an LLM prompt, so there is no
+/// legitimate use for a large one: a model cannot read 10 MB, and every byte past a
+/// few kilobytes is cost without benefit. Without a cap the buffer is whatever the
+/// peer chooses to send — `Incoming` has no default limit — so a single unauthenticated
+/// `POST` could exhaust the process's memory. Refusing early is both the safe and the
+/// honest answer, and 413 is the code that says exactly that.
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// The request body exceeded [`MAX_REQUEST_BODY_BYTES`] (or could not be read).
+///
+/// Deliberately a distinct type rather than an empty body: a truncated body handed to
+/// the model looks like a complete one, and the model would answer a request it never
+/// actually saw.
+#[derive(Debug)]
+pub struct BodyTooLarge {
+    pub method: String,
+    pub uri: String,
+}
+
+/// Extract request data from hyper Request.
+///
+/// The body is bounded by [`MAX_REQUEST_BODY_BYTES`]; a larger one yields
+/// [`BodyTooLarge`] and the caller answers 413 without spending an LLM call.
 pub async fn extract_request_data(
     req: Request<Incoming>,
     protocol_label: &str,
     status_tx: &mpsc::UnboundedSender<String>,
-) -> RequestData {
+) -> Result<RequestData, BodyTooLarge> {
     // Extract request details first for logging
     let method = req.method().to_string();
     // Only use path+query portion (not scheme/host) for event data
@@ -46,12 +70,21 @@ pub async fn extract_request_data(
         }
     }
 
-    // Read body
-    let body_bytes = match req.into_body().collect().await {
+    // Read body, bounded. `Limited` errors as soon as the cap is passed rather than
+    // after buffering the whole thing, so an oversized upload costs at most the cap.
+    let limited = http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES);
+    let body_bytes = match limited.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            error!("Failed to read request body: {}", e);
-            Bytes::new()
+            error!(
+                "{} {} {}: refusing request body ({}); limit is {} bytes",
+                protocol_label, method, uri, e, MAX_REQUEST_BODY_BYTES
+            );
+            let _ = status_tx.send(format!(
+                "✗ {} {} {} → 413 (request body over {} bytes)",
+                protocol_label, method, uri, MAX_REQUEST_BODY_BYTES
+            ));
+            return Err(BodyTooLarge { method, uri });
         }
     };
 
@@ -111,13 +144,41 @@ pub async fn extract_request_data(
         }
     }
 
-    RequestData {
+    Ok(RequestData {
         method,
         uri,
         version,
         headers,
         body_bytes,
-    }
+    })
+}
+
+/// The 413 answer for a request whose body exceeded [`MAX_REQUEST_BODY_BYTES`].
+///
+/// Static text: nothing derived from the request or from an internal error reaches the
+/// peer, only the fact and the limit.
+pub fn build_payload_too_large_response(
+    too_large: &BodyTooLarge,
+    protocol_label: &str,
+    status_tx: &mpsc::UnboundedSender<String>,
+) -> Response<Full<Bytes>> {
+    warn!(
+        "{} {} {} decision=refused_body_too_large: over {} bytes",
+        protocol_label, too_large.method, too_large.uri, MAX_REQUEST_BODY_BYTES
+    );
+    let _ = status_tx.send(format!(
+        "→ {} {} {} → 413",
+        protocol_label, too_large.method, too_large.uri
+    ));
+    build_safe_response(
+        413,
+        [("Content-Type".to_string(), "text/plain".to_string())],
+        format!(
+            "Payload Too Large: request bodies are limited to {} bytes\n",
+            MAX_REQUEST_BODY_BYTES
+        ),
+        protocol_label,
+    )
 }
 
 /// Build a hyper `Response` from parts that came from the LLM or from server
@@ -247,7 +308,18 @@ pub fn build_response(
     ))
 }
 
-/// Build error response for LLM failures
+/// Build error response for LLM failures.
+///
+/// The peer gets a *category*, never the error: `error` is classified by
+/// [`crate::utils::WireFailure`] and then only logged. Overload is transient and
+/// retryable, which 500 does not say, so it becomes 503 + `Retry-After` and a client
+/// backs off instead of recording a permanent server fault — that is the path a second
+/// concurrent request takes when `--llm-max-concurrent` is saturated and the queue is
+/// full or the wait timed out. Everything else is a 500.
+///
+/// Both branches carry a `decision=` tag, so an operator reading `netget.log` can tell a
+/// saturated backend from a broken one without parsing the error text
+/// (`src/server/radius/` is the reference for this).
 pub fn build_error_response(
     error: anyhow::Error,
     protocol_label: &str,
@@ -255,28 +327,31 @@ pub fn build_error_response(
     uri: &str,
     status_tx: &mpsc::UnboundedSender<String>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    let failure = crate::utils::WireFailure::classify(&error);
+    let (status, decision) = match failure {
+        crate::utils::WireFailure::Overloaded => (503, "fail_closed_llm_overloaded"),
+        crate::utils::WireFailure::Unavailable => (500, "fail_closed_llm_error"),
+    };
     error!(
-        "LLM error generating {} response: {}",
-        protocol_label, error
+        "{} {} {} decision={} status={}: {}",
+        protocol_label, method, uri, decision, status, error
     );
-    let _ = status_tx.send(format!("✗ LLM error for {} {}: {}", method, uri, error));
+    let _ = status_tx.send(format!(
+        "✗ LLM error for {} {} → {}: {}",
+        method, uri, status, error
+    ));
 
-    // Overload is transient and retryable, which 500 does not say. Report it as
-    // 503 + Retry-After so a client backs off and tries again instead of
-    // recording a permanent server fault — this is the path a second concurrent
-    // request takes when `--llm-max-concurrent` is saturated and the queue is
-    // full or the wait timed out.
-    if crate::llm::is_overload_error(&error) {
+    if status == 503 {
         return Ok(Response::builder()
             .status(503)
             .header(hyper::header::RETRY_AFTER, "1")
-            .body(Full::new(Bytes::from("Service Unavailable")))
+            .body(Full::new(Bytes::from(failure.prefixed_text())))
             .unwrap());
     }
 
     Ok(Response::builder()
         .status(500)
-        .body(Full::new(Bytes::from("Internal Server Error")))
+        .body(Full::new(Bytes::from(failure.prefixed_text())))
         .unwrap())
 }
 

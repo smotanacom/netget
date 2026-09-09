@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::client::http::actions::{
     HTTP_CLIENT_CONNECTED_EVENT, HTTP_CLIENT_RESPONSE_RECEIVED_EVENT,
@@ -67,33 +67,75 @@ enum Dispatch {
 pub struct HttpClient;
 
 impl HttpClient {
-    /// The process-wide HTTP client, built once.
+    /// The HTTP client for one host, built once and kept.
     ///
-    /// Two things this avoids, both of which cost real time on every request before:
-    /// `reqwest::Client::builder().build()` sets up the rustls stack and loads the
-    /// platform root store -- on macOS that reads the system keychain through
-    /// Security.framework, which is synchronous and serialises across processes -- so it
-    /// runs on `spawn_blocking` rather than parking a tokio worker. And it is kept, so
-    /// requests after the first reuse the connection pool instead of paying for a fresh
-    /// TLS stack and handshake each time.
+    /// Three things this avoids, all of which cost real time on every request before:
+    ///
+    /// - `reqwest::Client::builder().build()` sets up the rustls stack and loads the
+    ///   platform root store — on macOS that reads the system keychain through
+    ///   Security.framework, which is synchronous and serialises across processes — so it
+    ///   runs on `spawn_blocking` rather than parking a tokio worker.
+    /// - It is kept, so requests after the first reuse the connection pool instead of
+    ///   paying for a fresh TLS stack and handshake each time.
+    /// - **The literal-IP resolver bypass.** `reqwest` hands the URL host to its DNS
+    ///   resolver unconditionally and `hyper-util`'s `GaiResolver` does not special-case a
+    ///   dotted quad, so `http://127.0.0.1:8080` performs a real `getaddrinfo`. On macOS
+    ///   that goes through libinfo to mDNSResponder — one system-wide daemon, measured
+    ///   blocking for **8.25 seconds** under ~100 concurrent processes. A NetGet HTTP
+    ///   client is pointed at a literal IP more often than not, so this is the common case,
+    ///   not the exotic one.
+    ///
+    /// That last point is why the cache is **keyed by host** rather than being a single
+    /// process-wide client: `ClientBuilder::resolve` is a per-host override, so a single
+    /// shared client cannot carry one for a host it has not been told about. The map is
+    /// only ever as large as the set of hosts this process has been pointed at.
+    ///
+    /// The override logic mirrors `ollama_client::without_dns_for_literal_ip`, which is
+    /// private and builds a client with reqwest's default TLS backend; this one keeps
+    /// `use_rustls_tls()` deliberately, since native-tls on macOS is the keychain path the
+    /// first bullet is about. `host_of` — the part that is easy to get wrong, and did get
+    /// wrong once by leaving the port on — is shared.
     ///
     /// Protocol versions are negotiated via ALPN during the handshake, so one client
     /// serves both HTTP/1.1 and HTTP/2.
-    async fn http_client() -> Result<reqwest::Client> {
-        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-        if let Some(client) = CLIENT.get() {
-            return Ok(client.clone());
+    async fn http_client(base_url: &str) -> Result<reqwest::Client> {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+
+        static CLIENTS: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+        let clients = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+
+        let host = crate::llm::ollama_client::host_of(base_url).to_string();
+        if let Some(client) = clients.lock().ok().and_then(|map| map.get(&host).cloned()) {
+            return Ok(client);
         }
-        let built = tokio::task::spawn_blocking(|| {
-            reqwest::Client::builder()
+
+        let build_host = host.clone();
+        let built = tokio::task::spawn_blocking(move || {
+            let mut builder = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
-                .use_rustls_tls()
-                .build()
-                .context("Failed to build HTTP client")
+                .use_rustls_tls();
+            // Only when the host *is* an address. A hostname is left alone: resolving
+            // `localhost` or a real name is the resolver's job, and /etc/hosts or
+            // split-horizon DNS may legitimately point it somewhere unexpected.
+            if let Ok(ip) = build_host.parse::<std::net::IpAddr>() {
+                // The port is irrelevant — hyper overwrites it from the URL — so one
+                // override serves every port this client is later pointed at.
+                builder = builder.resolve(&build_host, std::net::SocketAddr::new(ip, 0));
+            }
+            builder.build().context("Failed to build HTTP client")
         })
         .await
         .context("HTTP client build task panicked")??;
-        Ok(CLIENT.get_or_init(|| built).clone())
+
+        // A concurrent builder may have won the race; either client is equally valid, so
+        // keep whichever landed first rather than replacing it and orphaning its pool.
+        match clients.lock() {
+            Ok(mut map) => Ok(map.entry(host).or_insert(built).clone()),
+            // Poisoned only if another thread panicked while holding the map. The freshly
+            // built client is still usable; it just does not get cached.
+            Err(_) => Ok(built),
+        }
     }
 
     /// Connect to an HTTP server with integrated LLM actions
@@ -110,11 +152,6 @@ impl HttpClient {
 
         info!("HTTP client {} initialized for {}", client_id, remote_addr);
 
-        // Warm the shared client here rather than building one and dropping it. This
-        // used to bind to `_http_client`: a full rustls stack constructed at connect time
-        // and immediately discarded, while every request built another one.
-        Self::http_client().await?;
-
         // Store client in protocol_data
         // Ensure base_url has http:// scheme
         let base_url = if remote_addr.starts_with("http://") || remote_addr.starts_with("https://")
@@ -123,6 +160,13 @@ impl HttpClient {
         } else {
             format!("http://{}", remote_addr)
         };
+
+        // Warm the client for this host here rather than building one and dropping it.
+        // This used to bind to `_http_client`: a full rustls stack constructed at connect
+        // time and immediately discarded, while every request built another one. It is
+        // warmed *after* `base_url` exists, because the cache is keyed by host — warming
+        // an unrelated entry would leave the first real request paying the build cost.
+        Self::http_client(&base_url).await?;
 
         // `default_headers` is declared in `get_startup_parameters()` as "headers included
         // in all requests". It was never read, so setting it changed nothing. It is stored
@@ -190,7 +234,7 @@ impl HttpClient {
                 &app_state,
                 client_id.to_string(),
                 &instruction,
-                &String::new(), // No memory yet for initial connection
+                "", // No memory yet for initial connection
                 Some(&event),
                 &crate::client::http::actions::HttpClientProtocol,
                 &status_tx,
@@ -457,6 +501,7 @@ impl HttpClient {
                                 state_clone,
                                 llm_clone,
                                 status_clone,
+                                0,
                             )
                             .await;
                         });
@@ -500,7 +545,7 @@ impl HttpClient {
             client_id, method, path, headers, body, &app_state, &status_tx,
         )
         .await?;
-        Self::notify_response(client_id, exchange, app_state, llm_client, status_tx).await;
+        Self::notify_response(client_id, exchange, app_state, llm_client, status_tx, 0).await;
         Ok(())
     }
 
@@ -544,7 +589,9 @@ impl HttpClient {
             client_id, method, url
         );
 
-        let http_client = Self::http_client().await?;
+        // Keyed on the *request* URL, not the base: `path` may be an absolute URL
+        // pointing at a different host, and that host needs its own resolver override.
+        let http_client = Self::http_client(&url).await?;
 
         let mut request = match method.to_uppercase().as_str() {
             "GET" => http_client.get(&url),
@@ -618,93 +665,123 @@ impl HttpClient {
         }
     }
 
+    /// How many exchanges deep this client keeps following the model's answers. Each
+    /// response can ask for another request, which produces another response; without a
+    /// bound a model that answers every response with a request never stops.
+    const MAX_FOLLOWUP_DEPTH: u8 = 4;
+
     /// Hand a completed exchange to the LLM as an `http_response_received` event.
-    async fn notify_response(
+    ///
+    /// Boxed with an explicit `+ Send` because the chain is genuinely self-referential
+    /// (report → request → report) and the future is awaited inside a `tokio::spawn`,
+    /// which inference will not give `Send` on its own. This is the shape root
+    /// `CLAUDE.md` prescribes for the "client asks the model and throws the answer away"
+    /// family of defects: **a depth bound, not silence.**
+    fn notify_response(
         client_id: ClientId,
         exchange: HttpExchange,
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
-    ) {
-        let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
-            return;
-        };
+        depth: u8,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
 
-        let protocol = Arc::new(crate::client::http::actions::HttpClientProtocol::new());
-        let event = Event::new(
-            &HTTP_CLIENT_RESPONSE_RECEIVED_EVENT,
-            serde_json::json!({
-                "status_code": exchange.status_code,
-                "status_text": exchange.status_text,
-                "headers": exchange.headers,
-                "body": exchange.body,
-            }),
-        );
+            let protocol = Arc::new(crate::client::http::actions::HttpClientProtocol::new());
+            let event = Event::new(
+                &HTTP_CLIENT_RESPONSE_RECEIVED_EVENT,
+                serde_json::json!({
+                    "status_code": exchange.status_code,
+                    "status_text": exchange.status_text,
+                    "headers": exchange.headers,
+                    "body": exchange.body,
+                }),
+            );
 
-        let memory = app_state
-            .get_memory_for_client(client_id)
+            let memory = app_state
+                .get_memory_for_client(client_id)
+                .await
+                .unwrap_or_default();
+
+            match call_llm_for_client(
+                &llm_client,
+                &app_state,
+                client_id.to_string(),
+                &instruction,
+                &memory,
+                Some(&event),
+                protocol.as_ref(),
+                &status_tx,
+            )
             .await
-            .unwrap_or_default();
+            {
+                Ok(ClientLlmResult {
+                    actions,
+                    memory_updates,
+                }) => {
+                    // Update memory
+                    if let Some(mem) = memory_updates {
+                        app_state.set_memory_for_client(client_id, mem).await;
+                    }
 
-        match call_llm_for_client(
-            &llm_client,
-            &app_state,
-            client_id.to_string(),
-            &instruction,
-            &memory,
-            Some(&event),
-            protocol.as_ref(),
-            &status_tx,
-        )
-        .await
-        {
-            Ok(ClientLlmResult {
-                actions,
-                memory_updates,
-            }) => {
-                // Update memory
-                if let Some(mem) = memory_updates {
-                    app_state.set_memory_for_client(client_id, mem).await;
+                    // Execute what the model asked for, and report each result back to it
+                    // until the depth bound. Reporting used to stop after one hop: the
+                    // follow-up ran but its response raised no event, so a model that read
+                    // a 302 and asked for the redirect target never learned what it got.
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        if name != "http_request" {
+                            continue;
+                        }
+                        match Self::perform_request(
+                            client_id,
+                            data["method"].as_str().unwrap_or("GET").to_string(),
+                            data["path"].as_str().unwrap_or("/").to_string(),
+                            data["headers"].as_object().cloned(),
+                            data["body"].as_str().map(|s| s.to_string()),
+                            &app_state,
+                            &status_tx,
+                        )
+                        .await
+                        {
+                            Ok(exchange) => {
+                                if depth + 1 < Self::MAX_FOLLOWUP_DEPTH {
+                                    Self::notify_response(
+                                        client_id,
+                                        exchange,
+                                        app_state.clone(),
+                                        llm_client.clone(),
+                                        status_tx.clone(),
+                                        depth + 1,
+                                    )
+                                    .await;
+                                } else {
+                                    warn!(
+                                        "HTTP client {} reached the follow-up depth limit \
+                                         ({}); not reporting the response to the model",
+                                        client_id,
+                                        Self::MAX_FOLLOWUP_DEPTH
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error!("HTTP client {} follow-up request failed: {}", client_id, e)
+                            }
+                        }
+                    }
                 }
-
-                // Execute what the model asked for. These were discarded, so a model that
-                // read a response and wanted to follow it with another request was
-                // silently ignored -- the entire purpose of raising the event.
-                //
-                // They run through `perform_request`, which issues the exchange and raises
-                // no event. That bounds the loop (a follow-up cannot trigger another
-                // response event and drive the model in circles) and is also the only
-                // shape that compiles: routing them back through `make_request` would make
-                // notify -> apply -> make -> notify a self-referential async chain, which
-                // rustc cannot prove `Send` and `tokio::spawn` therefore rejects.
-                use crate::llm::actions::client_trait::{Client, ClientActionResult};
-                for action in actions {
-                    let Ok(ClientActionResult::Custom { name, data }) =
-                        protocol.execute_action(action.clone())
-                    else {
-                        continue;
-                    };
-                    if name != "http_request" {
-                        continue;
-                    }
-                    let result = Self::perform_request(
-                        client_id,
-                        data["method"].as_str().unwrap_or("GET").to_string(),
-                        data["path"].as_str().unwrap_or("/").to_string(),
-                        data["headers"].as_object().cloned(),
-                        data["body"].as_str().map(|s| s.to_string()),
-                        &app_state,
-                        &status_tx,
-                    )
-                    .await;
-                    if let Err(e) = result {
-                        error!("HTTP client {} follow-up request failed: {}", client_id, e);
-                    }
+                Err(e) => {
+                    error!("LLM error for HTTP client {}: {}", client_id, e);
                 }
             }
-            Err(e) => {
-                error!("LLM error for HTTP client {}: {}", client_id, e);
-            }
-        }
+        })
     }
 }

@@ -97,14 +97,31 @@ Black-box testing approach where:
 - All use HTTP/2 protocol
 - Requests processed concurrently (HTTP/2 multiplexing benefit)
 
-## Total LLM Call Budget
+### Tests 4-5: Failure semantics (`failure_semantics_test.rs`)
 
-**Total LLM Calls**: 6
+**Purpose**: What the peer gets when netget cannot, or will not, answer.
+
+Both point the server at a mock that answers the startup instruction and nothing else,
+so every `http2_request` is a backend failure.
+
+- `test_http2_answers_500_when_the_llm_fails` — the stream gets **500** promptly, with no
+  `Retry-After` (503 + `Retry-After` is reserved for an *overloaded* backend, so a client
+  can tell a retryable failure from a permanent one; HTTP/2 answered a flat 500 for both
+  until this was split). The body is asserted to name `netget` and to contain none of the
+  backend URL, model name, retry text or `Caused by` chain.
+- `test_http2_refuses_an_oversized_request_body` — a body one byte over
+  `http_common::MAX_REQUEST_BODY_BYTES` (8 MiB) is answered **413**, and `expect_calls(1)`
+  on the startup rule proves it cost no LLM call.
+
+**LLM Calls**: 1 each (startup only).
+
+## Total LLM Call Budget
 
 - Test 1: 1 (startup) + 4 (requests) = 5 calls
 - Test 2: 1 (startup) + 2 (requests) = 3 calls
 - Test 3: 1 (startup) + 3 (requests) = 4 calls
-- **Actual Total**: 5 + 3 + 4 = 12 calls (tests run separately, servers not reused)
+- Tests 4-5: 1 (startup) each = 2 calls
+- **Total**: 14 calls (tests run separately, servers not reused)
 
 **Optimization**: Could reduce to 9 calls by:
 
@@ -112,7 +129,9 @@ Black-box testing approach where:
 2. Keep Test 3 separate for multiplexing demo (1 + 3 = 4 calls)
 3. **New Total**: 9 + 4 = 13 calls
 
-**Current Approach**: Keep tests separate for clarity (slightly over budget at 12 calls vs. target <10)
+**Current Approach**: Keep tests separate for clarity (over the <10 target at 14 calls).
+The failure tests cannot share a server with the others: they need a model that answers
+*nothing*, which is the opposite of what the functional tests configure.
 
 ## Runtime Performance
 
@@ -132,7 +151,7 @@ Black-box testing approach where:
 
 ### 1. LLM Call Budget Slightly Over
 
-- **Issue**: 12 total LLM calls vs. target <10
+- **Issue**: 14 total LLM calls vs. target <10
 - **Impact**: Tests take ~20s instead of ~15s
 - **Mitigation**: Tests are kept separate for clarity. Could be optimized if needed.
 - **Resolution**: Acceptable for comprehensive coverage
@@ -142,14 +161,22 @@ Black-box testing approach where:
 - **Issue**: Client uses `http2_prior_knowledge()` for cleartext HTTP/2
 - **Impact**: Real browsers require TLS + ALPN negotiation
 - **Mitigation**: Tests focus on protocol behavior, not TLS
-- **Resolution**: Will be addressed when TLS support added to HTTP/2 server
+- **Resolution**: TLS *is* supported by the server (`tls_cert_manager`); what is missing
+  is **ALPN advertisement**, so a browser will not select `h2` on its own however the
+  test is written. Testing browser-shaped negotiation needs the server to advertise ALPN
+  first — see `src/server/http2/CLAUDE.md`.
 
 ### 3. No Server Push Testing
 
-- **Issue**: HTTP/2 server push not implemented yet
-- **Impact**: Can't test server-initiated push of resources
-- **Mitigation**: Future enhancement
-- **Resolution**: Will add when server push action is implemented
+- **Issue**: server push **is** implemented (`push_resource` action; `handle_h2_request`
+  sends PUSH_PROMISE + push stream before the main response) and nothing tests it.
+  `reqwest` cannot observe a push, which is why the existing tests do not.
+- **Impact**: the whole push path is unexercised.
+- **Resolution**: the `h2` crate's client exposes `push_promises()` and would work — but
+  the server frames with `h2` too, so such a test asserts only that one crate
+  round-trips through itself, which root `CLAUDE.md` names as the circular-evidence
+  case. It would be coverage, not maturity evidence. A non-`h2` peer (curl, nghttp2) is
+  what the protocol actually needs.
 
 ## Test Isolation
 
@@ -204,8 +231,9 @@ curl --http2-prior-knowledge http://127.0.0.1:<port>/
 
 If server responds with HTTP/1.1 instead of HTTP/2:
 
-- Check server logs for "HTTP/2 server listening"
-- Verify `http2::Builder` is used (not `http1::Builder`)
+- Check server logs for "HTTP/2 (h2c with push) server listening"
+- Confirm the request reached `H2Server::spawn_with_push_support` — the server is built
+  directly on the `h2` crate, not on hyper's `http2::Builder`
 - Ensure client uses `http2_prior_knowledge()`
 
 ### Timeout Issues
@@ -228,11 +256,8 @@ When TLS is added to HTTP/2 server:
 
 ### Server Push Testing
 
-When server push is implemented:
-
-- Test push promises
-- Verify pushed resources
-- Test client rejection of push
+Push is implemented; the test is what is missing. See Known Issue 3 for why the obvious
+`h2`-client version would be circular evidence.
 
 ### Stream Prioritization
 
