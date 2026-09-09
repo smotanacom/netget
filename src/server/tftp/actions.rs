@@ -19,6 +19,27 @@ impl TftpProtocol {
     }
 }
 
+/// Read a `block_number` and check it fits the wire field.
+///
+/// The field is 16 bits. This used to be `as_u64()? as u16`, which silently wraps: a model
+/// answering with block 65536 put block 0 on the wire, and block 70000 put 4464 — a
+/// mid-transfer block number the client had already acknowledged, so the transfer either
+/// stalled or duplicated a block with no error anywhere. The declared range is 1-65535 and
+/// the executor now enforces it.
+fn parse_block_number(action: &serde_json::Value, action_name: &str) -> Result<u16> {
+    let raw = action
+        .get("block_number")
+        .and_then(|v| v.as_u64())
+        .with_context(|| format!("Missing 'block_number' in {action_name} action"))?;
+
+    u16::try_from(raw).map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid TFTP block_number {raw} in {action_name}: the field is 16 bits, so it must \
+             be 0-65535 (0 is only valid as the ACK that accepts a write request)."
+        )
+    })
+}
+
 // Event type constants
 pub static TFTP_READ_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
@@ -195,8 +216,16 @@ impl Protocol for TftpProtocol {
             DevelopmentState, PrivilegeRequirement, ProtocolMetadataV2,
         };
 
+        // Deliberately NOT `.connectionless()`. TFTP is UDP, but unlike the other UDP
+        // servers its "connections" are real per-transfer sessions with an explicit
+        // lifecycle: every exit path — final ACK, timeout, ERROR, socket error — calls
+        // `close_connection_on_server`, so nothing leaks and the idle sweep has no work to
+        // do. Declaring it connectionless made `cleanup_old_connections` evict a live
+        // transfer whenever the handler took more than ten seconds to answer, which one LLM
+        // round-trip routinely does; the transfer then finished on the wire while its
+        // connection entry, its block counter and its close all targeted a record that was
+        // already gone.
         ProtocolMetadataV2::builder()
-            .connectionless()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(69))
             .implementation("Custom TFTP packet parsing and state machine")
@@ -315,11 +344,7 @@ impl Server for TftpProtocol {
 
 impl TftpProtocol {
     fn execute_send_tftp_data(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let block_number = action
-            .get("block_number")
-            .and_then(|v| v.as_u64())
-            .context("Missing 'block_number' in send_tftp_data action")?
-            as u16;
+        let block_number = parse_block_number(&action, "send_tftp_data")?;
 
         let data_hex = action
             .get("data_hex")
@@ -349,11 +374,7 @@ impl TftpProtocol {
     }
 
     fn execute_send_tftp_ack(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let block_number = action
-            .get("block_number")
-            .and_then(|v| v.as_u64())
-            .context("Missing 'block_number' in send_tftp_ack action")?
-            as u16;
+        let block_number = parse_block_number(&action, "send_tftp_ack")?;
 
         // Build TFTP ACK packet
         // Opcode (2 bytes) = 4 (ACK)
@@ -366,15 +387,35 @@ impl TftpProtocol {
     }
 
     fn execute_send_tftp_error(&self, action: serde_json::Value) -> Result<ActionResult> {
+        // Both fields are declared `required: true`. They used to be silently defaulted to
+        // 0 and "Error", so an action the model got wrong produced a plausible-looking
+        // ERROR packet rather than a visible failure — and the declaration was a lie.
         let error_code = action
             .get("error_code")
             .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u16;
+            .context("Missing 'error_code' in send_tftp_error action (RFC 1350 defines 0-7)")?;
+        if error_code > 7 {
+            return Err(anyhow::anyhow!(
+                "Invalid TFTP error_code {error_code}: RFC 1350 defines 0-7 (0=not defined, \
+                 1=file not found, 2=access violation, 3=disk full, 4=illegal operation, \
+                 5=unknown transfer ID, 6=file exists, 7=no such user)."
+            ));
+        }
+        let error_code = error_code as u16;
 
         let error_message = action
             .get("error_message")
             .and_then(|v| v.as_str())
-            .unwrap_or("Error");
+            .context("Missing 'error_message' in send_tftp_error action")?;
+
+        // The message is NUL-terminated on the wire, so an embedded NUL would truncate it
+        // and leave the remainder as trailing garbage the client reads as part of the packet.
+        if error_message.contains('\0') {
+            return Err(anyhow::anyhow!(
+                "TFTP 'error_message' must not contain a NUL byte: the field is NUL-terminated \
+                 on the wire, so an embedded NUL truncates the message."
+            ));
+        }
 
         // Build TFTP ERROR packet
         // Opcode (2 bytes) = 5 (ERROR)

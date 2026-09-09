@@ -580,8 +580,10 @@ fn smb_create_file_action() -> ActionDefinition {
         name: "smb_create_file".to_string(),
         description: "Answer a 'create' operation: the path is (or becomes) a regular file. The \
                       handle the client receives is marked FILE_ATTRIBUTE_NORMAL, so the client \
-                      will follow up with read/write rather than query_directory. This is also \
-                      the default when you return neither create action."
+                      will follow up with read/write rather than query_directory. Returning \
+                      neither create action is NOT a default: it refuses the open with \
+                      STATUS_ACCESS_DENIED, because silence must not become consent for an \
+                      admission decision."
             .to_string(),
         parameters: vec![Parameter {
             name: "path".to_string(),

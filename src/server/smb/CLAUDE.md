@@ -6,7 +6,12 @@ SMB2 (Server Message Block version 2) file server implementing a subset of MS-SM
 file sharing where the LLM controls the virtual filesystem, authentication, and file operations.
 
 **Protocol**: SMB 2.1 (dialect 0x0210)
-**Transport**: Direct TCP (port 445) or NetBIOS over TCP (port 139)
+**Transport**: raw SMB2 over TCP, with **no NetBIOS session-service framing**. This is not
+"direct TCP (445) or NetBIOS over TCP (139)" as this line used to claim: every real client on
+either port prefixes each message with the 4-byte NBSS header (`00` + a 24-bit length), and
+this server reads 64 bytes and requires `\xFESMB` at offset 0. A real `smbclient` therefore
+hands it `00 00 00 xx`, the signature check fails, and the connection closes with no reply.
+The tests speak the same unframed dialect the server does, which is why nothing caught it.
 **Port**: 445 (standard), configurable
 **Status**: Experimental
 **Startup parameters**: none declared, none read.
@@ -34,7 +39,9 @@ Implements minimal SMB 2.1 subset:
 
 - **Negotiate Protocol** - Offer SMB 2.1 dialect (0x0210)
 - **Session Setup** - Guest authentication only
-- **Tree Connect** - Accept all share connections
+- **Tree Connect** - accepted unconditionally, with **no LLM call and no share check**, and
+  the arm does not consume the request body, so the next header read finds the leftover
+  bytes and drops the connection. No test sends TREE_CONNECT. Treat it as unimplemented.
 - **Create** - Open/create files and directories
 - **Read/Write** - File content operations
 - **Close** - Close file handles
@@ -97,7 +104,10 @@ Manual SMB2 packet parsing:
 Connections tracked in ServerInstance state:
 
 - Connection ID per TCP connection
-- Protocol-specific info: `ProtocolConnectionInfo::Smb { authenticated, username, session_id, open_files }`
+- Protocol-specific info: **none**. This line used to name a
+  `ProtocolConnectionInfo::Smb { authenticated, username, session_id, open_files }` variant;
+  no such variant exists (`ProtocolConnectionInfo` is a generic JSON wrapper), the connection
+  is registered with `ProtocolConnectionInfo::empty()`, and the update site is a `TODO`.
 - Stats: bytes_sent, bytes_received, packets_sent, packets_received
 - Status updated on connection close
 
@@ -215,12 +225,12 @@ declared set and the event's action list drift apart again.
 
 | `operation` | Expected action | Effect on the wire |
 |---|---|---|
-| `session_setup` | `smb_auth_success` / `smb_auth_deny` | STATUS_SUCCESS with a session id, or STATUS_ACCESS_DENIED |
+| `session_setup` | `smb_auth_success` / `smb_auth_deny` | STATUS_SUCCESS with a session id, or STATUS_ACCESS_DENIED (`0xC0000022`) |
 | `create` | `smb_create_file` / `smb_create_directory` | FILE_ATTRIBUTE_NORMAL (0x80) or FILE_ATTRIBUTE_DIRECTORY (0x10) in the CREATE response, and the handle is recorded as one or the other; **neither action ⇒ STATUS_ACCESS_DENIED and no handle** |
 | `read` | `smb_read_file` | the decoded `content` becomes the READ response body; **absent action ⇒ STATUS_ACCESS_DENIED** |
 | `write` | `smb_write_file` | STATUS_SUCCESS with `bytes_written`; **absent action ⇒ STATUS_ACCESS_DENIED** |
-| `query_info` | `smb_get_file_info` | `size` in the QUERY_INFO response |
-| `query_directory` | `smb_list_directory` | the `files` array becomes the directory listing |
+| `query_info` | `smb_get_file_info` | `size` in the QUERY_INFO response; **absent action ⇒ STATUS_ACCESS_DENIED** |
+| `query_directory` | `smb_list_directory` | the `files` array becomes the directory listing; **absent action ⇒ STATUS_ACCESS_DENIED** |
 
 **`smb_delete_file` / `smb_delete_directory` do not exist.** SMB2 has no DELETE command:
 a client deletes by opening the file and issuing SET_INFO with
@@ -228,7 +238,7 @@ FileDispositionInformation (MS-SMB2 2.2.39). This server does not implement SET_
 all, so neither action could ever have been requested. Implementing delete means
 implementing SET_INFO first.
 
-**Create, read and write are all fail-closed.** An operation whose LLM response contains no
+**Every operation is fail-closed.** An operation whose LLM response contains no
 corresponding action is refused with STATUS_ACCESS_DENIED. Silence from the model, an LLM
 outage and an explicit denial must not be indistinguishable from approval (see the fail-open
 note in the root `CLAUDE.md`).
@@ -243,10 +253,47 @@ Write was fail-closed first; `create` and `read` were not, and both were the fai
 - **READ** with no `smb_read_file` returned STATUS_SUCCESS whose body was the literal bytes
   `File not found or empty` — a *successful* read of fabricated content, indistinguishable
   from a file that genuinely holds that text.
+- **QUERY_INFO** with no `smb_get_file_info` fell through to a hardcoded 4096, so silence
+  produced STATUS_SUCCESS and a fabricated stat.
+- **QUERY_DIRECTORY** with no `smb_list_directory` fell through to `unwrap_or_default()`, so
+  silence produced STATUS_SUCCESS and an empty listing — which reads to a client as the
+  positive assertion "this directory is empty". A genuinely empty directory is still
+  expressible: `smb_list_directory` with an empty `files` array is a decision, not a silence.
 
-Neither wire response can carry the difference between "the model refused" and "the model
-said nothing", so the log does: `decision=model_reject` when the answer had actions but none
-of the expected type, `decision=fail_closed_no_action` when it had none at all.
+Two more admission holes closed in the same pass, both of which made the model's answer
+decorative rather than binding:
+
+- **The denial did not deny.** `build_auth_denied_response` sent `0xC0000016` under a comment
+  calling it `STATUS_ACCESS_DENIED`. `0xC0000016` is `STATUS_MORE_PROCESSING_REQUIRED` — the
+  status a server sends *mid*-SPNEGO to mean "keep going". A real client reads it as an
+  intermediate success and sends another SESSION_SETUP, so both `smb_auth_deny` and the
+  fail-closed LLM-error branch reduced to "continue negotiating". `STATUS_ACCESS_DENIED` is
+  `0xC0000022`, which the same file already defined and which the CREATE/READ/WRITE refusals
+  already used. Two tests pinned the wrong constant while their assertion messages named
+  ACCESS_DENIED, and a third accepted `0xC0000016` as a *successful* auth — so the same value
+  stood for approval and refusal and nothing could tell them apart.
+- **Nothing consulted the session.** `SmbConnectionState.sessions` was written by the
+  successful auth path and read by nothing but a log line, so the decision governed exactly
+  one response. A peer could open a socket and send CREATE or READ as its first bytes — no
+  NEGOTIATE, no SESSION_SETUP, no admission event — and be served; a peer whose login had
+  just been denied could send CREATE on the same connection and be served identically.
+  Everything but NEGOTIATE and SESSION_SETUP now answers `STATUS_USER_SESSION_DELETED`
+  (`0xC0000203`) until a session exists, logged `decision=fail_closed_no_session`.
+  `test_smb_file_operation_without_a_session_is_refused` pins it, and pins that the model is
+  not consulted about the refused operation either.
+
+**`allow_auth` is gone.** The auth check accepted `smb_auth_success` *or* `allow_auth` — a
+name no `ActionDefinition` produces, absent from `get_sync_actions()` and from the event's
+action list, and explicitly excluded by `smb_declared_actions_are_all_routed`. It was a
+second, undocumented way to authenticate.
+
+No wire response can carry the difference between "the model refused" and "the model said
+nothing", so the log does: `decision=model_reject` when the answer had actions but none of
+the expected type, `decision=fail_closed_no_action` when it had none at all,
+`decision=fail_closed_llm_error` when the backend itself failed, and
+`decision=fail_closed_no_session` for an operation that arrived before any authentication.
+SESSION_SETUP had none of these until this pass — the one place the distinction matters
+most.
 
 ### Payload encoding (read before writing prompts)
 
@@ -307,8 +354,11 @@ All four were found by writing the first test that asserts response *bytes* rath
 
 ### Error Handling
 
-No explicit error field - LLM just omits expected action type.
-Server returns default error response if action not found.
+There is no explicit error field: the model refuses by omitting the expected action, and the
+server answers STATUS_ACCESS_DENIED. An unknown SMB2 command and a request body too short to
+carry its own fields now answer `STATUS_NOT_SUPPORTED` and `STATUS_INVALID_PARAMETER`; all
+three used to return no reply at all, leaving the peer to wait out its own timeout on a
+connection the unread body had already desynced.
 
 ### When the LLM call itself fails
 
@@ -386,6 +436,13 @@ Provide /documents directory with readme.txt (content: "Welcome to NetGet SMB").
 Start an SMB file server on port 445. Only allow user "alice" to authenticate.
 Deny all other users.
 ```
+
+> **This example does not work as written.** `parse_smb2_username` reads the SESSION_SETUP
+> body from `body.iter().take(200).skip(24)` while the caller reads exactly 24 bytes into a
+> fixed `[u8; 24]`, so the iterator is always empty and the username is always `"guest"`.
+> Per-user policy is therefore unimplementable today, and `smb_auth_success.username` is
+> declared `required: true` and then ignored by the executor. Fixing it means parsing the
+> real NTLMSSP security buffer.
 
 **LLM Response (alice):**
 

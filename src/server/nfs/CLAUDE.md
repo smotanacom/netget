@@ -9,6 +9,34 @@ and `privilege_requirement` is correctly `None` — a declaration here could nev
 (`src/server/nfs/mod.rs`) implements its `NFSFileSystem` trait, and every trait method turns
 into one LLM round-trip.
 
+## Robustness: framing is `nfsserve`'s, and it is not bounded
+
+`nfsserve` owning RPC, XDR and message framing is a real simplification, but it is **not** a
+safety guarantee, and the line above reads as though it were.
+
+`nfsserve` 0.10.2 reads a length off the wire and allocates it with no sanity limit in two
+places: `rpcwire.rs` resizes its fragment buffer by the 31-bit fragment length, and `xdr.rs`
+resizes the `Vec<u8>` that a `dirpath`, a `filename`, a file handle and WRITE data each
+deserialise into by a 32-bit length field. A ~40-byte `MOUNTPROC3_MNT` whose `dirpath` length
+is `0xFFFFFFFF` therefore asks for a 4 GiB zeroed allocation **before any authentication**,
+and Rust aborts the process on allocation failure. A non-last fragment with the EOF bit clear
+appends into one buffer indefinitely. There is no read timeout, no connection cap, and a task
+is spawned per RPC message.
+
+The MOUNT path compounds it: `nfsserve`'s default `path_to_id` splits the dirpath on `/` and
+calls `lookup()` per component, and every `lookup` is one `consult_llm` round-trip. So an
+unauthenticated peer can turn one MOUNT call into an unbounded sequential chain of LLM calls,
+saturating `--llm-max-concurrent` for every other server in the process.
+
+Neither is fixed. The bounds belong in the framing layer, which means a guard around the
+listener or a patched `nfsserve`, and both are the first thing to address before this protocol
+is exposed to anything untrusted.
+
+Two related notes on the same layer: because `nfsserve` spawns a task per RPC message, several
+`consult_llm` calls can run concurrently for one peer — NetGet's per-connection
+Idle→Processing→Accumulating state machine is absent here — and this server calls
+`update_connection_stats` nowhere, so the rail shows no peers and no counters for it.
+
 ## No storage — and that is the whole design
 
 There is no file table, no directory tree, no attribute cache, no backing store of any kind.
@@ -206,8 +234,12 @@ longer than you would guess.
 ## Testing
 
 `tests/server/nfs/test.rs` — connection lifecycle, port configuration, multiple connections,
-stop/start. It exercises the TCP and RPC layers; it does not mount a filesystem, so it did not
-catch the empty-action bug above. A mocked mount + lookup + read would.
+stop/start, **and a mocked MOUNT + LOOKUP + READ** (`test_nfs_mount_and_lookup`), which
+asserts the model'''s answers reach the wire. This section used to say the suite "does not
+mount a filesystem" and call for exactly that test; it exists.
+
+`llm_failure_test.rs` asserts SERVERFAULT on the wire when the backend fails, and that the
+reply carries no trailing bytes.
 
 ## References
 

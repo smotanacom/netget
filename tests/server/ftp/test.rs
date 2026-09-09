@@ -306,3 +306,175 @@ async fn test_ftp_pwd_quit() -> E2EResult<()> {
     println!("=== Test completed ===\n");
     Ok(())
 }
+
+/// A control line with no newline in it must not grow the server's buffer without bound.
+///
+/// `BufReader::read_line` accumulates until it finds `\n`, so an unauthenticated peer that
+/// connects and streams bytes forever was a one-connection out-of-memory. The server now caps
+/// the line at `MAX_COMMAND_LINE` and answers `500` before closing, which is what this test
+/// observes: the reply arrives *while the peer is still able to send more*, so the cap fired
+/// rather than the server having buffered everything and waited for an EOF that never came.
+#[tokio::test]
+async fn test_ftp_refuses_an_unbounded_command_line() -> E2EResult<()> {
+    println!("\n=== E2E Test: FTP over-long command line ===");
+
+    let prompt = "listen on port {AVAILABLE_PORT} via ftp. Send greeting '220 FTP Ready'";
+
+    let config = helpers::NetGetConfig::new(prompt).with_mock(|mock| {
+        mock.on_instruction_containing("listen on port")
+            .and_instruction_containing("ftp")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "FTP",
+                    "instruction": prompt
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+            .on_event("ftp_command")
+            .and_event_data_contains("command", "CONNECTION_ESTABLISHED")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "send_ftp_response",
+                    "code": 220,
+                    "message": "FTP Ready"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let server = helpers::start_netget_server(config).await?;
+
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+
+    let greeting = read_reply(&mut reader, "greeting").await;
+    assert!(
+        greeting.starts_with("220"),
+        "expected a 220 greeting, got: {greeting}"
+    );
+
+    // 64 KiB with not one newline in it — eight times the cap.
+    let flood = vec![b'A'; 64 * 1024];
+    // A short write is fine: the point is that the server answers without having consumed a
+    // newline, so ignore a write error caused by the server closing on us mid-flood.
+    let _ = write_half.write_all(&flood).await;
+    let _ = write_half.flush().await;
+
+    let reply = read_reply(&mut reader, "over-long command line").await;
+    assert!(
+        reply.starts_with("500"),
+        "an over-long command line must be refused with 500, got: {reply}"
+    );
+
+    // And the control connection must be closed, not left accumulating.
+    let mut trailing = String::new();
+    match tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut trailing)).await {
+        Ok(Ok(0)) => println!("connection closed after the 500, as expected"),
+        Ok(Ok(_)) => panic!("FTP kept the connection open after refusing: {trailing}"),
+        Ok(Err(_)) => println!("connection reset after the 500, which is also a close"),
+        Err(_) => panic!("FTP left the connection open after a 500 Command line too long"),
+    }
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    println!("=== Test completed ===\n");
+    Ok(())
+}
+
+/// A handler must not be able to forge a second reply by putting CRLF in `message`.
+///
+/// FTP is line-oriented, so `"need password\r\n230 Logged in"` is not a long 331 — it is a 331
+/// followed by a forged 230, and a client's reply-code state machine reads it as a successful
+/// login. The action description always said CR and LF were forbidden; nothing enforced it.
+/// What this test pins is the property, not the mechanism: whatever the server does with the
+/// rejected action, a `230` line must never reach the peer.
+#[tokio::test]
+async fn test_ftp_reply_text_cannot_forge_a_second_reply() -> E2EResult<()> {
+    println!("\n=== E2E Test: FTP reply-splitting is refused ===");
+
+    let prompt = "listen on port {AVAILABLE_PORT} via ftp. Send greeting '220 FTP Ready'";
+
+    let config = helpers::NetGetConfig::new(prompt).with_mock(|mock| {
+        mock.on_instruction_containing("listen on port")
+            .and_instruction_containing("ftp")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "FTP",
+                    "instruction": prompt
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+            .on_event("ftp_command")
+            .and_event_data_contains("command", "CONNECTION_ESTABLISHED")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "send_ftp_response",
+                    "code": 220,
+                    "message": "FTP Ready"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+            // The hostile answer: one action whose message smuggles a whole second reply.
+            .on_event("ftp_command")
+            .and_event_data_contains("command", "USER anonymous")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "send_ftp_response",
+                    "code": 331,
+                    "message": "Password required\r\n230 User logged in"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let server = helpers::start_netget_server(config).await?;
+
+    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+
+    let greeting = read_reply(&mut reader, "greeting").await;
+    assert!(
+        greeting.starts_with("220"),
+        "expected a 220 greeting, got: {greeting}"
+    );
+
+    write_half.write_all(b"USER anonymous\r\n").await?;
+    write_half.flush().await?;
+
+    // Drain everything the server is willing to say, then assert on all of it at once. A
+    // per-line assertion would pass simply by stopping before the forged line.
+    let mut transcript = String::new();
+    loop {
+        let mut line = String::new();
+        match tokio::time::timeout(Duration::from_secs(10), reader.read_line(&mut line)).await {
+            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+            Ok(Ok(_)) => {
+                println!("reply line: {}", line.trim());
+                transcript.push_str(&line);
+            }
+        }
+    }
+
+    assert!(
+        !transcript.lines().any(|l| l.starts_with("230")),
+        "a handler forged a 230 through CRLF in 'message'; transcript was:\n{transcript}"
+    );
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    println!("=== Test completed ===\n");
+    Ok(())
+}

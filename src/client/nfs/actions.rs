@@ -15,10 +15,9 @@ use std::sync::LazyLock;
 pub static NFS_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "nfs_connected",
-        "NFS client successfully mounted NFS export",
-        json!({
-            "type": "wait_for_more"
-        }),
+        "NFS client successfully mounted an NFS export. This is your one turn before the \
+         client goes idle: issue an operation, or wait_for_more to do nothing.",
+        json!({"type": "nfs_list_dir", "path": "/"}),
     )
     .with_parameters(vec![
         Parameter {
@@ -40,8 +39,15 @@ pub static NFS_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 pub static NFS_CLIENT_OPERATION_RESULT_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "nfs_operation_result",
-        "Result of an NFS file operation",
-        json!({"type": "placeholder", "event_id": "nfs_operation_result"}),
+        "Result of an NFS file operation. `success` is false when the server refused or the \
+         path does not exist; `error` then carries the NFS status. Follow up with another \
+         operation, or wait_for_more if there is nothing more to do.",
+        // `EventType::response_example` is rendered into the model's prompt and is
+        // documented as having to be a real protocol action. This used to be
+        // `{"type": "placeholder", ...}`, which `execute_action` rejects as an unknown
+        // action — so after every completed operation the model was handed an example that
+        // could not be executed.
+        json!({"type": "nfs_list_dir", "path": "/"}),
     )
     .with_parameters(vec![
         Parameter {
@@ -326,18 +332,17 @@ impl Protocol for NfsClientProtocol {
         "NFS"
     }
 
+    /// The two events this client actually raises.
+    ///
+    /// These used to be freshly-built `EventType`s declaring the same two ids with **no
+    /// parameters** and a `{"type": "placeholder"}` example, while `mod.rs` emitted the
+    /// `LazyLock` statics above. So the registry, the TUI and handler validation saw a
+    /// different shape from the one that fires, and both advertised an example the executor
+    /// rejects. Clone the statics instead, so there is exactly one declaration of each.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "nfs_connected",
-                "Triggered when NFS client mounts export",
-                json!({"type": "placeholder", "event_id": "nfs_connected"}),
-            ),
-            EventType::new(
-                "nfs_operation_result",
-                "Triggered when NFS operation completes",
-                json!({"type": "placeholder", "event_id": "nfs_operation_result"}),
-            ),
+            NFS_CLIENT_CONNECTED_EVENT.clone(),
+            NFS_CLIENT_OPERATION_RESULT_EVENT.clone(),
         ]
     }
 

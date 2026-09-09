@@ -30,6 +30,14 @@ use actions::SMB_OPERATION_EVENT;
 
 // NTSTATUS codes used in SMB2 response headers (MS-ERREF 2.3.1).
 const STATUS_ACCESS_DENIED: u32 = 0xC000_0022;
+/// The command is not one this server implements. Better than silence: a peer given no reply
+/// at all waits out its own timeout with the connection already desynced.
+const STATUS_NOT_SUPPORTED: u32 = 0xC000_00BB;
+/// The request body was too short to carry the fields the command requires.
+const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
+/// No session has been established on this connection, or the one that was has gone. Sent in
+/// reply to any file operation that arrives before a successful SESSION_SETUP.
+const STATUS_USER_SESSION_DELETED: u32 = 0xC000_0203;
 const STATUS_DATA_ERROR: u32 = 0xC000_003E;
 /// "Insufficient system resources exist to complete the API." The closest NTSTATUS to
 /// "retryable", used when the LLM failure was capacity exhaustion rather than a fault.
@@ -357,6 +365,39 @@ impl SmbServer {
         const SMB2_QUERY_INFO: u16 = 0x0010;
         const SMB2_QUERY_DIRECTORY: u16 = 0x000E;
 
+        // Nothing but the two handshake commands may be served on a connection that has not
+        // completed a SESSION_SETUP the model approved.
+        //
+        // `SmbConnectionState.sessions` was written by the successful auth path and then read
+        // by nothing except a log line, so the authentication decision governed exactly one
+        // response. A peer could open a socket and send CREATE or READ straight away — no
+        // NEGOTIATE, no SESSION_SETUP — and be served; a peer whose login the model had just
+        // *denied* could send CREATE on the same connection and be served. The model's answer
+        // has to gate the operations, or asking it was decorative.
+        const SMB2_TREE_DISCONNECT: u16 = 0x0004;
+        const SMB2_LOGOFF: u16 = 0x0002;
+        let handshake = matches!(command, SMB2_NEGOTIATE | SMB2_SESSION_SETUP);
+        if !handshake {
+            let authenticated = { !_state.lock().await.sessions.is_empty() };
+            if !authenticated {
+                Log::new(Some(status_tx)).warn(format!(
+                    "SMB2 command 0x{:04x} refused (decision=fail_closed_no_session): no \
+                     authenticated session on this connection; replying \
+                     STATUS_USER_SESSION_DELETED",
+                    command
+                ));
+                // TREE_DISCONNECT and LOGOFF are named only so this reads as a deliberate
+                // list rather than an accident; they are refused too, since neither can
+                // apply without a session to apply to.
+                let _ = (SMB2_TREE_DISCONNECT, SMB2_LOGOFF);
+                return Ok(Some(Self::build_error_response(
+                    _header,
+                    command,
+                    STATUS_USER_SESSION_DELETED,
+                )?));
+            }
+        }
+
         match command {
             SMB2_NEGOTIATE => {
                 Log::new(Some(status_tx)).debug("SMB2 NEGOTIATE request - offering SMB 2.1");
@@ -422,7 +463,8 @@ impl SmbServer {
                     Ok(actions) => actions,
                     Err(e) => {
                         Log::new(Some(status_tx)).warn(format!(
-                            "LLM error during SMB authentication for user {} - denying auth: {}",
+                            "LLM error during SMB authentication for user {} \
+                             (decision=fail_closed_llm_error) - denying auth: {}",
                             username, e
                         ));
 
@@ -433,14 +475,31 @@ impl SmbServer {
                 };
 
                 // Check if LLM allowed the authentication
-                let auth_allowed = actions.iter().any(|a| {
-                    a.get("type").and_then(|t| t.as_str()) == Some("smb_auth_success")
-                        || a.get("type").and_then(|t| t.as_str()) == Some("allow_auth")
-                });
+                // `smb_auth_success` only. There used to be an `|| == Some("allow_auth")`
+                // arm here for a name no `ActionDefinition` produces, that appears in neither
+                // `get_sync_actions()` nor the event's action list, and that
+                // `smb_declared_actions_are_all_routed` explicitly excludes — a second,
+                // undocumented way to authenticate that no legitimate answer would ever use.
+                let auth_allowed = actions
+                    .iter()
+                    .any(|a| a.get("type").and_then(|t| t.as_str()) == Some("smb_auth_success"));
 
                 if !auth_allowed {
-                    Log::new(Some(status_tx))
-                        .warn(format!("SMB authentication denied for user: {}", username));
+                    // Kept apart in the log because the wire cannot carry the difference:
+                    // both answers refuse the login, but only one of them is a decision.
+                    // This is the same split CREATE and READ already log, and it matters
+                    // most here — an operator reading "authentication denied" needs to know
+                    // whether the model denied it or whether the model said nothing.
+                    let decision = if actions.is_empty() {
+                        "fail_closed_no_action"
+                    } else {
+                        "model_reject"
+                    };
+                    Log::new(Some(status_tx)).warn(format!(
+                        "SMB authentication denied for user {} (decision={}); replying \
+                         STATUS_ACCESS_DENIED",
+                        username, decision
+                    ));
 
                     // Return ACCESS_DENIED response
                     let response = Self::build_auth_denied_response(_header)?;
@@ -899,21 +958,50 @@ impl SmbServer {
                         }
                     };
 
-                    // Extract file info from LLM response (or use defaults)
+                    // An answer carrying no `smb_get_file_info` used to fall through to a
+                    // hardcoded 4096, so STATUS_SUCCESS and a fabricated stat were the reply
+                    // to a model that had refused, to an empty static handler, and to a reply
+                    // that deserialised but said nothing. The comment above already promised
+                    // the 4096 default would not be handed out "as if the model had answered"
+                    // — that held only for an LLM *error*, not for model silence. CREATE,
+                    // READ and WRITE all refuse here; QUERY_INFO now does too.
                     let size = actions
                         .iter()
                         .find(|a| {
                             a.get("type").and_then(|t| t.as_str()) == Some("smb_get_file_info")
                         })
                         .and_then(|a| a.get("size"))
-                        .and_then(|s| s.as_u64())
-                        .unwrap_or(4096);
+                        .and_then(|s| s.as_u64());
+
+                    let Some(size) = size else {
+                        let decision = if actions.is_empty() {
+                            "fail_closed_no_action"
+                        } else {
+                            "model_reject"
+                        };
+                        Log::new(Some(status_tx)).warn(format!(
+                            "SMB2 QUERY_INFO refused for {} (decision={}): no smb_get_file_info \
+                             with a size in the answer; replying STATUS_ACCESS_DENIED",
+                            path, decision
+                        ));
+                        return Ok(Some(Self::build_error_response(
+                            _header,
+                            SMB2_QUERY_INFO,
+                            STATUS_ACCESS_DENIED,
+                        )?));
+                    };
 
                     let response = Self::build_query_info_response(_header, size)?;
                     Ok(Some(response))
                 } else {
+                    // Writing nothing left the peer to wait out its own timeout, and the
+                    // unread body had already desynced the stream. Say so instead.
                     warn!("SMB2 QUERY_INFO: invalid request size");
-                    Ok(None)
+                    Ok(Some(Self::build_error_response(
+                        _header,
+                        SMB2_QUERY_INFO,
+                        STATUS_INVALID_PARAMETER,
+                    )?))
                 }
             }
             SMB2_QUERY_DIRECTORY => {
@@ -965,7 +1053,14 @@ impl SmbServer {
                         }
                     };
 
-                    // Extract file list from LLM response
+                    // Same fail-open as QUERY_INFO had: no `smb_list_directory` in the
+                    // answer became `unwrap_or_default()`, and an empty listing plus
+                    // STATUS_SUCCESS reads to the client as "the directory is empty" — a
+                    // positive assertion the model never made. The comment above already
+                    // said an empty listing must not be handed out; that held only for an
+                    // LLM error. A genuinely empty directory is still expressible: the model
+                    // sends `smb_list_directory` with an empty `files` array, which is a
+                    // decision rather than a silence.
                     let files = actions
                         .iter()
                         .find(|a| {
@@ -973,20 +1068,52 @@ impl SmbServer {
                         })
                         .and_then(|a| a.get("files"))
                         .and_then(|f| f.as_array())
-                        .cloned()
-                        .unwrap_or_default();
+                        .cloned();
+
+                    let Some(files) = files else {
+                        let decision = if actions.is_empty() {
+                            "fail_closed_no_action"
+                        } else {
+                            "model_reject"
+                        };
+                        Log::new(Some(status_tx)).warn(format!(
+                            "SMB2 QUERY_DIRECTORY refused for {} (decision={}): no \
+                             smb_list_directory in the answer; replying STATUS_ACCESS_DENIED",
+                            path, decision
+                        ));
+                        return Ok(Some(Self::build_error_response(
+                            _header,
+                            SMB2_QUERY_DIRECTORY,
+                            STATUS_ACCESS_DENIED,
+                        )?));
+                    };
 
                     debug!("SMB2 QUERY_DIRECTORY: returning {} files", files.len());
                     let response = Self::build_query_directory_response(_header, &files)?;
                     Ok(Some(response))
                 } else {
                     warn!("SMB2 QUERY_DIRECTORY: invalid request size");
-                    Ok(None)
+                    Ok(Some(Self::build_error_response(
+                        _header,
+                        SMB2_QUERY_DIRECTORY,
+                        STATUS_INVALID_PARAMETER,
+                    )?))
                 }
             }
             _ => {
-                Log::new(Some(status_tx)).warn(format!("Unknown SMB2 command: 0x{:04x}", command));
-                Ok(None)
+                // Answering `Ok(None)` wrote nothing, so the peer waited out its own timeout
+                // while the unread request body sat in the stream and desynced every
+                // subsequent header read. STATUS_NOT_SUPPORTED is the honest answer and it
+                // at least lets the client move on.
+                Log::new(Some(status_tx)).warn(format!(
+                    "Unknown SMB2 command 0x{:04x}; replying STATUS_NOT_SUPPORTED",
+                    command
+                ));
+                Ok(Some(Self::build_error_response(
+                    _header,
+                    command,
+                    STATUS_NOT_SUPPORTED,
+                )?))
             }
         }
     }
@@ -1675,7 +1802,17 @@ impl SmbServer {
         Self::build_error_response(request_header, command, status)
     }
 
-    /// Build SMB2 ACCESS_DENIED response for SESSION_SETUP
+    /// Build the SMB2 SESSION_SETUP response that refuses a login.
+    ///
+    /// **This used to send `0xC0000016`, which is not ACCESS_DENIED.** `0xC0000016` is
+    /// `STATUS_MORE_PROCESSING_REQUIRED` — the status a server sends *mid*-SPNEGO to say
+    /// "keep going", i.e. an intermediate success. A real client receiving it does not treat
+    /// the login as refused; it sends another SESSION_SETUP. So both denial paths — the
+    /// model's own `smb_auth_deny` and the fail-closed branch taken when the LLM call errors
+    /// — reduced on the wire to "continue negotiating", and neither actually denied anything.
+    /// The constant was three lines from `STATUS_ACCESS_DENIED` (`0xC0000022`), which the
+    /// same file already defines and which the CREATE/READ/WRITE refusals already use; only
+    /// the comment claimed the two were the same value.
     #[cfg(feature = "smb")]
     fn build_auth_denied_response(request_header: &[u8]) -> Result<Vec<u8>> {
         let mut response = Vec::new();
@@ -1684,7 +1821,7 @@ impl SmbServer {
         response.extend_from_slice(b"\xFESMB");
         response.extend_from_slice(&[64, 0]); // Header length
         response.extend_from_slice(&[0, 0]); // Credit charge
-        response.extend_from_slice(&[0x16, 0x00, 0x00, 0xC0]); // STATUS_ACCESS_DENIED (0xC0000016)
+        response.extend_from_slice(&STATUS_ACCESS_DENIED.to_le_bytes()); // 0xC0000022
         response.extend_from_slice(&[0x01, 0x00]); // Command (SESSION_SETUP)
         response.extend_from_slice(&[0, 0]); // Credits
 

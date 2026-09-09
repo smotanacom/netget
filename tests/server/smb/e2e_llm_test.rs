@@ -250,10 +250,11 @@ async fn test_smb_llm_denies_user() -> E2EResult<()> {
     // answer. This used to print "✓" for a denial, "Note:" for a success and "Note:" for
     // anything else - i.e. it passed no matter what the server did, including when it
     // granted the session the model had refused.
+    // 0xC0000022, not 0xC0000016 — see the note on the same assertion in e2e_test.rs.
     assert_eq!(
         parse_smb2_status(&response),
-        Some(0xC0000016),
-        "smb_auth_deny must produce STATUS_ACCESS_DENIED, got a different status"
+        Some(0xC000_0022),
+        "smb_auth_deny must produce STATUS_ACCESS_DENIED (0xC0000022), got a different status"
     );
     println!("  [TEST] ✓ LLM denial answered with STATUS_ACCESS_DENIED");
 

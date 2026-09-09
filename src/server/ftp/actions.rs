@@ -29,6 +29,7 @@ impl FtpProtocol {
             .get("message")
             .and_then(|v| v.as_str())
             .context("Missing 'message' parameter (the human-readable text after the code)")?;
+        reject_line_breaks("message", message)?;
 
         let response = format!("{} {}\r\n", code, message);
 
@@ -53,8 +54,13 @@ impl FtpProtocol {
                 .get("message")
                 .and_then(|v| v.as_str())
                 .unwrap_or("OK");
+            reject_line_breaks("message", message)?;
             let response = format!("{} {}\r\n", code, message);
             return Ok(ActionResult::Output(response.as_bytes().to_vec()));
+        }
+
+        for line in &lines {
+            reject_line_breaks("lines", line)?;
         }
 
         // Build multiline response
@@ -99,6 +105,10 @@ impl FtpProtocol {
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
             .unwrap_or_default();
 
+        for entry in &entries {
+            reject_line_breaks("entries", entry)?;
+        }
+
         let entry_count = entries.len();
         let mut response = String::new();
         for entry in entries {
@@ -115,6 +125,31 @@ impl Default for FtpProtocol {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Reject CR or LF inside a piece of reply text the handler supplied.
+///
+/// FTP is line-oriented: a reply is terminated by CRLF and the client reads the next line as
+/// a *new* reply. So a `message`, listing entry or multiline element containing CR or LF does
+/// not produce a longer reply - it forges additional ones, and the client's reply-code state
+/// machine is then reading text the handler never meant as a code. With `send_ftp_response`
+/// that is a full response-splitting primitive: `"ok\r\n230 Logged in"` turns a 331 into a
+/// successful login.
+///
+/// All three action descriptions already promised this ("Must not contain CR or LF", "Do not
+/// include line endings", "the code and separators are added for you"). Nothing enforced it,
+/// so the promise held only for as long as the model chose to keep it. Erroring is right
+/// rather than stripping: a handler that meant several lines wants `send_ftp_multiline`, and
+/// silently rewriting its text would hide the mistake.
+fn reject_line_breaks(field: &str, value: &str) -> Result<()> {
+    if let Some(pos) = value.find(['\r', '\n']) {
+        return Err(anyhow::anyhow!(
+            "FTP '{field}' must not contain CR or LF (found one at byte {pos}): a reply is \
+             terminated by CRLF, so an embedded line break forges a second reply rather than \
+             continuing this one. Use send_ftp_multiline for a reply spanning several lines."
+        ));
+    }
+    Ok(())
 }
 
 /// Read and validate the `code` field of an FTP reply action.

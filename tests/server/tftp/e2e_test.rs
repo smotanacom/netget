@@ -406,3 +406,114 @@ async fn test_tftp_multi_block_transfer_with_mocks() -> E2EResult<()> {
 
     Ok(())
 }
+
+/// A handler may abort a download after it has started, and the client must be told.
+///
+/// The read continuation used to decide what it had just sent by looking at the packet's
+/// *length* rather than its opcode. An ERROR packet is short, so it was taken for a final
+/// DATA block: the server logged "final block sent", read the packet's error code as if it
+/// were a block number, and then sat in `wait_for_final_ack` for five seconds waiting for an
+/// acknowledgement the client had no reason to send. Nothing on the wire distinguished an
+/// aborted transfer from a completed one, and the transfer's state and connection entry
+/// lingered for the whole timeout.
+///
+/// Nothing covered the mid-transfer abort at all, which is why the length/opcode confusion
+/// survived. This drives block 1, acknowledges it, and asserts that the answer to that ACK is
+/// an ERROR the client can act on — and that the server says nothing further.
+#[tokio::test]
+async fn test_tftp_aborts_a_read_transfer_with_error_mid_stream() -> E2EResult<()> {
+    let block1_data = vec![0x41u8; 512];
+    let block1_hex = hex::encode(&block1_data);
+
+    let config = NetGetConfig::new(
+        "listen on port {AVAILABLE_PORT} via tftp. Serve the first block then fail",
+    )
+    .with_mock(|mock| {
+        mock.on_instruction_containing("listen")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "TFTP",
+                    "instruction": "Serve the first block then fail"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+            .on_event("tftp_read_request")
+            .and_event_data_contains("filename", "truncated.bin")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "send_tftp_data",
+                    "block_number": 1,
+                    "data_hex": block1_hex
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+            // The abort. Full 512 bytes went out, so the client acknowledges and asks for
+            // more; the handler answers that the rest is unreadable.
+            .on_event("tftp_ack_received")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "send_tftp_error",
+                    "error_code": 2,
+                    "error_message": "Access violation"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let mut server = start_netget_server(config).await?;
+    let server_addr = format!("127.0.0.1:{}", server.port);
+
+    let client = UdpSocket::bind("127.0.0.1:0").await?;
+    client
+        .send_to(&build_rrq_packet("truncated.bin", "octet"), &server_addr)
+        .await?;
+
+    let mut buffer = vec![0u8; 516];
+    let (n, peer_addr) = timeout(Duration::from_secs(5), client.recv_from(&mut buffer)).await??;
+    let (block_number, data) =
+        parse_data_packet(&buffer[..n]).expect("Failed to parse DATA packet");
+    assert_eq!(block_number, 1);
+    assert_eq!(
+        data.len(),
+        512,
+        "block 1 must be full so the transfer continues"
+    );
+
+    client.send_to(&build_ack_packet(1), peer_addr).await?;
+
+    let (n, _) = timeout(Duration::from_secs(5), client.recv_from(&mut buffer)).await??;
+    assert_eq!(
+        parse_opcode(&buffer[..n]),
+        Some(5),
+        "a mid-transfer abort must reach the client as an ERROR packet, not as data"
+    );
+    let (error_code, error_msg) =
+        parse_error_packet(&buffer[..n]).expect("Failed to parse ERROR packet");
+    assert_eq!(
+        error_code, 2,
+        "the handler's error code must survive to the wire"
+    );
+    assert_eq!(error_msg, "Access violation");
+
+    // Nothing may follow the ERROR. RFC 1350 ends a transfer there, and the server used to
+    // keep a task reading this socket afterwards.
+    let mut trailing = vec![0u8; 516];
+    match timeout(Duration::from_secs(2), client.recv_from(&mut trailing)).await {
+        Err(_) => {}
+        Ok(Ok((n, _))) => panic!(
+            "TFTP sent {n} more bytes after the ERROR packet (opcode {:?})",
+            parse_opcode(&trailing[..n])
+        ),
+        Ok(Err(e)) => panic!("unexpected socket error after the ERROR packet: {e}"),
+    }
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+
+    Ok(())
+}
