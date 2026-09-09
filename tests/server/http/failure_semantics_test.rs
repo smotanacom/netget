@@ -25,8 +25,8 @@ use std::time::Duration;
 /// `http_request` event is unmatched, so the mock answers HTTP 500 and netget reports an
 /// LLM failure for that turn — the condition both failure tests need.
 async fn server_with_failing_model() -> E2EResult<helpers::server::NetGetServer> {
-    let config = NetGetConfig::new("listen on port {AVAILABLE_PORT} via http stack").with_mock(
-        |mock| {
+    let config =
+        NetGetConfig::new("listen on port {AVAILABLE_PORT} via http stack").with_mock(|mock| {
             mock.on_custom(|ctx| !ctx.instruction.contains("Event ID:"))
                 .respond_with_actions(serde_json::json!([
                     {
@@ -38,8 +38,7 @@ async fn server_with_failing_model() -> E2EResult<helpers::server::NetGetServer>
                 ]))
                 .expect_calls(1)
                 .and()
-        },
-    );
+        });
     helpers::start_netget_server(config).await
 }
 
@@ -88,7 +87,9 @@ async fn test_http_answers_500_when_the_llm_fails() -> E2EResult<()> {
         "Caused by",
     ] {
         assert!(
-            !body.to_ascii_lowercase().contains(&leak.to_ascii_lowercase()),
+            !body
+                .to_ascii_lowercase()
+                .contains(&leak.to_ascii_lowercase()),
             "internal detail {leak:?} leaked into the response body {body:?} — the peer \
              gets a category, the log gets the error"
         );
