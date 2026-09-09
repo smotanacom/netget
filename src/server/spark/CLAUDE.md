@@ -61,7 +61,26 @@ actually read in `spawn()`. `send_first` is not declared.
 
 Monitoring API only (the tractable, testable core). No standalone-master submission endpoint
 (`POST /v1/submissions/create`), no SQL/streaming/environment/storage sub-resources, no
-event-log download, no auth. HTTP/1.1 only. State is virtual and lives only in the model's context.
+event-log download. HTTP/1.1 only. State is virtual and lives only in the model's context.
+
+**No authentication of any kind**, and nothing about the requester reaches the model: the
+`spark_request` event carries `method`, `path`, `operation` and `app_id` and nothing else, so
+there is no header, credential or peer address for it to decide on. Every request is answered
+unconditionally. (The event's log template used to interpolate `{client_ip}` and
+`{client_port}`, which the event has never carried — a missing field renders as the empty
+string, so every INFO line read `Spark  GET /api/v1/applications`.)
+
+**Request bodies are capped** at `MAX_REQUEST_BYTES` (64 KiB) through
+`http_body_util::Limited`. The monitoring API is read-only and the body is used for nothing but
+a `trace!` line, but it was read with an unbounded `collect()`, which made an unauthenticated
+POST of any size a way to grow the process. An over-cap body is dropped, not refused — nothing
+downstream reads it and every endpoint here is a GET.
+
+**Maturity stays `Experimental`, deliberately.** The tests drive `reqwest`, a generic HTTP
+client: it proves the server answers HTTP and that the bodies are the JSON arrays Spark's API
+documents, not that a real Spark client or History Server UI accepts them. That is the
+generic-HTTP-client exclusion the root `CLAUDE.md` lists, and it is the whole distance between
+this rating and Beta.
 
 ## References
 

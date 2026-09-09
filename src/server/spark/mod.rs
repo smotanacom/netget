@@ -19,8 +19,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
+use http_body_util::{BodyExt, Full, Limited};
+use hyper::body::{Body, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -35,6 +35,13 @@ use crate::server::connection::ConnectionId;
 use crate::server::spark::actions::SparkProtocol;
 use crate::state::app_state::AppState;
 use crate::{console_error, console_info};
+
+/// Largest request body this server will buffer.
+///
+/// The monitoring API is read-only, so a body is never needed — but it was read with an
+/// unbounded `req.into_body().collect()` and then used for nothing but a `trace!`, which
+/// made an unauthenticated POST of any size a way to grow the process. Small on purpose.
+const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
 /// Apache Spark monitoring REST server.
 pub struct SparkServer;
@@ -151,10 +158,57 @@ impl SparkServer {
     }
 }
 
+/// Handle one monitoring-API request, then record what crossed the wire.
+///
+/// The rail's byte counters and the connection-scoped task prompts read
+/// `bytes_received`/`bytes_sent`, and this server left both at the zero it registered the
+/// connection with, so every Spark peer showed no traffic at all however much it moved.
 #[allow(clippy::too_many_arguments)]
 async fn handle_spark_request(
     req: Request<Incoming>,
-    _connection_id: ConnectionId,
+    connection_id: ConnectionId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<SparkProtocol>,
+    server_id: crate::state::ServerId,
+    version: Arc<String>,
+) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
+    let received = req.body().size_hint().lower();
+    let response = handle_spark_request_inner(
+        req,
+        llm_client,
+        app_state.clone(),
+        status_tx.clone(),
+        protocol,
+        server_id,
+        version,
+    )
+    .await;
+
+    let sent = response
+        .as_ref()
+        .ok()
+        .and_then(|resp| resp.body().size_hint().exact())
+        .unwrap_or(0);
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            Some(received),
+            Some(sent),
+            Some(1),
+            Some(1),
+        )
+        .await;
+    let _ = status_tx.send("__UPDATE_UI__".to_string());
+
+    response
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_spark_request_inner(
+    req: Request<Incoming>,
     llm_client: OllamaClient,
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
@@ -165,10 +219,19 @@ async fn handle_spark_request(
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
 
-    let body_bytes = match req.into_body().collect().await {
+    // The monitoring API takes no request body; this is read only so an unexpected one
+    // shows up in the trace log. An over-cap body is dropped rather than refused, because
+    // nothing downstream reads it and every endpoint here is a GET.
+    let body_bytes = match Limited::new(req.into_body(), MAX_REQUEST_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            console_error!(status_tx, "Failed to read Spark request body: {}", e);
+            Log::new(Some(&status_tx)).warn(format!(
+                "Spark request body ignored (over {} bytes): {}",
+                MAX_REQUEST_BYTES, e
+            ));
             Bytes::new()
         }
     };

@@ -82,10 +82,13 @@ pub static SPARK_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         },
     ])
     .with_actions(spark_actions())
+    // Only fields `spark_request` actually carries. `{client_ip}` and `{client_port}` were
+    // in this template and in none of the event data, and a missing field renders as the
+    // empty string — so the INFO line read "Spark  GET /api/v1/applications".
     .with_log_template(
         LogTemplate::new()
-            .with_info("Spark {client_ip} {method} {path}")
-            .with_debug("Spark {method} {path} op={operation} from {client_ip}:{client_port}")
+            .with_info("Spark {method} {path}")
+            .with_debug("Spark {method} {path} op={operation} app={app_id}")
             .with_trace("Spark: {json_pretty(.)}"),
     )
 });
