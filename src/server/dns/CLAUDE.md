@@ -17,12 +17,20 @@ and the question section repeated. Not covered: TCP transport, EDNS0, DNSSEC,
 multi-record answers, and record types outside A/AAAA/CNAME/MX/TXT (see
 Limitations).
 
-E2E coverage lives in `tests/server/dns/test.rs` (note: `test.rs`, not
-`e2e_test.rs` as most protocols use). Those four tests currently fail before
-they reach the DNS layer - the mock script does not answer the
-`DocumentationRequired` retry that `open_server` triggers on first use, so the
-server never starts. The DNS action path is exercised end-to-end today via the
-DoT and DoH suites, which delegate to this implementation and do pass.
+E2E coverage lives in `tests/server/dns/` - `test.rs` (note: `test.rs`, not
+`e2e_test.rs` as most protocols use), `dig_test.rs` and `llm_failure_test.rs`.
+All six pass; this file claimed until September 2026 that the four in `test.rs`
+"currently fail before they reach the DNS layer" over a `DocumentationRequired`
+retry, which was stale.
+
+**`dig_test.rs` is the one that makes the Beta rating mean something.** `test.rs`
+drives the server with hickory-client while the server encodes with
+hickory-proto - the same project, the same codec - so on its own it proves the
+wire format self-consistent rather than correct. That is the circularity that
+kept `rss` at Experimental until `feed-rs` did its parsing. ISC BIND's `dig`
+shares no code with hickory, checks that the transaction id it chose comes back
+and that the question matches what it asked, and **fails rather than skipping**
+when the binary is absent (the `npm` precedent).
 
 ## Library Choices
 
