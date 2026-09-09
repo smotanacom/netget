@@ -407,3 +407,99 @@ async fn test_custom_response() -> E2EResult<()> {
     println!("=== Test passed ===\n");
     Ok(())
 }
+
+/// `wait_for_more` must keep the fragment it was shown.
+///
+/// The action's name promises accumulation and the server used to do the opposite: `WaitForMore`
+/// set `ConnectionState::Accumulating` and dropped the payload, so a model reassembling a message
+/// split across two reads never saw the first half again. This test splits one logical message
+/// across two writes, answers the first with `wait_for_more`, and asserts that the echo the
+/// server finally sends carries **both** halves — which is only possible if the fragment
+/// survived.
+#[tokio::test]
+async fn test_wait_for_more_keeps_the_fragment() -> E2EResult<()> {
+    println!("\n=== E2E Test: wait_for_more retains the payload ===");
+
+    let prompt = "listen on port {AVAILABLE_PORT} via tcp. Buffer input until you see END, then echo everything back.";
+
+    let server = helpers::start_netget_server(NetGetConfig::new(prompt).with_mock(|mock| {
+        mock.on_instruction_containing("tcp")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "TCP",
+                    "instruction": "Buffer until END then echo"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+            // ONE rule that branches on the event. Two rules on the same event would be
+            // first-match-wins and the second would never fire.
+            .on_event("tcp_data_received")
+            .respond_with_actions_from_event(|e| {
+                let data = e["data"].as_str().unwrap_or("");
+                if data.contains("END") {
+                    serde_json::json!([{ "type": "send_tcp_data", "data": data }])
+                } else {
+                    serde_json::json!([{ "type": "wait_for_more" }])
+                }
+            })
+            .expect_at_least(1)
+            .and()
+    }))
+    .await?;
+    println!("Server started on port {}", server.port);
+
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
+
+    // First half: the model answers wait_for_more, so nothing comes back yet.
+    stream.write_all(b"PART1-").await?;
+    stream.flush().await?;
+
+    // Nothing may come back yet, and proving that is what stops this test passing vacuously:
+    // if the two writes were coalesced into a single read the model would have seen END
+    // immediately, and the echo below would carry both halves whether or not the fragment was
+    // retained. A silent gap here means the first half really did go through wait_for_more.
+    let mut probe = vec![0u8; 64];
+    match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut probe)).await {
+        Err(_) => println!("✓ no reply to the first half, as wait_for_more requires"),
+        Ok(Ok(0)) => return Err("Server closed the connection on wait_for_more".into()),
+        Ok(Ok(n)) => {
+            return Err(format!(
+                "Server answered the incomplete first half with {:?} instead of waiting",
+                String::from_utf8_lossy(&probe[..n])
+            )
+            .into())
+        }
+        Ok(Err(e)) => return Err(format!("Read error while probing: {}", e).into()),
+    }
+
+    stream.write_all(b"PART2-END").await?;
+    stream.flush().await?;
+
+    let mut buffer = vec![0u8; 1024];
+    match tokio::time::timeout(Duration::from_secs(15), stream.read(&mut buffer)).await {
+        Ok(Ok(n)) if n > 0 => {
+            let response = String::from_utf8_lossy(&buffer[..n]).to_string();
+            println!("Received: {:?}", response);
+            assert!(
+                response.contains("PART1-") && response.contains("PART2-END"),
+                "wait_for_more dropped the first fragment: the echo was {:?}, expected it to \
+                 carry both PART1- and PART2-END",
+                response
+            );
+            println!("✓ fragment survived wait_for_more");
+        }
+        Ok(Ok(_)) => return Err("Connection closed without an echo".into()),
+        Ok(Err(e)) => return Err(format!("Read error: {}", e).into()),
+        Err(_) => return Err("No echo after the terminating write".into()),
+    }
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+
+    server.stop().await?;
+    println!("=== Test passed ===\n");
+    Ok(())
+}

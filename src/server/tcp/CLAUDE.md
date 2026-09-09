@@ -47,7 +47,19 @@ When data arrives while the LLM is processing:
 2. After LLM response, queued data is merged and processed
 3. Loop continues until all queued data is processed
 
-This ensures no data loss even under high traffic.
+`wait_for_more` puts the payload the model was just shown back at the **head** of that queue, so
+the next event carries the fragment joined to whatever arrived after it. It used to drop the
+fragment, which made the action's name a lie: a model asked to reassemble a message across two
+reads could only do it by copying the first half into its memory. If bytes arrived *during* the
+call that returned `wait_for_more`, they are the "more" it asked for, so the loop goes round
+again immediately rather than parking them until a read that may never come — the peer has
+typically sent its whole message and is waiting on us.
+
+The queue is bounded by `MAX_QUEUED_BYTES` (8 MiB, `src/server/tcp/mod.rs`). Both paths that
+grow it check the bound and close the connection (`decision=queue_overflow`, FIN) rather than
+trimming, because a truncated payload the model cannot tell is truncated is worse than a
+dropped connection. Without the bound a peer that streams for the length of one LLM call — a
+few seconds — could grow NetGet's memory as fast as its link allows, pre-authentication.
 
 ### 4. Optional Banner Support
 
@@ -88,9 +100,17 @@ The LLM responds to TCP events with actions:
 
 - `send_tcp_data` - Send raw bytes to client (`data` plus an explicit `encoding`, see
   [Data Format](#data-format))
-- `close_connection` - Close the connection
-- `wait_for_more` - Enter Accumulating state to buffer more data
+- `close_this_connection` - Close the connection
+- `wait_for_more` - Keep this payload and wait for the rest of the message
 - Common actions: `show_message`, `update_instruction`, etc.
+
+The one async (user-triggered) action is `close_connection`, which the dashboard's
+`[ disconnect this peer ]` injects. Its `connection_id` is optional and ignored — the executor
+is only ever reached with one connection in scope. `send_to_connection` and `list_connections`
+used to be advertised alongside it and **could not work**: nothing ever populated
+`TcpProtocol`'s own connection map, so `list_connections` always saw none, and the executor's
+`Output` is written to whichever connection is being handled, so `send_to_connection` parsed and
+then discarded its `connection_id`. Both are gone, the same removal `socket_file` made.
 
 ### Example LLM Response
 
@@ -112,7 +132,7 @@ The LLM responds to TCP events with actions:
 
 ### Data Format
 
-Outbound (`send_tcp_data`, `send_to_connection`) uses an **explicit** `encoding` field next to
+Outbound (`send_tcp_data`) uses an **explicit** `encoding` field next to
 `data`. There is no heuristic sniffing: `"48656c6c6f"` is simultaneously valid text and valid
 hex, so the sender must declare which it means.
 
@@ -195,11 +215,14 @@ struct ConnectionData {
 
 - All received data is processed immediately
 - Large bursts of data may overwhelm the LLM processing queue
+- There is no flow control back to the peer; the only limit is `MAX_QUEUED_BYTES`, and reaching
+  it closes the connection rather than slowing it
 
 ### 4. Memory Accumulation
 
-- `wait_for_more` accumulates data in memory without limits
-- Long-running accumulating connections could exhaust memory
+- `wait_for_more` accumulates data in memory, bounded by `MAX_QUEUED_BYTES` (8 MiB per
+  connection). Beyond that the connection is closed with `decision=queue_overflow`
+- The bound is per connection, so total memory still scales with the number of peers
 
 ### 5. Half-Close Is a Failure Signal, Not a Feature
 

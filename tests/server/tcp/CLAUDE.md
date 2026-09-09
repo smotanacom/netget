@@ -20,7 +20,9 @@ construct protocol responses from scratch using raw TCP byte streams.
 - `test_ftp_pwd_command()`: 1 LLM call (PWD command received)
 - `test_simple_echo()`: 1 LLM call (echo data received)
 - `test_custom_response()`: 1 LLM call (PING command received)
-- **Total: 5 LLM calls** (well under 10 limit)
+- `test_wait_for_more_keeps_the_fragment()`: 2 LLM calls (first half → `wait_for_more`, second
+  half → echo of the joined payload)
+- **Total: 7 LLM calls** (under the 10 limit)
 
 **Optimization Opportunity**: Could consolidate these into a single comprehensive server that handles all commands,
 reducing to 1 startup call + 5 request calls = 6 total. However, current approach provides better isolation and clearer
@@ -96,6 +98,16 @@ complexity without significant benefit for these straightforward test cases.
 - **Expected**: Response contains "PONG"
 - **Purpose**: Tests custom protocol implementation (non-FTP)
 
+### 6. `wait_for_more` Retention (`test_wait_for_more_keeps_the_fragment`)
+
+- **Prompt**: Buffer input until END, then echo everything
+- **Client**: Writes `PART1-`, proves nothing comes back, then writes `PART2-END`
+- **Expected**: the echo carries **both** halves
+- **Purpose**: `wait_for_more` used to drop the payload it was shown, so the model never saw the
+  first half again. The middle step — asserting a *silent* two-second gap after the first write
+  — is what stops the test passing vacuously: without it, two writes coalesced into one read
+  would satisfy the final assertion whether or not the fragment was retained.
+
 ## Known Issues
 
 ### 1. FTP Greeting Test Workaround
@@ -143,11 +155,14 @@ Original tests used the `suppaftp` library for full FTP client operations. This 
 
 ### Test Coverage Gaps
 
-1. **Binary data**: No tests for binary protocol handling (hex encoding/decoding)
-2. **Multi-packet**: No tests for `wait_for_more` accumulation behavior
-3. **Concurrent connections**: No tests for multiple simultaneous clients
-4. **Connection closing**: No tests for LLM-initiated `close_connection` action
-5. **State persistence**: No tests for connection-specific memory/state
+1. **Binary data**: No tests for binary protocol handling (`encoding: "hex"` in either direction)
+2. **Concurrent connections**: No tests for multiple simultaneous clients
+3. **Connection closing**: No tests for LLM-initiated `close_this_connection`, and none for the
+   dashboard's injected `close_connection` (every other peer-bearing protocol has a
+   `peer_inject_test`; TCP, which they were told to copy, has none)
+4. **State persistence**: No tests for connection-specific memory/state
+5. **Queue bound**: `MAX_QUEUED_BYTES` has no test; it needs a peer that streams for the length
+   of a mocked LLM call
 
 ### Consolidation Opportunity
 
