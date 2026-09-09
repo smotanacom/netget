@@ -295,7 +295,7 @@ None currently identified. Tests are stable with proper Ollama setup.
 
 1. **Build NetGet with all features**:
    ```bash
-   ./cargo-isolated.sh build --release --all-features
+   ./cargo-isolated.sh build --no-default-features --features sqs
    ```
 
 2. **Ollama must be running** with SQS-capable model:
@@ -306,13 +306,13 @@ None currently identified. Tests are stable with proper Ollama setup.
 ### Run SQS Tests Only
 
 ```bash
-./cargo-isolated.sh test --features sqs --test server::sqs::e2e_test
+./cargo-isolated.sh test --features sqs --test server -- server::sqs
 ```
 
 ### Run Specific Test
 
 ```bash
-./cargo-isolated.sh test --features sqs --test server::sqs::e2e_test test_sqs_basic_queue_operations
+./cargo-isolated.sh test --features sqs --test server -- server::sqs::e2e_test::test_sqs_basic_queue_operations
 ```
 
 ### Expected Output

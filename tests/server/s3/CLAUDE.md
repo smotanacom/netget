@@ -222,23 +222,25 @@ such a defect fails rather than retries.
 ## Test Execution
 
 ```bash
-# Build release binary first (REQUIRED)
-./cargo-isolated.sh build --release --all-features
-
 # Run all S3 tests
-./cargo-isolated.sh test --features s3 --test server::s3::e2e_test
+./cargo-isolated.sh test --features s3 --test server -- server::s3
 
 # Run only comprehensive test (best coverage, 7 LLM calls)
-./cargo-isolated.sh test --features s3 --test server::s3::e2e_test test_s3_comprehensive
+./cargo-isolated.sh test --features s3 --test server -- server::s3::e2e_test::test_s3_comprehensive
 
 # Run specific test
-./cargo-isolated.sh test --features s3 --test server::s3::e2e_test test_s3_get_object
+./cargo-isolated.sh test --features s3 --test server -- server::s3::e2e_test::test_s3_get_object
 
 # Run with output
-./cargo-isolated.sh test --features s3 --test server::s3::e2e_test -- --nocapture
+./cargo-isolated.sh test --features s3 --test server -- server::s3::e2e_test --nocapture
 ```
 
-**Important**: Must use `--test server::s3::e2e_test` (with module path) not `--test e2e_s3_test`.
+**Important**: `--test` names a cargo *target*. The target is `server` (`tests/server.rs`);
+`server::s3::e2e_test` is a module path **inside** it and belongs after `--`, as a filter.
+This file used to say the opposite, and `--test server::s3::e2e_test` matches no target —
+cargo prints the list of available targets and exits having run **zero** tests, which
+reads as a pass. No release build is needed either: the harness uses
+`CARGO_BIN_EXE_netget`, the binary cargo built for this test with these features.
 
 ## Test Output Example
 

@@ -204,17 +204,14 @@ let response = client
 ## Test Execution
 
 ```bash
-# Build release binary first (REQUIRED)
-./cargo-isolated.sh build --release --all-features
-
 # Run all DynamoDB tests
-./cargo-isolated.sh test --features dynamo --test server::dynamo::e2e_test
+./cargo-isolated.sh test --features dynamo --test server -- server::dynamo
 
 # Run specific test
-./cargo-isolated.sh test --features dynamo --test server::dynamo::e2e_test test_dynamo_get_item
+./cargo-isolated.sh test --features dynamo --test server -- server::dynamo::e2e_test::test_dynamo_get_item
 
 # Run with output
-./cargo-isolated.sh test --features dynamo --test server::dynamo::e2e_test -- --nocapture
+./cargo-isolated.sh test --features dynamo --test server -- server::dynamo::e2e_test --nocapture
 ```
 
 ## Test Output Example

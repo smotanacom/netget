@@ -3,8 +3,15 @@
 //! These tests use the actual AWS SDK for Rust to validate full compatibility
 //! with real DynamoDB clients. This is the most realistic test scenario.
 //!
-//! MUST build release binary before running: `cargo build --release --all-features`
-//! Run with: `cargo test --features dynamo --test e2e_dynamo_aws_sdk_test -- --test-threads=3`
+//! Run with:
+//! `cargo test --no-default-features --features dynamo --test server -- server::dynamo`
+//!
+//! Two corrections to what this header used to say. `--test` names a cargo *target*
+//! (`tests/server.rs`), not a module path, so `--test server::dynamo::e2e_test` matched no
+//! target and cargo listed the available targets and exited having run nothing. And no
+//! release build is needed first: the harness resolves the binary through
+//! `CARGO_BIN_EXE_netget`, which is the binary cargo built for *this* test with *these*
+//! features (`tests/helpers/common.rs`).
 
 #[cfg(feature = "dynamo")]
 mod tests {

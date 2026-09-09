@@ -3,8 +3,15 @@
 //! These tests spawn the actual NetGet binary and interact with it using rust-s3 client
 //! to validate S3 API functionality.
 //!
-//! MUST build release binary before running: `cargo build --release --all-features`
-//! Run with: `cargo test --features s3,s3 --test server::s3::e2e_test`
+//! Run with:
+//! `cargo test --no-default-features --features s3 --test server -- server::s3`
+//!
+//! Two corrections to what this header used to say. `--test` names a cargo *target*
+//! (`tests/server.rs`), not a module path, so `--test server::s3::e2e_test` matched no
+//! target and cargo listed the available targets and exited having run nothing. And no
+//! release build is needed first: the harness resolves the binary through
+//! `CARGO_BIN_EXE_netget`, which is the binary cargo built for *this* test with *these*
+//! features (`tests/helpers/common.rs`).
 
 #[cfg(feature = "s3")]
 mod tests {
