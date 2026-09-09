@@ -2,19 +2,24 @@
 
 ## Overview
 
-The IRC client connects to IRC servers using a custom line-based protocol implementation. Unlike the server which uses
-the `irc` crate, the client implements IRC manually for fine-grained LLM control.
+The IRC client connects to IRC servers using a custom line-based protocol implementation.
 
 ## Library Choices
 
 **NO external IRC library** - Custom implementation using:
 
 - `tokio::net::TcpStream` - Raw TCP connection
-- Line-based protocol parsing (CRLF-delimited)
-- Manual IRC command construction
+- Line-based protocol parsing (CRLF-delimited), read through
+  `crate::server::irc::wire::read_irc_line` so the read is bounded
+- Manual IRC command construction, validated by the same `wire` module the server uses
 
-**Rationale**: The `irc` crate is designed for full-featured IRC clients with automatic message handling, which would
-limit LLM control. Our custom implementation gives the LLM direct control over all IRC commands and responses.
+**Rationale**: A full-featured IRC client library handles messages automatically, which would
+limit LLM control. Hand-rolling gives the LLM direct control over all IRC commands and responses.
+
+**The `irc` crate is a declared dependency of this feature and is used by nothing.** This file
+used to say the *server* used it and that only the client was hand-rolled; neither is true -
+`grep -rn "^use irc::" src/` finds no hits, both sides are hand-rolled, and the dependency is
+pure weight. Both this file and the client's `metadata().implementation` claimed otherwise.
 
 ## Architecture
 
@@ -39,15 +44,16 @@ PING :server.example.com
 :server 001 nick :Welcome to the IRC Network
 ```
 
-### State Machine
+### No state machine
 
-**ConnectionState**:
+There is no Idle/Processing/Accumulating machine and no message queue. One used to exist here
+and was worse than nothing twice over: the read loop awaits each LLM call inline before reading
+the next line, so `Processing` was unreachable and the queue was dead code - and the one path
+that touched the queue **cleared it without ever handing it to the model**, so had it been
+reachable it would have silently discarded every message that arrived during a call.
 
-- `Idle` - Ready to process messages
-- `Processing` - LLM call in progress
-- `Accumulating` - Queuing messages during LLM processing
-
-This prevents concurrent LLM calls on the same client.
+Concurrency is prevented by the loop's own shape, and backpressure comes from TCP. This is the
+same choice `src/server/irc/CLAUDE.md` documents for the server side.
 
 ## LLM Integration
 
@@ -89,19 +95,57 @@ This prevents concurrent LLM calls on the same client.
 
 ## Implementation Details
 
+### Line framing (`crate::server::irc::wire`, shared with the server)
+
+The client and server are behind the same `irc` feature and share one definition of what an IRC
+line may be. Two things this buys, both of which were missing:
+
+**The read is bounded.** `AsyncBufReadExt::read_line` grows until it finds a newline, so a
+*server* that streams bytes with no `\n` grew this client's buffer until the netget process was
+out of memory. Reads go through `wire::read_irc_line`, capped at `MAX_IRC_READ_LINE` = 8704
+bytes (RFC 1459's 512 plus IRCv3's 8191 of message tags). Over the cap the client sets
+`ClientStatus::Error` and disconnects.
+
+**Model text cannot forge a second command.** This is the highest-stakes direction in the whole
+family: what the client writes lands in a channel other humans read, and the text comes from the
+model. `PRIVMSG #chan :hi\r\nJOIN #ops` was one message *and* a JOIN, so a model told only to
+chat could be steered into `JOIN`, `NICK`, `MODE` or `QUIT` by anything reaching its context -
+on a chat protocol, every stranger in the channel. `IrcClientProtocol::execute_action` now runs
+`reject_line_breaks` on every trailing parameter (`message`, `command`, `quit_message`) and
+`reject_not_a_word` on every word-position one (`channel`, `target`, `new_nick`), and
+`execute_irc_action` caps the finished line at RFC 1459's 512 bytes on a `char` boundary.
+
+Validation lives in `execute_action` rather than at the point of writing because that is the one
+gate both callers pass through - the LLM path and the injected-command loop each call it before
+`apply_action`. That also means a refusal comes back as a `Rejected` outcome the dashboard can
+show, rather than as a channel error that reads like the plumbing broke.
+
+The startup parameters get the same treatment: `nickname` and `username` go through
+`reject_not_a_word` and `realname` through `reject_line_breaks` before they are interpolated
+into the NICK/USER registration, so a CRLF in an operator-supplied nickname cannot forge a
+command before the session has even registered.
+
+Tested by `tests/client/irc/framing_test.rs` (zero LLM calls), which injects each hostile field
+and then asserts against **NetGet's own IRC server's access log** that no forged command
+crossed the wire.
+
 ### PING/PONG Handling
 
 PING messages are handled automatically without LLM involvement:
 
 ```rust
-if line.starts_with("PING ") {
-    let pong = line.replace("PING", "PONG");
-    write_all(format!("{}\r\n", pong).as_bytes()).await?;
+if let Some(rest) = line.strip_prefix("PING ") {
+    write_all(format!("PONG {rest}\r\n").as_bytes()).await?;
     continue;
 }
 ```
 
 This ensures the connection stays alive without requiring LLM responses.
+
+This used to be `line.replace("PING", "PONG")`, which rewrites **every** occurrence, not the
+command word. IRC ping tokens are opaque cookies and real ircds do emit ones containing the
+letters `PING`; those came back corrupted and the server dropped the link for failing its own
+keepalive. Only the first word is a command.
 
 ### Dashboard injection (`[ send_privmsg ]`, `[ send_notice ]`, `[ send_raw ]`, `[ disconnect ]`)
 
@@ -140,7 +184,8 @@ The `parse_irc_message` function extracts:
 - **Connection errors** - Return error immediately
 - **Read errors** - Set client status to Error, disconnect
 - **PING timeout** - Server disconnects (handled by server)
-- **Nick collision** - LLM receives 433 message, can choose new nick
+- **Nick collision** - the LLM does **not** receive the 433: it arrives before registration
+  completes, and pre-001 lines are dropped (see limitation 7)
 
 ## Limitations
 
@@ -159,8 +204,17 @@ The `parse_irc_message` function extracts:
 5. **Single Encoding** - Assumes UTF-8, doesn't handle legacy encodings
     - Rationale: Modern IRC servers use UTF-8
 
-6. **No Message Splitting** - Long messages may be truncated by server
-    - Future: Auto-split messages longer than 512 bytes
+6. **No Message Splitting** - a message over RFC 1459's 512-byte line limit is **truncated
+   locally** by `wire::cap_line` (on a `char` boundary, logged at WARN) rather than sent whole
+   and truncated or dropped by the server. The tail is lost either way; doing it here keeps the
+   line well-formed and puts the loss in netget's own log.
+    - Future: Auto-split into several PRIVMSGs instead of truncating
+
+7. **Registration only completes on numeric 001** - the `irc_connected` event fires when a line
+   containing ` 001 ` arrives, and **every line before that is discarded without reaching the
+   model**. A server that answers 433 (nickname in use), 464 (password required) or `ERROR`
+   instead therefore leaves the client silently deaf, connected but never registered, until the
+   socket closes. Known and not fixed.
 
 ## Testing Strategy
 

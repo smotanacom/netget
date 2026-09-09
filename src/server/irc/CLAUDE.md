@@ -18,7 +18,7 @@ IRC responses, handles protocol commands (NICK, USER, JOIN, PRIVMSG, PING, etc.)
     - No complex binary protocol
 - **tokio** - Async runtime and I/O
     - `TcpListener` for accepting connections
-    - `BufReader` for line-based reading
+    - `BufReader`, read through `wire::read_irc_line` rather than `read_line` (see below)
     - `AsyncWriteExt` for sending responses
 
 **Rationale**: IRC protocol is simple enough that no dedicated library is needed. Messages are text lines ending with
@@ -47,21 +47,54 @@ The LLM receives raw IRC messages and responds with structured actions:
 IRC message flow:
 
 1. Accept TCP connection
-2. Read lines with `BufReader::read_line()` (splits on `\n`)
+2. Read one line with `wire::read_irc_line`, **bounded** at `MAX_IRC_READ_LINE` (8704 bytes)
 3. Parse IRC command from line (e.g., "NICK alice\r\n")
 4. Send line to LLM as `irc_message_received` event
 5. LLM returns actions (e.g., `send_irc_welcome`)
 6. Execute actions (send responses)
 7. Loop for next line
 
-### 3. Automatic Line Termination
+### 3. Line framing is enforced, not assumed (`src/server/irc/wire.rs`)
 
-All IRC messages must end with `\r\n`:
+IRC is line-oriented in both directions, and both directions are attacker-influenced: the peer
+chooses what it sends, and the **model** chooses the text we relay to other humans in a channel.
+`wire.rs` is the one place that decides what a line may be, and the IRC *client* shares it.
 
-- Received messages: Preserved as-is from `read_line()`
-- Sent messages: Automatically add `\r\n` if not present
-- `send_irc_message`: Formats to ensure `\r\n` termination
-- Other actions: Format with `\r\n` suffix
+**Inbound: the read is bounded.** `AsyncBufReadExt::read_line` grows its buffer until it finds a
+newline, so a peer that connects and streams bytes with no `\n` is a one-connection
+out-of-memory - unauthenticated, since IRC has no authentication before NICK/USER. The read now
+goes through `wire::read_irc_line`, capped at `MAX_IRC_READ_LINE` = 8704 bytes (RFC 1459's 512
+plus IRCv3's 8191 bytes of message tags, so nothing real is refused). A peer that exceeds it
+gets `ERROR :Closing link: message exceeds 8704 bytes` and the link is closed - there is no
+resynchronisation point once the prefix has been thrown away.
+
+**Outbound: model text cannot forge a second message.** Every `send_irc_*` action interpolates
+model-supplied strings into a CRLF-terminated line, so a `message` containing `\r\n` did not
+produce a longer message - it produced *two*, the second attributed to this server. This is the
+same defect as FTP's reply splitting (`src/server/ftp/actions.rs`), and it is worse here because
+the payload is chat. Three rules now apply, all in `wire.rs` and all erroring rather than
+silently rewriting (a handler that meant two messages should emit two actions):
+
+- `reject_line_breaks` - no CR, LF or NUL in any interpolated field. RFC 1459 §2.3.1 forbids all
+  three in a message.
+- `reject_not_a_word` - fields that land in *word* position (`nickname`, `channel`, `target`,
+  `source`, `server`, `user`, `host`) additionally reject spaces, a leading `:` and emptiness,
+  each of which shifts every parameter after it. Trailing parameters (a message body, a PART
+  reason) get `reject_line_breaks` only, because spaces are exactly what belongs there.
+- `cap_line` - the finished line is truncated to RFC 1459's 512 bytes including CRLF, on a
+  `char` boundary, with a WARN naming the action. Truncation rather than refusal, because that
+  is what a real ircd does and because dropping a chat message entirely is the worse answer.
+
+`send_irc_numeric` additionally rejects a code outside 1..=999: `{:03}` pads a smaller number
+but widens a larger one, and a four-digit "numeric" is read by the client as the start of the
+next parameter.
+
+Sent messages still get their `\r\n` added automatically; what changed is that the text may no
+longer contain one of its own.
+
+Tested by `tests/server/irc/framing_test.rs` (zero LLM calls), which asserts each refusal, the
+512-byte cut on multi-byte text, and - on a real socket - that 64 KiB with no newline is cut off
+with `ERROR` rather than buffered.
 
 ### 4. No Server-Side State
 
@@ -290,6 +323,12 @@ loop. Test: `tests/server/irc/peer_inject_test.rs` (zero LLM calls).
 - No SASL support
 - No NickServ integration
 - All users accepted
+- **No ident lookup.** A real ircd opens a connection back to the client's port 113 (RFC 1413)
+  on accept and prefixes the resulting username with `~` when the lookup fails. NetGet does
+  neither: it never contacts the peer's ident service, and the `user` field of a JOIN/PART
+  prefix is whatever the model supplies (default `"user"`), not anything verified. NetGet does
+  ship an `ident` protocol, but it is a separate server - nothing wires the two together, and a
+  client that expects the connect-time ident probe will not see one.
 
 ### 3. Limited Numeric Responses
 

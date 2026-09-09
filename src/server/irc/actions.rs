@@ -6,6 +6,7 @@ use crate::llm::actions::{
 };
 use crate::protocol::log_template::LogTemplate;
 use crate::protocol::EventType;
+use crate::server::irc::wire::{cap_line, reject_line_breaks, reject_not_a_word};
 use crate::state::app_state::AppState;
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -186,17 +187,20 @@ impl IrcProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'message' parameter")?;
 
-        // Ensure IRC messages end with \r\n
-        let formatted = if message.ends_with("\r\n") {
-            message.to_string()
-        } else if message.ends_with('\n') {
-            format!("{}\r", message.trim_end_matches('\n'))
-        } else {
-            format!("{}\r\n", message)
-        };
+        // One raw line, not a raw byte stream. The escape hatch exists so the model can send
+        // a verb this vocabulary does not name, not so it can send several messages in one
+        // action - which is what an embedded CRLF would do, silently, from a field the model
+        // filled in.
+        let body = message.trim_end_matches('\n').trim_end_matches('\r');
+        reject_line_breaks("message", body)?;
+
+        let formatted = format!("{body}\r\n");
 
         debug!("IRC sending message: {}", formatted.trim());
-        Ok(ActionResult::Output(formatted.as_bytes().to_vec()))
+        Ok(ActionResult::Output(cap_line(
+            "send_irc_message",
+            formatted,
+        )))
     }
 
     fn execute_send_irc_welcome(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -215,11 +219,15 @@ impl IrcProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("Welcome to the IRC Network");
 
+        reject_not_a_word("nickname", nickname)?;
+        reject_not_a_word("server", server)?;
+        reject_line_breaks("message", message)?;
+
         // IRC numeric 001 (RPL_WELCOME)
         let response = format!(":{} 001 {} :{}\r\n", server, nickname, message);
 
         debug!("IRC sending welcome: {}", response.trim());
-        Ok(ActionResult::Output(response.as_bytes().to_vec()))
+        Ok(ActionResult::Output(cap_line("send_irc_welcome", response)))
     }
 
     fn execute_send_irc_pong(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -228,10 +236,12 @@ impl IrcProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'token' parameter")?;
 
+        reject_line_breaks("token", token)?;
+
         let response = format!("PONG :{}\r\n", token);
 
         debug!("IRC sending PONG: {}", token);
-        Ok(ActionResult::Output(response.as_bytes().to_vec()))
+        Ok(ActionResult::Output(cap_line("send_irc_pong", response)))
     }
 
     fn execute_send_irc_join(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -255,11 +265,20 @@ impl IrcProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("localhost");
 
+        for (field, value) in [
+            ("nickname", nickname),
+            ("channel", channel),
+            ("user", user),
+            ("host", host),
+        ] {
+            reject_not_a_word(field, value)?;
+        }
+
         // IRC JOIN message
         let response = format!(":{nickname}!{user}@{host} JOIN {channel}\r\n");
 
         debug!("IRC sending JOIN: {} to {}", nickname, channel);
-        Ok(ActionResult::Output(response.as_bytes().to_vec()))
+        Ok(ActionResult::Output(cap_line("send_irc_join", response)))
     }
 
     fn execute_send_irc_part(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -285,6 +304,18 @@ impl IrcProtocol {
 
         let reason = action.get("reason").and_then(|v| v.as_str());
 
+        for (field, value) in [
+            ("nickname", nickname),
+            ("channel", channel),
+            ("user", user),
+            ("host", host),
+        ] {
+            reject_not_a_word(field, value)?;
+        }
+        if let Some(reason) = reason {
+            reject_line_breaks("reason", reason)?;
+        }
+
         // IRC PART message
         let response = if let Some(reason) = reason {
             format!(":{nickname}!{user}@{host} PART {channel} :{reason}\r\n")
@@ -293,7 +324,7 @@ impl IrcProtocol {
         };
 
         debug!("IRC sending PART: {} from {}", nickname, channel);
-        Ok(ActionResult::Output(response.as_bytes().to_vec()))
+        Ok(ActionResult::Output(cap_line("send_irc_part", response)))
     }
 
     fn execute_send_irc_privmsg(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -312,11 +343,15 @@ impl IrcProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'message' parameter")?;
 
+        reject_not_a_word("source", source)?;
+        reject_not_a_word("target", target)?;
+        reject_line_breaks("message", message)?;
+
         // IRC PRIVMSG
         let response = format!(":{} PRIVMSG {} :{}\r\n", source, target, message);
 
         debug!("IRC sending PRIVMSG from {} to {}", source, target);
-        Ok(ActionResult::Output(response.as_bytes().to_vec()))
+        Ok(ActionResult::Output(cap_line("send_irc_privmsg", response)))
     }
 
     fn execute_send_irc_notice(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -335,11 +370,15 @@ impl IrcProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'message' parameter")?;
 
+        reject_not_a_word("source", source)?;
+        reject_not_a_word("target", target)?;
+        reject_line_breaks("message", message)?;
+
         // IRC NOTICE
         let response = format!(":{} NOTICE {} :{}\r\n", source, target, message);
 
         debug!("IRC sending NOTICE from {} to {}", source, target);
-        Ok(ActionResult::Output(response.as_bytes().to_vec()))
+        Ok(ActionResult::Output(cap_line("send_irc_notice", response)))
     }
 
     fn execute_send_irc_numeric(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -363,11 +402,24 @@ impl IrcProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'message' parameter")?;
 
+        // A numeric is three digits wide by definition; `{:03}` pads a smaller number but
+        // happily widens a larger one, and a four-digit "numeric" is not a numeric at all -
+        // the client reads the extra digit as the start of the next parameter.
+        if !(1..=999).contains(&code) {
+            anyhow::bail!(
+                "Invalid 'code' {code}: an IRC numeric is a three-digit reply code between \
+                 001 and 999 (e.g. 001 RPL_WELCOME, 332 RPL_TOPIC, 353 RPL_NAMREPLY)."
+            );
+        }
+        reject_not_a_word("server", server)?;
+        reject_not_a_word("target", target)?;
+        reject_line_breaks("message", message)?;
+
         // IRC numeric response
         let response = format!(":{} {:03} {} :{}\r\n", server, code, target, message);
 
         debug!("IRC sending numeric {}: {}", code, message);
-        Ok(ActionResult::Output(response.as_bytes().to_vec()))
+        Ok(ActionResult::Output(cap_line("send_irc_numeric", response)))
     }
 }
 
@@ -376,11 +428,18 @@ impl IrcProtocol {
 fn send_irc_message_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_irc_message".to_string(),
-        description: "Send a raw IRC message (for custom responses)".to_string(),
+        description: "Send one raw IRC line, for a verb the other actions do not cover. \
+                      Exactly one message: the CRLF is added for you and the text must not \
+                      contain CR, LF or NUL. RFC 1459 caps a line at 512 bytes including that \
+                      CRLF, and a longer one is truncated."
+            .to_string(),
         parameters: vec![Parameter {
             name: "message".to_string(),
             type_hint: "string".to_string(),
-            description: "IRC message to send (will auto-add \\r\\n if not present)".to_string(),
+            description: "One IRC protocol line without its line ending, e.g. \
+                          \":server NOTICE * :Looking up your hostname\". Must not contain CR, \
+                          LF or NUL - use one action per message."
+                .to_string(),
             required: true,
         }],
         example: json!({
@@ -558,19 +617,27 @@ fn send_irc_privmsg_action() -> ActionDefinition {
             Parameter {
                 name: "source".to_string(),
                 type_hint: "string".to_string(),
-                description: "Source (nickname or server)".to_string(),
+                description: "Source (nickname or server). One word, no leading ':' - the colon \
+                              is added for you."
+                    .to_string(),
                 required: true,
             },
             Parameter {
                 name: "target".to_string(),
                 type_hint: "string".to_string(),
-                description: "Target (nickname or channel)".to_string(),
+                description: "Target (nickname or channel). One word - a space here would shift \
+                              every later parameter."
+                    .to_string(),
                 required: true,
             },
             Parameter {
                 name: "message".to_string(),
                 type_hint: "string".to_string(),
-                description: "Message text".to_string(),
+                description: "Message text. Must not contain CR, LF or NUL: an embedded line \
+                              break would forge a second IRC command from this source rather \
+                              than continuing the message. Truncated at the RFC 1459 512-byte \
+                              line limit."
+                    .to_string(),
                 required: true,
             },
         ],
@@ -596,19 +663,25 @@ fn send_irc_notice_action() -> ActionDefinition {
             Parameter {
                 name: "source".to_string(),
                 type_hint: "string".to_string(),
-                description: "Source (nickname or server)".to_string(),
+                description: "Source (nickname or server). One word, no leading ':' - the colon \
+                              is added for you."
+                    .to_string(),
                 required: true,
             },
             Parameter {
                 name: "target".to_string(),
                 type_hint: "string".to_string(),
-                description: "Target (nickname or channel)".to_string(),
+                description: "Target (nickname or channel). One word - a space here would shift \
+                              every later parameter."
+                    .to_string(),
                 required: true,
             },
             Parameter {
                 name: "message".to_string(),
                 type_hint: "string".to_string(),
-                description: "Notice text".to_string(),
+                description: "Notice text. Must not contain CR, LF or NUL, and is truncated at \
+                              the RFC 1459 512-byte line limit."
+                    .to_string(),
                 required: true,
             },
         ],
@@ -636,7 +709,9 @@ fn send_irc_numeric_action() -> ActionDefinition {
             Parameter {
                 name: "code".to_string(),
                 type_hint: "number".to_string(),
-                description: "Numeric code (e.g., 332, 353, 366)".to_string(),
+                description: "Three-digit reply code between 001 and 999 (e.g. 332 RPL_TOPIC, \
+                              353 RPL_NAMREPLY, 366 RPL_ENDOFNAMES)."
+                    .to_string(),
                 required: true,
             },
             Parameter {

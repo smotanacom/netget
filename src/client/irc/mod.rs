@@ -6,31 +6,33 @@ pub use actions::IrcClientProtocol;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::client::irc::actions::{IRC_CLIENT_CONNECTED_EVENT, IRC_CLIENT_MESSAGE_RECEIVED_EVENT};
 use crate::client::llm_budget::call_llm_for_client;
+use crate::server::irc::wire::{
+    cap_line, read_irc_line, reject_line_breaks, reject_not_a_word, IrcLine, MAX_IRC_READ_LINE,
+};
+
 use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ClientLlmResult;
 use crate::protocol::Event;
 use crate::state::app_state::AppState;
 use crate::state::{ClientId, ClientStatus};
 
-/// Connection state for LLM processing
-#[derive(Debug, Clone, PartialEq)]
-enum ConnectionState {
-    Idle,
-    Processing,
-    Accumulating,
-}
-
-/// Per-client data for LLM handling
+/// Per-client data shared between the read loop and the injected-command loop.
+///
+/// There is deliberately no Idle/Processing/Accumulating state machine here. One used to
+/// exist, with a `queued_messages` vector, and it was worse than nothing twice over: the read
+/// loop awaits each LLM call inline before reading the next line, so `Processing` was
+/// unreachable and the queue was dead code - and the one path that touched it *cleared* the
+/// queue without ever handing it to the model, so had it been reachable it would have silently
+/// discarded every message that arrived during a call. Backpressure comes from TCP instead,
+/// which is the same choice `src/server/irc/` documents.
 struct ClientData {
-    state: ConnectionState,
-    queued_messages: Vec<String>,
     memory: String,
     nickname: String,
 }
@@ -67,6 +69,15 @@ impl IrcClient {
             .transpose()?
             .flatten()
             .unwrap_or_else(|| "NetGet IRC Client".to_string());
+
+        // These three are interpolated straight into NICK/USER lines below, so they are held
+        // to the same framing rules as anything the model produces: a `nickname` containing
+        // CRLF would forge a command before the session has even registered, and one
+        // containing a space would shift USER's positional parameters. `realname` is the
+        // trailing parameter, where spaces belong.
+        reject_not_a_word("nickname", &nickname)?;
+        reject_not_a_word("username", &username)?;
+        reject_line_breaks("realname", &realname)?;
 
         // Resolve and connect
         let stream = TcpStream::connect(&remote_addr)
@@ -112,8 +123,6 @@ impl IrcClient {
 
         // Initialize client data
         let client_data = Arc::new(Mutex::new(ClientData {
-            state: ConnectionState::Idle,
-            queued_messages: Vec::new(),
             memory: String::new(),
             nickname: nickname.clone(),
         }));
@@ -150,13 +159,15 @@ impl IrcClient {
         let task_registrar = app_state.clone();
         let task_handle = tokio::spawn(async move {
             let mut reader = BufReader::new(read_half);
-            let mut line = String::new();
             let mut registered = false;
 
             loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => {
+                // Bounded. The peer here is a *server*, and an unbounded `read_line` lets one
+                // that never sends a newline grow this buffer until the netget process is out
+                // of memory - the same one-connection OOM the server side had.
+                let line = match read_irc_line(&mut reader, MAX_IRC_READ_LINE).await {
+                    Ok((IrcLine::Line(line), _)) => line,
+                    Ok((IrcLine::Eof, _)) => {
                         info!("IRC client {} disconnected", client_id);
                         app_state
                             .update_client_status(client_id, ClientStatus::Disconnected)
@@ -166,18 +177,48 @@ impl IrcClient {
                         let _ = status_tx.send("__UPDATE_UI__".to_string());
                         break;
                     }
-                    Ok(_) => {
+                    Ok((IrcLine::TooLong, n)) => {
+                        let msg = format!(
+                            "IRC server sent {n} bytes with no newline (limit \
+                             {MAX_IRC_READ_LINE})"
+                        );
+                        error!("IRC client {}: {}", client_id, msg);
+                        app_state
+                            .update_client_status(client_id, ClientStatus::Error(msg))
+                            .await;
+                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                        break;
+                    }
+                    Err(e) => {
+                        error!("IRC client {} read error: {}", client_id, e);
+                        app_state
+                            .update_client_status(client_id, ClientStatus::Error(e.to_string()))
+                            .await;
+                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                        break;
+                    }
+                };
+
+                {
+                    {
                         let line = line.trim_end().to_string();
                         trace!("IRC client {} received: {}", client_id, line);
 
-                        // Handle PING immediately
-                        if line.starts_with("PING ") {
-                            let pong = line.replace("PING", "PONG");
-                            if let Ok(_) = write_half_clone
+                        // Handle PING immediately.
+                        //
+                        // `line.replace("PING", "PONG")` was wrong in a way that only shows on
+                        // real servers: `replace` rewrites *every* occurrence, so a token
+                        // containing the letters PING - which ircds do send, they are opaque
+                        // cookies - came back corrupted and the server dropped the link for
+                        // failing its own ping. Only the command word is a command.
+                        if let Some(rest) = line.strip_prefix("PING ") {
+                            let pong = format!("PONG {rest}\r\n");
+                            if write_half_clone
                                 .lock()
                                 .await
-                                .write_all(format!("{}\r\n", pong).as_bytes())
+                                .write_all(pong.as_bytes())
                                 .await
+                                .is_ok()
                             {
                                 trace!("IRC client {} sent PONG", client_id);
                             }
@@ -229,73 +270,40 @@ impl IrcClient {
                         // Parse IRC message
                         let parsed = Self::parse_irc_message(&line);
 
-                        // Handle message with LLM
-                        let mut client_data_lock = client_data_clone.lock().await;
+                        // Handle message with LLM. Awaited inline, so the next line is not read
+                        // until this one has been answered - the backpressure the removed
+                        // state machine pretended to provide.
+                        if let Some(instruction) =
+                            app_state.get_instruction_for_client(client_id).await
+                        {
+                            let protocol = Arc::new(IrcClientProtocol::new());
+                            let event = Event::new(
+                                &IRC_CLIENT_MESSAGE_RECEIVED_EVENT,
+                                serde_json::json!({
+                                    "source": parsed.source,
+                                    "command": parsed.command,
+                                    "target": parsed.target,
+                                    "message": parsed.message,
+                                    "raw_message": line,
+                                }),
+                            );
 
-                        match client_data_lock.state {
-                            ConnectionState::Idle => {
-                                // Process immediately
-                                client_data_lock.state = ConnectionState::Processing;
-                                drop(client_data_lock);
-
-                                // Call LLM
-                                if let Some(instruction) =
-                                    app_state.get_instruction_for_client(client_id).await
-                                {
-                                    let protocol = Arc::new(IrcClientProtocol::new());
-                                    let event = Event::new(
-                                        &IRC_CLIENT_MESSAGE_RECEIVED_EVENT,
-                                        serde_json::json!({
-                                            "source": parsed.source,
-                                            "command": parsed.command,
-                                            "target": parsed.target,
-                                            "message": parsed.message,
-                                            "raw_message": line,
-                                        }),
-                                    );
-
-                                    if let Err(e) = Self::handle_llm_call(
-                                        &llm_client,
-                                        &app_state,
-                                        client_id,
-                                        &instruction,
-                                        &client_data_clone,
-                                        Some(&event),
-                                        protocol,
-                                        &write_half_clone,
-                                        &status_tx,
-                                    )
-                                    .await
-                                    {
-                                        error!("IRC client {} LLM error: {}", client_id, e);
-                                    }
-                                }
-
-                                // Process queued messages if any
-                                let mut client_data_lock = client_data_clone.lock().await;
-                                if !client_data_lock.queued_messages.is_empty() {
-                                    client_data_lock.queued_messages.clear();
-                                }
-                                client_data_lock.state = ConnectionState::Idle;
-                            }
-                            ConnectionState::Processing => {
-                                // Queue message
-                                client_data_lock.queued_messages.push(line.clone());
-                                client_data_lock.state = ConnectionState::Accumulating;
-                            }
-                            ConnectionState::Accumulating => {
-                                // Continue queuing
-                                client_data_lock.queued_messages.push(line.clone());
+                            if let Err(e) = Self::handle_llm_call(
+                                &llm_client,
+                                &app_state,
+                                client_id,
+                                &instruction,
+                                &client_data_clone,
+                                Some(&event),
+                                protocol,
+                                &write_half_clone,
+                                &status_tx,
+                            )
+                            .await
+                            {
+                                error!("IRC client {} LLM error: {}", client_id, e);
                             }
                         }
-                    }
-                    Err(e) => {
-                        error!("IRC client {} read error: {}", client_id, e);
-                        app_state
-                            .update_client_status(client_id, ClientStatus::Error(e.to_string()))
-                            .await;
-                        let _ = status_tx.send("__UPDATE_UI__".to_string());
-                        break;
                     }
                 }
             }
@@ -509,15 +517,20 @@ impl IrcClient {
         }
     }
 
-    /// Execute IRC-specific actions
+    /// Execute IRC-specific actions.
+    ///
+    /// The fields arriving here have already been through [`crate::server::irc::wire`]'s
+    /// checks in `IrcClientProtocol::execute_action`, which is the gate both the LLM path and
+    /// the injected-command path pass through. This function's own contribution is the RFC
+    /// 1459 512-byte cap, which is about the finished line rather than any one field.
     async fn execute_irc_action(
         name: &str,
         data: serde_json::Value,
         write_half: &Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
         client_data: &Arc<Mutex<ClientData>>,
     ) -> Result<Applied> {
-        let mut writer = write_half.lock().await;
-
+        // Build and validate the line *before* taking the write lock: a rejected action must
+        // not hold the socket, and must not have written half a line first.
         let (wire, disconnect) = match name {
             "join_channel" => {
                 let channel = data["channel"].as_str().context("Missing channel")?;
@@ -566,7 +579,13 @@ impl IrcClient {
             }
         };
 
-        writer.write_all(wire.as_bytes()).await?;
+        // RFC 1459 caps a message at 512 bytes including the CRLF. A server that receives a
+        // longer one truncates or drops it, so sending the full thing loses the tail either
+        // way; cutting it here keeps the line well-formed and puts the loss in our own log.
+        let wire = cap_line(name, wire);
+
+        let mut writer = write_half.lock().await;
+        writer.write_all(&wire).await?;
         writer.flush().await?;
 
         Ok(if disconnect {

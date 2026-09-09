@@ -6,6 +6,7 @@ use crate::llm::actions::{
     ActionDefinition, Parameter, ParameterDefinition,
 };
 use crate::protocol::EventType;
+use crate::server::irc::wire::{reject_line_breaks, reject_not_a_word};
 use crate::state::app_state::AppState;
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -94,7 +95,9 @@ impl Protocol for IrcClientProtocol {
                 parameters: vec![Parameter {
                     name: "channel".to_string(),
                     type_hint: "string".to_string(),
-                    description: "Channel name (e.g., '#rust')".to_string(),
+                    description: "Channel name (e.g., '#rust'). One word - no spaces, no line \
+                                  breaks."
+                        .to_string(),
                     required: true,
                 }],
                 example: json!({
@@ -168,13 +171,20 @@ impl Protocol for IrcClientProtocol {
                     Parameter {
                         name: "target".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Target channel or user".to_string(),
+                        description: "Target channel or user. One word - a space here would \
+                                      shift every later parameter."
+                            .to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "message".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Message text to send".to_string(),
+                        description: "Message text to send. Must not contain CR or LF: IRC \
+                                      messages are CRLF-terminated, so a line break would \
+                                      forge a second command from this client rather than \
+                                      continuing the message. Truncated at the RFC 1459 \
+                                      512-byte line limit."
+                            .to_string(),
                         required: true,
                     },
                 ],
@@ -192,13 +202,17 @@ impl Protocol for IrcClientProtocol {
                     Parameter {
                         name: "target".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Target channel or user".to_string(),
+                        description: "Target channel or user. One word - a space here would \
+                                      shift every later parameter."
+                            .to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "message".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Notice text to send".to_string(),
+                        description: "Notice text to send. Must not contain CR or LF, and is \
+                                      truncated at the RFC 1459 512-byte line limit."
+                            .to_string(),
                         required: true,
                     },
                 ],
@@ -211,11 +225,17 @@ impl Protocol for IrcClientProtocol {
             },
             ActionDefinition {
                 name: "send_raw".to_string(),
-                description: "Send a raw IRC command".to_string(),
+                description: "Send one raw IRC command, for a verb the other actions do not \
+                              cover. Exactly one command: the CRLF is added for you and the \
+                              text must not contain CR or LF."
+                    .to_string(),
                 parameters: vec![Parameter {
                     name: "command".to_string(),
                     type_hint: "string".to_string(),
-                    description: "Raw IRC command (without CRLF)".to_string(),
+                    description: "One raw IRC command without its line ending, e.g. \
+                                  \"MODE #rust +m\". Must not contain CR or LF - use one \
+                                  action per command."
+                        .to_string(),
                     required: true,
                 }],
                 example: json!({
@@ -239,17 +259,14 @@ impl Protocol for IrcClientProtocol {
         "IRC"
     }
     fn get_event_types(&self) -> Vec<EventType> {
+        // The two statics, not fresh copies. This used to build a second, parameterless pair
+        // with the same ids, so everything reading `get_event_types()` - the model's docs, the
+        // dashboard's routing editor - was told these events carry no fields, while the events
+        // the read loop actually raises carry five. Two declarations of one event drift; there
+        // is only one now.
         vec![
-            EventType::new(
-                "irc_connected",
-                "Triggered when IRC client connects and registers",
-                json!({"type": "send_privmsg", "target": "#rust", "message": "Hello, channel!"}),
-            ),
-            EventType::new(
-                "irc_message_received",
-                "Triggered when IRC client receives any message",
-                json!({"type": "send_privmsg", "target": "#rust", "message": "Hello, channel!"}),
-            ),
+            IRC_CLIENT_CONNECTED_EVENT.clone(),
+            IRC_CLIENT_MESSAGE_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
@@ -263,9 +280,20 @@ impl Protocol for IrcClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("irc crate for IRC protocol handling")
-            .llm_control("Join/part channels, send messages, change nick")
-            .e2e_testing("ngircd or inspircd as test server")
+            .implementation(
+                "Hand-rolled line-based IRC over plain TCP - no TLS, no SASL, no CTCP. The \
+                 `irc` crate is a declared dependency of this feature and is used by nothing; \
+                 this file used to claim otherwise. Registration is NICK + USER, and the \
+                 connected event fires on numeric 001.",
+            )
+            .llm_control("Join/part channels, send messages and notices, change nick, quit")
+            .e2e_testing(
+                "tests/client/irc/e2e_test.rs drives this client against NetGet's own IRC \
+                 *server* with both sides mocked, so it proves the two halves agree and \
+                 nothing about a real ircd. No test has ever run against ngircd, inspircd or \
+                 any other independent server, which is why this is Experimental rather than \
+                 Beta.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
@@ -361,6 +389,12 @@ impl Protocol for IrcClientProtocol {
 }
 
 // Implement Client trait (client-specific functionality)
+/// Every wire verb validates its fields here rather than at the point of writing, because
+/// this is the one gate both callers pass through: `handle_llm_call` and the injected-command
+/// loop each run `execute_action` before `apply_action`. Validating here means a refusal
+/// arrives as a `Rejected` outcome the dashboard can show, instead of as a channel error that
+/// reads like the plumbing broke - and it means the model's own answer is refused before any
+/// byte of it reaches the socket.
 impl Client for IrcClientProtocol {
     fn connect(
         &self,
@@ -393,6 +427,7 @@ impl Client for IrcClientProtocol {
                     .get("channel")
                     .and_then(|v| v.as_str())
                     .context("Missing 'channel' field")?;
+                reject_not_a_word("channel", channel)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "join_channel".to_string(),
@@ -404,7 +439,11 @@ impl Client for IrcClientProtocol {
                     .get("channel")
                     .and_then(|v| v.as_str())
                     .context("Missing 'channel' field")?;
+                reject_not_a_word("channel", channel)?;
                 let message = action.get("message").and_then(|v| v.as_str());
+                if let Some(message) = message {
+                    reject_line_breaks("message", message)?;
+                }
 
                 Ok(ClientActionResult::Custom {
                     name: "part_channel".to_string(),
@@ -416,6 +455,7 @@ impl Client for IrcClientProtocol {
                     .get("new_nick")
                     .and_then(|v| v.as_str())
                     .context("Missing 'new_nick' field")?;
+                reject_not_a_word("new_nick", new_nick)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "change_nick".to_string(),
@@ -431,6 +471,8 @@ impl Client for IrcClientProtocol {
                     .get("message")
                     .and_then(|v| v.as_str())
                     .context("Missing 'message' field")?;
+                reject_not_a_word("target", target)?;
+                reject_line_breaks("message", message)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "send_privmsg".to_string(),
@@ -446,6 +488,8 @@ impl Client for IrcClientProtocol {
                     .get("message")
                     .and_then(|v| v.as_str())
                     .context("Missing 'message' field")?;
+                reject_not_a_word("target", target)?;
+                reject_line_breaks("message", message)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "send_notice".to_string(),
@@ -457,6 +501,11 @@ impl Client for IrcClientProtocol {
                     .get("command")
                     .and_then(|v| v.as_str())
                     .context("Missing 'command' field")?;
+                // Raw means "a verb this vocabulary does not name", not "several commands":
+                // the CRLF is added when the line is written, so one already in the text is an
+                // extra command.
+                let command = command.trim_end_matches('\n').trim_end_matches('\r');
+                reject_line_breaks("command", command)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "send_raw".to_string(),
@@ -465,6 +514,9 @@ impl Client for IrcClientProtocol {
             }
             "disconnect" => {
                 let quit_message = action.get("quit_message").and_then(|v| v.as_str());
+                if let Some(quit_message) = quit_message {
+                    reject_line_breaks("quit_message", quit_message)?;
+                }
                 Ok(ClientActionResult::Custom {
                     name: "disconnect".to_string(),
                     data: json!({ "quit_message": quit_message }),
