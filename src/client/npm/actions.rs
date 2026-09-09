@@ -264,23 +264,20 @@ impl Protocol for NpmClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "NPM"
     }
+    /// Clones of the `LazyLock` statics the client actually raises, so the catalog the
+    /// model is shown and the events it receives cannot diverge.
+    ///
+    /// This used to hand-build a second set of `EventType`s with the same ids, no
+    /// parameters, and `{"type": "placeholder", "event_id": ...}` as the response
+    /// example. `EventType::effective_response_example` cannot repair a placeholder
+    /// without an attached action, so it fell through to `show_message` — which this
+    /// protocol's own `execute_action` rejects as unknown. The model was being taught an
+    /// answer its own client refuses.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "npm_connected",
-                "Triggered when NPM Registry client is initialized",
-                json!({"type": "placeholder", "event_id": "npm_connected"}),
-            ),
-            EventType::new(
-                "npm_package_info_received",
-                "Triggered when package information is received",
-                json!({"type": "placeholder", "event_id": "npm_package_info_received"}),
-            ),
-            EventType::new(
-                "npm_search_results_received",
-                "Triggered when search results are received",
-                json!({"type": "placeholder", "event_id": "npm_search_results_received"}),
-            ),
+            NPM_CLIENT_CONNECTED_EVENT.clone(),
+            NPM_CLIENT_PACKAGE_INFO_RECEIVED_EVENT.clone(),
+            NPM_CLIENT_SEARCH_RESULTS_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
@@ -381,8 +378,20 @@ impl Client for NpmClientProtocol {
     > {
         Box::pin(async move {
             use crate::client::npm::NpmClient;
+            // The declared startup parameter, honoured. `registry_url` has been in
+            // `get_startup_parameters()` since this client was written and nothing
+            // read it: `connect()` forwarded `ctx.remote_addr` and dropped
+            // `ctx.startup_params` on the floor, so the advertised knob did nothing
+            // when turned. `?`, never `unwrap()` - an undeclared or wrong-typed key
+            // must produce a clean error naming it, not a panic in the connect task.
+            let remote_addr = match ctx.startup_params.as_ref() {
+                Some(params) => params
+                    .get_optional_string("registry_url")?
+                    .unwrap_or(ctx.remote_addr),
+                None => ctx.remote_addr,
+            };
             NpmClient::connect_with_llm_actions(
-                ctx.remote_addr,
+                remote_addr,
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,

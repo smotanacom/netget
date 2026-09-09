@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::npm::actions::{
@@ -50,6 +50,61 @@ enum Applied {
     Disconnect,
 }
 
+/// The one `reqwest::Client` this protocol uses, built once.
+///
+/// Building a client is a **blocking** operation: it sets up the rustls stack and
+/// loads the platform root store, which on macOS reads the keychain through
+/// Security.framework, synchronously and serialised across processes. Every request
+/// here used to build a fresh one on the async runtime, which parks a tokio worker —
+/// the systemic defect `CLAUDE.md` records as having stalled a whole client runtime.
+///
+/// So: `OnceCell`, and `spawn_blocking` for the build itself.
+static SHARED_HTTP_CLIENT: tokio::sync::OnceCell<reqwest::Client> =
+    tokio::sync::OnceCell::const_new();
+
+async fn shared_http_client() -> Result<reqwest::Client> {
+    SHARED_HTTP_CLIENT
+        .get_or_try_init(|| async {
+            tokio::task::spawn_blocking(|| {
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(120))
+                    .user_agent("NetGet NPM Client/1.0")
+                    .build()
+            })
+            .await
+            .context("building the HTTP client panicked")?
+            .context("failed to build the HTTP client")
+        })
+        .await
+        .cloned()
+}
+
+/// Ceiling on a tarball fetched by `download_tarball`.
+///
+/// The tarball URL comes out of the registry's own packument, so its size is
+/// chosen by whatever this client was pointed at rather than by us. 64 MiB is
+/// well past any real npm package and far short of exhausting the process.
+const MAX_TARBALL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Turn an operator- or model-supplied address into a registry base URL.
+///
+/// Adding the missing scheme rather than discarding the address is the whole point:
+/// the old behaviour turned "point this at my local registry" into "talk to
+/// registry.npmjs.org", silently.
+fn resolve_registry_url(remote_addr: &str, status_tx: &mpsc::UnboundedSender<String>) -> String {
+    let trimmed = remote_addr.trim().trim_end_matches('/');
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return trimmed.to_string();
+    }
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("npm") {
+        Log::new(Some(status_tx)).info(
+            "NPM client: no registry address given, defaulting to https://registry.npmjs.org",
+        );
+        return "https://registry.npmjs.org".to_string();
+    }
+    format!("https://{trimmed}")
+}
+
 /// NPM Registry client that queries packages
 pub struct NpmClient;
 
@@ -62,24 +117,21 @@ impl NpmClient {
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
     ) -> Result<SocketAddr> {
-        // For NPM, "connection" is logical - we're accessing a REST API
-        // Default to registry.npmjs.org if not specified
-        let registry_url =
-            if remote_addr.starts_with("http://") || remote_addr.starts_with("https://") {
-                remote_addr
-            } else {
-                // Treat as package name or use default registry
-                "https://registry.npmjs.org".to_string()
-            };
+        // For NPM, "connection" is logical - we're accessing a REST API.
+        //
+        // A scheme-less address used to be **discarded** and silently replaced with
+        // registry.npmjs.org, so an operator who typed `127.0.0.1:8080` had their
+        // requests sent to the public registry with no warning — and this protocol's
+        // own startup example (`"remote_addr": "registry.npmjs.org"`) takes exactly
+        // that branch. A host is now given the `https://` it was missing; only a
+        // genuinely empty address falls back, and it says so.
+        let registry_url = resolve_registry_url(&remote_addr, &status_tx);
 
         info!("NPM client {} initialized for {}", client_id, registry_url);
 
-        // Build reqwest client
-        let _http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("NetGet NPM Client/1.0")
-            .build()
-            .context("Failed to build HTTP client")?;
+        // No client is built here. One used to be, bound to `_http_client` and
+        // dropped immediately — paying the blocking rustls/keychain cost at connect
+        // for a value nothing read. The shared client above is built on first use.
 
         // Store client in protocol_data
         app_state
@@ -243,10 +295,7 @@ impl NpmClient {
         );
 
         // Build HTTP client
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("NetGet NPM Client/1.0")
-            .build()?;
+        let http_client = shared_http_client().await?;
 
         // Make request
         match http_client.get(&url).send().await {
@@ -348,16 +397,36 @@ impl NpmClient {
     async fn run_follow_ups(
         client_id: ClientId,
         actions: Vec<serde_json::Value>,
-        app_state: &AppState,
+        app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) {
         use crate::llm::actions::client_trait::{Client, ClientActionResult};
         let protocol = crate::client::npm::actions::NpmClientProtocol::new();
         for action in actions {
-            let Ok(ClientActionResult::Custom { name, data }) =
-                protocol.execute_action(action.clone())
-            else {
-                continue;
+            // `Disconnect` used to be filtered out here by a `let ... else { continue }`
+            // that only admitted `Custom`, so a model answering a response event with
+            // `{"type": "disconnect"}` — which this protocol's own `get_startup_examples()`
+            // documents as a static handler — did nothing at all.
+            let (name, data) = match protocol.execute_action(action.clone()) {
+                Ok(ClientActionResult::Custom { name, data }) => (name, data),
+                Ok(ClientActionResult::Disconnect) => {
+                    info!(
+                        "NPM client {} disconnecting on the model's answer",
+                        client_id
+                    );
+                    app_state
+                        .update_client_status(client_id, ClientStatus::Disconnected)
+                        .await;
+                    return;
+                }
+                Ok(_) => continue,
+                Err(e) => {
+                    warn!(
+                        "NPM client {} could not execute the model's follow-up action: {}",
+                        client_id, e
+                    );
+                    continue;
+                }
             };
             let outcome: Result<()> = match name.as_str() {
                 "npm_get_package" => Self::perform_get_package_info(
@@ -378,6 +447,21 @@ impl NpmClient {
                     data["limit"].as_u64().unwrap_or(10),
                     app_state,
                     status_tx,
+                )
+                .await
+                .map(|_| ()),
+                // `download_tarball` raises no event and makes no LLM call, so it is
+                // safe here — it was reaching the catch-all below and being logged as
+                // "has no non-notifying path", which was simply untrue.
+                "npm_download_tarball" => Self::download_tarball(
+                    client_id,
+                    data["package_name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    data["version"].as_str().unwrap_or("latest").to_string(),
+                    app_state.clone(),
+                    status_tx.clone(),
                 )
                 .await
                 .map(|_| ()),
@@ -498,10 +582,7 @@ impl NpmClient {
         );
 
         // Build HTTP client
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("NetGet NPM Client/1.0")
-            .build()?;
+        let http_client = shared_http_client().await?;
 
         // Build query parameters
         let url = format!(
@@ -628,15 +709,26 @@ impl NpmClient {
         }
     }
 
-    /// Download package tarball
+    /// Fetch a package tarball and report what came back.
+    ///
+    /// **Nothing is written to disk.** This used to end in
+    /// `tokio::fs::write(&output_path, bytes)` with `output_path` taken verbatim from
+    /// the model's action - an arbitrary-file-write driven by LLM output, and a
+    /// straight violation of the rule that a protocol implements no storage. A model
+    /// that merely misunderstood the parameter could overwrite `~/.ssh/authorized_keys`.
+    /// PyPI's equivalent (`perform_download_package`) already fetched and reported
+    /// without persisting, so this is the family's own precedent rather than a new
+    /// design.
+    ///
+    /// What the caller gets instead is the byte count and the integrity string the
+    /// registry advertised, which is what a model can actually reason about.
     pub async fn download_tarball(
         client_id: ClientId,
         package_name: String,
         version: String,
-        output_path: String,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         // First get package info to find tarball URL
         let registry_url = app_state
             .with_client_mut(client_id, |client| {
@@ -657,11 +749,7 @@ impl NpmClient {
             client_id, package_name, version
         );
 
-        // Build HTTP client
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .user_agent("NetGet NPM Client/1.0")
-            .build()?;
+        let http_client = shared_http_client().await?;
 
         // Get package info
         let package_data: serde_json::Value = http_client
@@ -672,8 +760,8 @@ impl NpmClient {
             .await
             .context("Failed to get package info")?;
 
-        // Find tarball URL
-        let tarball_url = if version == "latest" {
+        // Find the `dist` block for the requested version, and the tarball URL in it.
+        let dist = if version == "latest" {
             package_data
                 .get("dist-tags")
                 .and_then(|dt| dt.get("latest"))
@@ -683,35 +771,69 @@ impl NpmClient {
                         .and_then(|vs| vs.get(lv.as_str().unwrap_or("")))
                 })
                 .and_then(|v| v.get("dist"))
-                .and_then(|d| d.get("tarball"))
-                .and_then(|t| t.as_str())
         } else {
             package_data
                 .get("versions")
                 .and_then(|vs| vs.get(&version))
                 .and_then(|v| v.get("dist"))
-                .and_then(|d| d.get("tarball"))
-                .and_then(|t| t.as_str())
         }
-        .context("Could not find tarball URL")?;
+        .context("Could not find a dist block for the requested version")?
+        .clone();
+
+        let tarball_url = dist
+            .get("tarball")
+            .and_then(|t| t.as_str())
+            .context("Could not find tarball URL")?
+            .to_string();
+
+        // The integrity the registry claims for these bytes, reported alongside the
+        // size so the model sees what it was promised as well as what arrived.
+        let advertised = dist
+            .get("integrity")
+            .or_else(|| dist.get("shasum"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("(none advertised)")
+            .to_string();
 
         info!("NPM client {} downloading from: {}", client_id, tarball_url);
 
-        // Download tarball
-        let response = http_client.get(tarball_url).send().await?;
-        let bytes = response.bytes().await?;
+        // Bounded. The URL comes from the registry's own JSON, so its size is chosen
+        // by whatever we are pointed at, and `bytes()` would buffer all of it.
+        // Streaming with a cap means a hostile or merely enormous tarball costs at
+        // most the cap.
+        let mut response = http_client.get(&tarball_url).send().await?;
+        if let Some(len) = response.content_length() {
+            if len > MAX_TARBALL_BYTES {
+                anyhow::bail!(
+                    "{} advertises {} bytes, over the {} byte limit; refusing to download it",
+                    tarball_url,
+                    len,
+                    MAX_TARBALL_BYTES
+                );
+            }
+        }
+        let mut received: u64 = 0;
+        while let Some(chunk) = response.chunk().await? {
+            received += chunk.len() as u64;
+            if received > MAX_TARBALL_BYTES {
+                anyhow::bail!(
+                    "{} exceeded the {} byte limit mid-transfer; aborting",
+                    tarball_url,
+                    MAX_TARBALL_BYTES
+                );
+            }
+        }
 
-        // Write to file
-        tokio::fs::write(&output_path, bytes)
-            .await
-            .context("Failed to write tarball")?;
-
+        let summary = format!(
+            "{}@{}: {} bytes from {} (registry integrity: {}); not saved - NetGet stores nothing",
+            package_name, version, received, tarball_url, advertised
+        );
         Log::new(Some(&status_tx)).info(format!(
-            "NPM client {} downloaded tarball to: {}",
-            client_id, output_path
+            "NPM client {} fetched tarball {}",
+            client_id, summary
         ));
 
-        Ok(())
+        Ok(summary)
     }
 
     /// Apply one already-parsed action against the live NPM client.
@@ -798,25 +920,21 @@ impl NpmClient {
                 }
                 "npm_download_tarball" => {
                     // No split needed: download_tarball raises no event and makes no LLM
-                    // call, so awaiting it awaits nothing but the network and the write.
+                    // call, so awaiting it awaits nothing but the network.
                     let package_name = data["package_name"]
                         .as_str()
                         .unwrap_or_default()
                         .to_string();
                     let version = data["version"].as_str().unwrap_or("latest").to_string();
-                    let output_path = data["output_path"].as_str().unwrap_or_default().to_string();
-                    Self::download_tarball(
+                    let summary = Self::download_tarball(
                         client_id,
-                        package_name.clone(),
-                        version.clone(),
-                        output_path.clone(),
+                        package_name,
+                        version,
                         app_state.clone(),
                         status_tx.clone(),
                     )
                     .await?;
-                    Ok(Applied::Executed(format!(
-                        "download_tarball {package_name}@{version} written to {output_path}"
-                    )))
+                    Ok(Applied::Executed(format!("download_tarball {summary}")))
                 }
                 other => Ok(Applied::Executed(format!(
                     "unknown NPM custom result '{other}' was not executed"

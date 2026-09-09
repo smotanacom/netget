@@ -108,9 +108,18 @@ Special handling for scoped packages:
     - Returns package names, versions, descriptions
 
 3. **`download_tarball`**
-    - Download .tgz package file
-    - Automatically resolves tarball URL
-    - Saves to local filesystem
+    - Fetch the .tgz and report its size plus the `integrity`/`shasum` the registry
+      advertised for it
+    - Automatically resolves the tarball URL from the packument
+    - **Writes nothing to disk, and takes no path.** It used to end in
+      `tokio::fs::write(&output_path, bytes)` with `output_path` taken verbatim from
+      the model's action — an arbitrary-file-write driven by LLM output, and a straight
+      violation of the rule that a protocol implements no storage. A model that merely
+      misunderstood the parameter could have overwritten `~/.ssh/authorized_keys`. The
+      parameter is gone from the action, not just from the executor
+    - The download is capped at `MAX_TARBALL_BYTES` (64 MiB) and streamed, because the
+      tarball URL comes out of the registry's own JSON and its size is therefore chosen
+      by whatever this client was pointed at
 
 4. **`disconnect`**
     - Cleanup client state
@@ -135,8 +144,8 @@ User: "Find http server packages for Node.js"
 4. Event: npm_package_info_received
    - Version: 4.18.2
    - Dist: { tarball: "https://...", shasum: "..." }
-5. LLM calls: download_tarball("express", "4.18.2", "./express.tgz")
-6. Download completes
+5. LLM calls: download_tarball("express", "4.18.2")
+6. Download completes; the client reports the byte count and the advertised integrity
 ```
 
 ## NPM Registry API
@@ -405,4 +414,12 @@ human answers it or the intercept times out (default 300s). Injected sends queue
 the bounded channel, which surfaces as "client busy" backpressure. `send_to_client`'s own
 timeout protects the caller either way.
 
-**Not wired:** `get_package_info` / `search_packages` **discard** the actions the LLM returns for `npm_package_info_received` and `npm_search_results_received` (`actions: _`), and `connect_with_llm_actions` never raises `npm_connected` at all — so the `npm_connected` static-handler example in `get_startup_examples()` cannot fire. Both predate the command channel and are untouched by it; today the injected-command path is the *only* way an NPM action reaches the wire. `search_packages` also hardcodes `https://registry.npmjs.org/-/v1/search` and ignores the configured `registry_url`, so it cannot be pointed at a private registry or a test listener.
+**This paragraph used to say the opposite of what the code does, and in the dangerous direction** — it claimed `get_package_info`/`search_packages` *discard* the model's actions (`actions: _`), that `npm_connected` is never raised, and that search hardcodes `https://registry.npmjs.org/-/v1/search`. All three had been fixed; a reader trusting this file would have re-fixed a solved bug. `run_follow_ups` executes what the model answers, `connect_with_llm_actions` raises `npm_connected`, and search uses the configured `registry_url`.
+
+**What is true now.** `run_follow_ups` bounds the chain structurally at one turn: it routes through the non-notifying `perform_*` helpers, which raise no event, so a model cannot drive an unbounded action -> event -> action loop the way Maven's shape could. It handles all four verbs the model can see — `npm_download_tarball` used to fall through to the catch-all and be logged as having "no non-notifying path", which was simply untrue — and a model answering `{"type": "disconnect"}` now actually disconnects instead of being filtered out before the match.
+
+**Startup parameters.** `registry_url` is declared in `get_startup_parameters()` **and read**: `connect()` prefers it over `ctx.remote_addr`. It was declared and read by nothing for as long as this client has existed — `connect()` forwarded `ctx.remote_addr` and dropped `ctx.startup_params` on the floor — so the advertised knob did nothing when turned.
+
+**A scheme-less address is no longer discarded.** `remote_addr` without `http://`/`https://` used to be thrown away and silently replaced with `https://registry.npmjs.org`, so an operator who typed `127.0.0.1:8080` had their requests sent to the public registry with no warning — and this protocol's own startup example (`"remote_addr": "registry.npmjs.org"`) took exactly that branch. A host now gets the `https://` it was missing; only an empty address falls back, and it says so in the log.
+
+**One `reqwest::Client`, built once, off the runtime.** Every request used to build a fresh one, and `connect()` built a further one into `_http_client` and dropped it immediately. Building a client is blocking — rustls setup plus the platform root store, which on macOS reads the keychain through Security.framework — so this was the systemic defect `CLAUDE.md` records as having stalled a whole client runtime, paid per request.
