@@ -403,6 +403,21 @@ pub static SSDP_SEARCH_COMPLETE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
                 .to_string(),
             required: true,
         },
+        Parameter {
+            name: "send_error".to_string(),
+            type_hint: "string".to_string(),
+            // Present only on the failure path, and undeclared until now — the payload
+            // carried it while the model's schema for this event did not mention it, so the
+            // one field that explains a zero-responder search was invisible to the reader
+            // most in need of it.
+            description: "Only present when the search could not be SENT at all; then \
+                          responder_count is 0 for that reason and not because nothing \
+                          answered. The usual cause is sending to 239.255.255.250 from a \
+                          loopback-bound socket, which has no multicast route — retry with \
+                          'target' set to a specific device's address."
+                .to_string(),
+            required: false,
+        },
     ])
     .with_actions(all_actions())
 });

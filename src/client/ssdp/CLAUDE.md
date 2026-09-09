@@ -136,7 +136,9 @@ because left raw it reads as a bug in NetGet.
 The failure also reaches the **model**, not only the log: a send failure raises
 `ssdp_search_complete` with `send_error` set and no responders. Only the model can choose a
 different target, so telling only the operator would leave it waiting on a window that never
-opens.
+opens. `send_error` is declared as a (non-required) parameter of that event, so the model's
+schema mentions it — it used to be put in the payload and left out of the declaration, which
+made the one field explaining a zero-responder search invisible to the reader who needed it.
 
 Two more things worth knowing about the multicast path:
 
