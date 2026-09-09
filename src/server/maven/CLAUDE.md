@@ -308,7 +308,7 @@ ProtocolConnectionInfo::Maven {
 - No support for chunked responses
 - Inbound is bounded: Maven GETs carry no body, but the body must still be drained for
   keep-alive, so it is drained through `http_body_util::Limited` at
-  `http_common::handler::MAX_REQUEST_BODY_BYTES` (8 MiB) and anything larger is refused
+  this module's own `MAX_REQUEST_BODY_BYTES` (8 MiB) and anything larger is refused
   with **413**. Without the cap an unauthenticated peer could make this server buffer an
   arbitrary number of bytes it then threw away
 

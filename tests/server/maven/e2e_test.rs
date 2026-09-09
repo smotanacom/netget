@@ -756,8 +756,10 @@ fn external_sha1(bytes: &[u8]) -> Option<String> {
 }
 
 /// The user's home directory, without pulling in a crate for it.
-fn dirs_home() -> Result<std::path::PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+fn dirs_home() -> Result<std::path::PathBuf, String> {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
-        .ok_or_else(|| "HOME is not set, so the Maven local repository cannot be located".into())
+        .ok_or_else(|| {
+            "HOME is not set, so the Maven local repository cannot be located".to_string()
+        })
 }

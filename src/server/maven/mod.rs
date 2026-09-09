@@ -150,6 +150,19 @@ impl MavenServer {
     }
 }
 
+/// How much of a request body is read before the request is refused with 413.
+///
+/// Deliberately a local constant rather than a reference to
+/// `http_common::handler::MAX_REQUEST_BODY_BYTES`, which carries the same value:
+/// `http_common` is gated on `#[cfg(any(feature = "http", ...))]` and `maven = []`
+/// pulls none of those, so borrowing it broke `cargo check --no-default-features
+/// --features maven` — exactly what CI's `single-feature` job exists to catch.
+/// A per-protocol constant is also what the decentralisation rule asks for.
+///
+/// `Incoming` has no default limit, so without a cap the buffer is whatever the peer
+/// chooses to send.
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
 /// Parse Maven artifact path into components
 ///
 /// Maven paths follow the pattern:
@@ -313,7 +326,7 @@ fn payload_too_large() -> Response<Full<Bytes>> {
         .header("Content-Type", "text/plain; charset=utf-8")
         .body(Full::new(Bytes::from(format!(
             "Payload Too Large: request bodies are limited to {} bytes\n",
-            crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES
+            MAX_REQUEST_BODY_BYTES
         ))))
         .expect("413 response with a literal body is always valid")
 }
@@ -415,19 +428,13 @@ async fn handle_maven_request_with_llm_inner(
     // unauthenticated peer could otherwise make this server buffer an arbitrary
     // number of bytes it then throws away. `Limited` errors as soon as the cap is
     // passed rather than after buffering the whole thing.
-    if let Err(e) = http_body_util::Limited::new(
-        req.into_body(),
-        crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES,
-    )
-    .collect()
-    .await
+    if let Err(e) = http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES)
+        .collect()
+        .await
     {
         log.warn(format!(
             "Maven {} {} decision=refused_body_too_large (limit {} bytes) -> 413: {}",
-            method,
-            uri,
-            crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES,
-            e
+            method, uri, MAX_REQUEST_BODY_BYTES, e
         ));
         return Ok(payload_too_large());
     }

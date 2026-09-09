@@ -161,6 +161,19 @@ impl YarnServer {
     }
 }
 
+/// How much of a request body is read before the request is refused with 413.
+///
+/// Deliberately a local constant rather than a reference to
+/// `http_common::handler::MAX_REQUEST_BODY_BYTES`, which carries the same value:
+/// `http_common` is gated on `#[cfg(any(feature = "http", ...))]` and `yarn = []`
+/// pulls none of those, so borrowing it broke `cargo check --no-default-features
+/// --features yarn` — exactly what CI's `single-feature` job exists to catch.
+/// A per-protocol constant is also what the decentralisation rule asks for.
+///
+/// `Incoming` has no default limit, so without a cap the buffer is whatever the peer
+/// chooses to send.
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
 /// Approximate the bytes this request cost on the wire.
 ///
 /// hyper hands us a parsed `Request`, so the original head is gone; this
@@ -255,12 +268,9 @@ async fn handle_yarn_request_inner(
     //
     // Falling back to an empty body would be worse than refusing: the model would be
     // asked to act on a submission it never saw, and would answer as if it had.
-    let body_bytes = match http_body_util::Limited::new(
-        req.into_body(),
-        crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES,
-    )
-    .collect()
-    .await
+    let body_bytes = match http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES)
+        .collect()
+        .await
     {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
@@ -269,7 +279,7 @@ async fn handle_yarn_request_inner(
                 "YARN {} {} decision=refused_body_too_large (limit {} bytes) -> 413: {}",
                 method,
                 path,
-                crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES,
+                MAX_REQUEST_BODY_BYTES,
                 e
             );
             return Ok(build_yarn_response(
@@ -277,10 +287,7 @@ async fn handle_yarn_request_inner(
                 yarn_remote_exception(
                     413,
                     "WebApplicationException",
-                    &format!(
-                        "request body exceeds {} bytes",
-                        crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES
-                    ),
+                    &format!("request body exceeds {} bytes", MAX_REQUEST_BODY_BYTES),
                 ),
                 None,
             ));

@@ -27,7 +27,8 @@ Three layers of evidence, deliberately independent of each other:
 3. **`crane`.** `test_oci_registry_against_crane` drives the real
    google/go-containerregistry client, which re-hashes everything it fetches and
    errors out on a mismatch. This is the strongest available evidence and the reason
-   the protocol is `Experimental` rather than `Incomplete`.
+   the protocol is `Experimental` rather than `Incomplete`. It is only evidence
+   because it now **fails** when crane is absent rather than skipping — see below.
 
 ## Tests
 
@@ -88,7 +89,23 @@ The most important test in the suite. Server started with
 
 ### `e2e_test.rs::test_oci_registry_against_crane` — 1 LLM call
 
-Skipped unless both `crane` and `python3` are on `PATH`.
+**Fails — not skips — unless both `crane` and `python3` are on `PATH`.** It used to
+print "crane not installed - skipping the real-client test" and return `Ok(())`, so on
+any machine without crane it was a green pass that had asserted nothing, while this
+file called it "the strongest available evidence" and `metadata().e2e_testing` claimed
+validation against crane. A skip-when-missing gate is a silent pass, not evidence;
+`tests/server/npm/e2e_test.rs::test_npm_with_real_cli` is the shape copied here. The
+cost is that crane and python3 are now requirements wherever this suite runs.
+
+`python3` is needed for the blob-dispatching *script handler*, not by crane.
+
+The test is `#[tokio::test(flavor = "multi_thread")]` for a reason worth keeping: every
+`crane` invocation is a blocking `std::process::Command`, and the in-process mock Ollama
+server is spawned onto this test's own runtime. On the default current-thread runtime a
+crane call holds the only worker, so the moment any handler misses and falls through to
+the model, crane waits on netget, netget waits on the mock, and the mock cannot run
+because crane owns the thread. Today's handlers are all deterministic so it happens not
+to deadlock; that is luck, not design.
 
 Handlers are deterministic — static for catalog/tags/manifest, and a **python script
 handler for blobs** that dispatches on `event.digest`. A static handler cannot do
