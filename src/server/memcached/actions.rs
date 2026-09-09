@@ -103,7 +103,11 @@ pub static MEMCACHED_GET_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         ),
         p("keys", "array", "Keys requested, in order"),
     ])
-    .with_actions(vec![send_values_action(), send_error_action()])
+    .with_actions(vec![
+        send_values_action(),
+        send_error_action(),
+        close_connection_action(),
+    ])
 });
 
 pub static MEMCACHED_STORE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -143,7 +147,11 @@ pub static MEMCACHED_STORE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "'utf8' if the data block was valid UTF-8, else 'hex'",
         ),
     ])
-    .with_actions(vec![send_status_action(), send_error_action()])
+    .with_actions(vec![
+        send_status_action(),
+        send_error_action(),
+        close_connection_action(),
+    ])
 });
 
 pub static MEMCACHED_DELETE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -153,7 +161,11 @@ pub static MEMCACHED_DELETE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         json!({ "type": "send_memcached_status", "status": "DELETED" }),
     )
     .with_parameters(vec![p("key", "string", "Key to delete")])
-    .with_actions(vec![send_status_action(), send_error_action()])
+    .with_actions(vec![
+        send_status_action(),
+        send_error_action(),
+        close_connection_action(),
+    ])
 });
 
 pub static MEMCACHED_ARITHMETIC_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -172,6 +184,7 @@ pub static MEMCACHED_ARITHMETIC_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         send_number_action(),
         send_status_action(),
         send_error_action(),
+        close_connection_action(),
     ])
 });
 
@@ -186,7 +199,11 @@ pub static MEMCACHED_TOUCH_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         p("key", "string", "Key to touch"),
         p("exptime", "number", "New expiry"),
     ])
-    .with_actions(vec![send_status_action(), send_error_action()])
+    .with_actions(vec![
+        send_status_action(),
+        send_error_action(),
+        close_connection_action(),
+    ])
 });
 
 pub static MEMCACHED_STATS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -203,7 +220,11 @@ pub static MEMCACHED_STATS_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "string",
         "Sub-command such as 'items', 'slabs', 'sizes', or null for the general stats",
     )])
-    .with_actions(vec![send_stats_action(), send_error_action()])
+    .with_actions(vec![
+        send_stats_action(),
+        send_error_action(),
+        close_connection_action(),
+    ])
 });
 
 pub static MEMCACHED_VERSION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -214,7 +235,11 @@ pub static MEMCACHED_VERSION_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         json!({ "type": "send_memcached_version", "version": "1.6.45" }),
     )
     .with_parameters(vec![])
-    .with_actions(vec![send_version_action(), send_error_action()])
+    .with_actions(vec![
+        send_version_action(),
+        send_error_action(),
+        close_connection_action(),
+    ])
 });
 
 pub static MEMCACHED_FLUSH_ALL_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -228,7 +253,11 @@ pub static MEMCACHED_FLUSH_ALL_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "number",
         "Seconds until the flush takes effect; 0 means immediately",
     )])
-    .with_actions(vec![send_status_action(), send_error_action()])
+    .with_actions(vec![
+        send_status_action(),
+        send_error_action(),
+        close_connection_action(),
+    ])
 });
 
 pub static MEMCACHED_UNKNOWN_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
@@ -243,6 +272,7 @@ pub static MEMCACHED_UNKNOWN_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(
         send_error_action(),
         send_status_action(),
         send_values_action(),
+        close_connection_action(),
     ])
 });
 
@@ -438,10 +468,15 @@ impl Protocol for MemcachedProtocol {
                  stored anywhere in this server.",
             )
             .e2e_testing(
-                "Validated against libmemcached 1.0.18's memcat/memstat/memping - an \
-                 independent C implementation, invoked as subprocesses - plus raw-socket \
-                 tests asserting exact VALUE/END framing, byte counts, and a payload \
-                 containing CRLF.",
+                "NO INDEPENDENT CLIENT IN THE RUNNING SUITE, which is why this is \
+                 Experimental and not Beta. The libmemcached 1.0.18 checks \
+                 (memcat/memstat/memping) in tests/server/memcached/real_client_test.rs sit \
+                 behind a skip-when-missing gate: without the binaries they print SKIP and \
+                 return Ok(()), so on a runner that lacks libmemcached they are a silent \
+                 pass and prove nothing. Everything that always runs is raw-socket - our \
+                 parser checked against our framer - asserting exact VALUE/END framing, byte \
+                 counts, a payload containing CRLF, and that a rejected storage header \
+                 consumes its data block instead of leaving it to be parsed as commands.",
             )
             .notes(
                 "STORES NOTHING BY DESIGN: there is no map or table in the Rust code, so \

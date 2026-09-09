@@ -87,7 +87,8 @@ impl MemcachedServer {
                 let llm = llm_client.clone();
                 let st = state.clone();
                 let tx = status_tx.clone();
-                tokio::spawn(async move {
+                let registrar = state.clone();
+                let conn_handle = tokio::spawn(async move {
                     if let Err(e) = Self::handle_connection(
                         stream,
                         peer_addr,
@@ -104,6 +105,13 @@ impl MemcachedServer {
                     st.close_connection_on_server(server_id, connection_id)
                         .await;
                 });
+
+                // Register the per-connection task too, not just the accept loop: aborting
+                // the accept loop releases the port but leaves every in-flight session
+                // running, so `stop_server` did not actually stop the server.
+                // `register_server_task` prunes finished handles on each call, so this cannot
+                // grow without bound.
+                registrar.register_server_task(server_id, conn_handle).await;
             }
         });
 
@@ -239,11 +247,16 @@ impl MemcachedServer {
                 match protocol::parse_command(&buffer) {
                     Parsed::Incomplete => break,
                     Parsed::Invalid { message, consumed } => {
-                        buffer.drain(..consumed.min(buffer.len()));
+                        let dropped = consumed.min(buffer.len());
+                        buffer.drain(..dropped);
                         warn!(
                             "Memcached {} sent an unusable command: {}",
                             peer_addr, message
                         );
+                        // Bytes the peer sent are bytes received, malformed or not. This arm
+                        // counted only what it wrote back, so a peer sending nothing but bad
+                        // commands showed `bytes_received == 0` on the dashboard.
+                        Self::count_received(state, server_id, connection_id, dropped).await;
                         let line = format!("CLIENT_ERROR {}\r\n", message);
                         {
                             let mut writer = write_half.lock().await;
@@ -251,6 +264,29 @@ impl MemcachedServer {
                             writer.flush().await?;
                         }
                         Self::count_sent(state, server_id, connection_id, line.len()).await;
+                    }
+                    Parsed::Fatal { message } => {
+                        // A storage command whose `<bytes>` is missing, unparseable or larger
+                        // than the cap. There is no boundary to skip to, so continuing would
+                        // mean parsing the peer's payload as commands. Reply and close.
+                        let received = buffer.len();
+                        buffer.clear();
+                        warn!(
+                            "Memcached {} decision=connection_closed_unframable: {}; closing, \
+                             because the data block's extent is unknown and skipping it would \
+                             put the peer's payload on the command path",
+                            peer_addr, message
+                        );
+                        Self::count_received(state, server_id, connection_id, received).await;
+                        let line = format!("CLIENT_ERROR {}\r\n", message);
+                        {
+                            let mut writer = write_half.lock().await;
+                            writer.write_all(line.as_bytes()).await?;
+                            writer.flush().await?;
+                            let _ = writer.shutdown().await;
+                        }
+                        Self::count_sent(state, server_id, connection_id, line.len()).await;
+                        return Ok(());
                     }
                     Parsed::Complete { command, consumed } => {
                         buffer.drain(..consumed);
@@ -292,10 +328,16 @@ impl MemcachedServer {
                                     // reply, so silence would hang them until their own
                                     // timeout. SERVER_ERROR is the protocol's way of saying
                                     // "this server failed" — never a fabricated cache hit.
+                                    // `decision=` tags mirror `src/server/radius/`: the text
+                                    // protocol has one failure reply, so on the wire a
+                                    // refusal, an outage and a model that answered with
+                                    // nothing usable are indistinguishable. Only the log can
+                                    // tell them apart.
                                     warn!(
-                                        "Memcached produced no action for {} from {}",
-                                        Self::command_name(&command),
-                                        peer_addr
+                                        "Memcached {} decision=fail_closed_no_action command={}: \
+                                         no action produced",
+                                        peer_addr,
+                                        Self::command_name(&command)
                                     );
                                     bytes.extend_from_slice(
                                         b"SERVER_ERROR no response was produced\r\n",
@@ -313,13 +355,27 @@ impl MemcachedServer {
                                 // CRLF-terminated with no length prefix, so a newline inside
                                 // the text would end the reply early and the rest would be
                                 // parsed as the next one.
+                                //
+                                // The overload/unavailable split that `redis` maps onto
+                                // `-LOADING` vs `-ERR` has nowhere to go here: the text
+                                // protocol defines exactly one server-failure reply, and
+                                // inventing a second would be a protocol extension no client
+                                // understands. It is carried in the log instead, so an
+                                // operator can still tell a saturated backend from a broken
+                                // one.
                                 let overloaded = crate::llm::is_overload_error(&e);
+                                let decision = if overloaded {
+                                    "fail_closed_llm_overloaded"
+                                } else {
+                                    "fail_closed_llm_error"
+                                };
                                 let text = crate::utils::WireFailure::classify(&e).prefixed_text();
                                 let reply = format!("SERVER_ERROR {text}\r\n");
                                 log.warn(format!(
-                                    "Memcached LLM call failed for {} (overload={}); replying {}: {}",
+                                    "Memcached {} decision={} command={} replying {}: {}",
                                     peer_addr,
-                                    overloaded,
+                                    decision,
+                                    Self::command_name(&command),
                                     reply.trim(),
                                     e
                                 ));

@@ -105,9 +105,11 @@ async fn injected_memcached_action_reaches_raw_socket_and_close_sends_eof() {
         .expect("read injected bytes");
     assert_eq!(&buf[..n], b"VERSION 1.6.45\r\n");
 
-    // (Injected writes go through the generic peer task, which deliberately does not touch
-    // update_connection_stats — the server's own read/write counters are exercised by the
-    // e2e and real-client suites, not here.)
+    // Injected writes ARE counted: `src/server/peer_support.rs` calls
+    // `update_connection_stats` on `ClientSendOutcome::Sent`. (This comment used to claim the
+    // opposite; `tests/server/redis/peer_inject_test.rs` asserts the counters move for
+    // exactly this path.) Not asserted here because this connection has never been read
+    // from, so only the injected write would show — the e2e suite covers the read side.
 
     // "disconnect this peer": the dashboard injects {"type":"close_connection"}, which the
     // executor maps to CloseConnection; the peer task half-closes and the socket reads EOF.
