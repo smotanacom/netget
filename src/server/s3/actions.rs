@@ -637,11 +637,22 @@ impl Server for S3Protocol {
                     .ok_or_else(|| anyhow::anyhow!("Missing message"))?
                     .to_string();
 
+                // Range-check before narrowing: `as u16` on a u64 wraps, so 65540 became 4
+                // and reached `StatusCode::from_u16`, which rejected it — the peer then got a
+                // 500 and the model was told nothing. `send_s3_write_result` has checked this
+                // since it was written; this arm had not.
                 let status_code = action
                     .get("status_code")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| anyhow::anyhow!("Missing or invalid status_code"))?
-                    as u16;
+                    .ok_or_else(|| anyhow::anyhow!("Missing or invalid status_code"))?;
+                if !(100..=599).contains(&status_code) {
+                    anyhow::bail!(
+                        "send_s3_error status_code {} is outside 100-599. S3 uses 404 for \
+                         NoSuchKey/NoSuchBucket, 403 for AccessDenied and 500 for InternalError.",
+                        status_code
+                    );
+                }
+                let status_code = status_code as u16;
 
                 Ok(ActionResult::Custom {
                     name: "s3_error".to_string(),

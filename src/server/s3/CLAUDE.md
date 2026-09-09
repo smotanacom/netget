@@ -331,7 +331,12 @@ impractical regardless of encoding.
   and `region` were declared until they were removed: `spawn()` never read any of them, so
   they advertised authentication the server does not perform
 - **HTTP/1.1 only** - no HTTP/2 support
-- **No streaming** - full request/response buffering
+- **No streaming** - full request/response buffering, capped at `MAX_REQUEST_BYTES` (8 MiB)
+  in `mod.rs`; a larger body is refused with `413 EntityTooLarge` and never reaches the model
+- **The model never sees an uploaded body.** `s3_request` carries
+  `request_details.body_size`, not the bytes — so on PutObject the model knows how large the
+  object was and nothing else. It acknowledges the write (`send_s3_write_result`) without
+  having read it
 - **Limited operations** - only common CRUD operations supported
 - **No multipart uploads** - large files not supported efficiently
 - **No presigned URLs** - URL signing not implemented
@@ -399,9 +404,14 @@ Every request that does not produce a normal S3 response is logged with a stable
   `s3_bucket_list` (DEBUG, alongside the normal response)
 - `decision=model_reject` — the model deliberately refused, via `send_s3_error` (DEBUG)
 - `decision=model_no_action` — the model answered nothing this protocol can turn into a
-  response, or every action it emitted failed to execute. WARN, because the wire answer is
-  the empty `200 OK` fall-through, which for PutObject/CreateBucket/DeleteObject/HeadObject
-  reads to the client as success. The line names how many actions failed
+  response, or every action it emitted failed to execute. WARN, and the wire answer is a
+  **500 `InternalError`**: the empty `200 OK` fall-through this line used to describe is
+  gone, because for PutObject/CreateBucket/DeleteObject/HeadObject it read to the client as
+  success. The line names how many actions failed
+- `decision=fail_closed_body_rejected` — the request body exceeded `MAX_REQUEST_BYTES`
+  (8 MiB) or could not be read. WARN, and the peer gets `413` + `<Code>EntityTooLarge</Code>`.
+  The request never reaches the model: a truncated upload used to be reported to it as a
+  PutObject carrying zero bytes, which it would then acknowledge as a stored object
 - `decision=fail_closed_llm_error category=Overloaded|Unavailable` — netget could not reach
   a decision at all (backend error, timeout, unusable output). WARN, and the **only** place
   the full error text is written; it goes to `netget.log` and the TUI status stream and
