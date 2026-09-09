@@ -148,17 +148,24 @@ else:
     actions = []
 print(json.dumps({"actions": actions}))"#;
 
+        // Protocol parameters go inside `startup_params`. `CommonAction::OpenServer`
+        // (`src/llm/actions/common.rs`) declares a fixed field set -- host, port, interface,
+        // mac_address, send_first, instruction, startup_params, event_handlers, scheduled_tasks --
+        // and serde silently drops anything else, so a top-level `socket_path` never reaches
+        // `spawn()` and the server fails to start at all. These examples had it at the top level;
+        // `tests/examples/protocol_examples_test.rs` starts every protocol from its own declared
+        // examples and reported exactly that.
         StartupExamples::new(
             json!({
                 "type": "open_server",
                 "base_stack": "socket_file",
-                "socket_path": "./netget.sock",
+                "startup_params": { "socket_path": "./netget.sock" },
                 "instruction": "Unix socket IPC server that echoes data"
             }),
             json!({
                 "type": "open_server",
                 "base_stack": "socket_file",
-                "socket_path": "./netget.sock",
+                "startup_params": { "socket_path": "./netget.sock" },
                 "event_handlers": [{
                     "event_pattern": "socket_file_data_received",
                     "handler": {
@@ -171,7 +178,7 @@ print(json.dumps({"actions": actions}))"#;
             json!({
                 "type": "open_server",
                 "base_stack": "socket_file",
-                "socket_path": "./netget.sock",
+                "startup_params": { "socket_path": "./netget.sock" },
                 "event_handlers": [
                     {
                         "event_pattern": "socket_file_connection_opened",
