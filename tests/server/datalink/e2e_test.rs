@@ -186,6 +186,60 @@ async fn datalink_startup_outcome_matches_capture_privilege() {
     }
 }
 
+/// What a captured frame looks like to the model, asserted against literal bytes.
+///
+/// `packet_event_data` is the payload builder the capture loop uses, and it is pure — so this
+/// is the one thing about a pcap protocol that *can* be checked with no capture handle at all.
+/// It is worth checking: a frame is up to 65535 bytes and used to be handed to the model whole,
+/// which is 131070 characters of prompt for one packet.
+#[test]
+fn datalink_event_payload_reports_the_frame_and_any_truncation() {
+    use netget::server::datalink::{packet_event_data, MAX_HEX_BYTES_TO_MODEL};
+
+    // A minimal ARP request over Ethernet (RFC 826 payload), 42 bytes.
+    const ARP: &str =
+        "ffffffffffff001122334455080600010800060400010011223344550a0000010000000000000a000002";
+    let frame = hex::decode(ARP).expect("literal test vector");
+
+    let data = packet_event_data(&frame);
+    assert_eq!(data["packet_hex"], ARP, "a short frame is reported whole");
+    assert_eq!(data["packet_length"], 42);
+    assert_eq!(data["captured_length"], 42);
+    assert_eq!(data["truncated"], false);
+
+    // Long frame: a prefix, and the event says so rather than silently misreporting the size.
+    let long = vec![0x5au8; MAX_HEX_BYTES_TO_MODEL + 1];
+    let data = packet_event_data(&long);
+    assert_eq!(data["packet_length"], (MAX_HEX_BYTES_TO_MODEL + 1) as u64);
+    assert_eq!(data["captured_length"], MAX_HEX_BYTES_TO_MODEL as u64);
+    assert_eq!(data["truncated"], true);
+    assert_eq!(
+        data["packet_hex"].as_str().unwrap().len(),
+        MAX_HEX_BYTES_TO_MODEL * 2
+    );
+
+    // Exactly at the boundary nothing is cut.
+    assert_eq!(
+        packet_event_data(&vec![0u8; MAX_HEX_BYTES_TO_MODEL])["truncated"],
+        false
+    );
+
+    // Every field the payload carries must be one the event declares, or the model is shown a
+    // value with no description and no type.
+    let declared: Vec<String> = netget::server::datalink::actions::DATALINK_PACKET_CAPTURED_EVENT
+        .parameters
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+    for key in data.as_object().unwrap().keys() {
+        assert!(
+            declared.contains(key),
+            "the event payload carries '{key}', which datalink_packet_captured does not declare \
+             (declared: {declared:?})"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Privileged: the capture itself
 // ---------------------------------------------------------------------------

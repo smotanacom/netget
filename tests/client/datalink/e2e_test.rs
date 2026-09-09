@@ -1,18 +1,44 @@
-//! E2E tests for DataLink client
+//! E2E tests for the DataLink client: the real NetGet binary, driven by a mock model,
+//! opening a **real libpcap handle on loopback** and putting **real frames** on it.
 //!
-//! These tests verify DataLink client functionality by spawning the actual NetGet binary
-//! and testing client behavior as a black-box.
-//! Test strategy: Mock frame injection and capture, < 10 LLM calls total.
+//! # These tests need layer-2 capture access, and say so instead of skipping
+//!
+//! Nothing here is mocked below the model. `open_client` opens `lo0`/`lo` through libpcap,
+//! `inject_frame` reaches `pcap::sendpacket`, and `datalink_frame_captured` fires for traffic
+//! this test generates on loopback. That has always been true - the docs used to claim the
+//! opposite ("No actual network traffic", "No root privileges required") while depending on
+//! exactly that access, so on a host without it the failure arrived as a mock expectation that
+//! never fired, several steps from the cause.
+//!
+//! `require_capture` now states the requirement up front and fails on it. It is deliberately
+//! **not** a skip: a silent pass on a runner without BPF access would leave this client's only
+//! end-to-end evidence resting on nothing.
+//!
+//! Test strategy: mock model, < 10 LLM calls total.
 
 #[cfg(all(test, feature = "datalink"))]
 mod datalink_client_tests {
     use crate::helpers::*;
+    use ::netget::privilege::SystemCapabilities;
     use std::time::Duration;
+
+    /// Fail - loudly, and before anything else - on a host that cannot open a capture.
+    fn require_capture(test: &str) {
+        assert!(
+            SystemCapabilities::detect().has_packet_capture_access,
+            "{test} opens a real libpcap handle on loopback and injects real frames, and this \
+             process has no layer-2 capture access (macOS/BSD: read access to /dev/bpf*, via \
+             sudo or Wireshark's ChmodBPF; Linux: root or `setcap cap_net_raw+ep`). Skipping \
+             would report a pass for a test that exercised nothing."
+        );
+    }
 
     /// Test DataLink client frame injection
     /// LLM calls: 2 (client startup, frame injected event)
     #[tokio::test]
     async fn test_datalink_client_inject_frame_with_mocks() -> E2EResult<()> {
+        require_capture("test_datalink_client_inject_frame_with_mocks");
+
         // Start a DataLink client that injects an ARP frame
         let client_config =
             NetGetConfig::new("Connect to lo0 via DataLink. Inject an ARP request for 10.0.0.2")
@@ -76,10 +102,6 @@ mod datalink_client_tests {
 
         println!("✅ DataLink client injected frame successfully");
 
-        // Note: Mock verification not possible in subprocess tests
-        // The mock matching works correctly (see logs), but call tracking
-        // happens inside the netget subprocess and can't be reported back
-
         // Cleanup
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
@@ -95,6 +117,8 @@ mod datalink_client_tests {
     /// LLM calls: 3 (client startup, frame injected, frame captured)
     #[tokio::test]
     async fn test_datalink_client_promiscuous_capture_with_mocks() -> E2EResult<()> {
+        require_capture("test_datalink_client_promiscuous_capture_with_mocks");
+
         // Start a DataLink client in promiscuous mode
         let client_config = NetGetConfig::new(
             "Connect to lo0 via DataLink with promiscuous mode. Monitor all frames.",
@@ -167,10 +191,6 @@ mod datalink_client_tests {
 
         println!("✅ DataLink client in promiscuous mode processed mocked capture");
 
-        // Note: Mock verification not possible in subprocess tests
-        // The mock matching works correctly (see logs), but call tracking
-        // happens inside the netget subprocess and can't be reported back
-
         // Cleanup
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
@@ -186,6 +206,8 @@ mod datalink_client_tests {
     /// LLM calls: 3 (client startup, frame injected, frame captured with response)
     #[tokio::test]
     async fn test_datalink_client_inject_and_respond_with_mocks() -> E2EResult<()> {
+        require_capture("test_datalink_client_inject_and_respond_with_mocks");
+
         // Both directions on one client: inject a frame, and capture one.
         //
         // This used to open `eth0` and wait for a real ARP reply from 192.168.1.1. There
@@ -273,10 +295,6 @@ mod datalink_client_tests {
 
         println!("✅ DataLink client completed inject-and-respond pattern");
 
-        // Note: Mock verification not possible in subprocess tests
-        // The mock matching works correctly (see logs), but call tracking
-        // happens inside the netget subprocess and can't be reported back
-
         // Cleanup
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
@@ -292,6 +310,8 @@ mod datalink_client_tests {
     /// LLM calls: 2 (client startup, disconnect action)
     #[tokio::test]
     async fn test_datalink_client_disconnect_with_mocks() -> E2EResult<()> {
+        require_capture("test_datalink_client_disconnect_with_mocks");
+
         // Start a DataLink client and disconnect gracefully
         let client_config =
             NetGetConfig::new("Connect to lo0 via DataLink. Inject one frame then disconnect.")
@@ -345,10 +365,6 @@ mod datalink_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         println!("✅ DataLink client injected frame and disconnected gracefully");
-
-        // Note: Mock verification not possible in subprocess tests
-        // The mock matching works correctly (see logs), but call tracking
-        // happens inside the netget subprocess and can't be reported back
 
         // Cleanup
         // Wait for the exchange the mocks describe, rather than trusting a fixed
