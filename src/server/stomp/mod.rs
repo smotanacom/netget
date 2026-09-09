@@ -641,7 +641,17 @@ where
                     return Flow::Close;
                 }
                 wrote_output = true;
-                wrote_receipt |= bytes.starts_with(b"RECEIPT\n");
+                // Only a RECEIPT carrying the id the client actually asked for cancels the
+                // automatic one. Matching on the command alone meant *any* RECEIPT suppressed
+                // it, so a handler answering `UNSUBSCRIBE id:s0 receipt:r-9` with a receipt
+                // for some other id sent that one and the client's `r-9` never arrived - and
+                // a spec-compliant client blocks on it forever, with no read timeout to reap
+                // the connection. The declared examples for stomp_unsubscribe, stomp_ack and
+                // stomp_nack used to be exactly that mistake, so this was reachable by
+                // following the documentation.
+                wrote_receipt |= receipt_id
+                    .as_deref()
+                    .is_some_and(|id| is_receipt_for(&bytes, id));
                 wrote_error |= bytes.starts_with(b"ERROR\n");
                 log.debug(format!("STOMP sent {} bytes to {}", bytes.len(), peer_addr));
                 log.trace(format!(
@@ -729,6 +739,15 @@ where
         ));
     }
     Flow::Continue
+}
+
+/// Whether `bytes` is a `RECEIPT` frame acknowledging `receipt_id`.
+///
+/// The comparison is against the bytes `receipt_frame` itself would produce, so the escaping
+/// rules cannot drift between the two: whatever `RECEIPT` this server builds for an id, a
+/// model-authored one for the same id is byte-identical.
+fn is_receipt_for(bytes: &[u8], receipt_id: &str) -> bool {
+    bytes.starts_with(b"RECEIPT\n") && bytes == frame::receipt_frame(receipt_id)
 }
 
 /// Render a received body for an event as text plus an explicit encoding.

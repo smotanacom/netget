@@ -12,8 +12,9 @@
 #[cfg(all(test, feature = "stomp"))]
 mod stomp_codec_test {
     use netget::server::stomp::frame::{
-        error_frame, escape_header, parse_frame, receipt_frame, should_escape, unescape_header,
-        FrameError, ParseOutcome, StompFrame, MAX_FRAME_BYTES,
+        error_frame, escape_header, is_safe_unescaped_header, parse_frame, receipt_frame,
+        should_escape, unescape_header, FrameError, ParseOutcome, StompFrame, MAX_FRAME_BYTES,
+        MAX_HEADERS,
     };
 
     fn parse_one(bytes: &[u8]) -> (StompFrame, usize) {
@@ -197,6 +198,100 @@ mod stomp_codec_test {
             parse_frame(&wire).unwrap_err(),
             FrameError::FrameTooLarge(_)
         ));
+    }
+
+    /// A `content-length` a peer picked must not be able to wrap the index that reads it.
+    ///
+    /// `18446744073709551615` parses cleanly into a `usize`, and `pos + len` then overflowed:
+    /// a panic in debug and test builds, where `overflow-checks` is on, and in release a wrap
+    /// to `pos - 1` that made the whole thing invisible in the shipped profile while it was
+    /// live in every test run. The panic happened inside the connection's `tokio::spawn`, so
+    /// it was swallowed: the connection's cleanup never ran and the peer handle and the
+    /// `AppState` row leaked with the connection stuck `Active`. One frame, from any peer,
+    /// before the CONNECT gate.
+    #[test]
+    fn a_content_length_that_would_wrap_the_index_is_refused() {
+        let wire = format!("SEND\ndestination:/q\ncontent-length:{}\n\n\0", usize::MAX);
+        assert!(matches!(
+            parse_frame(wire.as_bytes()).unwrap_err(),
+            FrameError::FrameTooLarge(_)
+        ));
+        // Anything past the frame bound is refused on sight rather than buffered toward.
+        let wire = format!(
+            "SEND\ndestination:/q\ncontent-length:{}\n\n\0",
+            MAX_FRAME_BYTES + 1
+        );
+        assert!(matches!(
+            parse_frame(wire.as_bytes()).unwrap_err(),
+            FrameError::FrameTooLarge(_)
+        ));
+    }
+
+    /// `MAX_FRAME_BYTES` bounds the memory but not the work.
+    ///
+    /// The connection loop re-parses the whole pending buffer after every read, allocating two
+    /// `String`s per header line each time, so a megabyte of three-byte header lines is ~350k
+    /// headers re-parsed ~128 times as the 8 KB reads arrive — tens of millions of allocations
+    /// from a megabyte of input, per connection, with nothing capping connections.
+    #[test]
+    fn a_frame_with_absurdly_many_headers_is_refused() {
+        let mut wire = b"SEND\n".to_vec();
+        for i in 0..=MAX_HEADERS {
+            wire.extend_from_slice(format!("h{i}:v\n").as_bytes());
+        }
+        wire.extend_from_slice(b"\n\0");
+        assert_eq!(parse_frame(&wire).unwrap_err(), FrameError::TooManyHeaders);
+
+        // The bound is generous: no real frame comes close, and one that does still parses.
+        let mut ok = b"SEND\n".to_vec();
+        for i in 0..(MAX_HEADERS - 1) {
+            ok.extend_from_slice(format!("h{i}:v\n").as_bytes());
+        }
+        ok.extend_from_slice(b"\n\0");
+        assert!(matches!(
+            parse_frame(&ok).unwrap(),
+            ParseOutcome::Frame { .. }
+        ));
+    }
+
+    /// A peer's own malformed input is quoted back to it, and must be quoted in a bounded way.
+    ///
+    /// A `FrameError` reaches the `ERROR` frame, `netget.log` and the TUI status stream, which
+    /// is an unbounded channel with no backpressure. `MalformedHeader` carried the entire
+    /// offending line — up to a megabyte — and `{:?}` escaping roughly doubles it, so the peer
+    /// chose how much memory NetGet spent on its behalf, three times over.
+    #[test]
+    fn a_malformed_header_is_quoted_back_in_a_bounded_way() {
+        let mut wire = b"SEND\n".to_vec();
+        wire.extend_from_slice(&vec![b'x'; 500_000]);
+        wire.extend_from_slice(b"\n\n\0");
+        let rendered = parse_frame(&wire).unwrap_err().to_string();
+        assert!(
+            rendered.len() < 400,
+            "a malformed-header error must not carry the peer's whole line; got {} bytes",
+            rendered.len()
+        );
+        assert!(rendered.contains("no ':' separator"));
+    }
+
+    /// The one place a string reaches the wire without the escaper in front of it.
+    ///
+    /// STOMP 1.2 exempts `CONNECT`/`STOMP`/`CONNECTED` from escaping so a 1.2 endpoint can
+    /// read a 1.0/1.1 peer's handshake, which means `encode()` writes their header values raw.
+    /// `send_stomp_connected` copies the model's `session` and `server` straight in, and this
+    /// protocol's own startup example builds the session out of peer input
+    /// (`'session-' + login`), so it is reachable from a script handler as readily as from the
+    /// model. Rejecting rather than escaping, because escaping is exactly what those commands
+    /// cannot do.
+    #[test]
+    fn values_that_would_forge_a_header_on_an_unescaped_command_are_rejected() {
+        assert!(!should_escape("CONNECTED"));
+        assert!(is_safe_unescaped_header("session-1"));
+        assert!(is_safe_unescaped_header("netget/stomp"));
+        assert!(!is_safe_unescaped_header("s\nversion:1.0"));
+        assert!(!is_safe_unescaped_header("s\r\nlogin:root"));
+        assert!(!is_safe_unescaped_header("a:b"));
+        assert!(!is_safe_unescaped_header("a\0b"));
     }
 
     // === encoding ===

@@ -6,8 +6,8 @@ whether to admit a session and what every message carries; there is no broker be
 
 **State**: Beta. **Privilege**: `None` — the default port is 61613, which is
 unprivileged, so declaring `PrivilegedPort` would be dead code (the `svn` mistake).
-**Stack**: `ETH>IP>TCP>STOMP`. **Library**: none on the server side — the codec is `frame.rs`,
-~300 lines. `async-stomp` is a **dev-dependency only**, used as the test peer.
+**Stack**: `ETH>IP>TCP>STOMP`. **Library**: none on the server side — the codec is `frame.rs`.
+`async-stomp` is a **dev-dependency only**, used as the test peer.
 
 ## Why the rating is Beta, precisely
 
@@ -117,7 +117,7 @@ no heart-beat header at all, so it is content either way.
 |---|---|
 | `send_stomp_connected` | `CONNECTED` with `version` (1.2 only), optional `session`/`server`, and `heart-beat:0,0` |
 | `send_stomp_message` | `MESSAGE`; requires `destination`, `subscription`, `message_id`; optional `body` + `encoding`, `content_type`, `headers` |
-| `send_stomp_receipt` | `RECEIPT`. Rarely needed — receipts are automatic |
+| `send_stomp_receipt` | `RECEIPT`. Rarely needed — receipts are automatic. Only one carrying the *same* `receipt_id` the client asked for suppresses the automatic one |
 | `send_stomp_error` | `ERROR`; the connection is closed afterwards, as the spec requires |
 | `close_connection` | hangs up |
 
@@ -189,10 +189,49 @@ write half is an `Arc<Mutex<WriteHalf>>` shared by the session and the peer comm
 `[ message this peer ]` runs any of the actions above through the same executor the model's go
 through, and `[ disconnect this peer ]` is `close_connection`.
 
-Every task this protocol spawns is registered with `AppState::register_server_task` — the accept
-loop *and* each connection task. Aborting a parent does not abort what it spawned, so an
+The accept loop *and* each connection task are registered with
+`AppState::register_server_task`. Aborting a parent does not abort what it spawned, so an
 unregistered connection task keeps its socket alive after `stop_server` has released the
-listener (the BGP keepalive bug).
+listener (the BGP keepalive bug). The one task not registered is the peer-injection task from
+`server/peer_support.rs`, which is shared infrastructure and self-terminating — it ends when
+`remove_peer_handle` drops its sender. This section used to claim *every* task was registered,
+which read as a stronger guarantee than the code gives.
+
+## What bounds the codec
+
+Four things, and each was added because the absence of it was reachable from one frame:
+
+- `MAX_FRAME_BYTES` (1 MiB) bounds a frame that is never terminated.
+- A `content-length` above that is refused **on sight** rather than buffered toward, and the
+  index that reads it is bounded before the addition. `content-length:18446744073709551615`
+  parses cleanly into a `usize` and `pos + len` overflowed — a panic in debug and test builds,
+  a wrap in release, so the bug was invisible in the shipped profile while live in every test
+  run. The panic was inside the connection's `tokio::spawn`, so it was swallowed and the
+  connection's cleanup never ran: the peer handle and the `AppState` row leaked with the
+  connection stuck `Active`. Reachable before the CONNECT gate.
+- `MAX_HEADERS` (1024) bounds the *work*, which `MAX_FRAME_BYTES` does not. The session loop
+  re-parses the whole pending buffer after every read, allocating two `String`s per header
+  line, so a megabyte of `a:\n` lines is ~350k headers re-parsed ~128 times as the 8 KB reads
+  arrive.
+- A `FrameError` quotes at most 120 characters of the peer's own input, via
+  `crate::utils::truncate_for_log`. It reaches the `ERROR` frame, `netget.log` *and* the
+  unbounded TUI status channel, so an unbounded quote let the peer choose how much memory
+  NetGet spent on its behalf, three times over.
+
+## Header injection on the exempt commands
+
+STOMP 1.2 exempts `CONNECT`, `STOMP` and `CONNECTED` from header escaping so a 1.2 endpoint can
+read a 1.0/1.1 peer's handshake. That means `encode()` writes those three commands' header
+values **raw**, and it is the one place in this protocol where a string reaches the wire with
+no escaper in front of it. `send_stomp_connected` therefore *rejects* a `session` or `server`
+containing `\r`, `\n`, `:` or NUL, and the client rejects the same in `host`/`login`/`passcode`
+before building its `CONNECT`. Rejecting rather than escaping is the point: escaping is exactly
+what those commands cannot do, and a 1.0/1.1 peer would read the sequence literally.
+
+This is worth stating plainly because the prose elsewhere — "framing is never the model's to
+get wrong" — was not true here. The protocol's own startup example builds the session out of
+peer input (`'session-' + login`), so the injection was reachable from a script handler as
+readily as from the model.
 
 ## Not implemented
 
