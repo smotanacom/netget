@@ -28,6 +28,18 @@ use crate::server::CouchDbProtocol;
 use crate::state::app_state::AppState;
 use crate::{console_error, console_info};
 
+/// How much of a request body is read before the request is refused with 413.
+///
+/// Same value and same reasoning as `http_common::MAX_REQUEST_BODY_BYTES`, defined locally
+/// because `server::http_common` is gated on `any(feature = "http", "http2", "oauth2", …)`
+/// and `couchdb` is not in that list — the same exit `xmlrpc` takes. Adding `couchdb` to the
+/// gate in `src/server/mod.rs` would let this share the constant.
+///
+/// The body is buffered whole and then embedded in an LLM prompt, so there is no legitimate
+/// use for a large one: a model cannot read 8 MB, and every byte past a few kilobytes is cost
+/// without benefit. Without a cap the buffer is whatever the peer chooses to send.
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
 /// CouchDB server that delegates all operations to LLM
 pub struct CouchDbServer;
 
@@ -214,12 +226,49 @@ async fn handle_couchdb_request_with_llm(
         }
     }
 
-    // Read JSON body
-    let body_bytes = match req.into_body().collect().await {
+    // Read the JSON body, bounded.
+    //
+    // `Incoming` has no default limit, so this used to buffer whatever an unauthenticated
+    // peer chose to send — one `POST /db/_bulk_docs` was enough to exhaust the process. The
+    // body is then embedded whole in an LLM prompt, so there is no legitimate large one
+    // either. `Limited` errors as soon as the cap is passed rather than after buffering it,
+    // and 413 says exactly what happened. This is the bound `http`, `http2` and `xmlrpc`
+    // already had; CouchDB and Elasticsearch were the two HTTP servers still without it.
+    //
+    // An unreadable body must **not** fall through as empty, which is what the old `Err` arm
+    // did: the handler was then shown a request with no body and answered it as though the
+    // client had sent none, so a truncated bulk update read as an empty one.
+    let limit = MAX_REQUEST_BODY_BYTES;
+    let body_bytes = match http_body_util::Limited::new(req.into_body(), limit)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            console_error!(status_tx, "Failed to read CouchDB request body: {}", e);
-            Bytes::new()
+            error!(
+                "CouchDB {} {}: refusing request body ({}); limit is {} bytes",
+                method, path, e, limit
+            );
+            console_error!(
+                status_tx,
+                "CouchDB {} {} → 413 (request body over {} bytes)",
+                method,
+                path,
+                limit
+            );
+            let body = serde_json::json!({
+                "error": "too_large",
+                "reason": format!("netget: request body exceeds {} bytes", limit)
+            })
+            .to_string();
+            return Ok(couchdb_response_builder(413)
+                .body(Full::new(Bytes::from(body)))
+                .unwrap_or_else(|_| {
+                    couchdb_infallible_error(
+                        hyper::StatusCode::PAYLOAD_TOO_LARGE,
+                        r#"{"error":"too_large","reason":"netget: request body too large"}"#,
+                    )
+                }));
         }
     };
 
