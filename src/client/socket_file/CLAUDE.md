@@ -70,20 +70,36 @@ The LLM receives two primary event types:
 
 2. **socket_file_data_received**
     - Triggered when data arrives from socket
-    - Contains hex-encoded data and length
+    - Contains `data` (text when every byte is printable ASCII, hex otherwise), `encoding`
+      (`"utf8"` / `"hex"`) saying which, and `data_length`
     - Prevents concurrent calls via state machine
+
+Both are the `LazyLock` statics the read loop emits. `get_event_types()` used to build two
+*separate* `EventType`s with `{"type": "placeholder"}` example actions, no parameters and no
+attached actions, so the model was shown one description and handed another.
 
 ### Actions
 
 **Async Actions (user-triggered):**
 
-- `send_socket_file_data` - Send hex-encoded data to socket
-- `disconnect` - Close socket connection
+- `send_socket_file_data` - `data` + optional `encoding` (`"utf8"` default, `"hex"`)
+- `disconnect` - Close socket connection and end the read loop
 
 **Sync Actions (LLM response to events):**
 
-- `send_socket_file_data` - Send data in response to received data
-- `wait_for_more` - Queue data without immediate response
+- `send_socket_file_data` - the same fields, in response to received data
+- `wait_for_more` - queue data without immediate response
+- `disconnect`
+
+`data_hex` remains **accepted** by the executor, because it was the only shape this client ever
+advertised and models reach for it out of habit; it means exactly
+`{"data": ..., "encoding": "hex"}`. It is no longer what the client *advertises*: hex-only fields
+are the "never put raw bytes in action parameters" defect, and they forced the model to encode
+`PING` as `50494e47` to say hello.
+
+`disconnect` used to `break` only the loop over the model's actions, leaving the socket open —
+the model's decision to hang up did nothing. It now shuts down the write half and ends the read
+loop.
 
 ### Action Results
 
@@ -110,7 +126,12 @@ Actions return `ClientActionResult` enum:
 **Accumulating:**
 
 - Still processing, more data has arrived
-- All queued data is processed after current LLM call completes
+- The queue becomes the next payload once the in-flight round-trip finishes, and the loop runs
+  again until the queue is empty
+
+This last part was a lie until September 2026: the queue was filled and then `clear()`ed without
+ever being shown to the model, so every byte that arrived during an LLM call was silently
+dropped.
 
 ### Dual Logging
 
@@ -142,9 +163,13 @@ All significant events are logged via:
 
 ### Security
 
-- File system permissions control access
+- File system permissions control access — the *server's*, not this client's: a client creates no
+  filesystem object at all. It opens the path it was given and nothing else.
 - No encryption by default (unlike TLS/TCP)
 - Shared memory namespace (all processes on same host)
+- The path is caller-supplied and is passed straight to `UnixStream::connect`. Pointing it at
+  `/var/run/docker.sock` is a documented use case, so treat "what this client may be told to
+  connect to" as equal to "what the invoking user may connect to".
 
 ## Use Cases
 

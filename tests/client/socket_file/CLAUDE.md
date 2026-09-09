@@ -1,247 +1,102 @@
 # Socket File Client Testing
 
-## Test Strategy
+## Strategy
 
-The Socket File client tests use a **hybrid approach**:
+The peer of a Unix-domain-socket client is a **local descriptor**. There is no third-party
+implementation of "a program listening on a Unix socket" to validate against, the way `mysql`
+has `mysql_async` — so the strongest evidence this protocol admits is a **real
+`tokio::net::UnixListener` peer**, bound in the test process, accepted for real, with real bytes
+crossing in both directions. That is what the suite drives. It is why the client stays
+`Experimental` and why no test here should be read as evidence for more.
 
-1. **Unit Tests:** Test protocol metadata, actions, and event definitions without LLM
-2. **Minimal E2E:** Basic connection test with mock Unix socket server (no LLM calls)
-3. **Fast Execution:** < 1 second total runtime
+Everything runs in-process against a `MockOllamaServer`; no NetGet binary is spawned, so the
+suite is immune to the shared-`target/` contention that makes binary-spawning tests flaky during
+a parallel wave.
 
-## LLM Call Budget
+## The tests
 
-**Target:** 0 LLM calls per test run
+### `e2e_test.rs::client_speaks_first_and_answers_the_peer` — 2 LLM calls
 
-**Rationale:**
+The only test that exercises the read loop.
 
-- Socket File is essentially TCP over Unix domain sockets
-- Same patterns as TCP client (already validated)
-- Unit tests provide sufficient coverage for protocol implementation
-- E2E would require complex test setup with Unix socket servers
+1. A `UnixListener` is bound at a per-process, per-nanosecond temp path and accepts one
+   connection, forwarding every chunk it reads to the test and answering the first with `PONG\n`.
+2. `ClientForm::create` starts the client. The connect handling raises
+   `socket_file_connected`; the mock answers `send_socket_file_data` `PING\n`; the test asserts
+   `PING\n` arrived at the peer. **A connect event that is never raised fails here** — that
+   event was declared and unemitted for a long time, which left a client that was told to speak
+   first unable to.
+3. The peer's `PONG\n` raises `socket_file_data_received`. The mock rule matches on
+   `and_event_data_contains("data", "PONG")` — **in plain text**, which is the point: before this
+   pass the event carried `data_hex` only, and this rule would have had to say `504f4e470a`.
+4. The mock answers `ACK\n` and the test asserts it reached the peer, which proves the model's
+   answer is executed rather than counted and logged.
 
-**Alternative Testing:**
+Both rules are `expect_calls(1)` and the test finishes with `verify_calls()`, so a rule that
+never matched fails rather than falling through to a real model.
 
-- Manual testing with real services (Docker, Redis, PostgreSQL)
-- Integration tests in larger test suites (if needed)
+Waits are `tokio::time::timeout` on the forwarding channel — a condition, never a sleep.
 
-## Expected Runtime
+### `e2e_test.rs::send_accepts_text_hex_and_the_legacy_field` — 0 LLM calls
 
-**Total:** < 1 second
+The payload contract, at the executor. `{"data": "Hello"}` sends `Hello`;
+`{"data": "48656c6c6f"}` sends the ten characters, **not** `Hello`, because there is no
+auto-detection; `{"data": "48656c6c6f", "encoding": "hex"}` sends the five bytes; the legacy
+`{"data_hex": ...}` still works. Invalid hex is an `Err` naming the encoding, not a panic and not
+a silent truncation.
 
-**Breakdown:**
+### `e2e_test.rs::declared_events_match_the_emitted_ones` — 0 LLM calls
 
-- `test_socket_file_metadata`: < 10ms (protocol metadata verification)
-- `test_socket_file_actions`: < 10ms (action parsing and execution)
-- `test_socket_file_events`: < 10ms (event type validation)
-- `test_socket_file_connect`: < 500ms (basic connection with mock server)
+`get_event_types()` must return the statics the read loop emits. It used to return two freshly
+built `EventType`s with `{"type": "placeholder"}` examples, no parameters and no attached
+actions. The test asserts the real parameters are declared, that `data_hex` is *not* the
+model-facing field, that each event attaches `send_socket_file_data`, and that neither example is
+a placeholder.
 
-## Test Coverage
+### `e2e_test.rs::metadata_is_experimental_and_names_its_evidence` — 0 LLM calls
 
-### What We Test
+Pins the maturity rating with the reason in the assertion message.
 
-**✅ Protocol Metadata:**
+### `command_channel_test.rs::injected_socket_file_data_reaches_the_unix_socket` — 0 LLM calls
 
-- Protocol name ("SocketFile")
-- Stack name ("UnixSocket")
-- Keywords (socket file, unix socket, domain socket)
-- Description and example prompt
-- Development state (Experimental)
+The dashboard's `[ send ]` path: `AppState::send_to_client` injects an action from outside the
+read loop and the bytes reach the socket. The client's LLM points at `http://127.0.0.1:1`, so
+nothing here goes through a model. Also asserts an unknown action is `Rejected` rather than
+swallowed, and that an injected `disconnect` really ends the loop and drops the handle.
 
-**✅ Action Definitions:**
+## LLM call budget
 
-- Async actions (send_socket_file_data, disconnect)
-- Sync actions (send_socket_file_data, wait_for_more)
-- Action parameter validation
-- Action execution (hex decoding, result types)
+**2 calls**, both mocked, both in one test.
 
-**✅ Event Types:**
+## Expected runtime
 
-- socket_file_connected event
-- socket_file_data_received event
-- Event parameter definitions
+Under a second for the whole directory; the last measured run was 5 tests in 0.17s.
 
-**✅ Basic Connectivity:**
-
-- Connection to Unix socket server
-- Socket path handling
-- Error handling (missing socket file)
-
-### What We Don't Test (Yet)
-
-**❌ Full LLM Integration:**
-
-- LLM interpreting received data
-- LLM generating response actions
-- Memory updates across interactions
-
-**❌ Real-World Services:**
-
-- Docker daemon (/var/run/docker.sock)
-- PostgreSQL socket
-- Redis socket
-
-**❌ Advanced Features:**
-
-- Credential passing (SCM_CREDENTIALS)
-- File descriptor passing
-- Abstract namespace sockets (Linux)
-
-## Known Issues
-
-### Platform Dependencies
-
-**Issue:** Unix sockets are not available on all platforms
-
-**Impact:** Tests will fail on Windows (except Windows 10+ with AF_UNIX support)
-
-**Mitigation:**
-
-- Feature-gated tests (`#[cfg(all(test, feature = "socket_file"))]`)
-- Skip tests on unsupported platforms
-
-### Socket File Cleanup
-
-**Issue:** Test socket files may persist if tests crash
-
-**Impact:** Subsequent test runs may fail if socket file already exists
-
-**Mitigation:**
-
-- Always clean up socket files in test teardown
-- Use unique socket paths per test (include PID)
-- `let _ = std::fs::remove_file(&socket_path);` before and after tests
-
-### Permissions
-
-**Issue:** Socket file permissions may prevent connection
-
-**Impact:** Tests may fail in restricted environments
-
-**Mitigation:**
-
-- Use ./tmp directory (project-local)
-- Fall back to test-specific directory if ./tmp unavailable
-
-## Test Expansion Strategy
-
-### Phase 1: Current (Unit Tests Only)
-
-**Status:** ✅ Implemented
-
-- Protocol metadata validation
-- Action definition verification
-- Basic connection test (mock server)
-- Zero LLM calls, < 1 second runtime
-
-### Phase 2: Real Service Integration (Optional)
-
-**Status:** Not implemented
-
-**If Needed:**
-
-- Test with Docker socket (if Docker installed)
-- Test with Redis socket (if Redis running)
-- Requires conditional test execution (`#[ignore]` or environment checks)
-- Budget: 3-5 LLM calls for real service interactions
-
-### Phase 3: LLM Integration Tests (Optional)
-
-**Status:** Not implemented
-
-**If Needed:**
-
-- Full E2E test with LLM controlling socket communication
-- Test protocol-specific interactions (HTTP over Unix socket)
-- Budget: 5-10 LLM calls
-- Runtime: 30-60 seconds (due to LLM latency)
-
-## Running Tests
-
-### Run Socket File Tests Only
+## Running
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features socket_file --test client::socket_file::e2e_test
+./cargo-isolated.sh test --no-default-features --features socket_file \
+    --test client -- socket_file:: --test-threads=100
 ```
 
-### Run All Client Tests
+Note `--test client` names the *target*; `--test client::socket_file::e2e_test` lists targets and
+exits without running anything.
 
-```bash
-./cargo-isolated.sh test --all-features
-```
+## Not covered
 
-### Run Without Building (if already built)
+- `wait_for_more` accumulation: the action is advertised and the executor returns `WaitForMore`,
+  but the read loop ignores that variant — it processes the queue on the next pass regardless.
+- Payloads larger than the 8 KiB read buffer, and binary payloads over the wire (the `hex`
+  encoding is covered at the executor only).
+- Real services (`/var/run/docker.sock`, a PostgreSQL socket). Those are manual checks; a test
+  that skips when the socket is absent would be a silent pass, which CLAUDE.md is explicit is not
+  evidence.
+- Client `event_handlers` dispatch (script/static/manual) on this protocol.
 
-```bash
-./cargo-isolated.sh test --no-fail-fast --no-default-features --features socket_file
-```
+## Known issues
 
-## Manual Testing Examples
+**Socket file cleanup.** Paths include the PID and a nanosecond timestamp, and are removed before
+bind and after the assertions, so a crashed run cannot collide with a later one. `/tmp` is used
+rather than `./tmp` so a test never depends on the repo cwd.
 
-For manual validation with real services:
-
-### Docker Daemon
-
-```bash
-# Start NetGet
-./cargo-isolated.sh run --no-default-features --features socket_file
-
-# In TUI, open socket file client:
-open_client socket_file /var/run/docker.sock "GET /containers/json HTTP/1.1\r\nHost: localhost\r\n\r\n"
-```
-
-### PostgreSQL
-
-```bash
-# Connect to PostgreSQL socket (if running)
-open_client socket_file /var/run/postgresql/.s.PGSQL.5432 "Send PostgreSQL protocol handshake"
-```
-
-### Redis
-
-```bash
-# Connect to Redis socket
-open_client socket_file /var/run/redis/redis.sock "Send PING command"
-```
-
-## Success Criteria
-
-Tests pass if:
-
-1. ✅ All unit tests pass (metadata, actions, events)
-2. ✅ Basic connection test completes without errors
-3. ✅ Total runtime < 1 second
-4. ✅ Zero LLM API calls made
-5. ✅ No socket file leaks (cleanup successful)
-
-## Future Improvements
-
-### Automated Service Detection
-
-Detect if Docker/Redis/PostgreSQL sockets exist and run conditional tests:
-
-```rust
-#[test]
-fn test_docker_socket() {
-    if std::path::Path::new("/var/run/docker.sock").exists() {
-        // Run Docker socket test
-    }
-}
-```
-
-### Cross-Platform Socket Simulation
-
-Use `tempfile` crate to create platform-appropriate socket paths:
-
-```rust
-use tempfile::TempDir;
-let tmp_dir = TempDir::new()?;
-let socket_path = tmp_dir.path().join("test.sock");
-```
-
-### Benchmarking
-
-Add criterion benchmarks for:
-
-- Connection latency
-- Throughput (bytes/second)
-- Comparison with TCP loopback
+**Platform.** Unix only; the whole suite is `#![cfg(all(feature = "socket_file", unix))]`.
