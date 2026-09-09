@@ -448,6 +448,22 @@ port below 1024. Two failure modes to avoid:
 
 - **A `PrivilegedPort` above 1023 can never fire.** `svn` declared `PrivilegedPort(3690)`, which
   read as protection and was dead code. Declare `None` if the default port is unprivileged.
+- **A test can start an entirely different protocol and still pass.** `ospf`'s three e2e
+  tests pass `"base_stack": "UDP"`, which `open_server` renames to `protocol` — so what
+  starts is the **generic UDP server**, not `src/server/ospf/`. The mocked event is
+  `udp_datagram_received` and the mocked action `send_udp_response`, both the UDP server's;
+  no test in the tree mocks `ospf_hello` or any other OSPF event. The test builds
+  OSPF-shaped bytes, the mock hands OSPF-shaped bytes back, a UDP server relays them, and
+  `assert_eq!(buf[1], 1)` asserts a constant the test itself wrote. The
+  `"application_protocol": "OSPF"` sitting alongside is read by nothing in `src/`.
+  **Check which server a test actually starts before believing what it covers.**
+
+  If you want the real thing — a declared `transport: "udp"` startup parameter that routes
+  through the protocol's *own* code so the whole event → LLM → action → frame path runs
+  unprivileged — copy `lldp`, `stp`, `cdp`, `eapol`, `vrrp`, `ndp`, `rawip` or `tuntap`.
+  Those genuinely implement it; `ospf` never did, despite its `Cargo.toml` comment having
+  claimed so for a long time.
+
 - **Don't claim more than you need.** `ospf` declared `Root` when it wants `CAP_NET_RAW`, which
   would refuse to start on a capability-only process that could in fact run it.
 
