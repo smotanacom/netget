@@ -556,16 +556,23 @@ test when its expectation is genuinely wrong.
 **All tests live in `tests/`. Never add `#[cfg(test)] mod tests` to `src/`.** Tests reach
 internals via `use netget::` public APIs; make items public or refactor if needed.
 
-This policy is currently violated by **5** files in `src/`: `server/bluetooth_ble/mod`,
-`server/bluetooth_ble_beacon/mod`, `server/etcd/mod`, `server/grpc/mod` and
-`server/oci_registry/actions`. Migrate them if you are working nearby; do not add more.
+**This policy is currently satisfied — there are zero violations.** Verified September 2026:
+no `#[cfg(test)] mod tests` and no `mod tests` of any kind exists under `src/`.
 
-This list was wrong in **both** directions before this pass — it named nine files of which eight
-no longer violate, and missed four that do — so derive it rather than trusting it:
+**The derivation command this section used to give is wrong, and produced five false
+positives** — it matched *doc comments quoting the policy*, in `bluetooth_ble/mod.rs`,
+`bluetooth_ble_beacon/mod.rs`, `etcd/mod.rs`, `grpc/mod.rs` and `oci_registry/actions.rs`.
+Every one of those lines is prose explaining why the code does **not** have a test module.
+This section then asserted the opposite of what the code did, in both directions over time,
+which is a good argument for the anchored form:
 
 ```bash
-grep -rln "#\[cfg(test)\]" src/ --include='*.rs'
+# Real test modules only. The naive `grep -rln "#\[cfg(test)\]"` matches the comments too.
+grep -rnE '^[[:space:]]*#\[cfg\(test\)\]' src/ --include='*.rs'
+grep -rnE '^[[:space:]]*(pub )?mod tests' src/ --include='*.rs'
 ```
+
+Both return nothing today. If either starts returning something, that is a real violation.
 
 ### The mod.rs footgun (CRITICAL)
 
