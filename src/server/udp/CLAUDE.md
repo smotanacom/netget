@@ -108,15 +108,26 @@ The LLM responds to UDP events with actions:
 
 `data` is paired with an `encoding` parameter:
 
-- `"text"` - the string's UTF-8 bytes, verbatim
+- `"text"` (or `"utf8"`) - the string's UTF-8 bytes, verbatim
 - `"hex"` - hex-decoded; an error if the string is not valid hex
 - omitted, or `"auto"` - hex if the string happens to parse as hex, otherwise text
+
+`"utf8"` is accepted because the TCP server spells the same idea that way, and a model that has
+just been writing `send_tcp_data` reaches for it here. It used to be rejected outright with
+"Unknown encoding 'utf8'", losing the whole datagram over a spelling.
 
 **`auto` is ambiguous and is only the default for backwards compatibility.** Any even-length
 run of hex digits is taken as hex, so `{"data": "1234"}` puts the two bytes `0x12 0x34` on the
 wire rather than the four characters `1234`. The same applies to `"abcd"`, `"DEADBEEF"` and
 `"0000"`. An echo server written against the old documented behaviour ("text data sent as-is")
 silently corrupted any payload that looked like hex. Always pass `encoding` explicitly.
+
+The guess is no longer silent: whenever `auto` actually resolves to hex, `decode_payload` logs a
+WARN naming the character and byte counts. **It should not be the default at all** — TCP was
+given an explicit `encoding` field for exactly this reason — but flipping it breaks three
+existing tests outside this protocol's tree (`tests/server/ospf/e2e_test.rs`, which starts the
+generic UDP server and relies on `hex::encode(...)` being auto-detected) plus
+`tests/server/udp/test.rs`. That is one small cross-cutting change, not a UDP-local one.
 
 **Received data** arrives as `data_preview` plus `data_encoding`, which is `"text"` when the
 datagram is printable ASCII and `"hex"` otherwise; reply using the same encoding. The preview
@@ -136,19 +147,19 @@ for `"Hello"` and had to reconstruct the payload from decimal byte codes.
 
 ### Connection Data Structure
 
-```rust
-ProtocolConnectionInfo::Udp {
-    recent_peers: Vec<(SocketAddr, Instant)>, // Track recent peer activity
-}
-```
-
-Unlike TCP, no write_half or queued_data - UDP is stateless.
+`ProtocolConnectionInfo::empty()`. There is no `Udp` variant and no `recent_peers` list — this
+section used to show a `ProtocolConnectionInfo::Udp { recent_peers }` that has never existed,
+contradicting §4 three paragraphs above. Unlike TCP there is no write_half and no queued_data:
+UDP is stateless here.
 
 ### State Updates
 
 - Connection state tracked in `ServerInstance.connections`
-- Each datagram increments `packets_received` and `bytes_received`
-- Response increments `packets_sent` and `bytes_sent`
+- Each datagram creates a row with `packets_received: 1` and `bytes_received: n`
+- The response calls `update_connection_stats`, so `packets_sent` / `bytes_sent` /
+  `last_activity` move. They did **not** until September 2026: the row was created and never
+  touched again, so the rail's `↑` column sat at zero for the entire life of every entry while
+  this file claimed otherwise
 - UI updates via `__UPDATE_UI__` message
 
 ## Known Limitations
@@ -180,12 +191,25 @@ Server processes every received datagram:
 - No throttling of LLM calls
 - Can be overwhelmed by high packet rates
 
-### 5. `send_to_address` Cannot Actually Target Another Address
+### 5. `send_to_address` — fixed, and worth knowing as the shape of the bug
 
-Despite its name, description and `address` parameter, the address is parsed for validation
-and then discarded. `execute_send_to_address` returns a plain `ActionResult::Output`, and the
-handler in `mod.rs` sends every Output back to the peer that sent the current datagram. The
-action is effectively a second `send_udp_response`.
+It used to parse the `address` for validation and then **discard** it: the executor returned a
+plain `ActionResult::Output`, and the handler in `mod.rs` writes every Output back to the peer
+that sent the current datagram — so the one action whose purpose is "send somewhere else"
+behaved exactly like `send_udp_response`, with nothing in the log to say so.
+
+It now writes the datagram itself through the server's own socket (`try_send_to`, because the
+executor is synchronous) and returns `NoAction`, so `mod.rs` does not additionally echo it to
+the current peer. Two consequences:
+
+- It only works inside a running server, which is the only context that holds a socket. The
+  registry's copy has none and says so, rather than pretending.
+- It is therefore declared on `udp_datagram_received` as well as in `get_async_actions()`.
+  `call_llm` builds a server's tool list from the *event*, so while it was only in the async
+  list the model was never offered it in the one place it could have worked.
+
+`test_send_to_address_reaches_the_named_address_only` asserts both halves: the named observer
+receives the payload, and the triggering peer does not.
 
 ### 6. No Multi-packet Responses
 
