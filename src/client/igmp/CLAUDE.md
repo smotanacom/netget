@@ -8,9 +8,12 @@ which doesn't require root privileges for basic operations.
 
 ## Library Choices
 
-### Primary Approach: Socket Options (socket2)
+### Primary Approach: socket options on the client's own tokio socket
 
-- **Library**: `socket2` v0.5 (already a NetGet dependency)
+- **Library**: `tokio::net::UdpSocket`'s `join_multicast_v4` / `leave_multicast_v4`, which are
+  the same `IP_ADD_MEMBERSHIP` / `IP_DROP_MEMBERSHIP` options `socket2` exposes. They are called
+  on the socket the receive loop polls — not on a socket created for the call, which is what the
+  first version did and why the membership died the moment the match arm ended.
 - **Purpose**: Multicast group join/leave using `IP_ADD_MEMBERSHIP` and `IP_DROP_MEMBERSHIP`
 - **Privileges**: No root required for receiving multicast
 - **Pros**:
@@ -39,17 +42,16 @@ The IGMP client is **connectionless** but maintains **active listening state**:
 3. **Group Management**: Join/leave multicast groups dynamically via LLM actions
 4. **Reception Loop**: Async loop receives multicast datagrams from joined groups
 
-### State Machine
+### No state machine, deliberately
 
-```
-Idle → Processing → Idle
-       ↓
-   Accumulating (if queued data exists)
-```
+Most protocols here carry an Idle → Processing → Accumulating machine, and this client used to
+carry a copy of it. It could never fire. One task does both the `recv_from` and the `await` on
+the LLM call, so `Processing` was unobservable, the queue it guarded was only ever pushed to
+from the unreachable arm, and the Idle arm ended by **clearing** that queue — so had it ever
+worked it would have silently dropped the datagrams it collected. It is gone. Datagrams that
+arrive during an LLM round-trip wait in the kernel socket buffer, which is where they belong.
 
-- **Idle**: Waiting for multicast data
-- **Processing**: LLM handling current datagram
-- **Accumulating**: Queued data exists, waiting for LLM to finish
+Do not reintroduce one without a second reader to guard against.
 
 ### Multicast Group Tracking
 
@@ -68,8 +70,12 @@ The client tracks joined multicast groups in `IgmpClientData::joined_groups` (Ha
 
 2. **igmp_data_received** - Triggered on multicast datagram reception
     - Parameters:
-        - `data_hex`: Hexadecimal-encoded datagram payload
-        - `data_length`: Payload size in bytes
+        - `data_hex`: hex of the datagram, **capped at the first 2048 bytes**
+          (`MAX_EVENT_PAYLOAD_BYTES`). A UDP datagram can be 64 KiB, which is 128 KiB of hex —
+          enough to fill a model's context with one frame, and to do it again for the next.
+        - `data_length`: the **full** size in bytes, whether or not `data_hex` was cut
+        - `data_truncated`: true when `data_hex` is a prefix. The model is told what it is not
+          being shown rather than quietly handed one.
         - `source_addr`: Sender's IP:port
 
 ### Actions
@@ -106,9 +112,15 @@ The client tracks joined multicast groups in `IgmpClientData::joined_groups` (Ha
 3. **send_multicast**
     - Sends data to a multicast group
     - Parameters:
-        - `multicast_addr`: Destination multicast IP
-        - `port`: Destination port
-        - `data_hex`: Hex-encoded payload
+        - `multicast_addr`: Destination multicast IP — parsed as an `Ipv4Addr` by
+          `execute_action`, not at send time, so a bad value names the field the model got wrong
+          instead of failing on a synthesised `"addr:port"` string
+        - `port`: Destination port — range-checked to `u16` for the same reason
+        - `data_hex`: Hex-encoded payload. The field is documented as hex and the executor
+          **decodes** it (`hex::decode`), so what reaches the wire is the bytes, never the ASCII
+          of the hex string. The e2e test used to mock this as `"data"`, which is not the
+          declared field: `execute_action` refused it, no datagram was sent, and the test passed
+          anyway. See `tests/client/igmp/e2e_test.rs`.
     - Example:
       ```json
       {
@@ -127,16 +139,20 @@ The client tracks joined multicast groups in `IgmpClientData::joined_groups` (Ha
 
 ### Multicast Join/Leave
 
-The implementation uses `socket2::Socket::join_multicast_v4()` and `leave_multicast_v4()`:
+`UdpSocket::join_multicast_v4()` / `leave_multicast_v4()` on the client's own socket:
 
 ```rust
-let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-sock.join_multicast_v4(&multicast_ip, &interface_ip)?; // Kernel sends IGMP report
-sock.leave_multicast_v4(&multicast_ip, &interface_ip)?; // Kernel sends IGMP leave
+// On the client's OWN receive socket - see the bug note at the foot of this file.
+socket.join_multicast_v4(multicast_ip, interface_ip)?;  // Kernel sends IGMP report
+socket.leave_multicast_v4(multicast_ip, interface_ip)?; // Kernel sends IGMP leave
 ```
 
 **Important**: These operations trigger the kernel to send IGMP protocol messages (Membership Report, Leave Group). The
-client doesn't construct raw IGMP packets.
+client doesn't construct raw IGMP packets — which is also why an injected join reports
+`Executed`, never `Sent`: NetGet writes no bytes of its own.
+
+A repeated join is answered from `joined_groups` rather than passed to the kernel, so it reads
+`Executed { detail: "already a member of …" }` instead of failing with `EADDRINUSE`.
 
 ### Multicast Reception
 

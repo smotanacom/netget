@@ -67,7 +67,13 @@ impl Protocol for IgmpProtocol {
                  So with no operator policy (no instruction, no handler) the server applies the \
                  spec-safe STATIC default of advertising no memberships and staying silent, with \
                  NO LLM round-trip; the LLM is consulted only when the operator supplies the \
-                 membership policy. Zero-LLM path is compile-verified; full e2e needs root.",
+                 membership policy. Evidence: the packet builders, the RFC 1071 checksum, the \
+                 IP-header stripping and the RFC 2236/3376 response destinations are covered \
+                 field-by-field by tests/server/igmp/packet_codec_test.rs, which needs no \
+                 privilege. The raw socket itself is NOT: every e2e test is root-gated and \
+                 `#[ignore]`d, so no ordinary test run has ever had this server receive a \
+                 packet. Experimental for that reason - do not read the codec tests as \
+                 validation against a real IGMP router.",
             )
             .build()
     }
@@ -85,16 +91,23 @@ impl Protocol for IgmpProtocol {
         use crate::llm::actions::StartupExamples;
         use serde_json::json;
 
-        // Deterministic: answer every membership query with a report for the
-        // queried group, no LLM call.
+        // Deterministic: answer a membership query with a report for the group this
+        // server is configured to be a member of, no LLM call.
+        //
+        // It does NOT echo the queried group back. A General Query names group 0.0.0.0,
+        // so echoing would emit `send_membership_report` for 0.0.0.0 - a report in a
+        // group that does not exist, which the executor refuses. Which groups to report
+        // is membership policy and is never derivable from a general query; that is the
+        // whole reason this protocol has a policy at all.
         let script = r#"import json, sys
+GROUP = "239.255.255.250"
 data = json.load(sys.stdin)
 event = data["event"]
+actions = []
 if data["event_type_id"] == "igmp_query_received":
-    actions = [{"type": "send_membership_report",
-                "group_address": event.get("group_address", "224.0.0.1")}]
-else:
-    actions = []
+    queried = event.get("group_address", "0.0.0.0")
+    if event.get("query_type") == "General" or queried == GROUP:
+        actions = [{"type": "send_membership_report", "group_address": GROUP}]
 print(json.dumps({"actions": actions}))"#;
 
         StartupExamples::new(
@@ -177,46 +190,59 @@ impl Server for IgmpProtocol {
 }
 
 impl IgmpProtocol {
-    /// Execute join_group async action
-    fn execute_join_group(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let group = action
-            .get("group_address")
-            .and_then(|v| v.as_str())
-            .context("Missing 'group_address' parameter")?;
-
-        let _addr: Ipv4Addr = group.parse().context("Invalid IPv4 multicast address")?;
-
-        // Return the group address as a custom result for async processing
-        Ok(ActionResult::Custom {
-            name: "igmp_join_group".to_string(),
-            data: json!({"group_address": group}),
-        })
-    }
-
-    /// Execute leave_group async action
-    fn execute_leave_group(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let group = action
-            .get("group_address")
-            .and_then(|v| v.as_str())
-            .context("Missing 'group_address' parameter")?;
-
-        let _addr: Ipv4Addr = group.parse().context("Invalid IPv4 multicast address")?;
-
-        // Return the group address as a custom result for async processing
-        Ok(ActionResult::Custom {
-            name: "igmp_leave_group".to_string(),
-            data: json!({"group_address": group}),
-        })
-    }
-
-    /// Execute send_membership_report sync action
-    fn execute_send_membership_report(&self, action: serde_json::Value) -> Result<ActionResult> {
+    /// Read `group_address` and require it to be a real IPv4 multicast group.
+    ///
+    /// Every IGMP verb here names a group, and 224.0.0.0/4 is the only range any of them means
+    /// anything in: `join_multicast_v4` refuses anything else with `EINVAL`, and a Membership
+    /// Report or Leave for a unicast address is a claim no router can act on. Rejecting here
+    /// names the offending field back to the model instead of failing later as a bare OS errno,
+    /// or - worse - putting a nonsense group on the wire.
+    ///
+    /// It also catches the case the *general* query makes easy to get wrong: a general query
+    /// carries group 0.0.0.0, so echoing the queried group straight back into a report produces
+    /// `send_membership_report` for 0.0.0.0. Which groups to report is membership policy; it is
+    /// never derivable from a general query.
+    fn group_address(action: &serde_json::Value, verb: &str) -> Result<Ipv4Addr> {
         let group = action
             .get("group_address")
             .and_then(|v| v.as_str())
             .context("Missing 'group_address' parameter")?;
 
         let addr: Ipv4Addr = group.parse().context("Invalid IPv4 multicast address")?;
+
+        if !addr.is_multicast() {
+            return Err(anyhow::anyhow!(
+                "{verb} needs an IPv4 multicast group in 224.0.0.0/4, got {addr}"
+            ));
+        }
+        Ok(addr)
+    }
+
+    /// Execute join_group async action
+    fn execute_join_group(&self, action: serde_json::Value) -> Result<ActionResult> {
+        let addr = Self::group_address(&action, "join_group")?;
+
+        // Return the group address as a custom result for async processing
+        Ok(ActionResult::Custom {
+            name: "igmp_join_group".to_string(),
+            data: json!({"group_address": addr.to_string()}),
+        })
+    }
+
+    /// Execute leave_group async action
+    fn execute_leave_group(&self, action: serde_json::Value) -> Result<ActionResult> {
+        let addr = Self::group_address(&action, "leave_group")?;
+
+        // Return the group address as a custom result for async processing
+        Ok(ActionResult::Custom {
+            name: "igmp_leave_group".to_string(),
+            data: json!({"group_address": addr.to_string()}),
+        })
+    }
+
+    /// Execute send_membership_report sync action
+    fn execute_send_membership_report(&self, action: serde_json::Value) -> Result<ActionResult> {
+        let addr = Self::group_address(&action, "send_membership_report")?;
 
         // Build IGMPv2 Membership Report
         let packet = build_igmp_v2_report(addr)?;
@@ -225,12 +251,7 @@ impl IgmpProtocol {
 
     /// Execute send_leave_group sync action
     fn execute_send_leave_group_message(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let group = action
-            .get("group_address")
-            .and_then(|v| v.as_str())
-            .context("Missing 'group_address' parameter")?;
-
-        let addr: Ipv4Addr = group.parse().context("Invalid IPv4 multicast address")?;
+        let addr = Self::group_address(&action, "send_leave_group")?;
 
         // Build IGMPv2 Leave Group message
         let packet = build_igmp_v2_leave(addr)?;
@@ -238,58 +259,39 @@ impl IgmpProtocol {
     }
 }
 
-/// Build an IGMPv2 Membership Report packet
+/// Build an IGMPv2 Membership Report packet (RFC 2236 §2, type 0x16)
 fn build_igmp_v2_report(group: Ipv4Addr) -> Result<Vec<u8>> {
-    let mut packet = Vec::new();
-
-    // Type: Membership Report (0x16)
-    packet.push(0x16);
-
-    // Max Response Time: 0 for reports
-    packet.push(0x00);
-
-    // Checksum: placeholder (will calculate)
-    packet.push(0x00);
-    packet.push(0x00);
-
-    // Group Address
-    packet.extend_from_slice(&group.octets());
-
-    // Calculate and insert checksum
-    let checksum = calculate_checksum(&packet);
-    packet[2] = (checksum >> 8) as u8;
-    packet[3] = (checksum & 0xFF) as u8;
-
-    Ok(packet)
+    Ok(build_igmp_v2_message(0x16, group))
 }
 
-/// Build an IGMPv2 Leave Group packet
+/// Build an IGMPv2 Leave Group packet (RFC 2236 §2, type 0x17)
 fn build_igmp_v2_leave(group: Ipv4Addr) -> Result<Vec<u8>> {
-    let mut packet = Vec::new();
+    Ok(build_igmp_v2_message(0x17, group))
+}
 
-    // Type: Leave Group (0x17)
-    packet.push(0x17);
+/// The RFC 2236 §2 message, which is the same eight octets for every type: one type byte, one
+/// Max Response Time (unused and zero in everything but a Query), a two-byte checksum, and the
+/// group. Written once so the checksum can never be computed over one layout and stamped into
+/// another.
+fn build_igmp_v2_message(msg_type: u8, group: Ipv4Addr) -> Vec<u8> {
+    let g = group.octets();
+    let mut packet = vec![msg_type, 0x00, 0x00, 0x00, g[0], g[1], g[2], g[3]];
 
-    // Max Response Time: 0 for leave messages
-    packet.push(0x00);
-
-    // Checksum: placeholder (will calculate)
-    packet.push(0x00);
-    packet.push(0x00);
-
-    // Group Address
-    packet.extend_from_slice(&group.octets());
-
-    // Calculate and insert checksum
-    let checksum = calculate_checksum(&packet);
+    // Computed over the message with the checksum field zeroed, then written into it.
+    let checksum = igmp_checksum(&packet);
     packet[2] = (checksum >> 8) as u8;
     packet[3] = (checksum & 0xFF) as u8;
 
-    Ok(packet)
+    packet
 }
 
-/// Calculate Internet Checksum (RFC 1071)
-fn calculate_checksum(data: &[u8]) -> u16 {
+/// The RFC 1071 Internet Checksum over an IGMP message.
+///
+/// Public because it is the one piece of IGMP the receive side and the send side must agree on:
+/// `IgmpMessage::checksum_valid` folds a *received* message through this same function and
+/// requires 0, which holds exactly when the checksum field equals the complement of everything
+/// else. A second, separately written verifier would be a second chance to disagree.
+pub fn igmp_checksum(data: &[u8]) -> u16 {
     // `data.len() - 1` below underflows for an empty slice, which would then index far out of
     // range and panic. Guard explicitly rather than relying on every caller.
     if data.is_empty() {

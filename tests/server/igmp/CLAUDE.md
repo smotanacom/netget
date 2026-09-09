@@ -1,14 +1,68 @@
-# IGMP E2E Test Documentation
+# IGMP Server Test Documentation
 
-## Test Strategy
+## What actually runs
 
-The IGMP E2E tests verify that the LLM-controlled IGMP server correctly handles multicast group membership protocol
-operations. Since there's no standard Rust IGMP client library, tests manually construct IGMP packets and verify
-responses.
+Two files, and the distinction matters more than anything else here:
+
+| File | Runs unprivileged? | Count |
+|---|---|---|
+| `packet_codec_test.rs` | **yes, always** | 16 |
+| `e2e_test.rs` | **no — every case is `#[ignore]`d behind root** | 4 |
+
+Before `packet_codec_test.rs` existed, `cargo test --no-default-features --features igmp --test
+server -- server::igmp` reported **`0 passed; 4 ignored`**: nothing about the IGMP server ran in
+any ordinary test run, on any machine, ever. An earlier version of this file claimed the
+opposite — "Test approach validates protocol logic without requiring root for test execution" —
+which was wrong twice: the tests need root, *and* they would not pass with it (see the second
+blocker below). Read every ✅ below as a claim about the code, never as a test result.
+
+## `packet_codec_test.rs` — the unprivileged evidence
+
+Pure functions only: no socket, no interface, no privilege, no LLM. It asserts field by field
+against the literal RFC 2236 §2 layout rather than against a golden blob, so a failure names the
+field that moved.
+
+- **Emitted packets.** `send_membership_report` and `send_leave_group` through the real
+  `execute_action`: length 8, the type byte, Max Response Time zeroed, the group at offsets 4-7,
+  and the checksum folding to 0. A report and a leave for one group must differ in the type byte
+  **and** the checksum — a builder that forgot to recompute after changing the type would pass
+  every other assertion.
+- **The checksum.** Every single-bit flip in all 8 octets must invalidate it (64 cases), and
+  `igmp_checksum(&[])` must not underflow the `data.len() - 1` in its fold loop.
+- **Destinations.** `response_destination` against RFC 2236 §9 / §2.9 and RFC 3376 §4.2.14,
+  including the v1 and v3 report cases that used to fall back to the sender.
+- **Hostile input.** `igmp_payload` over every illegal IHL (0..5 words, and an IHL longer than
+  the packet), every non-IGMP protocol number, and every length below 20; `IgmpMessage::parse`
+  over all 256 type bytes and every length below 8; and `checksum_valid` on a corrupted message
+  that still parses.
+- **The executor.** Every rejection path of all four group verbs — missing, unparseable, IPv6,
+  numeric, `null`, unicast, `0.0.0.0`, `240.0.0.1`, `255.255.255.255` — must be an error rather
+  than a panic, because a panic here happens inside a spawned task where `tokio::spawn` swallows
+  it and the server goes on reporting `Running`.
+
+## `e2e_test.rs` — root-gated, and additionally broken
+
+All four cases are `#[ignore]`d. Two independent blockers, both of which have to be fixed before
+un-ignoring them is worth anything:
+
+1. **Raw-socket privilege.** `server_startup` refuses IGMP without root/`CAP_NET_RAW`
+   (`PrivilegeRequirement::RawSockets`), netget starts no server, and the harness fails with
+   "No servers or clients started".
+2. **The test client blocks the runtime.** It uses the blocking `std::net::UdpSocket`, and
+   `#[tokio::test]` runs each case on a *current-thread* runtime shared with the in-process
+   mocked Ollama server. A blocking `recv_from` parks the only worker, the mock cannot answer,
+   and the read times out for a reason that has nothing to do with IGMP. Port them to
+   `tokio::net::UdpSocket` as `tests/server/sip/e2e_test.rs` did.
+
+A third problem is in the design rather than the plumbing: the tests send IGMP **over UDP to a
+port**, while the server reads a **raw IPPROTO_IGMP socket** that receives whole IP packets and
+strips the header itself. Those two do not meet. Exercising the real receive path needs a raw
+socket on the sending side too, i.e. root on both ends.
 
 ## Test Organization
 
-All tests are in `tests/server/igmp/e2e_test.rs` with feature gate `#[cfg(all(test, feature = "igmp"))]`.
+Both files are declared in `tests/server/igmp/mod.rs` and feature-gated
+`#[cfg(all(test, feature = "igmp"))]`.
 
 ## Test Cases
 
@@ -125,11 +179,11 @@ Tests manually construct IGMPv2 packets:
 
 **Implementation**: IGMP server uses raw IP sockets (IPPROTO_IGMP)
 
-**Testing**: Tests use `std::net::UdpSocket` for simplicity
-
-- Tests send raw IGMP packets via UDP to server port
-- Server implementation uses actual raw sockets with root privileges
-- Test approach validates protocol logic without requiring root for test execution
+**Testing**: The `#[ignore]`d e2e tests use `std::net::UdpSocket` and send IGMP payloads to a
+UDP port. The server does not read a UDP port — it reads a raw IPPROTO_IGMP socket that receives
+whole IP packets — so this does **not** validate protocol logic without root; it validates
+nothing at all until both ends are raw sockets. `packet_codec_test.rs` is what covers the
+protocol logic unprivileged, by calling the pure functions directly.
 
 **Production**: Server uses `libc::socket()` with SOCK_RAW and IPPROTO_IGMP
 
@@ -137,15 +191,10 @@ Tests manually construct IGMPv2 packets:
 
 ### 1. Test Transport
 
-**Note**: Tests use UDP sockets while server uses raw IP sockets
-
-**Reason**:
-
-- Avoids requiring root privileges for test execution
-- Simplifies test setup and CI/CD integration
-- Server still receives/processes packets correctly
-
-**Impact**: Tests verify protocol logic and LLM decision-making
+**Note**: the e2e tests use UDP sockets while the server uses raw IP sockets. These are not the
+same transport, and the packets never meet — which is one reason the tests were never observed
+to pass. Do not read the UDP transport as "the same test without root"; it is a different test
+that exercises nothing on the server side.
 
 **Production Deployment**: Server requires root or CAP_NET_RAW capability
 
@@ -171,26 +220,24 @@ Tests manually construct IGMPv2 packets:
 
 ## Running Tests
 
-### Run all IGMP tests:
+`--test` names a *target* (`server`), not a path; the module path is a filter argument.
+
+### The tests that run (no privilege, no Ollama):
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features igmp --test server::igmp::e2e_test
+./cargo-isolated.sh test --no-default-features --features igmp \
+    --test server -- server::igmp::packet_codec --test-threads=100
 ```
 
-### Run specific test:
+### Everything, including the ignored e2e cases:
 
 ```bash
-./cargo-isolated.sh test --no-default-features --features igmp --test server::igmp::e2e_test -- test_igmp_general_query_response
+sudo ./cargo-isolated.sh test --no-default-features --features igmp \
+    --test server -- server::igmp --include-ignored --test-threads=100
 ```
 
-### Prerequisites:
-
-1. Build release binary first:
-   ```bash
-   ./cargo-isolated.sh build --release --features igmp
-   ```
-
-2. Ensure Ollama is running with qwen3-coder:30b model
+Expect the e2e cases to fail even under `sudo` until the blocking-socket and UDP-vs-raw problems
+above are fixed. The mocked Ollama runs in-process, so no real model is needed.
 
 ## Test Reliability
 

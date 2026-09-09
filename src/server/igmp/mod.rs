@@ -58,11 +58,92 @@ impl IgmpMessageType {
     }
 }
 
+/// Smallest legal IPv4 header (IHL 5 words), in bytes.
+const MIN_IP_HEADER: usize = 20;
+/// Largest legal IPv4 header (IHL 15 words), in bytes.
+const MAX_IP_HEADER: usize = 60;
+/// IANA protocol number for IGMP.
+const IP_PROTO_IGMP: u8 = 2;
+/// `224.0.0.2`, the ALL-ROUTERS group a Leave Group is addressed to (RFC 2236 §2.9).
+const ALL_ROUTERS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 2);
+/// `224.0.0.22`, the group every IGMPv3 Membership Report is addressed to (RFC 3376 §4.2.14).
+const ALL_IGMPV3_ROUTERS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 22);
+
+/// Why a captured IP packet carries no IGMP message we can act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadReject {
+    /// Fewer bytes than the smallest possible IPv4 header.
+    TooShort(usize),
+    /// The IHL field names a header length that is illegal, or longer than the packet.
+    HeaderLength { ihl: usize, len: usize },
+    /// The IPv4 protocol field is not 2.
+    NotIgmp(u8),
+}
+
+impl std::fmt::Display for PayloadReject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooShort(len) => write!(f, "packet too short for an IPv4 header ({len} bytes)"),
+            Self::HeaderLength { ihl, len } => {
+                write!(f, "malformed IPv4 header (IHL={ihl} bytes, packet={len})")
+            }
+            Self::NotIgmp(proto) => write!(f, "IP protocol {proto} is not IGMP"),
+        }
+    }
+}
+
+/// Strip the IPv4 header a raw socket delivers and return the IGMP message inside.
+///
+/// Every index below is reachable from the wire, so each one is bounds-checked before it is
+/// taken. In particular the IHL field is four bits, so a hostile packet can name a header of
+/// 0..=60 bytes: without the lower bound `&raw[ihl..]` would silently hand the IP header itself
+/// to the IGMP parser, and without the upper one it would be an out-of-range slice and a panic
+/// inside the capture task — where `tokio::spawn` swallows it and the server goes on reporting
+/// `Running`.
+pub fn igmp_payload(raw: &[u8]) -> std::result::Result<&[u8], PayloadReject> {
+    if raw.len() < MIN_IP_HEADER {
+        return Err(PayloadReject::TooShort(raw.len()));
+    }
+    let ihl = (raw[0] & 0x0F) as usize * 4;
+    if !(MIN_IP_HEADER..=MAX_IP_HEADER).contains(&ihl) || raw.len() < ihl {
+        return Err(PayloadReject::HeaderLength {
+            ihl,
+            len: raw.len(),
+        });
+    }
+    if raw[9] != IP_PROTO_IGMP {
+        return Err(PayloadReject::NotIgmp(raw[9]));
+    }
+    Ok(&raw[ihl..])
+}
+
+/// Where an IGMP message we are about to emit has to be addressed.
+///
+/// This is spec-fixed, not a choice: a Membership Report goes to the group it reports
+/// (RFC 2236 §9), a Leave Group to ALL-ROUTERS `224.0.0.2` (§2.9), and an IGMPv3 report to
+/// `224.0.0.22` (RFC 3376 §4.2.14). Sending any of them back to whoever queried us — which is
+/// what the fallback does, and what v1 and v3 reports used to get — puts a multicast control
+/// message on a unicast address, where no router is listening for it.
+pub fn response_destination(packet: &[u8], peer: SocketAddr) -> SocketAddr {
+    if packet.len() < 8 {
+        return peer;
+    }
+    let group = Ipv4Addr::new(packet[4], packet[5], packet[6], packet[7]);
+    match packet[0] {
+        0x12 | 0x16 if group.is_multicast() => SocketAddr::new(std::net::IpAddr::V4(group), 0),
+        0x17 => SocketAddr::new(std::net::IpAddr::V4(ALL_ROUTERS), 0),
+        0x22 => SocketAddr::new(std::net::IpAddr::V4(ALL_IGMPV3_ROUTERS), 0),
+        _ => peer,
+    }
+}
+
 /// Parsed IGMP message
 #[derive(Debug, Clone)]
 pub struct IgmpMessage {
     pub msg_type: IgmpMessageType,
     pub max_response_time: u8,
+    /// The checksum field as it arrived, bytes 2-3. See [`Self::checksum_valid`].
+    pub checksum: u16,
     pub group_address: Ipv4Addr,
     pub raw_data: Vec<u8>,
 }
@@ -81,16 +162,28 @@ impl IgmpMessage {
 
         let max_response_time = data[1];
 
-        // Checksum is at bytes 2-3 (we don't verify it for now)
+        let checksum = u16::from_be_bytes([data[2], data[3]]);
 
         let group_address = Ipv4Addr::new(data[4], data[5], data[6], data[7]);
 
         Ok(Self {
             msg_type,
             max_response_time,
+            checksum,
             group_address,
             raw_data: data.to_vec(),
         })
+    }
+
+    /// Whether the RFC 1071 checksum over the whole message is correct.
+    ///
+    /// Checked separately from [`Self::parse`] so the two failures stay distinguishable in the
+    /// log: a message we cannot parse is not IGMP, one that fails here *is* IGMP and arrived
+    /// corrupt. Acting on a corrupt message would spend an LLM round-trip — and possibly a
+    /// Membership Report, which is a positive claim — on bytes no conforming receiver would
+    /// have accepted.
+    pub fn checksum_valid(&self) -> bool {
+        crate::server::igmp::actions::igmp_checksum(&self.raw_data) == 0
     }
 
     /// Check if this is a general query (group address is 0.0.0.0)
@@ -228,33 +321,15 @@ impl IgmpServer {
                     Ok((n, peer_addr)) => {
                         let raw_data = &buffer[..n];
 
-                        // Raw sockets receive the full IP packet including IP header
-                        // We need to strip the IP header to get the IGMP payload
-                        // IP header is minimum 20 bytes, but can be longer with options
-                        if raw_data.len() < 20 {
-                            debug!("IGMP received packet too short ({} bytes)", n);
-                            continue;
-                        }
-
-                        // Extract IP header length from the first byte (IHL field, lower 4 bits)
-                        let ihl = (raw_data[0] & 0x0F) as usize * 4; // IHL is in 32-bit words
-
-                        if raw_data.len() < ihl {
-                            debug!("IGMP received malformed IP packet (IHL={}, len={})", ihl, n);
-                            continue;
-                        }
-
-                        // Extract protocol field from IP header (byte 9)
-                        let ip_protocol = raw_data[9];
-                        if ip_protocol != 2 {
-                            // Not IGMP protocol, skip
-                            debug!("Received non-IGMP IP packet (protocol={})", ip_protocol);
-                            continue;
-                        }
-
-                        // Extract the IGMP payload (after IP header)
-                        let igmp_data = &raw_data[ihl..];
-                        let data = igmp_data.to_vec();
+                        // Raw sockets receive the whole IP packet; every bounds check that
+                        // makes stripping the header safe lives in `igmp_payload`.
+                        let data = match igmp_payload(raw_data) {
+                            Ok(payload) => payload.to_vec(),
+                            Err(reject) => {
+                                debug!("IGMP discarded a capture from {}: {}", peer_addr, reject);
+                                continue;
+                            }
+                        };
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
 
@@ -264,7 +339,6 @@ impl IgmpServer {
                             ProtocolConnectionInfo,
                         };
                         let now = std::time::Instant::now();
-                        let state = server_state.lock().await;
                         let conn_state = ServerConnectionState {
                             id: connection_id,
                             remote_addr: peer_addr,
@@ -278,7 +352,6 @@ impl IgmpServer {
                             status_changed_at: now,
                             protocol_info: ProtocolConnectionInfo::empty(),
                         };
-                        drop(state);
                         app_state
                             .add_connection_to_server(server_id, conn_state)
                             .await;
@@ -296,6 +369,20 @@ impl IgmpServer {
                                 continue;
                             }
                         };
+
+                        // A message that fails its own checksum is corrupt, not merely
+                        // unfamiliar. Answering one would spend an LLM round-trip - and
+                        // possibly a Membership Report, which is a positive membership claim -
+                        // on bytes a conforming receiver would have dropped.
+                        if !igmp_msg.checksum_valid() {
+                            log.warn(format!(
+                                "IGMP {} from {} discarded: bad checksum 0x{:04x} decision=bad_checksum",
+                                igmp_msg.msg_type.as_str(),
+                                peer_addr,
+                                igmp_msg.checksum
+                            ));
+                            continue;
+                        }
 
                         // Summary + full payload FileOnly: the igmp_* event templates
                         // render the equivalent line to the TUI.
@@ -448,40 +535,10 @@ impl IgmpServer {
                                         if let Some(output_data) =
                                             protocol_result.get_all_output().first()
                                         {
-                                            // Determine destination address based on IGMP packet type
-                                            let dest_addr = if output_data.len() >= 8 {
-                                                let msg_type = output_data[0];
-                                                match msg_type {
-                                                    0x16 => {
-                                                        // Membership Report - send to the group address
-                                                        let group = Ipv4Addr::new(
-                                                            output_data[4],
-                                                            output_data[5],
-                                                            output_data[6],
-                                                            output_data[7],
-                                                        );
-                                                        SocketAddr::new(
-                                                            std::net::IpAddr::V4(group),
-                                                            0,
-                                                        )
-                                                    }
-                                                    0x17 => {
-                                                        // Leave Group - send to ALL_ROUTERS (224.0.0.2)
-                                                        SocketAddr::new(
-                                                            std::net::IpAddr::V4(Ipv4Addr::new(
-                                                                224, 0, 0, 2,
-                                                            )),
-                                                            0,
-                                                        )
-                                                    }
-                                                    _ => {
-                                                        // Unknown type, send to peer
-                                                        peer_addr
-                                                    }
-                                                }
-                                            } else {
-                                                peer_addr
-                                            };
+                                            // Spec-fixed, and a pure function so it is testable
+                                            // without a raw socket.
+                                            let dest_addr =
+                                                response_destination(output_data, peer_addr);
 
                                             // Send the IGMP packet via raw socket
                                             if let Err(e) =
@@ -522,6 +579,22 @@ impl IgmpServer {
                                                         if let Ok(group_addr) =
                                                             group_str.parse::<Ipv4Addr>()
                                                         {
+                                                            // `joined_groups` is what makes a
+                                                            // repeated join idempotent: without
+                                                            // this check the second one fails
+                                                            // with EADDRINUSE and is logged as
+                                                            // an error, when in fact the
+                                                            // membership the model asked for
+                                                            // already exists.
+                                                            if server_state_clone
+                                                                .lock()
+                                                                .await
+                                                                .joined_groups
+                                                                .contains(&group_addr)
+                                                            {
+                                                                log.debug(format!("IGMP already a member of {}; join ignored", group_addr));
+                                                                continue;
+                                                            }
                                                             // Join the multicast group on all interfaces (0.0.0.0)
                                                             match socket_clone.join_multicast_v4(
                                                                 group_addr,
