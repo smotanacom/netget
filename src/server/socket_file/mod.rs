@@ -58,6 +58,23 @@ fn describe_file_type(ft: &std::fs::FileType) -> &'static str {
     }
 }
 
+/// Removes the socket node this server bound, when the accept loop ends — including when the
+/// task is aborted by `stop_server`, because aborting drops the task future and with it this
+/// guard.
+///
+/// Without it a stopped server left its socket node on disk advertising a service nothing was
+/// listening on: `connect(2)` gets ECONNREFUSED rather than ENOENT, which reads as "the service
+/// is down" instead of "there is no service". `named_pipe` and `pty` both clean up after
+/// themselves; this one did not. The node is always one we created — the bind is preceded by a
+/// guarded unlink of any stale socket at the same path.
+struct SocketCleanup(PathBuf);
+
+impl Drop for SocketCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Unix domain socket server that listens for incoming connections
 pub struct SocketFileServer;
 
@@ -135,7 +152,10 @@ impl SocketFileServer {
 
         // Spawn accept loop
         let task_registrar = app_state.clone();
+        let cleanup = SocketCleanup(socket_path.clone());
         let accept_handle = tokio::spawn(async move {
+            // Moved in so it drops (and unlinks) when the loop ends or the task is aborted.
+            let _cleanup = cleanup;
             loop {
                 match listener.accept().await {
                     Ok((stream, _)) => {
