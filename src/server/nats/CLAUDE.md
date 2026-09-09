@@ -44,6 +44,31 @@ nothing to ask the model about. The texts are the real server's
 (`Unknown Protocol Operation`, `Maximum Payload Violation`, …) because clients
 match on some of them.
 
+### What bounds the reader
+
+Three things, and it is worth knowing which does what, because for a long time
+only the first existed and the comments claimed it did the other two's job:
+
+- `MAX_CONTROL_LINE` (4096) bounds **one line**. It does not bound the buffer:
+  a `PUB` declares its own length and the reader buffers toward that.
+- `max_payload` bounds a **declared** size. It is checked against the whole
+  declared size of an `HPUB`, header block included, which is what nats-server's
+  `processHeaderPub` does. Checking only `total - header` left `header` free, and
+  since `header == total` is a zero-length body it passed everything —
+  `HPUB x 4000000000 4000000000` is 30 bytes on the wire and bought 4 GB of
+  buffering.
+- `max_payload + MAX_CONTROL_LINE + 16` bounds **what is actually buffered**. Past
+  that with nothing extractable, the peer is never going to complete a frame and
+  the connection is closed.
+
+Blank lines between frames are skipped iteratively, and the reader drains the run
+before parsing. Both matter. The skip used to recurse into `parse_frame` once per
+blank line, so 8 KB of newlines — a single `read` — recursed about 8000 levels and
+overflowed the stack; a Rust stack overflow is `SIGSEGV`, not a catchable panic, so
+`tokio::spawn` could not contain it and the entire NetGet process aborted. And with
+no eager drain, a peer sending only newlines grew the buffer by a chunk per read
+forever, because `parse_frame` reports `Ok(None)` having consumed nothing.
+
 ## Two tasks per connection
 
 - **Reader** — frames the stream (`parse_frame`), answers the non-decisions
@@ -64,7 +89,25 @@ the peer-injection task; the stream is `tokio::io::split`, never cloned.
 Both tasks are registered with `AppState::register_server_task`, not only the
 accept loop: aborting a task does not abort tasks it spawned, so a connection
 whose reader was registered nowhere would keep its socket alive past
-`stop_server`.
+`stop_server`. (The peer-injection task from `server/peer_support.rs` is the one
+exception, and it is shared infrastructure: it is self-terminating, ending when
+`remove_peer_handle` drops its sender.)
+
+A single `accept()` failure does **not** end the listener. Descriptor exhaustion
+and a peer hanging up between SYN and accept are transient, and breaking on them
+stopped the server accepting for good while `AppState` still showed it `Running` —
+a server that lies about being up, reached from the other direction. It retries
+with a 50 ms backoff and gives up only after `MAX_CONSECUTIVE_ACCEPT_ERRORS`.
+
+## Known gap: nothing reaps an idle connection
+
+There is no read deadline, no server-initiated `PING` timer and no cap on
+concurrent connections, and `.connectionless()` is deliberately unset (NATS is
+TCP, and setting it would have the 10-second idle sweep evict live sessions). A
+peer that connects and then says nothing holds a socket, two tasks and an
+`AppState` row until the server stops. This is repo-consistent — `src/server/tcp`
+is the same — but NATS is a protocol whose own `PING` could be used for liveness,
+and is not.
 
 ## What the model sees and controls
 

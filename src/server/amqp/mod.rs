@@ -66,6 +66,31 @@ const DEFAULT_HEARTBEAT: u16 = 60;
 const MAX_BODY_SIZE: u64 = 8 * 1024 * 1024;
 /// Largest number of channels one connection may hold open at once.
 const MAX_OPEN_CHANNELS: usize = 256;
+/// How much of a declared `body-size` is reserved up front.
+///
+/// `MAX_BODY_SIZE` bounds one channel, but a connection may open `MAX_OPEN_CHANNELS` of
+/// them and a content header costs a few dozen bytes. Reserving the full declared size meant
+/// ~256 small frames - a few KB on the wire, and no body bytes at all - bought an immediate
+/// 2 GiB allocation held until the connection dropped. `Vec` grows geometrically as the body
+/// frames actually arrive, so a real publisher pays at most one extra reallocation and an
+/// attacker pays for every byte it claims.
+const BODY_RESERVE_CHUNK: u64 = 64 * 1024;
+/// How long a peer may take to send the 8-byte protocol header.
+///
+/// This read happens before anything is negotiated, so nothing else bounds it. A peer that
+/// opened a socket and said nothing held the connection's four tasks and its `AppState` row
+/// for as long as it liked.
+const HANDSHAKE_TIMEOUT_SECS: u64 = 30;
+/// Read deadline applied when heartbeating is off.
+///
+/// `Session::heartbeat` is zero until the client's `Tune-Ok`, and AMQP lets a client answer
+/// `Tune-Ok` with zero to switch heartbeating off entirely - so "no heartbeat, no deadline"
+/// left the whole handshake untimed *and* handed an uncooperative peer a permanently untimed
+/// session. Deliberately long, because an idle consumer with heartbeats off is a real
+/// configuration; finite, which is the point.
+const IDLE_READ_TIMEOUT_SECS: u64 = 600;
+/// How many `accept()` failures in a row before the listener is treated as dead.
+const MAX_CONSECUTIVE_ACCEPT_ERRORS: u32 = 64;
 
 /// AMQP 0-9-1 broker.
 pub struct AmqpServer;
@@ -112,9 +137,15 @@ impl AmqpServer {
         let accept_status_tx = status_tx.clone();
 
         let accept_handle = tokio::spawn(async move {
+            // ECONNABORTED (a peer hanging up between SYN and accept) and EMFILE/ENFILE
+            // (descriptor exhaustion) are transient. Breaking on one stopped the listener for
+            // good and released the port while AppState went on reporting the server Running
+            // - a server that lies about being up, reached from the other direction.
+            let mut consecutive_accept_errors = 0u32;
             loop {
                 match listener.accept().await {
                     Ok((socket, peer_addr)) => {
+                        consecutive_accept_errors = 0;
                         Log::new(Some(&accept_status_tx))
                             .debug(format!("AMQP connection from {}", peer_addr));
 
@@ -134,9 +165,17 @@ impl AmqpServer {
                         });
                     }
                     Err(e) => {
+                        consecutive_accept_errors += 1;
+                        if consecutive_accept_errors >= MAX_CONSECUTIVE_ACCEPT_ERRORS {
+                            Log::new(Some(&accept_status_tx)).error(format!(
+                                "AMQP accept failed {} times in a row ({}); listener stopping",
+                                consecutive_accept_errors, e
+                            ));
+                            break;
+                        }
                         Log::new(Some(&accept_status_tx))
-                            .error(format!("AMQP accept error: {}", e));
-                        break;
+                            .warn(format!("AMQP accept error: {} - retrying", e));
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
                 }
             }
@@ -365,11 +404,25 @@ impl Session {
         offered_heartbeat: u16,
     ) -> Result<()> {
         // --- protocol header -------------------------------------------------
+        // Bounded: see HANDSHAKE_TIMEOUT_SECS. Nothing has been negotiated yet, so this read
+        // had no deadline of any kind.
         let mut header = [0u8; 8];
-        reader
-            .read_exact(&mut header)
-            .await
-            .map_err(|e| anyhow!("no AMQP protocol header from {}: {}", self.peer_addr, e))?;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
+            reader.read_exact(&mut header),
+        )
+        .await
+        {
+            Ok(result) => result
+                .map_err(|e| anyhow!("no AMQP protocol header from {}: {}", self.peer_addr, e))?,
+            Err(_) => {
+                return Err(anyhow!(
+                    "no AMQP protocol header from {} within {}s",
+                    self.peer_addr,
+                    HANDSHAKE_TIMEOUT_SECS
+                ))
+            }
+        };
         self.count_received(header.len()).await;
 
         if header != PROTOCOL_HEADER_091 {
@@ -432,21 +485,29 @@ impl Session {
         reader: &mut R,
         max_payload: usize,
     ) -> Result<Option<Frame>> {
-        let result = if self.heartbeat == 0 {
-            read_frame(reader, max_payload).await
+        // Section 4.2.7: a peer that sends nothing for two heartbeat intervals is dead. Where
+        // the peer switched heartbeating off, IDLE_READ_TIMEOUT_SECS applies instead - there
+        // is always a deadline, because there was previously none at all before Tune-Ok and
+        // none ever for a peer that answered zero.
+        let deadline = if self.heartbeat == 0 {
+            std::time::Duration::from_secs(IDLE_READ_TIMEOUT_SECS)
         } else {
-            // Section 4.2.7: a peer that sends nothing for two heartbeat intervals is dead.
-            let deadline = std::time::Duration::from_secs(self.heartbeat as u64 * 2);
-            match tokio::time::timeout(deadline, read_frame(reader, max_payload)).await {
-                Ok(result) => result,
-                Err(_) => {
-                    Log::new(Some(&self.status_tx)).warn(format!(
-                        "AMQP client {} sent nothing for {}s (two heartbeat intervals); closing",
-                        self.peer_addr,
-                        deadline.as_secs()
-                    ));
-                    Ok(None)
-                }
+            std::time::Duration::from_secs(self.heartbeat as u64 * 2)
+        };
+        let result = match tokio::time::timeout(deadline, read_frame(reader, max_payload)).await {
+            Ok(result) => result,
+            Err(_) => {
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "AMQP client {} sent nothing for {}s ({}); closing",
+                    self.peer_addr,
+                    deadline.as_secs(),
+                    if self.heartbeat == 0 {
+                        "heartbeating is off, so the idle timeout applies"
+                    } else {
+                        "two heartbeat intervals"
+                    }
+                ));
+                Ok(None)
             }
         };
         if let Ok(Some(frame)) = &result {
@@ -646,8 +707,9 @@ impl Session {
                 // client — and the refusal a handler asks for explicitly stays
                 // distinguishable from this one by its reply code and text.
                 Log::new(Some(&self.status_tx)).warn(format!(
-                    "AMQP handler made no decision for {}; refusing with 403. Answer \
-                     amqp_connection_open with amqp_connection_open_ok to accept clients.",
+                    "AMQP handler made no decision for {}: decision=fail_closed_no_answer; \
+                     refusing with 403. Answer amqp_connection_open with \
+                     amqp_connection_open_ok to accept clients.",
                     self.peer_addr
                 ));
                 self.send_connection_close(
@@ -783,9 +845,16 @@ impl Session {
             (CLASS_BASIC, BASIC_CANCEL) => {
                 let consumer_tag = d.short_string()?;
                 let bits = d.bits(1)?;
-                actions::unregister_consumer(self.server_id, &consumer_tag);
-                Log::new(Some(&self.status_tx))
-                    .debug(format!("AMQP basic.cancel '{}'", consumer_tag));
+                // Scoped to this connection: a tag is client-chosen and unique only within
+                // a connection, so without the check one client could cancel another's
+                // consumer by naming its tag - after which that client silently stopped
+                // receiving deliveries with no Basic.Cancel to explain it.
+                let cancelled =
+                    actions::unregister_consumer(self.server_id, self.connection_id, &consumer_tag);
+                Log::new(Some(&self.status_tx)).debug(format!(
+                    "AMQP basic.cancel '{}' (cancelled={})",
+                    consumer_tag, cancelled
+                ));
                 if !bits.first().copied().unwrap_or(false) {
                     let mut args = Encoder::new();
                     args.short_string(&consumer_tag);
@@ -945,6 +1014,30 @@ impl Session {
             consumer_tag, queue, channel
         ));
 
+        // Refuse a tag another connection already holds, before spending a model call on it.
+        // The consumer directory is keyed per server while tags are per connection, so
+        // letting the second registration through meant overwriting the first connection's
+        // socket handle - every later delivery for that tag went to the wrong client, and the
+        // tags are handed to the model in `list_consumers` on every publish event.
+        //
+        // 405 RESOURCE_LOCKED is what a broker answers when a client asks for something
+        // another connection is holding exclusively.
+        if actions::consumer_tag_taken_by_other(self.server_id, self.connection_id, &consumer_tag) {
+            Log::new(Some(&self.status_tx)).warn(format!(
+                "AMQP basic.consume refused: consumer tag '{}' belongs to another connection",
+                consumer_tag
+            ));
+            self.send_channel_close(
+                channel,
+                REPLY_RESOURCE_LOCKED,
+                "RESOURCE_LOCKED - consumer tag is in use by another connection",
+                CLASS_BASIC,
+                BASIC_CONSUME,
+            );
+            self.close_channel(channel);
+            return Ok(Next::Continue);
+        }
+
         if nowait {
             // No Consume-Ok is owed, so there is no decision to make; register the
             // consumer so deliveries can reach it.
@@ -1034,7 +1127,11 @@ impl Session {
             pending.properties = BasicProperties::decode(&mut d)?;
             pending.body_size = body_size;
             pending.header_seen = true;
-            pending.body.reserve(body_size as usize);
+            // Reserve for the first chunk only, not for the whole declared size - see
+            // BODY_RESERVE_CHUNK for why the declared size is not something to allocate on.
+            pending
+                .body
+                .reserve(body_size.min(BODY_RESERVE_CHUNK) as usize);
 
             // A message with an empty body has no body frames at all.
             if body_size == 0 {
@@ -1232,9 +1329,19 @@ impl Session {
                 HandlerOutcome::Wrote(self.protocol.written())
             }
             Err(e) => {
+                // Tagged as src/server/radius/ does, because on the wire the fail-closed
+                // paths below cannot carry the distinction: a Connection.Close 403 looks the
+                // same whether the model refused or the backend was down. The log is the only
+                // place the difference survives, so it has to be there.
+                let class = if crate::utils::WireFailure::classify(&e).is_overloaded() {
+                    "overloaded"
+                } else {
+                    "unavailable"
+                };
                 Log::new(Some(&self.status_tx)).warn(format!(
-                    "AMQP handler failed for {}: {}",
-                    event.event_type.id, e
+                    "AMQP handler failed for {}: decision=fail_closed_llm_error class={} \
+                     error={}",
+                    event.event_type.id, class, e
                 ));
                 HandlerOutcome::Wrote(self.protocol.written())
             }

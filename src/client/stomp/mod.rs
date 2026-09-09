@@ -132,6 +132,29 @@ impl StompClient {
         // supplies.
         let host = host_param.unwrap_or_else(|| host_of(&remote_addr));
 
+        // CONNECT is exempt from STOMP 1.2 header escaping (see `frame::should_escape`), so
+        // these three values reach the wire raw and nothing downstream can neutralise a
+        // newline in one. A `login` containing `\n` would forge an extra header on the
+        // handshake frame, and `\n\n` would end the header block. They come from startup
+        // parameters, which is the model or an MCP caller, so they are checked rather than
+        // trusted. Rejecting rather than escaping: a 1.0/1.1 broker would read an escape
+        // sequence literally, which is the whole reason the command is exempt.
+        for (field, value) in [
+            ("host", Some(host.as_str())),
+            ("login", login.as_deref()),
+            ("passcode", passcode.as_deref()),
+        ] {
+            if let Some(value) = value {
+                if !crate::server::stomp::frame::is_safe_unescaped_header(value) {
+                    anyhow::bail!(
+                        "STOMP startup parameter '{field}' may not contain a newline, carriage \
+                         return, colon or NUL: CONNECT headers are exempt from 1.2 escaping, so \
+                         such a value would forge a header rather than appear in this one"
+                    );
+                }
+            }
+        }
+
         let connect_frame = build_connect_frame(
             use_stomp_command,
             &host,

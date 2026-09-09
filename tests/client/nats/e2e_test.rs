@@ -137,6 +137,37 @@ mod nats_client_e2e_test {
             parse_server_frame(b"MSG greetings 7 99999\r\n", 10).unwrap_err(),
             ServerFrameError::MaximumPayloadViolation
         );
+        // ...and so is an HMSG, whose header length used to be unbounded: the limit was
+        // applied to `total - header`, so `header == total` gave a zero-length body that
+        // passed every check with `total` free. 4 GB of buffering from one 38-byte line.
+        assert_eq!(
+            parse_server_frame(b"HMSG greetings 7 4000000000 4000000000\r\n", 10).unwrap_err(),
+            ServerFrameError::MaximumPayloadViolation
+        );
+        // A declared size must never wrap the index that reads it. This one panicked on the
+        // `after_line + total_len` overflow in debug, and on a `start > end` slice in release.
+        let wrapping = format!("HMSG s 7 {max} {max}\r\n", max = usize::MAX);
+        assert_eq!(
+            parse_server_frame(wrapping.as_bytes(), usize::MAX).unwrap_err(),
+            ServerFrameError::MaximumPayloadViolation
+        );
+        // A run of blank lines must not recurse. The skip used to call parse_server_frame
+        // again per blank line, so 8 KB of newlines - one read - overflowed the stack, and a
+        // Rust stack overflow is SIGSEGV rather than a catchable panic: the whole NetGet
+        // process aborted. This test failing to complete *is* the regression.
+        let mut flood = vec![b'\n'; 100_000];
+        assert_eq!(parse_server_frame(&flood, MAX_PAYLOAD).unwrap(), None);
+        assert_eq!(
+            netget::client::nats::blank_line_prefix_len(&flood),
+            flood.len(),
+            "the reader must be able to drain the whole run, or the buffer grows forever"
+        );
+        flood.extend_from_slice(b"PING\r\n");
+        assert_eq!(
+            parse_server_frame(&flood, MAX_PAYLOAD).unwrap(),
+            Some((ServerFrame::Ping, flood.len())),
+            "a frame after the flood is still found, and the blank lines go with it"
+        );
         // A verb no broker sends is a stream that is no longer frame-aligned.
         assert_eq!(
             parse_server_frame(b"BOGUS\r\n", MAX_PAYLOAD).unwrap_err(),

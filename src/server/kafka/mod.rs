@@ -130,6 +130,10 @@ const ERR_UNKNOWN_SERVER_ERROR: i16 = -1;
 const ERR_NONE: i16 = 0;
 const ERR_CORRUPT_MESSAGE: i16 = 2;
 const ERR_UNKNOWN_TOPIC_OR_PARTITION: i16 = 3;
+/// Retriable in every Kafka client. Used when the *backend* is saturated rather than
+/// when anything about the request was wrong, so the client backs off and tries again
+/// instead of recording a permanent fault - the distinction `WireFailure` exists to draw.
+const ERR_REQUEST_TIMED_OUT: i16 = 7;
 const ERR_UNSUPPORTED_VERSION: i16 = 35;
 
 /// The API keys this broker implements, with the version range it implements for each.
@@ -173,7 +177,13 @@ enum Reply {
     /// An explicit `error_response` with a model-chosen Kafka error code.
     Error(i16),
     /// Nothing usable came back. Never treated as approval.
-    NoAnswer,
+    ///
+    /// Carries the error code to report, because the two ways of getting here are not the
+    /// same thing to a client: a saturated backend is transient and gets the retriable
+    /// `REQUEST_TIMED_OUT`, while a handler that ran and produced nothing usable gets
+    /// `UNKNOWN_SERVER_ERROR`, which clients treat as permanent. Collapsing both onto -1
+    /// made an overloaded backend look like a broken broker.
+    NoAnswer(i16),
 }
 
 impl KafkaServer {
@@ -851,7 +861,7 @@ impl KafkaServer {
                 ));
                 (vec![default_broker.clone()], Vec::new())
             }
-            Reply::NoAnswer => (vec![default_broker.clone()], Vec::new()),
+            Reply::NoAnswer(_) => (vec![default_broker.clone()], Vec::new()),
         };
 
         // Any topic the client explicitly asked about but the model did not describe is
@@ -860,7 +870,7 @@ impl KafkaServer {
         let fallback_error = match &reply {
             Reply::Data(_) => ERR_UNKNOWN_TOPIC_OR_PARTITION,
             Reply::Error(code) => *code,
-            Reply::NoAnswer => ERR_UNKNOWN_SERVER_ERROR,
+            Reply::NoAnswer(code) => *code,
         };
         for name in &requested_topics {
             let described = response_topics
@@ -875,7 +885,7 @@ impl KafkaServer {
             }
         }
 
-        if matches!(reply, Reply::NoAnswer) && requested_topics.is_empty() {
+        if matches!(reply, Reply::NoAnswer(_)) && requested_topics.is_empty() {
             Log::new(Some(status_tx)).warn(
                 "Kafka metadata: no answer from the model and no specific topic was requested; \
                  replying with the broker list and an empty topic list",
@@ -1089,7 +1099,7 @@ impl KafkaServer {
                         }
                     }
                     Reply::Error(code) => (code, -1),
-                    Reply::NoAnswer => (ERR_UNKNOWN_SERVER_ERROR, -1),
+                    Reply::NoAnswer(code) => (code, -1),
                 };
 
                 partition_responses.push(
@@ -1239,9 +1249,9 @@ impl KafkaServer {
                         .with_partition_index(partition_idx)
                         .with_error_code(code)
                         .with_records(Some(Bytes::new())),
-                    Reply::NoAnswer => PartitionData::default()
+                    Reply::NoAnswer(code) => PartitionData::default()
                         .with_partition_index(partition_idx)
-                        .with_error_code(ERR_UNKNOWN_SERVER_ERROR)
+                        .with_error_code(code)
                         .with_records(Some(Bytes::new())),
                 };
 
@@ -1340,7 +1350,7 @@ impl KafkaServer {
                         clamp_error_code(data.get("error_code").and_then(|v| v.as_i64()))
                     }
                     Reply::Error(code) => code,
-                    Reply::NoAnswer => ERR_UNKNOWN_SERVER_ERROR,
+                    Reply::NoAnswer(code) => code,
                 };
 
                 partition_responses.push(
@@ -1399,13 +1409,25 @@ impl KafkaServer {
         let execution = match result {
             Ok(r) => r,
             Err(e) => {
+                // The peer gets a category, the log gets the error - and the two ways of
+                // failing are tagged distinctly, as `src/server/radius/` does, because on
+                // the wire Kafka can only carry an error code and the log is the only place
+                // the difference survives.
+                let failure = crate::utils::WireFailure::classify(&e);
+                let (code, class) = if failure.is_overloaded() {
+                    (ERR_REQUEST_TIMED_OUT, "overloaded")
+                } else {
+                    (ERR_UNKNOWN_SERVER_ERROR, "unavailable")
+                };
                 Log::new(Some(status_tx)).warn(format!(
-                    "Kafka: no answer for {} ({}); replying with UNKNOWN_SERVER_ERROR rather than \
-                     a default",
+                    "Kafka: handler failed for {}: decision=fail_closed_llm_error class={} \
+                     error_code={} error={}",
                     event.id(),
+                    class,
+                    code,
                     e
                 ));
-                return Reply::NoAnswer;
+                return Reply::NoAnswer(code);
             }
         };
 
@@ -1416,6 +1438,8 @@ impl KafkaServer {
                 if name == expected_action {
                     return Reply::Data(data);
                 }
+                // Falls through to `error_response` below; keeping the two apart in the log
+                // is what makes a model's deliberate refusal distinguishable from silence.
                 if name == "error_response" {
                     let mut code =
                         clamp_error_code(data.get("error_code").and_then(|v| v.as_i64()));
@@ -1429,6 +1453,11 @@ impl KafkaServer {
                         ));
                         code = ERR_UNKNOWN_SERVER_ERROR;
                     }
+                    Log::new(Some(status_tx)).info(format!(
+                        "Kafka: {} refused: decision=model_reject error_code={}",
+                        event.id(),
+                        code
+                    ));
                     return Reply::Error(code);
                 }
                 debug!(
@@ -1440,12 +1469,17 @@ impl KafkaServer {
             }
         }
 
+        // The handler ran and produced nothing this event can use. Distinct from the
+        // backend failing above: permanent as far as the client is concerned, and tagged
+        // so an operator can tell the two apart in the log.
         Log::new(Some(status_tx)).warn(format!(
-            "Kafka: {} produced no '{}' and no 'error_response'; replying UNKNOWN_SERVER_ERROR",
+            "Kafka: {} produced no '{}' and no 'error_response': decision=model_silent \
+             error_code={}",
             event.id(),
-            expected_action
+            expected_action,
+            ERR_UNKNOWN_SERVER_ERROR
         ));
-        Reply::NoAnswer
+        Reply::NoAnswer(ERR_UNKNOWN_SERVER_ERROR)
     }
 }
 

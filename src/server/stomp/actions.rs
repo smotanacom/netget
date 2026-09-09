@@ -234,9 +234,11 @@ fn execute_send_connected(action: &serde_json::Value) -> Result<ActionResult> {
 
     let mut headers = vec![("version".to_string(), version.to_string())];
     if let Some(session) = action.get("session").and_then(|v| v.as_str()) {
+        reject_unescapable("session", session)?;
         headers.push(("session".to_string(), session.to_string()));
     }
     if let Some(server) = action.get("server").and_then(|v| v.as_str()) {
+        reject_unescapable("server", server)?;
         headers.push(("server".to_string(), server.to_string()));
     }
     // Never taken from the action: see STOMP_HEARTBEAT.
@@ -245,6 +247,28 @@ fn execute_send_connected(action: &serde_json::Value) -> Result<ActionResult> {
     Ok(ActionResult::Output(
         StompFrame::new("CONNECTED", headers, Vec::new()).encode(),
     ))
+}
+
+/// Refuse a value that would forge a header on a `CONNECTED` frame.
+///
+/// This is the one place in this protocol where the model's string reaches the wire without
+/// the escaper in front of it: STOMP 1.2 exempts `CONNECT`/`STOMP`/`CONNECTED` from escaping,
+/// so `encode()` writes their header values raw. A `session` containing a newline injects an
+/// arbitrary extra header; `\n\n` ends the header block and starts a body. The protocol's own
+/// startup example builds the session out of peer input (`'session-' + login`), so this is
+/// reachable from a script handler as readily as from the model.
+///
+/// It also keeps the documented interop honest: `async-stomp` unescapes `CONNECTED` headers
+/// unconditionally, so a value with a backslash in it would come back changed.
+fn reject_unescapable(field: &str, value: &str) -> Result<()> {
+    if !crate::server::stomp::frame::is_safe_unescaped_header(value) {
+        return Err(anyhow::anyhow!(
+            "'{field}' may not contain a newline, carriage return, colon or NUL: CONNECTED \
+             headers are exempt from STOMP 1.2 escaping, so such a value would forge a header \
+             rather than appear in this one"
+        ));
+    }
+    Ok(())
 }
 
 fn execute_send_message(action: &serde_json::Value) -> Result<ActionResult> {
@@ -731,9 +755,17 @@ pub static STOMP_SUBSCRIBE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 pub static STOMP_UNSUBSCRIBE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "stomp_unsubscribe",
-        "Client cancelled a subscription. Nothing need be sent in reply unless the frame asked \
-         for a receipt, which is handled for you.",
-        json!({"type": "send_stomp_receipt", "receipt_id": "receipt-1"}),
+        "Client cancelled a subscription. Answering with no action is the normal case - any \
+         receipt the frame asked for is sent for you. Use send_stomp_message only if a \
+         message still has to go out on another subscription.",
+        json!({
+            "type": "send_stomp_message",
+            "destination": "/queue/test",
+            "subscription": "sub-1",
+            "message_id": "msg-9",
+            "body": "sent on a subscription that is still open",
+            "encoding": "utf8"
+        }),
     )
     .with_parameters(vec![Parameter {
         name: "id".to_string(),
@@ -754,8 +786,17 @@ pub static STOMP_UNSUBSCRIBE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 pub static STOMP_ACK_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "stomp_ack",
-        "Client acknowledged a message it had been sent.",
-        json!({"type": "send_stomp_receipt", "receipt_id": "receipt-1"}),
+        "Client acknowledged a message it had been sent. Answering with no action is \
+         legitimate; the usual reason to answer is to send the next message now that this one \
+         is settled. Any receipt the frame asked for is sent for you.",
+        json!({
+            "type": "send_stomp_message",
+            "destination": "/queue/test",
+            "subscription": "sub-0",
+            "message_id": "msg-2",
+            "body": "the next message",
+            "encoding": "utf8"
+        }),
     )
     .with_parameters(vec![Parameter {
         name: "id".to_string(),
@@ -778,8 +819,16 @@ pub static STOMP_NACK_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "stomp_nack",
         "Client rejected a message it had been sent. This server does not redeliver on its own \
-         - resend it with send_stomp_message if that is what you want.",
-        json!({"type": "send_stomp_receipt", "receipt_id": "receipt-1"}),
+         - resend it with send_stomp_message if that is what you want, or answer with no \
+         action to drop it. Any receipt the frame asked for is sent for you.",
+        json!({
+            "type": "send_stomp_message",
+            "destination": "/queue/test",
+            "subscription": "sub-0",
+            "message_id": "msg-1-retry",
+            "body": "redelivered after NACK",
+            "encoding": "utf8"
+        }),
     )
     .with_parameters(vec![Parameter {
         name: "id".to_string(),

@@ -1,12 +1,10 @@
-//! E2E tests for MQTT protocol
+//! E2E tests for the MQTT broker.
 //!
-//! These tests verify MQTT broker functionality by starting NetGet with MQTT prompts
-//! and using rumqttc client library to connect and publish/subscribe.
-//!
-//! NOTE: MQTT broker is currently a placeholder implementation. These tests verify
-//! that the protocol is registered and returns appropriate error messages.
-//! Once full broker implementation is complete, these tests will be updated to
-//! validate actual MQTT functionality.
+//! `test_mqtt_subscribe_and_receive_a_published_message` is the evidence behind the
+//! protocol's Beta rating: a real rumqttc client completes CONNECT -> SUBSCRIBE ->
+//! SUBACK -> PUBLISH and then receives the broker's own PUBLISH back, with topic and
+//! payload asserted. It is not `#[ignore]`d and it cannot skip - rumqttc is a
+//! dev-dependency, so it either compiles and runs or the suite does not build.
 
 #![cfg(feature = "mqtt")]
 
@@ -38,47 +36,43 @@ async fn test_mqtt_broker_starts() -> E2EResult<()> {
     Ok(())
 }
 
-/// Test MQTT protocol is detectable from prompt keywords
+/// Every keyword `MqttProtocol::keywords()` advertises resolves to MQTT.
 ///
-/// Verifies that the protocol registry can detect MQTT from various keywords
-/// like "mqtt", "mosquitto", etc.
-#[tokio::test]
-async fn test_mqtt_keyword_detection() -> E2EResult<()> {
-    // Test various MQTT keywords
-    let mqtt_prompts = vec![
-        "Start an MQTT broker on port 1883",
-        "Create a mosquitto server for IoT devices",
-        "Listen via MQTT on port 0",
-        "Set up message queue telemetry transport on port 1883",
-    ];
+/// This asks the registry directly. The version this replaced spawned NetGet with no
+/// `.with_mock()`, so the LLM call always failed, no server was ever started, and the
+/// harness returned `Expected exactly 1 server, got 0` - which contains neither
+/// "unknown" nor "Unknown", so the assertion passed for *any* prompt, including one
+/// naming no protocol at all. Its `else` branch additionally did
+/// `panic!("Expected error for placeholder MQTT broker")`, i.e. it would have failed
+/// had the broker worked. The broker has not been a placeholder for a long time.
+#[test]
+fn test_mqtt_keyword_detection() {
+    use ::netget::protocol::server_registry::registry;
 
-    for prompt in mqtt_prompts {
-        println!("Testing prompt: {}", prompt);
+    let registry = registry();
+    let mqtt = registry
+        .get("MQTT")
+        .expect("MQTT is compiled in under #![cfg(feature = \"mqtt\")]");
 
-        let config = NetGetConfig::new(prompt).with_log_level("off");
-
-        // All should fail (placeholder), but for the right reason (MQTT detected)
-        let result = start_netget_server(config).await;
-
-        if let Err(e) = result {
-            let error_msg = e.to_string();
-
-            // Should not be "unknown protocol" - MQTT should be detected
-            assert!(
-                !error_msg.contains("unknown") && !error_msg.contains("Unknown"),
-                "MQTT should be detected from prompt '{}', got: {}",
-                prompt,
-                error_msg
-            );
-
-            println!("  ✓ MQTT detected from: {}", prompt);
-        } else {
-            panic!("Expected error for placeholder MQTT broker");
-        }
+    // Assert against what the protocol itself advertises, so a keyword added to
+    // actions.rs without a resolver entry fails here rather than silently never matching.
+    for keyword in mqtt.keywords() {
+        let prompt = format!("Start a server using {keyword} on port 1883");
+        assert_eq!(
+            registry.parse_from_str(&prompt).as_deref(),
+            Some("MQTT"),
+            "keyword {keyword:?} advertised by MqttProtocol::keywords() does not resolve to MQTT"
+        );
     }
 
-    println!("✓ MQTT keyword detection working");
-    Ok(())
+    // The names the LLM and the startup path use to refer to it.
+    for name in ["mqtt", "MQTT", "ETH>IP>TCP>MQTT"] {
+        assert_eq!(
+            registry.parse_from_str(name).as_deref(),
+            Some("MQTT"),
+            "{name:?} should resolve to MQTT"
+        );
+    }
 }
 
 // ============================================================================

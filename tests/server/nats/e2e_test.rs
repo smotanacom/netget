@@ -161,10 +161,73 @@ mod nats_e2e_test {
             parse_frame(b"PUB orders.eu 9999999\r\n", 1024),
             Err(FrameError::MaximumPayloadViolation)
         );
+        // ...and the same is true of HPUB. It was not: the payload limit was applied to
+        // `total - header`, so `header == total` gave a zero-length body that passed every
+        // check with `total` unbounded. This one line is 30 bytes on the wire and made the
+        // reader buffer its way toward 4 GB. The claim above was tested only for PUB.
+        assert_eq!(
+            parse_frame(b"HPUB orders.eu 4000000000 4000000000\r\n", 1024),
+            Err(FrameError::MaximumPayloadViolation)
+        );
         let long_line = format!("SUB {} 1\r\n", "x".repeat(5000));
         assert_eq!(
             parse_frame(long_line.as_bytes(), MAX_PAYLOAD),
             Err(FrameError::MaximumControlLineExceeded)
+        );
+    }
+
+    /// A run of newlines must not recurse, must not grow the buffer, and must not hide a
+    /// frame that follows it.
+    ///
+    /// The blank-line skip used to recurse into `parse_frame` once per blank line, one stack
+    /// frame deeper each time and not in tail position. 8 KB of newlines is a single `read`,
+    /// and about 8000 frames of recursion overflowed the stack - which in Rust is `SIGSEGV`,
+    /// not a catchable panic, so `tokio::spawn` could not contain it and the whole NetGet
+    /// process aborted. Every other server in the process went with it.
+    ///
+    /// 100_000 is far past the depth that used to abort, so this test failing to complete
+    /// *is* the regression.
+    #[test]
+    fn test_nats_parser_survives_a_flood_of_blank_lines() {
+        let mut flood = vec![b'\n'; 100_000];
+        assert_eq!(
+            parse_frame(&flood, MAX_PAYLOAD),
+            Ok(None),
+            "a buffer of only blank lines holds no frame"
+        );
+        assert_eq!(
+            netget::server::nats::blank_line_prefix_len(&flood),
+            flood.len(),
+            "the reader must be able to drain the whole run, or the buffer grows forever"
+        );
+
+        // CRLF, and whitespace-only lines, count as blank the same way - and a real frame
+        // after the flood is still found, at the right offset.
+        flood.extend_from_slice(b"\r\n   \r\nPING\r\n");
+        let consumed_before_ping = flood.len() - 6;
+        assert_eq!(
+            parse_frame(&flood, MAX_PAYLOAD),
+            Ok(Some((Frame::Ping, flood.len()))),
+            "PING after the flood, consuming the blank lines with it"
+        );
+        assert_eq!(
+            netget::server::nats::blank_line_prefix_len(&flood),
+            consumed_before_ping
+        );
+    }
+
+    /// A declared size must never be able to wrap the index that reads it.
+    ///
+    /// `HPUB x <usize::MAX> <usize::MAX>` passed the old payload check (zero-length body) and
+    /// then computed `after_line + total_len`, which panicked on overflow in debug and in
+    /// release wrapped to a `start > end` slice that panicked one line further on. Either way
+    /// the connection task died with its cleanup un-run, leaking the connection as `Active`.
+    #[test]
+    fn test_nats_parser_rejects_a_size_that_would_wrap_the_index() {
+        let line = format!("HPUB s {max} {max}\r\n", max = usize::MAX);
+        assert_eq!(
+            parse_frame(line.as_bytes(), u64::MAX),
+            Err(FrameError::MaximumPayloadViolation)
         );
     }
 

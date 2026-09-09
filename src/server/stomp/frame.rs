@@ -37,6 +37,23 @@
 /// below anything that threatens the process.
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
+/// Largest number of header lines accepted in one frame.
+///
+/// `MAX_FRAME_BYTES` bounds the *memory*, but not the work: the connection loop re-parses the
+/// whole pending buffer after every read, allocating two `String`s per header line each time.
+/// One megabyte of three-byte header lines (`a:\n`) is ~350k headers re-parsed ~128 times as
+/// the 8 KB reads arrive - tens of millions of allocations from a megabyte of input, per
+/// connection, with no connection limit. No real STOMP frame has more than a dozen headers.
+pub const MAX_HEADERS: usize = 1024;
+
+/// Longest peer-supplied fragment quoted back in a `FrameError`.
+///
+/// A `FrameError` reaches three places: the `ERROR` frame sent to the peer, `netget.log`, and
+/// the TUI status stream, which is an unbounded channel with no backpressure. Quoting a
+/// megabyte header line verbatim - which `{:?}` escaping can roughly double - into all three
+/// is a peer's choice of how much memory to spend on NetGet's behalf.
+const MAX_QUOTED_FRAGMENT: usize = 120;
+
 /// A parsed STOMP frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StompFrame {
@@ -157,6 +174,8 @@ pub enum FrameError {
     NotUtf8,
     /// The peer exceeded [`MAX_FRAME_BYTES`] without completing a frame.
     FrameTooLarge(usize),
+    /// The frame declared more than [`MAX_HEADERS`] header lines.
+    TooManyHeaders,
 }
 
 impl std::fmt::Display for FrameError {
@@ -178,11 +197,34 @@ impl std::fmt::Display for FrameError {
                 f,
                 "frame exceeded {MAX_FRAME_BYTES} bytes without terminating ({n} buffered)"
             ),
+            FrameError::TooManyHeaders => {
+                write!(f, "frame declared more than {MAX_HEADERS} headers")
+            }
         }
     }
 }
 
 impl std::error::Error for FrameError {}
+
+/// Trim a peer-supplied fragment to something safe to quote back at it and into the logs.
+///
+/// `crate::utils::truncate_for_log` rather than `&s[..N]`, because a header value is arbitrary
+/// UTF-8 and a byte-index cut lands mid-character often enough to matter.
+fn quote_fragment(s: &str) -> String {
+    crate::utils::truncate_for_log(s, MAX_QUOTED_FRAGMENT)
+}
+
+/// Whether a header name or value can be written into a frame whose command is exempt from
+/// escaping, without forging a header.
+///
+/// `CONNECT`, `STOMP` and `CONNECTED` carry their headers raw (see [`should_escape`]), so for
+/// those three commands nothing downstream can neutralise a `\n` or a `:`. A value containing
+/// one would inject an extra header, and `\n\n` would terminate the header block and start a
+/// body. Rejecting is right rather than escaping: a 1.0/1.1 peer would read an escape sequence
+/// literally, which is the whole reason those commands are exempt.
+pub fn is_safe_unescaped_header(s: &str) -> bool {
+    !s.contains(['\r', '\n', ':', '\0'])
+}
 
 /// Whether headers in `command` are escaped.
 ///
@@ -281,8 +323,11 @@ fn parse_inner(buf: &[u8]) -> Result<ParseOutcome, FrameError> {
         if line.is_empty() {
             break;
         }
+        if headers.len() >= MAX_HEADERS {
+            return Err(FrameError::TooManyHeaders);
+        }
         let Some((raw_name, raw_value)) = line.split_once(':') else {
-            return Err(FrameError::MalformedHeader(line));
+            return Err(FrameError::MalformedHeader(quote_fragment(&line)));
         };
         let (name, value) = if escape {
             (unescape_header(raw_name)?, unescape_header(raw_value)?)
@@ -299,12 +344,23 @@ fn parse_inner(buf: &[u8]) -> Result<ParseOutcome, FrameError> {
         .map(|(_, v)| {
             v.trim()
                 .parse::<usize>()
-                .map_err(|_| FrameError::BadContentLength(v.clone()))
+                .map_err(|_| FrameError::BadContentLength(quote_fragment(v)))
         })
         .transpose()?;
 
     let (body, consumed) = match declared_len {
         Some(len) => {
+            // `content-length: 18446744073709551615` parses cleanly into a `usize`, and
+            // `pos + len` then overflowed: a panic in debug and test builds (there is no
+            // `[profile.dev]` override, so `overflow-checks` is on), and in release a wrap to
+            // `pos - 1` that made the bug invisible in the shipped profile while it was live
+            // in every test run. The panic happened inside the connection's `tokio::spawn`,
+            // so it was swallowed, the connection's cleanup never ran, and the peer handle
+            // and `AppState` row leaked with the connection stuck `Active`. Reachable before
+            // the CONNECT gate, by any peer, in one frame.
+            if len > MAX_FRAME_BYTES {
+                return Err(FrameError::FrameTooLarge(len));
+            }
             let end = pos + len;
             if end >= buf.len() {
                 return Ok(ParseOutcome::Incomplete);

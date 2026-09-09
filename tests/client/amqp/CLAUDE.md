@@ -35,26 +35,33 @@ CARGO_TARGET_DIR=/tmp/clients-target cargo test --no-default-features --features
 
 An orphan `e2e_test.rs.bak` sitting beside them has been deleted.
 
-## Client-side action vocabulary is narrow, and the narrowing is enforced
+## What the model is offered
 
-`call_llm_for_client` (`src/llm/action_helper.rs`) offers the model **only**
-`protocol.get_async_actions(state)` — no common actions, and nothing from `get_sync_actions`.
-For the AMQP client that is `open_channel` and `disconnect` and nothing else. Anything else a
-mock returns is rejected by the response validator as an unknown action, which surfaces as an
-LLM failure rather than as a clear test error.
+`client_llm_action_set` = async ∪ sync ∪ the firing event's actions, so for this client that is
+`open_channel`, `publish`, `consume`, `disconnect` and `wait_for_more`. Anything else a mock
+returns is rejected by the response validator as an unknown action, which surfaces as an LLM
+failure rather than as a clear test error — so check a mock's action names against
+`src/client/amqp/actions.rs`, not against a neighbouring suite.
 
-`open_channel` currently resolves to `ClientActionResult::Custom` and
-`src/client/amqp/mod.rs` discards the result of the `amqp_connected` call, so no
-`Channel.Open` actually goes out. That is why the assertion is the *event firing*, which
-requires the handshake, rather than a channel appearing on the broker.
+Three claims that stood here and are **false**, kept because each reads as fact:
+
+- *"`call_llm_for_client` offers the model only `get_async_actions` — no common actions, and
+  nothing from `get_sync_actions`."* That was the widest client-side defect in the repo and it
+  is fixed; the set is the union above.
+- *"the client's entire vocabulary is `open_channel` and `disconnect`"* (said twice). It is the
+  five actions above.
+- *"`src/client/amqp/mod.rs` discards the result of the `amqp_connected` call, so no
+  `Channel.Open` actually goes out."* It executes every returned action through
+  `execute_action` → `apply_action`, whose `open_channel` arm calls `conn.create_channel()`.
+  `command_channel_test.rs` asserts a real `Channel.Open` round trip.
 
 ## Not covered
 
-Channel open, queue declare, bind, publish, consume and acknowledge from the client side —
-`src/client/amqp/` connects and then only keeps the connection alive, so there is nothing to
-drive. The broker side of all of those is covered by `tests/server/amqp/e2e_test.rs`, which
-drives it with a real lapin client. Also not covered: TLS (5671), SASL beyond PLAIN, publisher
-confirms, and multiple channels.
+Queue declare and bind from the client side — the client does not implement them. Publish,
+consume and channel open **are** implemented and are covered by `command_channel_test.rs`; the
+broker side of everything is covered by `tests/server/amqp/e2e_test.rs`, which drives it with a
+real lapin client. Also not covered: TLS (5671), SASL beyond PLAIN, publisher confirms, multiple
+channels, and any broker other than NetGet's own.
 
 ## `command_channel_test.rs` — the dashboard's `[ send ]`
 

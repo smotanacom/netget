@@ -75,6 +75,12 @@ pub const DEFAULT_MAX_PAYLOAD: usize = 1_048_576;
 /// random peer, but "trusted" is not "allowed to name any allocation size it likes".
 pub const MAX_ACCEPTED_PAYLOAD: usize = 64 * 1_048_576;
 
+/// Hard ceiling on the reader's frame buffer, over and above whatever any frame declares.
+///
+/// A frame is at most one control line plus `max_payload` plus its terminator, so anything
+/// past that with nothing extractable is a peer that will never complete one.
+const MAX_BUFFERED_SLACK: usize = MAX_CONTROL_LINE + 16;
+
 /// How many decision frames may wait for the dispatcher before the reader stops reading.
 ///
 /// Bounded on purpose. If the model is slower than the fabric for long enough to fill this,
@@ -157,6 +163,43 @@ pub fn parse_server_frame(
     buf: &[u8],
     max_payload: usize,
 ) -> Result<Option<(ServerFrame, usize)>, ServerFrameError> {
+    let skipped = blank_line_prefix_len(buf);
+    match parse_one_server_frame(&buf[skipped..], max_payload)? {
+        Some((frame, consumed)) => Ok(Some((frame, skipped + consumed))),
+        None => Ok(None),
+    }
+}
+
+/// Length of the leading run of blank lines (`\n`, `\r\n`, or a line of only whitespace).
+///
+/// Skipping them iteratively rather than by recursing into `parse_server_frame` is the same
+/// fix as on the server half, for the same reason: one stack frame per blank line, not in
+/// tail position, so a broker (or anything on that socket) writing 8 KB of newlines — one
+/// `read` — recursed about 8000 levels and overflowed the stack. A Rust stack overflow is
+/// `SIGSEGV`, not a catchable panic, so it aborted the whole NetGet process.
+///
+/// The reader drains this prefix before parsing too: `parse_server_frame` folds it into
+/// `consumed` when a frame follows, but reports `Ok(None)` having consumed nothing when none
+/// does, so without the eager drain the buffer would grow by a chunk on every read.
+pub fn blank_line_prefix_len(buf: &[u8]) -> usize {
+    let mut offset = 0;
+    while let Some(nl) = buf[offset..].iter().position(|&b| b == b'\n') {
+        let line_end = offset + nl;
+        let line = &buf[offset..line_end];
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if !line.iter().all(|b| b.is_ascii_whitespace()) {
+            break;
+        }
+        offset = line_end + 1;
+    }
+    offset
+}
+
+/// Decode one frame from a buffer whose first line is known not to be blank.
+fn parse_one_server_frame(
+    buf: &[u8],
+    max_payload: usize,
+) -> Result<Option<(ServerFrame, usize)>, ServerFrameError> {
     let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
         if buf.len() > MAX_CONTROL_LINE {
             return Err(ServerFrameError::MaximumControlLineExceeded);
@@ -176,15 +219,6 @@ pub fn parse_server_frame(
     let line = std::str::from_utf8(&buf[..line_end])
         .map_err(|_| ServerFrameError::UnknownProtocolOperation)?
         .trim();
-
-    if line.is_empty() {
-        // A blank line between frames: skip it and decode from after it, so the caller never
-        // re-parses bytes that can never become a frame.
-        return match parse_server_frame(&buf[after_line..], max_payload)? {
-            Some((frame, consumed)) => Ok(Some((frame, after_line + consumed))),
-            None => Ok(None),
-        };
-    }
 
     let mut parts = line.split_whitespace();
     let verb = parts
@@ -266,13 +300,18 @@ pub fn parse_server_frame(
         if header_len > total_len {
             return Err(ServerFrameError::UnknownProtocolOperation);
         }
-        // The limit applies to the body, as it does in a real server: the header block is
-        // accounted separately.
-        if total_len - header_len > max_payload {
+        // The limit applies to the whole declared size, header block included — the same fix
+        // as on the server half. Bounding only `total_len - header_len` left `header_len`
+        // unbounded, and `header_len == total_len` gives a zero-length body that passed both
+        // checks, so `HMSG s 1 4000000000 4000000000` made the reader buffer toward 4 GB and
+        // `HMSG s 1 <usize::MAX> <usize::MAX>` overflowed the index below.
+        if total_len > max_payload {
             return Err(ServerFrameError::MaximumPayloadViolation);
         }
 
-        let body_end = after_line + total_len;
+        let Some(body_end) = after_line.checked_add(total_len) else {
+            return Err(ServerFrameError::MaximumPayloadViolation);
+        };
         if buf.len() <= body_end {
             return Ok(None);
         }
@@ -647,6 +686,27 @@ impl NatsClient {
         'outer: loop {
             // Drain every complete frame currently in the buffer before reading again.
             loop {
+                // `parse_server_frame` folds a leading run of blank lines into `consumed`
+                // when a frame follows one, but reports `Ok(None)` having consumed nothing
+                // when none does. Draining here is what stops a peer sending only newlines
+                // from growing `buffer` by a chunk on every read.
+                let blank = blank_line_prefix_len(&buffer);
+                if blank > 0 {
+                    buffer.drain(..blank);
+                }
+                if buffer.len() > max_payload.saturating_add(MAX_BUFFERED_SLACK) {
+                    // More buffered than any single frame could need, with none extractable.
+                    error!(
+                        "NATS client {} buffered {} bytes with no complete frame; closing",
+                        client_id,
+                        buffer.len()
+                    );
+                    let _ = status_tx.send(format!(
+                        "[CLIENT] ✖ NATS client {} broker sent an unframeable stream",
+                        client_id
+                    ));
+                    break 'outer;
+                }
                 match parse_server_frame(&buffer, max_payload) {
                     Ok(Some((frame, consumed))) => {
                         buffer.drain(..consumed);

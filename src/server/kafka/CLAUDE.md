@@ -99,18 +99,33 @@ rather than left as documentation of a lie.
 
 ## Failure is refusal
 
-If the model returns nothing usable, the client gets the correct response *type* carrying
-`UNKNOWN_SERVER_ERROR` (-1). Silence never becomes success:
+If the model returns nothing usable, the client gets the correct response *type* carrying an
+error code. Silence never becomes success:
 
-- Produce: `error_code = -1`, `base_offset = -1`.
-- Fetch: `error_code = -1`, empty record set.
-- OffsetCommit: `error_code = -1`.
-- Metadata: every topic the client *asked about* comes back with -1. A topic the client
+- Produce: the failure code, `base_offset = -1`.
+- Fetch: the failure code, empty record set.
+- OffsetCommit: the failure code.
+- Metadata: every topic the client *asked about* comes back with it. A topic the client
   asked about that the model simply did not describe comes back `UNKNOWN_TOPIC_OR_PARTITION`
   (3) — omission is reported, never silently dropped.
 
 An `error_response` carrying `error_code: 0` is a contradiction and is rewritten to -1 with
 a WARN, so a refusal can never be mistaken for an acknowledgement.
+
+**A saturated backend is not a broken broker.** The three ways of getting no usable answer
+are distinct on the wire and in the log:
+
+| what happened | wire | log tag |
+|---|---|---|
+| the LLM backend is at capacity | `REQUEST_TIMED_OUT` (7), which every Kafka client treats as **retriable** | `decision=fail_closed_llm_error class=overloaded` |
+| the backend erred or timed out | `UNKNOWN_SERVER_ERROR` (-1), permanent | `decision=fail_closed_llm_error class=unavailable` |
+| the handler ran and produced nothing usable | `UNKNOWN_SERVER_ERROR` (-1), permanent | `decision=model_silent` |
+| the model deliberately refused | its own `error_response` code | `decision=model_reject` |
+
+Collapsing all of these onto -1 made an overloaded backend look like a broken broker, so a
+client recorded a permanent fault where it should have backed off and retried. The `class=`
+comes from `crate::utils::WireFailure`, which classifies the error without ever rendering it
+— the error text goes to the log, the peer gets a code.
 
 **The one default.** A Metadata reply always carries at least one broker, and if the model
 names none it is this server's own `advertised_host` and bound port, with `broker_id` as the
