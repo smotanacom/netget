@@ -40,6 +40,161 @@ pub struct ParsedSnmpInfo {
 /// no manager can read this as a value for the requested OID.
 pub const SNMP_ERROR_GEN_ERR: u8 = 5;
 
+/// How deeply a datagram may nest BER constructed values before we refuse to decode it.
+///
+/// A real SNMP message is four levels deep: Message SEQUENCE > PDU > VarBindList > VarBind.
+/// Sixteen leaves generous headroom for anything a manager legitimately sends while keeping
+/// `rasn`'s recursion to a depth no stack cares about.
+pub const MAX_BER_DEPTH: usize = 16;
+
+/// `rasn` 0.18 decodes a *constructed* OCTET STRING by calling
+/// `ber::de::parser::parse_encoded_value` on each of its segments, and a segment may itself be
+/// constructed — so the function calls itself, with no depth counter anywhere on the path.
+/// `v1::Message` and `v2c::Message` both carry `community` as an OCTET STRING, so the nesting a
+/// datagram declares is the recursion depth we get, and the only bound is the datagram size.
+///
+/// `24 80` (constructed OCTET STRING, indefinite length) is two bytes and buys one level. The
+/// end-of-contents markers can be omitted entirely — the decoder descends while input remains
+/// and only discovers the missing EOC on the way back up — so a single 64 KB UDP datagram
+/// reaches roughly 32000 frames. Measured here: 30000 levels aborts the process with
+/// `fatal runtime error: stack overflow`.
+///
+/// That is not a recoverable fault. A Rust stack overflow is a guard-page `SIGSEGV`/`SIGABRT`,
+/// not a panic: `tokio::spawn` cannot isolate it and `catch_unwind` cannot see it, so one
+/// unauthenticated datagram takes down every other server the NetGet process is running.
+///
+/// The screen below therefore walks the TLV structure *iteratively* — an explicit stack, no
+/// recursion of its own — and rejects the datagram before `rasn` ever sees it. It also rejects
+/// a definite length that reaches past the end of the datagram, which is the same class of
+/// mistake read from the other side: trust the length the peer declared and you buffer or index
+/// on a number the peer chose.
+///
+/// Returns `Err` with a reason suitable for the log. Never panics, never loops: `pos` strictly
+/// increases on every iteration and every read is bounds-checked.
+pub fn check_ber_structure(data: &[u8], max_depth: usize) -> std::result::Result<(), String> {
+    // `None` = indefinite length, closed by an end-of-contents marker.
+    // `Some(end)` = definite length, closed when `pos` reaches `end`.
+    let mut open: Vec<Option<usize>> = Vec::new();
+    let mut pos = 0usize;
+
+    loop {
+        // Close every definite-length level this position has run past.
+        while let Some(Some(end)) = open.last() {
+            if pos >= *end {
+                open.pop();
+            } else {
+                break;
+            }
+        }
+
+        if pos >= data.len() {
+            break;
+        }
+
+        // An end-of-contents marker closes the innermost indefinite level.
+        if data[pos] == 0x00 && data.get(pos + 1) == Some(&0x00) {
+            if matches!(open.last(), Some(None)) {
+                open.pop();
+                pos += 2;
+                continue;
+            }
+            // A stray 00 00 outside any indefinite level is malformed; let rasn produce the
+            // real diagnostic rather than guessing at it here.
+            return Ok(());
+        }
+
+        // --- identifier octets ---
+        let first = data[pos];
+        let constructed = (first & 0x20) != 0;
+        pos += 1;
+        if first & 0x1f == 0x1f {
+            // High-tag-number form: continuation octets until one without the high bit.
+            loop {
+                let Some(&b) = data.get(pos) else {
+                    return Err("truncated BER tag".to_string());
+                };
+                pos += 1;
+                if b & 0x80 == 0 {
+                    break;
+                }
+            }
+        }
+
+        // --- length octets ---
+        let Some(&len_first) = data.get(pos) else {
+            return Err("truncated BER length".to_string());
+        };
+        pos += 1;
+
+        let length: Option<usize> = if len_first == 0x80 {
+            None // indefinite
+        } else if len_first & 0x80 == 0 {
+            Some(len_first as usize)
+        } else {
+            let n = (len_first & 0x7f) as usize;
+            // A length-of-length beyond 8 octets cannot describe anything a datagram holds.
+            if n > 8 {
+                return Err(format!("BER length field of {n} octets is not decodable"));
+            }
+            let Some(bytes) = data.get(pos..pos + n) else {
+                return Err("truncated BER long-form length".to_string());
+            };
+            pos += n;
+            let mut v: u64 = 0;
+            for &b in bytes {
+                v = (v << 8) | b as u64;
+            }
+            // Bound the *declared* length against the whole datagram, not against whatever
+            // happens to be left: `usize::try_from` alone would accept 4 GB on a 64-bit box.
+            let v = usize::try_from(v).map_err(|_| "BER length overflows usize".to_string())?;
+            if v > data.len() {
+                return Err(format!(
+                    "BER element declares {v} bytes in a {} byte datagram",
+                    data.len()
+                ));
+            }
+            Some(v)
+        };
+
+        match (constructed, length) {
+            (true, definite) => {
+                let end = match definite {
+                    Some(len) => {
+                        let end = pos.checked_add(len).ok_or("BER length overflows")?;
+                        if end > data.len() {
+                            return Err(format!(
+                                "BER element ends at {end}, past the {} byte datagram",
+                                data.len()
+                            ));
+                        }
+                        Some(end)
+                    }
+                    None => None,
+                };
+                open.push(end);
+                if open.len() > max_depth {
+                    return Err(format!(
+                        "BER nesting deeper than {max_depth} levels; a real SNMP message is 4"
+                    ));
+                }
+                // Contents of a constructed value are the next elements: do not skip them.
+            }
+            (false, Some(len)) => {
+                pos = pos.checked_add(len).ok_or("BER length overflows")?;
+                if pos > data.len() {
+                    return Err("BER primitive runs past the end of the datagram".to_string());
+                }
+            }
+            (false, None) => {
+                // Indefinite length on a primitive is invalid BER.
+                return Err("indefinite length on a primitive BER value".to_string());
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub struct SnmpServer;
 
 impl SnmpServer {
@@ -317,6 +472,17 @@ impl SnmpServer {
 
     /// Parse SNMP message and extract relevant information
     pub fn parse_snmp_message(data: &[u8]) -> Result<ParsedSnmpInfo> {
+        // Screen the TLV structure before rasn sees it. Its BER decoder recurses once per
+        // level of constructed nesting with no bound, and a stack overflow is fatal to the
+        // whole process rather than to this datagram. See `check_ber_structure`.
+        if let Err(reason) = check_ber_structure(data, MAX_BER_DEPTH) {
+            return Err(anyhow::anyhow!(
+                "Rejected malformed SNMP message ({} bytes): {}",
+                data.len(),
+                reason
+            ));
+        }
+
         // Try to decode as SNMPv2c first (most common)
         if let Ok(msg) = ber::decode::<v2c::Message<v2::Pdus>>(data) {
             let request_type = Self::get_v2_pdu_type(&msg.data);
