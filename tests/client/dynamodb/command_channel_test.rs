@@ -242,3 +242,163 @@ async fn injected_put_item_reaches_the_endpoint() {
 
     state.remove_client(client_id).await;
 }
+
+/// `remote_addr` alone must be the endpoint — the target the operator typed cannot be ignored.
+///
+/// It was: `connect_with_llm_actions` took the address as `_remote_addr` and dropped it, so a
+/// client created against `127.0.0.1:PORT` with no explicit `endpoint_url` had the AWS SDK
+/// resolve `https://dynamodb.<region>.amazonaws.com` and sign with whatever ambient
+/// credentials the machine happened to have. A client aimed at localhost issued real reads and
+/// writes against real AWS. This test passes no `endpoint_url` at all: if the address is
+/// dropped again, the stub never sees the request and the send does not report success.
+///
+/// It also pins the second half of the same fix: `region` is the only startup parameter given.
+/// All four are declared `required: false` but were read with `get_string`, which errors when
+/// the key is absent, so any subset of them failed the connect outright.
+#[tokio::test]
+async fn remote_addr_alone_is_the_endpoint() {
+    let stub = spawn_http_stub("200 OK", "application/x-amz-json-1.0", "{}").await;
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let client_id = ClientForm {
+        protocol: "dynamodb".to_string(),
+        remote_addr: Some(format!("127.0.0.1:{}", stub.port)),
+        instruction: Some("test client".to_string()),
+        // No `endpoint_url`: the address is the only thing saying where to go. Credentials
+        // are supplied because the SDK will not sign without them and nothing would reach
+        // the wire at all — the point here is *where* the request lands, not whether it is
+        // signed. Passing a strict subset of the four optional parameters is also exactly
+        // what used to fail the connect outright.
+        startup_params: Some(serde_json::json!({
+            "region": "us-east-1",
+            "access_key_id": "netget-test",
+            "secret_access_key": "netget-test-secret",
+        })),
+        ..Default::default()
+    }
+    .create(
+        &state,
+        netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string()),
+        tx.clone(),
+    )
+    .await
+    .expect("create dynamodb client with only remote_addr and region");
+
+    wait_for_client_handle(&state, client_id).await;
+
+    let outcome = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({
+                "type": "put_item",
+                "table_name": "remote-addr-marker",
+                "item": {"id": {"S": "injected"}}
+            }),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("send_to_client put_item");
+    assert!(
+        matches!(outcome, ClientSendOutcome::Executed { .. }),
+        "expected Executed, got {outcome:?}"
+    );
+    assert!(
+        stub.saw("remote-addr-marker"),
+        "the request did not go to remote_addr: {:?}",
+        stub.seen.lock().unwrap()
+    );
+
+    state.remove_client(client_id).await;
+}
+
+/// An attribute type this client cannot convert must be refused, not silently dropped.
+///
+/// `json_to_attribute_value` returned `Option` and both callers skipped a `None`, so a
+/// `put_item` carrying a Map, List or set attribute wrote an item **missing that attribute**
+/// and reported success, and a malformed base64 `B` value was written as an empty blob.
+/// Nothing was logged on any path. The model has to be told, so this is now a `Rejected`.
+#[tokio::test]
+async fn an_unsupported_attribute_type_is_refused_not_dropped() {
+    let stub = spawn_http_stub("200 OK", "application/x-amz-json-1.0", "{}").await;
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let client_id = ClientForm {
+        protocol: "dynamodb".to_string(),
+        remote_addr: Some(format!("127.0.0.1:{}", stub.port)),
+        instruction: Some("test client".to_string()),
+        startup_params: Some(serde_json::json!({
+            "region": "us-east-1",
+            "access_key_id": "netget-test",
+            "secret_access_key": "netget-test-secret",
+        })),
+        ..Default::default()
+    }
+    .create(
+        &state,
+        netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string()),
+        tx.clone(),
+    )
+    .await
+    .expect("create dynamodb client");
+
+    wait_for_client_handle(&state, client_id).await;
+
+    // A Map attribute alongside a supported one: the whole write must fail rather than
+    // silently storing only `id`.
+    let outcome = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({
+                "type": "put_item",
+                "table_name": "unsupported-attr-marker",
+                "item": {
+                    "id": {"S": "injected"},
+                    "profile": {"M": {"nested": {"S": "value"}}}
+                }
+            }),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("send_to_client put_item");
+    match &outcome {
+        ClientSendOutcome::Rejected { error } => {
+            assert!(
+                error.contains("profile"),
+                "the refusal must name the attribute the model got wrong, got {error:?}"
+            );
+        }
+        other => panic!("expected Rejected for an unsupported attribute type, got {other:?}"),
+    }
+    assert!(
+        !stub.saw("unsupported-attr-marker"),
+        "a write with an unconvertible attribute must not reach the endpoint at all: {:?}",
+        stub.seen.lock().unwrap()
+    );
+
+    // Malformed base64 in a B attribute is the same class: it used to become an empty blob.
+    let outcome = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({
+                "type": "put_item",
+                "table_name": "bad-base64-marker",
+                "item": {"id": {"S": "x"}, "blob": {"B": "not base64!!"}}
+            }),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("send_to_client put_item");
+    assert!(
+        matches!(outcome, ClientSendOutcome::Rejected { .. }),
+        "expected Rejected for undecodable base64, got {outcome:?}"
+    );
+    assert!(
+        !stub.saw("bad-base64-marker"),
+        "an undecodable value must not be written as an empty blob: {:?}",
+        stub.seen.lock().unwrap()
+    );
+
+    state.remove_client(client_id).await;
+}

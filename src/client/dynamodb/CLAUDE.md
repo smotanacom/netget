@@ -30,10 +30,12 @@ Local, LocalStack). The LLM can execute DynamoDB operations and interpret respon
          │   - Call LLM with response
          │   - Update memory
          │
-         └─► Background Monitor Task
-             - Checks if client still exists
-             - Exits if client removed
+         └─► Connected-event task (registered)
+             - Asks the model once on connect
+             - Runs whatever it answers through run_operation_once
 ```
+
+(There is no background monitor task. One existed and was removed; this diagram outlived it.)
 
 ### Connection Model
 
@@ -158,17 +160,32 @@ The LLM constructs typed attribute maps, and NetGet converts them to AWS SDK typ
 
 ### Dual Logging
 
+Operations log to `netget.log` through `tracing`, and **only failures** reach the status
+stream:
+
 ```rust
-info!("DynamoDB client {} PutItem to table {}", client_id, table_name);  // → netget.log
-status_tx.send("[CLIENT] DynamoDB PutItem succeeded");                    // → TUI
+error!("DynamoDB client {} operation {} failed: {}", client_id, name, e);  // → netget.log
+status_tx.send(format!("[ERROR] DynamoDB operation {} failed: {}", name, e));  // → TUI
 ```
+
+There is no per-operation success message on the status stream — a completed operation sends
+`__UPDATE_UI__` and nothing else. This section used to show an
+`info!("... PutItem to table ...")` / `status_tx.send("[CLIENT] DynamoDB PutItem succeeded")`
+pair; neither line exists anywhere in the code.
 
 ### Error Handling
 
-- **Connection Failed**: Initialization error, client not created
-- **Operation Failed**: Log error, return Err, call LLM with error event
+- **Connection**: `connect()` cannot currently fail. It marks the client `Connected` before
+  anything has been verified, so a typo'd endpoint or an unreachable host still shows a
+  healthy client and the first symptom is an operation failing later. This is the client-side
+  form of "a server that lies about being up"; closing it wants one cheap probe during connect
+- **Operation Failed**: logged, sent to the status stream, and returned to the injector as
+  `ClientSendOutcome::Rejected` — *not* `Executed`, which is how it used to render, making a
+  refusal indistinguishable from a completed write in the dashboard
+- **Unconvertible attribute**: refused before the request is built, naming the attribute. It
+  used to be dropped from the item silently and the write reported as successful
 - **Authentication Failed**: AWS SDK handles authentication errors
-- **LLM Error**: Log, continue accepting actions
+- **LLM Error**: logged, and the command loop keeps accepting actions
 
 ## Features
 
@@ -195,7 +212,10 @@ status_tx.send("[CLIENT] DynamoDB PutItem succeeded");                    // →
 
 - **No Streaming** - Responses buffered in memory
 - **No Pagination** - Large scans/queries return first page only
-- **No Complex Types** - Maps (M) and Lists (L) not yet supported
+- **No Complex Types** - only `S`, `N`, `B`, `BOOL` and `NULL` convert. Maps (M), lists (L)
+  and sets (SS/NS/BS) are **refused with an error naming the attribute**, not dropped: an
+  unsupported attribute used to vanish from the item while the write reported success, and a
+  `B` value whose base64 did not decode was written as an empty blob
 - **No Batch Operations** - BatchGetItem/BatchWriteItem not implemented
 - **No Transactions** - TransactWriteItems not implemented
 - **No Streams** - DynamoDB Streams not supported
@@ -373,11 +393,32 @@ The DynamoDB call itself is **awaited** in the loop, so the detail is a real res
 `dynamodb_response_received` event is raised from its own registered task, so an event handler
 that parks for a human answer cannot wedge the command loop.
 
-**Known gap (not closed here):** this client still raises no `dynamodb_connected` event —
-`connect_with_llm_actions` never calls `call_llm_for_client` — so the injected/command path is
-currently the *only* way an action reaches the wire. The LLM cannot drive this client until a
-connected-event call is added.
+**The `dynamodb_connected` event *is* raised**, from a registered task rather than inline so a
+manual routing rule cannot block client creation, and whatever the model answers runs through
+`run_operation_once`. (This paragraph used to say the opposite — that no connected event
+exists and the LLM cannot drive this client at all.) What is still true is the shape of the
+chain: `run_operation_once` raises no event, so a follow-up the model issues in reply to
+`dynamodb_response_received` is the last step. That is the "non-notifying path" the root
+`CLAUDE.md` names, and the prescribed fix is a depth bound rather than silence.
 
-Test: `tests/client/dynamodb/command_channel_test.rs` (no LLM, no AWS — `endpoint_url` is a
-loopback listener). Note that `tests/client/mod.rs` gates `pub mod dynamodb` on the **`dynamo`**
-feature alias, not `dynamodb`, so the directory only compiles when `dynamo` is enabled.
+**Where requests go.** `remote_addr` is the endpoint unless `endpoint_url` overrides it. It
+used to be ignored outright, so a client aimed at `localhost:8000` with no explicit
+`endpoint_url` had the SDK resolve `https://dynamodb.<region>.amazonaws.com` and sign with
+whatever ambient credentials the machine had — real reads and writes against real AWS from a
+client that looked local. All four startup parameters are declared optional and are now read
+as optional; they were read with `get_string`, which errors on a missing key, so passing any
+strict subset of them (`endpoint_url` alone, the documented local-testing case) failed the
+connect with "Required string parameter 'region' is missing".
+
+Tests: `tests/client/dynamodb/command_channel_test.rs` (no LLM, no AWS — the endpoint is a
+loopback listener). Three tests, all running by default: the injected `put_item` path, that
+`remote_addr` alone reaches the stub, and that an unsupported attribute type is refused rather
+than dropped. The four tests in `e2e_test.rs` are all `#[ignore]`d **and drive
+`aws_sdk_dynamodb` directly** — they never touch this client, so even un-ignored they would
+prove things about the AWS SDK.
+
+`tests/client/mod.rs` gates `pub mod dynamodb` on `any(feature = "dynamo", feature =
+"dynamodb")`, so the directory compiles under either. (It used to say `dynamo` only, which was
+wrong.) The genuine quirk is one level down: `tests/client/dynamodb/mod.rs` gates
+`mod e2e_test` on `dynamo`, the **server** feature, so `--features dynamodb` alone compiles the
+client tests without it.
