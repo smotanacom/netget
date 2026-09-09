@@ -103,3 +103,30 @@ What it does do is refresh `AppState::update_connection_stats` on the single rea
 write, so the rail shows real `↓ ↑` byte/packet counts and a fresh `last_activity` rather than
 `↓0 ↑0`. Covered by the zero-LLM in-process test `hls_connection_stats_are_recorded`
 (`tests/server/hls/e2e_test.rs`), which also asserts no peer handle is registered.
+
+## It cannot read the filesystem, and that is the point
+
+There is no `std::fs`, no `tokio::fs`, no `Path` and no `PathBuf` anywhere under
+`src/server/hls/` — verify with `grep -rn "fs::\|File::\|PathBuf\|Path::" src/server/hls/`.
+The request path is used for exactly two things: choosing between the playlist and segment
+events (`path.contains(".m3u8")`), and being handed to the model as event data. Every byte the
+server returns comes from the model's action — `playlist`/`segments` for a playlist, `content`
+or hex-decoded `data` for a segment.
+
+So there is **no path traversal surface**: `../../etc/passwd` is a string the model is asked
+about, not a file that gets opened. A future change that resolves a path against a directory
+would introduce the whole class at once, and would also break the "protocols must not implement
+storage" rule — the model supplies the bytes.
+
+## Request reading is bounded in both dimensions
+
+Headers are capped at 64 KiB **and** at a 30-second deadline (`HEADER_READ_TIMEOUT`). The size
+cap alone was not enough: a peer that connects and sends one byte, or nothing, parked the task
+and its socket for as long as it cared to hold the connection open, which is the whole of
+slowloris. The path is additionally truncated to `MAX_PATH_LEN` (512) before it reaches the log,
+the status stream or the model's prompt, since all three used to take it at whatever length the
+peer chose.
+
+`parse_request_line` also finds the header terminator on the bytes rather than decoding the whole
+buffer as UTF-8 first — the same head-of-line stall RTSP had, where a read that stopped in the
+middle of a multi-byte character invalidated headers that were already complete.
