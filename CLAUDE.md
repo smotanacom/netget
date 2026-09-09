@@ -865,22 +865,32 @@ from `Cargo.toml` and `build.rs` rather than trusting it — it has been wrong.
 
 ## MCP surface
 
-`--mcp` (stdio) and `--mcp-http PORT` expose 12 tools sharing the TUI's code paths. See
-`src/mcp_stdio/CLAUDE.md`. Current gaps to keep in mind when testing a protocol through MCP:
+`--mcp` (stdio) and `--mcp-http PORT` expose tools sharing the TUI's code paths. See
+`src/mcp_stdio/CLAUDE.md`.
 
-- **No client tools.** `list_protocols` lists client protocols and `get_protocol_docs`
-  instructs the caller to use `open_client`, but no MCP tool starts a client.
-- `start_server` cannot pass `interface` or `mac_address` (hardcoded `None`), so
-  interface-bound protocols (`arp`, `datalink`, `icmp`, `isis`) can't be targeted at a real
-  NIC; nor `scheduled_tasks`, `initial_memory`, or `feedback_instructions`.
-- `send_first` is accepted by `start_server_from_action` as `_send_first` and **ignored
-  entirely** — on every path, not just MCP.
-- Unknown action names in `event_handlers` are accepted at startup and silently do nothing at
-  runtime; the client gets no response and the access log records the action as if it ran.
-- `get_protocol_docs` returns the TUI LLM's documentation (`open_server`, `base_stack`), which
-  describes an API MCP callers cannot invoke.
-- No state persists across process restarts, and `stop_server`/`stop_all` skip
-  `cleanup_server_tasks()`, orphaning scheduled tasks.
+**Five of the six gaps this section used to list have been fixed, and it kept claiming them.**
+Re-verified September 2026 against `src/mcp_stdio/`:
+
+| Former gap | Status |
+|---|---|
+| No client tools | **Fixed** — `start_client`, `list_clients`, `client_status`, `stop_client` all exist in `tools.rs` |
+| `start_server` cannot pass `interface` / `mac_address` / `scheduled_tasks` / `initial_memory` / `feedback_instructions` | **Fixed** — all are tool params and are passed through |
+| `send_first` accepted as `_send_first` and ignored on every path | **Fixed** — `params.send_first` is passed and folded into `startup_params`, though only where the protocol declares it |
+| `get_protocol_docs` returns TUI docs describing an uninvokable API | **Fixed** — `docs.rs` is MCP-shaped and mentions neither `open_server` nor `base_stack` |
+| `stop_server`/`stop_all` skip `cleanup_server_tasks()` | **Fixed** — teardown moved inside `AppState::remove_server`, pinned by `tests/mcp_stop_cleanup_test.rs` |
+
+**Two remain:**
+
+- **Unknown action names in `event_handlers` are still accepted at startup** — only the
+  handler's *shape* is validated. They are no longer silent at runtime, though:
+  `executor.rs` logs at ERROR and records a failure.
+- **No state persists across process restarts**, which is by design.
+
+**The lesson is about this file, not about MCP.** A "current gaps" list is the part of any
+document that rots first, and rotting toward *understating* the code is the dangerous
+direction: it tells the next person a capability is missing, so they build around an absence
+that is not there. Re-derive such a list before trusting it, and prefer stating how to check
+over stating what is true.
 
 A long-running `netget --mcp` process keeps executing its original binary image after a
 rebuild. When behavior contradicts the source, confirm which build is actually running before

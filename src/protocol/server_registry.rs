@@ -1119,6 +1119,12 @@ impl ServerRegistry {
 pub(crate) const ALL_KNOWN_PROTOCOLS: &[(&str, &str)] = &[
     ("TCP", "tcp"),
     ("SOCKET_FILE", "socket_file"),
+    // The other three local-descriptor protocols. Without these, a build that does not compile
+    // them answers `Unknown protocol: 'pty'. Did you mean 'NTP'?` instead of saying the protocol
+    // exists but is not compiled in - the table is what tells those two cases apart.
+    ("PTY", "pty"),
+    ("STDIO", "stdio"),
+    ("NAMED_PIPE", "named_pipe"),
     ("HTTP", "http"),
     ("HTTP2", "http2"),
     ("PyPI", "pypi"),
