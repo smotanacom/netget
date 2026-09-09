@@ -142,7 +142,33 @@ impl Protocol for ProxyProtocol {
             .implementation("Manual HTTP/1.1 with rcgen v0.14 + rustls")
             .llm_control("Request pass/block/modify, response pass/block/modify (MITM only), HTTPS allow/block")
             .e2e_testing("reqwest configured as a real proxy client against local target servers (tests/server/proxy/test.rs), plus mocked-LLM startup and MITM scenarios (tests/server/proxy/e2e_test.rs). No curl and no browser has been run against it.")
-            .notes("HTTP/1.1 only; MITM CA is generated per run and clients must trust it; certificate_mode 'load_from_file' is not implemented and is rejected at startup (its cert_path/key_path parameters are declared only so that rejection is the error the caller sees); responses on plain HTTP are forwarded without LLM consultation; only the first exchange of a keep-alive HTTPS connection is inspected")
+            .notes(
+                "OPEN RELAY BY DESIGN, AND UNRESTRICTED: the destination of every request and \
+                 every CONNECT is chosen by the peer (from the request-target or the Host \
+                 header), and there is no allow-list, deny-list or network restriction of any \
+                 kind. Loopback, link-local (including 169.254.169.254, the cloud \
+                 instance-metadata endpoint) and every RFC 1918 range are reachable, so anyone \
+                 who can reach this port can reach whatever this host can -- an SSRF pivot into \
+                 the operator's private network, and a relay someone else's traffic can be \
+                 laundered through. The only gate is the model, and `request_filter_mode` / \
+                 `https_connection_filter_mode` decide whether it is consulted at all: at \
+                 `none`, or at `match_only` with filters that miss, traffic is forwarded with no \
+                 consultation whatsoever. The `*_filters` lists select what the model is ASKED \
+                 about; they do not restrict anything on their own. Do not expose this to an \
+                 untrusted network. \
+                 In MITM mode the generated CA's private key never leaves memory and is never \
+                 written to disk -- `ca_export_path` writes the public certificate only -- but a \
+                 client that trusts that CA has its TLS broken for every host, so the exported \
+                 file must be treated as the sensitive artefact it is. \
+                 HTTP/1.1 only; the MITM CA is generated per run and clients must trust it; \
+                 certificate_mode 'load_from_file' is not implemented and is rejected at startup \
+                 (its cert_path/key_path parameters are declared only so that rejection is the \
+                 error the caller sees); responses on plain HTTP are forwarded without LLM \
+                 consultation; only the first exchange of a keep-alive HTTPS connection is \
+                 inspected; the request head is capped at 64 KiB with a 30s deadline and an \
+                 upstream response at 8 MiB, but the number of concurrent connections is \
+                 unbounded.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
