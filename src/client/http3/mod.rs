@@ -28,6 +28,29 @@ use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 /// a close on; this is what the old idle task was for.
 const REMOVAL_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Wall-clock bound on one complete HTTP/3 exchange: QUIC handshake, h3 session setup,
+/// request, and response.
+///
+/// There was no bound at all. `quinn` gives up on a peer that stops acknowledging, but a
+/// server that completes the handshake and then simply never answers — trivially arranged,
+/// and what a hung or wedged backend looks like — left `recv_response()` pending forever.
+/// The task is registered, so `remove_client` could still abort it, but the dashboard's
+/// `[ send ]` had no way to fail: `send_to_client` waited on an exchange that would never
+/// resolve. 30 s matches the HTTP/1.1 and HTTP/2 clients' reqwest timeout.
+const HTTP3_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How much of a response body is read before the exchange is abandoned.
+///
+/// The body is buffered whole and handed to the model, so an unbounded one is memory
+/// exhaustion with no upside — a model cannot read 8 MiB either. Same value and same
+/// reasoning as the HTTP servers' `MAX_REQUEST_BODY_BYTES`.
+const MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// How many exchanges deep this client keeps following the model's answers. Each response
+/// can ask for another request, which produces another response; without a bound a model
+/// that answers every response with a request never stops.
+const MAX_FOLLOWUP_DEPTH: u8 = 4;
+
 /// One completed HTTP/3 exchange.
 ///
 /// Split out of [`Http3Client::make_request`] so the injected-command loop can await
@@ -38,6 +61,10 @@ pub struct Http3Exchange {
     pub status_text: String,
     pub headers: serde_json::Map<String, serde_json::Value>,
     pub body: String,
+    /// The index of the QUIC stream this exchange used, from `h3`'s `RequestStream::id`.
+    /// Only the index is public in `h3`; the wire stream id of a client bidirectional
+    /// stream is `index << 2`.
+    pub stream_index: u64,
 }
 
 /// What one executed action did.
@@ -109,9 +136,10 @@ impl Http3Client {
 
         info!("HTTP/3 client {} initialized successfully", client_id);
 
-        // Injected commands (the dashboard's [ send ]). This client raises no
-        // connected event, so there is no LLM call to register ahead of - but the
-        // handle still has to exist before `connect()` returns, or the dashboard
+        // Injected commands (the dashboard's [ send ]). Registered before the connected
+        // event below, and before `connect()` returns: a dashboard-created client defaults
+        // to a `*` manual rule, so that LLM call can park for minutes waiting for a human
+        // and [ send ] has to work for the whole park. Without the handle the dashboard
         // greys out [ send ] on a client that is up.
         //
         // This task also replaces the old "poll get_client() every 5s" idle task -
@@ -135,8 +163,9 @@ impl Http3Client {
         //
         // Raised from a registered task rather than inline: a dashboard-created client
         // defaults to a `*` -> manual rule, and awaiting a parked answer here would block
-        // client creation itself. Requests go through `perform_request`, which raises no
-        // event, so a connect instruction cannot start an unbounded chain.
+        // client creation itself. The exchange it produces IS reported back to the model
+        // (it used to be dropped), bounded by MAX_FOLLOWUP_DEPTH so a connect instruction
+        // cannot start an unbounded chain.
         let conn_state = app_state.clone();
         let conn_llm = llm_client.clone();
         let status_tx_c = status_tx.clone();
@@ -175,7 +204,7 @@ impl Http3Client {
                         if name != "http3_request" {
                             continue;
                         }
-                        if let Err(e) = Self::perform_request(
+                        match Self::perform_request(
                             client_id,
                             data["method"].as_str().unwrap_or("GET").to_string(),
                             data["path"].as_str().unwrap_or("/").to_string(),
@@ -186,10 +215,26 @@ impl Http3Client {
                         )
                         .await
                         {
-                            error!(
+                            // The exchange used to be dropped here, so the very first
+                            // request — the one the connect instruction asks for — never
+                            // raised `http3_response_received`. The model was told to make
+                            // a request and then never told what came back. (The HTTP/2
+                            // client had the same defect and it was fixed there first.)
+                            Ok(exchange) => {
+                                Self::notify_response(
+                                    client_id,
+                                    exchange,
+                                    conn_state.clone(),
+                                    conn_llm.clone(),
+                                    status_tx_c.clone(),
+                                    0,
+                                )
+                                .await;
+                            }
+                            Err(e) => error!(
                                 "HTTP/3 client {} connect-time request failed: {}",
                                 client_id, e
-                            );
+                            ),
                         }
                     }
                 }
@@ -364,6 +409,7 @@ impl Http3Client {
                         state_clone,
                         llm_clone,
                         status_clone,
+                        0,
                     )
                     .await;
                 });
@@ -405,7 +451,7 @@ impl Http3Client {
         let exchange =
             Self::perform_request(client_id, method, path, headers, body, priority, &app_state)
                 .await?;
-        Self::notify_response(client_id, exchange, app_state, llm_client, status_tx).await;
+        Self::notify_response(client_id, exchange, app_state, llm_client, status_tx, 0).await;
         Ok(())
     }
 
@@ -414,8 +460,39 @@ impl Http3Client {
     ///
     /// The QUIC connection is closed before returning rather than after the LLM call,
     /// so a slow model does not hold an idle connection open.
+    ///
+    /// Bounded by [`HTTP3_REQUEST_TIMEOUT`]. Every step below can block indefinitely
+    /// against a server that completes the handshake and then goes quiet, and none of them
+    /// carried a deadline of its own; the endpoint is dropped on timeout, which closes the
+    /// connection.
     #[allow(clippy::too_many_arguments)]
     pub async fn perform_request(
+        client_id: ClientId,
+        method: String,
+        path: String,
+        headers: Option<serde_json::Map<String, serde_json::Value>>,
+        body: Option<String>,
+        priority: Option<u8>,
+        app_state: &AppState,
+    ) -> Result<Http3Exchange> {
+        match tokio::time::timeout(
+            HTTP3_REQUEST_TIMEOUT,
+            Self::perform_request_inner(
+                client_id, method, path, headers, body, priority, app_state,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!(
+                "HTTP/3 exchange did not complete within {}s",
+                HTTP3_REQUEST_TIMEOUT.as_secs()
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn perform_request_inner(
         client_id: ClientId,
         method: String,
         path: String,
@@ -531,6 +608,28 @@ impl Http3Client {
             }
         }
 
+        // `priority` was threaded from the action through four call sites and read only by
+        // the `info!` above — it changed nothing on the wire, exactly like the `enable_0rtt`
+        // startup param that was removed for the same reason (see `actions.rs`). It is now
+        // sent as the RFC 9218 `priority` header field, which is how HTTP/3 actually
+        // expresses this: a request header, urgency `u=0..7`, that the *server* uses when
+        // scheduling. Applied after the merge so it wins over a hand-written `priority`
+        // header, and skipped entirely when the model does not ask for one, since RFC 9218
+        // has a default (u=3) and sending it explicitly is not the same as leaving it out.
+        //
+        // Note the direction: RFC 9218 urgency is **lowest-is-most-urgent**. The action
+        // description used to say "higher is more urgent", which is backwards, so a model
+        // asking for high priority would have de-prioritised its request.
+        if let Some(urgency) = priority {
+            let urgency = urgency.min(7);
+            match http::header::HeaderValue::from_str(&format!("u={urgency}")) {
+                Ok(value) => {
+                    req_builder = req_builder.header("priority", value);
+                }
+                Err(e) => tracing::warn!("HTTP/3 client {client_id}: bad priority header: {e}"),
+            }
+        }
+
         // Build request body
         let req_body = body.unwrap_or_default();
         let request = req_builder.body(()).context("Failed to build request")?;
@@ -559,6 +658,14 @@ impl Http3Client {
             client_id
         );
 
+        // The stream this request went out on. `http3_response_received` used to report a
+        // hardcoded `0` under a `// TODO: Get actual stream ID` — a field the model was
+        // told was the stream id and could never use to tell two responses apart. `h3`
+        // does expose it; only the *index* is public (the raw id is `index << 2` for a
+        // client bidirectional stream), so that is what is reported and what the event
+        // parameter now describes.
+        let stream_index = stream.id().index();
+
         // Receive response
         let response = stream
             .recv_response()
@@ -576,10 +683,18 @@ impl Http3Client {
             }
         }
 
-        // Read response body
+        // Read response body, bounded. It is buffered whole and handed to the model, so a
+        // server streaming without end would otherwise grow this Vec until the process
+        // died — and a model cannot read 8 MiB anyway.
         let mut body_bytes = Vec::new();
         while let Some(mut chunk) = stream.recv_data().await? {
             use bytes::Buf;
+            if body_bytes.len() + chunk.remaining() > MAX_RESPONSE_BODY_BYTES {
+                return Err(anyhow::anyhow!(
+                    "HTTP/3 response body exceeded {} bytes",
+                    MAX_RESPONSE_BODY_BYTES
+                ));
+            }
             body_bytes.extend_from_slice(chunk.chunk());
             chunk.advance(chunk.remaining());
         }
@@ -599,98 +714,125 @@ impl Http3Client {
             status_text: status.to_string(),
             headers: resp_headers,
             body: body_text,
+            stream_index,
         })
     }
 
     /// Hand a completed exchange to the LLM as an `http3_response_received` event.
-    async fn notify_response(
+    ///
+    /// Boxed with an explicit `+ Send` because the chain is genuinely self-referential
+    /// (report → request → report) and the future is awaited inside a `tokio::spawn`,
+    /// which inference will not give `Send` on its own. Root `CLAUDE.md` prescribes
+    /// exactly this for the "client asks the model and throws the answer away" family:
+    /// **a depth bound, not silence.**
+    fn notify_response(
         client_id: ClientId,
         exchange: Http3Exchange,
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
-    ) {
-        let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
-            return;
-        };
+        depth: u8,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
 
-        let protocol = Arc::new(crate::client::http3::actions::Http3ClientProtocol::new());
-        let event = Event::new(
-            &HTTP3_CLIENT_RESPONSE_RECEIVED_EVENT,
-            serde_json::json!({
-                "status_code": exchange.status_code,
-                "status_text": exchange.status_text,
-                "headers": exchange.headers,
-                "body": exchange.body,
-                "stream_id": 0u64, // TODO: Get actual stream ID if available
-            }),
-        );
+            let protocol = Arc::new(crate::client::http3::actions::Http3ClientProtocol::new());
+            let event = Event::new(
+                &HTTP3_CLIENT_RESPONSE_RECEIVED_EVENT,
+                serde_json::json!({
+                    "status_code": exchange.status_code,
+                    "status_text": exchange.status_text,
+                    "headers": exchange.headers,
+                    "body": exchange.body,
+                    "stream_id": exchange.stream_index,
+                }),
+            );
 
-        let memory = app_state
-            .get_memory_for_client(client_id)
+            let memory = app_state
+                .get_memory_for_client(client_id)
+                .await
+                .unwrap_or_default();
+
+            match call_llm_for_client(
+                &llm_client,
+                &app_state,
+                client_id.to_string(),
+                &instruction,
+                &memory,
+                Some(&event),
+                protocol.as_ref(),
+                &status_tx,
+            )
             .await
-            .unwrap_or_default();
+            {
+                Ok(ClientLlmResult {
+                    actions,
+                    memory_updates,
+                }) => {
+                    // Update memory
+                    if let Some(mem) = memory_updates {
+                        app_state.set_memory_for_client(client_id, mem).await;
+                    }
 
-        match call_llm_for_client(
-            &llm_client,
-            &app_state,
-            client_id.to_string(),
-            &instruction,
-            &memory,
-            Some(&event),
-            protocol.as_ref(),
-            &status_tx,
-        )
-        .await
-        {
-            Ok(ClientLlmResult {
-                actions,
-                memory_updates,
-            }) => {
-                // Update memory
-                if let Some(mem) = memory_updates {
-                    app_state.set_memory_for_client(client_id, mem).await;
+                    // Execute what the model asked for, and report each result back to it
+                    // until the depth bound. Reporting used to stop after one hop: the
+                    // follow-up ran but its response raised no event, so a model that read
+                    // a 302 and asked for the redirect target never learned what it got.
+                    use crate::llm::actions::client_trait::{Client, ClientActionResult};
+                    for action in actions {
+                        let Ok(ClientActionResult::Custom { name, data }) =
+                            protocol.execute_action(action.clone())
+                        else {
+                            continue;
+                        };
+                        if name != "http3_request" {
+                            continue;
+                        }
+                        match Self::perform_request(
+                            client_id,
+                            data["method"].as_str().unwrap_or("GET").to_string(),
+                            data["path"].as_str().unwrap_or("/").to_string(),
+                            data["headers"].as_object().cloned(),
+                            data["body"].as_str().map(|s| s.to_string()),
+                            data["priority"].as_u64().map(|p| p as u8),
+                            &app_state,
+                        )
+                        .await
+                        {
+                            Ok(exchange) => {
+                                if depth + 1 < MAX_FOLLOWUP_DEPTH {
+                                    Self::notify_response(
+                                        client_id,
+                                        exchange,
+                                        app_state.clone(),
+                                        llm_client.clone(),
+                                        status_tx.clone(),
+                                        depth + 1,
+                                    )
+                                    .await;
+                                } else {
+                                    tracing::warn!(
+                                        "HTTP/3 client {} reached the follow-up depth limit \
+                                         ({}); not reporting the response to the model",
+                                        client_id,
+                                        MAX_FOLLOWUP_DEPTH
+                                    );
+                                }
+                            }
+                            Err(e) => error!(
+                                "HTTP/3 client {} follow-up request failed: {}",
+                                client_id, e
+                            ),
+                        }
+                    }
                 }
-
-                // Execute what the model asked for. These were discarded, so a model that
-                // read a response and wanted to follow it with another request was
-                // silently ignored -- the entire purpose of raising the event.
-                //
-                // They run through `perform_request`, which raises no event: that bounds
-                // the loop, and avoids making notify -> apply -> make -> notify a
-                // self-referential async chain that rustc cannot prove `Send`.
-                use crate::llm::actions::client_trait::{Client, ClientActionResult};
-                for action in actions {
-                    let Ok(ClientActionResult::Custom { name, data }) =
-                        protocol.execute_action(action.clone())
-                    else {
-                        continue;
-                    };
-                    if name != "http3_request" {
-                        continue;
-                    }
-                    let result = Self::perform_request(
-                        client_id,
-                        data["method"].as_str().unwrap_or("GET").to_string(),
-                        data["path"].as_str().unwrap_or("/").to_string(),
-                        data["headers"].as_object().cloned(),
-                        data["body"].as_str().map(|s| s.to_string()),
-                        data["priority"].as_u64().map(|p| p as u8),
-                        &app_state,
-                    )
-                    .await;
-                    if let Err(e) = result {
-                        error!(
-                            "HTTP/3 client {} follow-up request failed: {}",
-                            client_id, e
-                        );
-                    }
+                Err(e) => {
+                    error!("LLM error for HTTP/3 client {}: {}", client_id, e);
                 }
             }
-            Err(e) => {
-                error!("LLM error for HTTP/3 client {}: {}", client_id, e);
-            }
-        }
+        })
     }
 }
 

@@ -23,20 +23,17 @@ pub static HTTP3_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| 
             "priority": 5
         }),
     )
-    .with_parameters(vec![
-        Parameter {
-            name: "base_url".to_string(),
-            type_hint: "string".to_string(),
-            description: "Base URL for HTTP/3 requests".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "connection_id".to_string(),
-            type_hint: "string".to_string(),
-            description: "QUIC connection ID".to_string(),
-            required: true,
-        },
-    ])
+    // Only `base_url` is emitted. A `connection_id` parameter used to be declared here,
+    // and marked required, while the emit site sends nothing of the kind - there is no
+    // QUIC connection at this point at all, because this client opens one per request and
+    // closes it before returning. A required field that never arrives is worse than no
+    // field: the model is told to expect it.
+    .with_parameters(vec![Parameter {
+        name: "base_url".to_string(),
+        type_hint: "string".to_string(),
+        description: "Base URL for HTTP/3 requests".to_string(),
+        required: true,
+    }])
 });
 
 /// HTTP/3 client response received event
@@ -74,7 +71,10 @@ pub static HTTP3_CLIENT_RESPONSE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock:
         Parameter {
             name: "stream_id".to_string(),
             type_hint: "number".to_string(),
-            description: "HTTP/3 stream ID".to_string(),
+            description: "Index of the QUIC stream this response arrived on. Distinct per \
+                request within one connection; this client opens a fresh connection per \
+                request, so in practice it restarts from 0 each time and is informational."
+                .to_string(),
             required: true,
         },
     ])
@@ -142,7 +142,12 @@ impl Protocol for Http3ClientProtocol {
                     Parameter {
                         name: "priority".to_string(),
                         type_hint: "number".to_string(),
-                        description: "Stream priority (0-7, higher is more urgent)".to_string(),
+                        description: "RFC 9218 urgency, 0-7, sent as the `priority: u=N` request \
+                            header. **Lower is more urgent** (0 = most urgent, 7 = least); \
+                            the RFC default is 3, and omitting this sends no header at all, \
+                            which is not the same as sending u=3. It is a hint the server \
+                            uses when scheduling responses; a server may ignore it."
+                            .to_string(),
                         required: false,
                     },
                 ],
@@ -169,50 +174,72 @@ impl Protocol for Http3ClientProtocol {
         ]
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        vec![ActionDefinition {
-            name: "send_http3_request".to_string(),
-            description: "Send another HTTP/3 request in response to received data".to_string(),
-            parameters: vec![
-                Parameter {
-                    name: "method".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "HTTP method".to_string(),
-                    required: true,
-                },
-                Parameter {
-                    name: "path".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "Request path".to_string(),
-                    required: true,
-                },
-                Parameter {
-                    name: "headers".to_string(),
-                    type_hint: "object".to_string(),
-                    description: "Request headers".to_string(),
-                    required: false,
-                },
-                Parameter {
-                    name: "body".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "Request body".to_string(),
-                    required: false,
-                },
-                Parameter {
-                    name: "priority".to_string(),
-                    type_hint: "number".to_string(),
-                    description: "Stream priority (0-7)".to_string(),
-                    required: false,
-                },
-            ],
-            example: json!({
-                "type": "send_http3_request",
-                "method": "POST",
-                "path": "/api/data",
-                "body": "{\"key\": \"value\"}",
-                "priority": 3
-            }),
-            log_template: None,
-        }]
+        vec![
+            ActionDefinition {
+                name: "send_http3_request".to_string(),
+                description: "Send another HTTP/3 request in response to received data".to_string(),
+                parameters: vec![
+                    Parameter {
+                        name: "method".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "HTTP method".to_string(),
+                        required: true,
+                    },
+                    Parameter {
+                        name: "path".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Request path".to_string(),
+                        required: true,
+                    },
+                    Parameter {
+                        name: "headers".to_string(),
+                        type_hint: "object".to_string(),
+                        description: "Request headers".to_string(),
+                        required: false,
+                    },
+                    Parameter {
+                        name: "body".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "Request body".to_string(),
+                        required: false,
+                    },
+                    Parameter {
+                        name: "priority".to_string(),
+                        type_hint: "number".to_string(),
+                        description: "RFC 9218 urgency, 0-7, sent as the `priority: u=N` request \
+                            header. **Lower is more urgent** (0 = most urgent, 7 = least); \
+                            the RFC default is 3, and omitting this sends no header at all, \
+                            which is not the same as sending u=3. It is a hint the server \
+                            uses when scheduling responses; a server may ignore it."
+                            .to_string(),
+                        required: false,
+                    },
+                ],
+                example: json!({
+                    "type": "send_http3_request",
+                    "method": "POST",
+                    "path": "/api/data",
+                    "body": "{\"key\": \"value\"}",
+                    "priority": 3
+                }),
+                log_template: None,
+            },
+            // The third of the three standard client sync actions (CLAUDE.md), and the one
+            // this client did not have. Its `apply_action` has always handled
+            // `ClientActionResult::WaitForMore`, so the plumbing existed and only the
+            // declaration and the executor arm were missing — a model with nothing to send
+            // had to invent an action, and got "Unknown HTTP/3 client action" back. The
+            // http and http2 clients both declare it.
+            ActionDefinition {
+                name: "wait_for_more".to_string(),
+                description: "Take no action and wait for the next response. Use when nothing \
+                should be sent yet."
+                    .to_string(),
+                parameters: vec![],
+                example: json!({ "type": "wait_for_more" }),
+                log_template: None,
+            },
+        ]
     }
     fn protocol_name(&self) -> &'static str {
         "HTTP3"
@@ -242,9 +269,26 @@ impl Protocol for Http3ClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("quinn (QUIC) + h3 (HTTP/3) libraries")
-            .llm_control("Full control over requests, stream priorities, 0-RTT decision")
-            .e2e_testing("HTTP/3 capable server (e.g., Cloudflare, Google)")
+            .implementation(
+                "quinn v0.11 (QUIC) + h3 v0.0.8 (RFC 9114). A fresh QUIC endpoint and \
+                 connection per request, closed before the response is reported. Server \
+                 certificates are NOT verified - the verifier is hardcoded to accept any \
+                 chain and there is no startup parameter to change that.",
+            )
+            .llm_control(
+                "Method, path, headers, body, and RFC 9218 request urgency (`priority`, \
+                 sent as the `priority: u=N` header). Not 0-RTT: this client keeps no \
+                 session-ticket cache and opens a new connection every time, so there is \
+                 never a session to resume.",
+            )
+            .e2e_testing(
+                "None that runs. NetGet has no HTTP/3 server, so all three tests in \
+                 tests/client/http3/e2e_test.rs are #[ignore]d and there is nothing on the \
+                 machine for the client to reach; the only executing coverage is \
+                 tests/client/http3/command_channel_test.rs, which exercises injected \
+                 actions and not the QUIC path. Nothing has ever been asserted against a \
+                 real HTTP/3 server.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
@@ -371,6 +415,7 @@ impl Client for Http3ClientProtocol {
                 })
             }
             "disconnect" => Ok(ClientActionResult::Disconnect),
+            "wait_for_more" => Ok(ClientActionResult::WaitForMore),
             _ => Err(anyhow::anyhow!(
                 "Unknown HTTP/3 client action: {}",
                 action_type

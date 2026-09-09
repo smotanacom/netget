@@ -2,8 +2,20 @@
 
 ## Overview
 
-E2E tests for the HTTP/3 client implementation verify that the LLM-controlled HTTP/3 client can successfully make
-requests over QUIC transport to HTTP/3 servers.
+**Every test in `e2e_test.rs` is `#[ignore]`d and none of them has ever run.** They are
+written against a "NetGet HTTP/3 server" that does not exist: the `http3` feature builds
+the *client* only, `base_stack: HTTP3` cannot start anything, and `src/server/quic/` is a
+raw-QUIC server under ALPN `h3` with no RFC 9114 framing — no HTTP/3 client, this one
+included, can talk to it. Root `CLAUDE.md` also forbids reaching an external endpoint, so
+there is nothing on the machine for the client to connect to.
+
+The only coverage that executes is `command_channel_test.rs`, which injects actions into a
+running client and never opens a QUIC connection. **Nothing here has ever asserted this
+client against a real HTTP/3 server**, and `metadata().e2e_testing` now says so.
+
+Read the rest of this file as a description of what the ignored tests *would* check if an
+HTTP/3 server protocol existed — the plan for one is in `src/server/quic/CLAUDE.md` under
+"If a real HTTP/3 server is wanted". Do not read it as evidence.
 
 ## Test Strategy
 
@@ -50,7 +62,13 @@ Tests spawn actual NetGet processes as black boxes:
 
 ### 2. `test_http3_client_with_priority`
 
-**Purpose**: Verify stream priority control
+**Purpose**: Verify stream priority control.
+
+Note that this test asks for `"priority": 7` as "high priority". Under RFC 9218 — which is
+what the client now sends, as a `priority: u=N` header — **7 is the least urgent value**
+and 0 the most. The test asserts nothing about the priority reaching the wire, so it would
+still pass; the number is simply misleading and should be `1` if this test is ever
+un-ignored.
 
 **Flow**:
 
@@ -154,7 +172,9 @@ Tests spawn actual NetGet processes as black boxes:
 
 **Limitation**: Doesn't verify interoperability with other implementations
 
-**Future**: Add optional tests against public HTTP/3 servers (Cloudflare, Google)
+**Not a future option**: tests must bind to localhost only and never contact external
+endpoints (root `CLAUDE.md`). Reaching Cloudflare or Google would also make the suite
+depend on someone else's uptime. The unblocking work is an HTTP/3 server protocol.
 
 ## Performance Considerations
 
@@ -200,7 +220,7 @@ Tests spawn actual NetGet processes as black boxes:
 ### Medium Priority
 
 4. **External Server Tests**
-    - Test against Cloudflare QUIC
+    - Test against a local HTTP/3 server, once one exists (never an external endpoint)
     - Verify interoperability
 
 5. **Error Scenarios**

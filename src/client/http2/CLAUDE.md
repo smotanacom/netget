@@ -40,14 +40,39 @@ Unlike HTTP/1.1, HTTP/2 connections are persistent and multiplexed:
 2. **Stream Multiplexing**: Multiple requests share one connection without head-of-line blocking
 3. **Request on Demand**: Requests are made via LLM actions, not a continuous read loop
 
-### Client Initialization
+### Client initialization — once per host, on `spawn_blocking`
+
+`Http2Client::http2_client(url)` returns a cached `reqwest::Client`, keyed by host:
 
 ```rust
-let http_client = reqwest::Client::builder()
+let mut builder = reqwest::Client::builder()
     .timeout(std::time::Duration::from_secs(30))
-    .http2_prior_knowledge()  // Force HTTP/2 without ALPN negotiation
-    .build()?;
+    .http2_prior_knowledge();          // Force HTTP/2 without ALPN negotiation
+if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+    builder = builder.resolve(&host, std::net::SocketAddr::new(ip, 0));
+}
 ```
+
+**It was built per request**, plus one more at connect that was bound to `_http_client` and
+dropped immediately — both on the async runtime. Three things that cost, all recorded in
+root `CLAUDE.md` as measured rather than theoretical:
+
+- `Client::builder().build()` sets up the rustls stack and loads the platform root store;
+  on macOS that reads the keychain through Security.framework, synchronously and serialised
+  across processes. On the async runtime it parks a tokio worker — how the `doh` client's
+  whole runtime stalled. It now runs on `spawn_blocking`.
+- A fresh client per request means a fresh connection pool per request, so every request
+  paid for a new TCP handshake. For a protocol whose entire point is multiplexing over one
+  connection, that is the worst possible arrangement.
+- **The literal-IP resolver bypass.** `reqwest` hands the URL host to its DNS resolver
+  unconditionally and `hyper-util`'s `GaiResolver` does not special-case a dotted quad, so
+  `http://127.0.0.1:8080` performs a real `getaddrinfo` — measured at **8.25 s** through
+  mDNSResponder under ~100 concurrent processes. `ClientBuilder::resolve` is a **per-host**
+  override, which is why the cache is keyed by host rather than being one client.
+
+`crate::llm::ollama_client::host_of` does the host extraction — the part that is easy to
+get wrong, and did get wrong once by leaving the port attached, silently disabling the
+bypass.
 
 **`http2_prior_knowledge()`**: Forces HTTP/2 protocol without TLS ALPN negotiation. Use this when:
 
@@ -159,17 +184,22 @@ HTTP/2 uses binary framing:
 2. **Stream Priority**: Cannot set stream priorities
 3. **Flow Control**: Automatic, cannot tune window sizes
 4. **GOAWAY Handling**: Limited control over connection shutdown
-5. **Cleartext h2c**: `http2_prior_knowledge()` required for non-TLS HTTP/2
+5. **Cleartext h2c**: `http2_prior_knowledge()` is applied unconditionally, so this client
+   **cannot speak HTTP/2 over TLS**. That is deliberate — NetGet's own HTTP/2 server never
+   advertises ALPN, so prior knowledge is the only way to reach it — but it means an
+   `https://` target that requires ALPN negotiation will fail. There is no startup
+   parameter to switch it off.
+6. **No response size cap**: the body is buffered whole via `Response::text()` with no
+   limit, then handed to the model
 
 ## Testing Strategy
 
 See `tests/client/http2/CLAUDE.md` for full testing documentation.
 
-**Test Servers:**
-
-- `https://http2.golang.org` - Public HTTP/2 test server
-- `https://nghttp2.org` - HTTP/2 reference implementation
-- Local HTTP/2 server (e.g., nginx with http2 enabled)
+**Test servers:** none external. Root `CLAUDE.md` forbids tests contacting outside
+endpoints; the suite points this client at NetGet's own HTTP/2 server on loopback. The
+public servers this section used to list (`http2.golang.org`, `nghttp2.org`) are also all
+TLS, which `http2_prior_knowledge()` cannot reach — see Limitations.
 
 **Test Scenarios:**
 
