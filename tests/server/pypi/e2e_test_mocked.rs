@@ -73,9 +73,20 @@ mod pypi_server_tests {
         // Wait for server to fully process the request
         tokio::time::sleep(Duration::from_millis(500)).await;
 
+        // Asserted, not printed. All three tests in this file used to end at
+        // `println!("... {} bytes", output.stdout.len())` and never look at the body,
+        // so the only thing they checked was that a mock rule had been hit — a
+        // response of the wrong shape, or the wrong body entirely, passed. The
+        // not-found test additionally called curl without `-w`, so it never saw a
+        // status code at all despite being named for one.
+        let body = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            body.contains("hello-world/"),
+            "the package index did not carry the PEP 503 anchor the mock served: {body:?}"
+        );
         println!(
-            "✅ PyPI server served package index with mocks (response: {} bytes)",
-            output.stdout.len()
+            "✅ PyPI server served the package index ({} bytes)",
+            body.len()
         );
 
         // Add timeout to mock verification to prevent indefinite hanging
@@ -155,9 +166,21 @@ mod pypi_server_tests {
         // Wait for server to fully process the request
         tokio::time::sleep(Duration::from_millis(500)).await;
 
+        // Asserted, not printed: see the note in the package-index test above.
+        let body = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            body.contains("hello_world-1.0.0-py3-none-any.whl"),
+            "the project page did not carry the distribution filename the mock served: \
+             {body:?}"
+        );
+        assert!(
+            body.contains("#sha256="),
+            "the project page carried no PEP 503 hash fragment, which is what pip \
+             verifies the download against: {body:?}"
+        );
         println!(
-            "✅ PyPI server served package page with mocks (response: {} bytes)",
-            output.stdout.len()
+            "✅ PyPI server served the project page ({} bytes)",
+            body.len()
         );
 
         // Add timeout to mock verification to prevent indefinite hanging
@@ -218,11 +241,17 @@ mod pypi_server_tests {
             "http://127.0.0.1:{}/simple/nonexistent-package/",
             server.port
         );
+        // `-w '%{http_code}'` and `-o /dev/null`: this test is named for a status code
+        // and was invoking curl in a way that could never show it one.
         let output = tokio::time::timeout(
             Duration::from_secs(10),
             tokio::task::spawn_blocking(move || {
                 std::process::Command::new("curl")
                     .arg("-s")
+                    .arg("-o")
+                    .arg("/dev/null")
+                    .arg("-w")
+                    .arg("%{http_code}")
                     .arg("--max-time")
                     .arg("5")
                     .arg(&url)
@@ -237,10 +266,13 @@ mod pypi_server_tests {
         // Wait for server to fully process the request
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        println!(
-            "✅ PyPI server returned 404 for non-existent package with mocks (response: {} bytes)",
-            output.stdout.len()
+        let status = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            status.trim(),
+            "404",
+            "a project the index does not serve must come back 404, not {status}"
         );
+        println!("✅ PyPI server returned 404 for a non-existent package");
 
         // Add timeout to mock verification to prevent indefinite hanging
         tokio::time::timeout(Duration::from_secs(10), server.verify_mocks())

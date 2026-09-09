@@ -289,4 +289,14 @@ human answers it or the intercept times out (default 300s). Injected sends queue
 the bounded channel, which surfaces as "client busy" backpressure. `send_to_client`'s own
 timeout protects the caller either way.
 
-**Not wired:** `get_package_info` / `search_packages` / `download_package` / `list_package_files` **discard** the actions the LLM returns (`actions: _`), and `connect_with_llm_actions` never raises `pypi_connected`. Both predate the command channel and are untouched by it; today the injected-command path is the *only* way a PyPI action reaches the wire.
+**This paragraph used to say the opposite of what the code does.** It claimed the four operations *discard* the model's actions and that `pypi_connected` is never raised; both had been fixed, and a reader trusting this file would have re-fixed a solved bug. `run_follow_ups` executes what the model answers, bounded structurally at one turn because it routes through the non-notifying `perform_*` helpers, and `connect_with_llm_actions` raises `pypi_connected` from its own registered task.
+
+**What is true now.**
+
+- The connected event carries `index_url`. It declares that parameter as **required** and this file documented it, but the event was raised with `{}` — so a `pypi_connected` handler could not tell which index it was talking to.
+- `index_url` is declared in `get_connect`/`get_startup_parameters()` **and read**: `connect()` prefers it over `ctx.remote_addr`. It was read by nothing until now, so the advertised knob did nothing when turned.
+- A `remote_addr` with no scheme is no longer discarded and replaced with `https://pypi.org`. It gets the `https://` it was missing; only an empty address falls back, and it says so in the log. Before, an operator who typed `127.0.0.1:8080` had their requests sent to the public index with no warning.
+- `search_packages` builds its `search_url` from the configured index. It hardcoded `https://pypi.org/search/?q=...`, so a client pointed at a private index was handed the public one as somewhere to go.
+- `download_package` **streams and counts**; it does not buffer. It used to hold an entire distribution in memory and use it for nothing but `.len()`, at a size chosen by whatever the client was pointed at. It is capped at `MAX_DOWNLOAD_BYTES` (256 MiB). Nothing is written to disk — NetGet implements no storage, so a download here is a fetch-and-report.
+- One `reqwest::Client`, built once on `spawn_blocking`. Every request used to build a fresh one, and `connect()` built a further one into `_http_client` and dropped it immediately — the blocking rustls + platform-root-store cost that `CLAUDE.md` records as having stalled a whole client runtime, paid per request.
+- `get_event_types()` returns clones of the `LazyLock` statics the client actually raises. It used to hand-build a parallel set with no parameters and `{"type": "placeholder"}` examples, which steered the model to `show_message` — an action `execute_action` rejects.

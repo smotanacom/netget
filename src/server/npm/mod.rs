@@ -150,8 +150,78 @@ impl NpmServer {
     }
 }
 
-/// Handle a single NPM registry request
+/// Approximate the bytes this request cost on the wire.
+///
+/// hyper hands us a parsed `Request`, so the original head is gone; this
+/// reconstructs its size from the parts that survive. It is an estimate, and
+/// deliberately so — the alternative is a `↓` counter frozen at 0, which reads as
+/// "this peer sent nothing" rather than "we did not measure".
+fn approximate_request_bytes(req: &Request<Incoming>) -> u64 {
+    use hyper::body::Body;
+    let head: usize = req.method().as_str().len()
+        + req.uri().to_string().len()
+        + 12 // " HTTP/1.1\r\n" plus the blank line terminating the head
+        + req
+            .headers()
+            .iter()
+            .map(|(name, value)| name.as_str().len() + value.len() + 4)
+            .sum::<usize>();
+    head as u64 + req.body().size_hint().lower()
+}
+
+/// Record one request/response exchange against the connection's counters, then
+/// return the response unchanged.
+///
+/// `update_connection_stats` is what the dashboard rail's `↓ ↑` columns and the
+/// connection-scoped task prompts read, and it is what keeps `last_activity`
+/// moving. Without it a busy NPM server draws every peer as idle with zero
+/// bytes in both directions — which is exactly what the rail is for.
+#[allow(clippy::too_many_arguments)]
 async fn handle_npm_request(
+    req: Request<Incoming>,
+    connection_id: ConnectionId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<NpmProtocol>,
+    server_id: crate::state::ServerId,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let bytes_received = approximate_request_bytes(&req);
+    let response = handle_npm_request_inner(
+        req,
+        connection_id,
+        llm_client,
+        app_state.clone(),
+        status_tx,
+        protocol,
+        server_id,
+    )
+    .await;
+
+    let bytes_sent = response
+        .as_ref()
+        .ok()
+        .and_then(|resp| {
+            use hyper::body::Body;
+            resp.body().size_hint().exact()
+        })
+        .unwrap_or(0);
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            Some(bytes_received),
+            Some(bytes_sent),
+            Some(1),
+            Some(1),
+        )
+        .await;
+
+    response
+}
+
+/// Handle a single NPM registry request
+async fn handle_npm_request_inner(
     req: Request<Incoming>,
     _connection_id: ConnectionId,
     llm_client: OllamaClient,

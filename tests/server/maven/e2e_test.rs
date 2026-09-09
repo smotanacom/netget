@@ -506,121 +506,260 @@ Return 404 for other artifacts.
     Ok(())
 }
 
-#[tokio::test]
-#[ignore] // Requires Maven CLI installed
+/// Drive the server with the **real `mvn` binary** and assert the artifact it wrote.
+///
+/// This test replaces one that could never have passed, and the reasons are worth
+/// keeping because each one looks survivable on its own:
+///
+/// - it was `#[ignore]`d, so nothing ran it;
+/// - it printed "Maven CLI not found, skipping test" and returned `Ok(())`, so on a
+///   machine without `mvn` it was a green pass that asserted nothing;
+/// - on the happy path it asserted **nothing at all** — `if success { println!("✓") }
+///   else { println!("⚠ inconclusive") }`, so a total failure and a total success were
+///   the same outcome;
+/// - and it was started with `NetGetConfig::new(prompt)` and **no `.with_mock()`**,
+///   which builds a strict empty mock where every LLM call 500s, so
+///   `start_netget_server` could never even get its `open_server` action back.
+///
+/// `tests/server/maven/CLAUDE.md` nonetheless presented it as real-client evidence.
+/// That is how a maturity claim outlives the thing that justified it.
+///
+/// **Two hard requirements, both deliberate**, following `npm`'s shape
+/// (`tests/server/npm/e2e_test.rs::test_npm_with_real_cli`): the test *fails* rather
+/// than skips when `mvn` is absent, and it fails with an explicit message when the
+/// user's `~/.m2/repository` has never cached `maven-dependency-plugin`.
+///
+/// **Nothing external is contacted**, which took some arranging and is the reason the
+/// original could not simply be un-ignored. `dependency:get` needs
+/// `maven-dependency-plugin`, which a fresh `-Dmaven.repo.local` cannot resolve without
+/// Maven Central. The way out is Maven 3.9's *split local repository*: writes go to a
+/// throwaway head (`-Dmaven.repo.local`), reads fall back to the user's existing cache
+/// (`-Dmaven.repo.local.tail`), so the plugin is found locally and never fetched. A
+/// test-owned `settings.xml` then mirrors `*` at the NetGet port, which suppresses
+/// `central` and any repository in the user's own settings — verified: the only
+/// "Downloading from" line names 127.0.0.1. The user's real `~/.m2` is never written to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_maven_cli_download() -> E2EResult<()> {
     println!("\n=== E2E Test: Real Maven CLI Download ===");
-    println!("NOTE: This test requires 'mvn' command to be available");
 
-    // Check if mvn is installed
-    let mvn_check = tokio::process::Command::new("mvn")
+    // The mvn CLI *is* the evidence this test exists to produce. A machine without it
+    // must say so, not report a silent pass.
+    match tokio::process::Command::new("mvn")
         .arg("--version")
         .output()
-        .await;
-
-    if mvn_check.is_err() {
-        println!("⚠ Maven CLI not found, skipping test");
-        return Ok(());
+        .await
+    {
+        Ok(out) if out.status.success() => println!(
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("mvn")
+        ),
+        Ok(out) => {
+            return Err(format!(
+                "`mvn --version` exited {}: this test's whole point is driving the real \
+                 Maven CLI against NetGet's repository",
+                out.status
+            )
+            .into())
+        }
+        Err(e) => {
+            return Err(format!(
+                "the Maven CLI is not available ({e}): this test's whole point is driving \
+                 the real `mvn` against NetGet's repository, and skipping it would leave \
+                 Maven's real-client claim resting on nothing"
+            )
+            .into())
+        }
     }
 
-    // PROMPT: Serve a complete Maven artifact for Maven CLI
-    let prompt = r#"listen on port {AVAILABLE_PORT} via maven.
-Serve library com.netget.test:maven-test:1.0.0
-For the JAR file, return: "Test JAR content"
-For the POM file, return this complete POM:
-<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>com.netget.test</groupId>
-  <artifactId>maven-test</artifactId>
-  <version>1.0.0</version>
-  <packaging>jar</packaging>
-</project>
-For SHA-1 checksums, return: da39a3ee5e6b4b0d3255bfef95601890afd80709
-For all requests, log what was requested.
-"#;
+    // The split local repository's tail. Reads only — Maven writes into the head below.
+    let tail_repo = dirs_home()?.join(".m2").join("repository");
+    if !tail_repo
+        .join("org/apache/maven/plugins/maven-dependency-plugin")
+        .is_dir()
+    {
+        return Err(format!(
+            "{} has no cached maven-dependency-plugin. This test resolves plugins from \
+             that cache on purpose so it never contacts Maven Central; warm it once with \
+             `mvn -B dependency:get -Dartifact=junit:junit:4.13.2` and re-run.",
+            tail_repo.display()
+        )
+        .into());
+    }
 
-    // Start the server
-    let server = helpers::start_netget_server(NetGetConfig::new(prompt)).await?;
+    // The exact bytes served, and their SHA-1s computed by `shasum` — an implementation
+    // NetGet does not own. Maven verifies the `.sha1` companion against what it received
+    // and fails the resolution on a mismatch, so serving a checksum computed elsewhere is
+    // what turns "Maven got 200s" into "Maven accepted the artifact".
+    const POM_BODY: &str = concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+        "<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n",
+        "  <modelVersion>4.0.0</modelVersion>\n",
+        "  <groupId>com.netget.test</groupId>\n",
+        "  <artifactId>maven-test</artifactId>\n",
+        "  <version>1.0.0</version>\n",
+        "  <packaging>jar</packaging>\n",
+        "</project>\n"
+    );
+    const JAR_BODY: &str = "netget-maven-test-jar-payload";
+
+    let pom_sha1 = external_sha1(POM_BODY.as_bytes())
+        .ok_or("`shasum -a 1` is required to compute the checksums Maven verifies")?;
+    let jar_sha1 = external_sha1(JAR_BODY.as_bytes())
+        .ok_or("`shasum -a 1` is required to compute the checksums Maven verifies")?;
+
+    // ONE rule that branches on the event, not several rules on the same event: rules
+    // are first-match-wins, and Maven's request order is its own business.
+    let config =
+        NetGetConfig::new("listen on port {AVAILABLE_PORT} via maven.").with_mock(|mock| {
+            mock.on_instruction_containing("listen on port")
+                .and_instruction_containing("maven")
+                .respond_with_actions(serde_json::json!([{
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "Maven",
+                    "instruction": "Serve com.netget.test:maven-test:1.0.0"
+                }]))
+                .expect_calls(1)
+                .and()
+                .on_event("maven_artifact_request")
+                .respond_with_actions_from_event(move |e| {
+                    let extension = e["extension"].as_str().unwrap_or("");
+                    let is_checksum = e["is_checksum"].as_bool().unwrap_or(false);
+                    let (content_type, body) = match (extension, is_checksum) {
+                        ("pom", false) => ("application/xml", POM_BODY.to_string()),
+                        ("pom", true) => ("text/plain", pom_sha1.clone()),
+                        ("jar", false) => ("application/java-archive", JAR_BODY.to_string()),
+                        ("jar", true) => ("text/plain", jar_sha1.clone()),
+                        _ => {
+                            return serde_json::json!([{
+                                "type": "send_maven_error",
+                                "status": 404,
+                                "message": "not served by this test"
+                            }])
+                        }
+                    };
+                    serde_json::json!([{
+                        "type": "send_maven_artifact",
+                        "status": 200,
+                        "content_type": content_type,
+                        "body": body
+                    }])
+                })
+                .expect_at_least(2)
+                .and()
+        });
+
+    let server = helpers::start_netget_server(config).await?;
     println!("Server started on port {}", server.port);
 
-    // Create a temporary directory for Maven test
-    let temp_dir = std::env::temp_dir().join(format!("maven_test_{}", server.port));
-    fs::create_dir_all(&temp_dir)?;
-    println!("Test directory: {:?}", temp_dir);
+    let work = tempfile::tempdir()?;
+    let head_repo = work.path().join("repo");
+    let settings = work.path().join("settings.xml");
+    fs::write(
+        &settings,
+        format!(
+            "<settings xmlns=\"http://maven.apache.org/SETTINGS/1.0.0\">\n\
+             \x20 <mirrors>\n\
+             \x20   <mirror>\n\
+             \x20     <id>netget-under-test</id>\n\
+             \x20     <url>http://127.0.0.1:{}/</url>\n\
+             \x20     <mirrorOf>*</mirrorOf>\n\
+             \x20   </mirror>\n\
+             \x20 </mirrors>\n\
+             </settings>\n",
+            server.port
+        ),
+    )?;
 
-    // Create a minimal pom.xml that declares a dependency
-    let pom_content = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>com.test</groupId>
-  <artifactId>test-project</artifactId>
-  <version>1.0.0</version>
-  <packaging>jar</packaging>
-
-  <repositories>
-    <repository>
-      <id>netget-test</id>
-      <url>http://127.0.0.1:{}/</url>
-    </repository>
-  </repositories>
-
-  <dependencies>
-    <dependency>
-      <groupId>com.netget.test</groupId>
-      <artifactId>maven-test</artifactId>
-      <version>1.0.0</version>
-    </dependency>
-  </dependencies>
-</project>
-"#,
-        server.port
-    );
-
-    let pom_path = temp_dir.join("pom.xml");
-    fs::write(&pom_path, pom_content)?;
-    println!("Created test pom.xml");
-
-    // Run Maven dependency:get to download the artifact
-    println!("\n--- Running Maven CLI ---");
+    // `tokio::process`, not `std::process`: the in-process mock Ollama server shares this
+    // test's runtime, and a blocking `mvn` would hold a worker while netget waits on the
+    // model that cannot run.
     let output = tokio::process::Command::new("mvn")
-        .arg("dependency:resolve")
-        .arg("-B") // Batch mode (no interactive)
-        .arg("-U") // Force update
-        .current_dir(&temp_dir)
+        .arg("-B")
+        .arg("-s")
+        .arg(&settings)
+        .arg(format!("-Dmaven.repo.local={}", head_repo.display()))
+        .arg(format!("-Dmaven.repo.local.tail={}", tail_repo.display()))
+        .arg("dependency:get")
+        .arg("-Dartifact=com.netget.test:maven-test:1.0.0")
         .output()
         .await?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    println!("Maven stdout:\n{}", stdout);
-    if !stderr.is_empty() {
-        println!("Maven stderr:\n{}", stderr);
+    // Nothing outside this machine may be contacted.
+    for line in stdout.lines().filter(|l| l.contains("Downloading from")) {
+        assert!(
+            line.contains("127.0.0.1"),
+            "Maven reached outside localhost: {line}"
+        );
     }
 
-    // Check if Maven successfully resolved the dependency
-    let success = output.status.success()
-        || stdout.contains("BUILD SUCCESS")
-        || stdout.contains("maven-test:1.0.0");
+    assert!(
+        output.status.success(),
+        "mvn dependency:get failed against NetGet.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 
-    if success {
-        println!("✓ Maven CLI successfully downloaded the artifact");
-    } else {
-        println!("⚠ Maven CLI test inconclusive - check logs above");
-        println!("This may be expected if Maven caching or network settings interfere");
-    }
+    // The assertion that means something: Maven wrote the artifact into its local
+    // repository, which it does only after the download AND the checksum verification.
+    let jar = head_repo.join("com/netget/test/maven-test/1.0.0/maven-test-1.0.0.jar");
+    let pom = head_repo.join("com/netget/test/maven-test/1.0.0/maven-test-1.0.0.pom");
+    assert!(
+        jar.is_file(),
+        "Maven reported success but wrote no JAR at {}\nstdout:\n{stdout}",
+        jar.display()
+    );
+    assert_eq!(
+        fs::read(&jar)?,
+        JAR_BODY.as_bytes(),
+        "the JAR Maven stored is not the one NetGet served"
+    );
+    assert_eq!(
+        fs::read_to_string(&pom)?,
+        POM_BODY,
+        "the POM Maven stored is not the one NetGet served"
+    );
+    println!("mvn resolved, checksum-verified and stored the artifact NetGet served");
 
-    // Cleanup
-    fs::remove_dir_all(&temp_dir).ok();
-    println!("✓ Cleaned up test directory");
-
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
     Ok(())
+}
+
+/// SHA-1 via `shasum -a 1`, an implementation NetGet does not own, so the checksum
+/// Maven verifies is not this codebase checking itself.
+///
+/// Called before the server starts, so the blocking `Command` here cannot starve the
+/// mock model.
+fn external_sha1(bytes: &[u8]) -> Option<String> {
+    use std::io::Write;
+    let dir = tempfile::tempdir().ok()?;
+    let path = dir.path().join("payload.bin");
+    std::fs::File::create(&path).ok()?.write_all(bytes).ok()?;
+    let out = std::process::Command::new("shasum")
+        .arg("-a")
+        .arg("1")
+        .arg(&path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    Some(stdout.split_whitespace().next()?.to_string())
+}
+
+/// The user's home directory, without pulling in a crate for it.
+fn dirs_home() -> Result<std::path::PathBuf, String> {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| {
+            "HOME is not set, so the Maven local repository cannot be located".to_string()
+        })
 }

@@ -55,6 +55,60 @@ enum Applied {
 }
 
 /// PyPI client that interacts with Python Package Index
+/// Ceiling on a distribution fetched by `perform_download_package`.
+///
+/// The download URL comes out of the index's own JSON, so its size is chosen by
+/// whatever this client was pointed at rather than by us. 256 MiB is past any real
+/// wheel or sdist and far short of exhausting the process.
+const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Turn an operator- or model-supplied address into an index base URL.
+///
+/// Adding the missing scheme rather than discarding the address is the whole point:
+/// the old behaviour turned "point this at my local index" into "talk to pypi.org",
+/// silently.
+fn resolve_index_url(remote_addr: &str, status_tx: &mpsc::UnboundedSender<String>) -> String {
+    let trimmed = remote_addr.trim().trim_end_matches('/');
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return trimmed.to_string();
+    }
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("pypi") {
+        Log::new(Some(status_tx))
+            .info("PyPI client: no index address given, defaulting to https://pypi.org");
+        return "https://pypi.org".to_string();
+    }
+    format!("https://{trimmed}")
+}
+
+/// The one `reqwest::Client` this protocol uses, built once.
+///
+/// Building a client is a **blocking** operation: it sets up the rustls stack and
+/// loads the platform root store, which on macOS reads the keychain through
+/// Security.framework, synchronously and serialised across processes. Every request
+/// here used to build a fresh one on the async runtime, which parks a tokio worker —
+/// the systemic defect `CLAUDE.md` records as having stalled a whole client runtime.
+///
+/// So: `OnceCell`, and `spawn_blocking` for the build itself.
+static SHARED_HTTP_CLIENT: tokio::sync::OnceCell<reqwest::Client> =
+    tokio::sync::OnceCell::const_new();
+
+async fn shared_http_client() -> Result<reqwest::Client> {
+    SHARED_HTTP_CLIENT
+        .get_or_try_init(|| async {
+            tokio::task::spawn_blocking(|| {
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(30))
+                    .user_agent("NetGet-PyPI-Client/1.0")
+                    .build()
+            })
+            .await
+            .context("building the HTTP client panicked")?
+            .context("failed to build the HTTP client")
+        })
+        .await
+        .cloned()
+}
+
 pub struct PypiClient;
 
 impl PypiClient {
@@ -68,20 +122,15 @@ impl PypiClient {
     ) -> Result<SocketAddr> {
         info!("PyPI client {} initialized for {}", client_id, remote_addr);
 
-        // Build reqwest client
-        let _http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("NetGet-PyPI-Client/1.0")
-            .build()
-            .context("Failed to build HTTP client")?;
+        // No client is built here. One used to be, bound to `_http_client` and
+        // dropped immediately — paying the blocking rustls/keychain cost at connect
+        // for a value nothing read. `shared_http_client()` builds one on first use.
 
-        // Parse index URL, default to pypi.org
-        let index_url = if remote_addr.starts_with("http://") || remote_addr.starts_with("https://")
-        {
-            remote_addr.clone()
-        } else {
-            "https://pypi.org".to_string()
-        };
+        // Parse the index URL. A scheme-less address used to be **discarded** and
+        // silently replaced with pypi.org, so an operator who typed `127.0.0.1:8080`
+        // had their requests sent to the public index with no warning. A host now
+        // gets the `https://` it was missing; only an empty address falls back.
+        let index_url = resolve_index_url(&remote_addr, &status_tx);
 
         // Store client data
         app_state
@@ -137,6 +186,7 @@ impl PypiClient {
         let connected_state = task_registrar.clone();
         let connected_llm = connected_llm_client;
         let connected_status = connected_status_tx;
+        let connected_index_url = index_url.clone();
         let connected = tokio::spawn(async move {
             let Some(instruction) = connected_state.get_instruction_for_client(client_id).await
             else {
@@ -144,8 +194,12 @@ impl PypiClient {
             };
             let protocol = crate::client::pypi::actions::PypiClientProtocol::new();
             let event = Event::new(
+                // This event declares `index_url` as a **required** parameter and
+                // `src/client/pypi/CLAUDE.md` documents it, but it was raised with `{}` —
+                // so a `pypi_connected` handler could not tell which index it was talking
+                // to. npm gets this right and this now matches it.
                 &crate::client::pypi::actions::PYPI_CLIENT_CONNECTED_EVENT,
-                serde_json::json!({}),
+                serde_json::json!({ "index_url": connected_index_url }),
             );
             match crate::client::llm_budget::call_llm_for_client(
                 &connected_llm,
@@ -215,7 +269,7 @@ impl PypiClient {
             client_id, package_name
         );
 
-        let http_client = Self::http_client()?;
+        let http_client = Self::http_client().await?;
 
         match http_client.get(&url).send().await {
             Ok(response) => {
@@ -287,14 +341,18 @@ impl PypiClient {
                 )
                 .await
                 .map(|_| ()),
-                "pypi_search_packages" => Self::perform_search_packages(
-                    client_id,
-                    data["query"].as_str().unwrap_or_default().to_string(),
-                    data["limit"].as_u64().unwrap_or(10),
-                    status_tx,
-                )
-                .await
-                .map(|_| ()),
+                "pypi_search_packages" => match Self::index_url(app_state, client_id).await {
+                    Ok(index_url) => Self::perform_search_packages(
+                        client_id,
+                        data["query"].as_str().unwrap_or_default().to_string(),
+                        data["limit"].as_u64().unwrap_or(10),
+                        &index_url,
+                        status_tx,
+                    )
+                    .await
+                    .map(|_| ()),
+                    Err(e) => Err(e),
+                },
                 "pypi_download_package" => Self::perform_download_package(
                     client_id,
                     data["package_name"]
@@ -368,11 +426,12 @@ impl PypiClient {
             .context("No index URL found")
     }
 
-    fn http_client() -> Result<reqwest::Client> {
-        Ok(reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("NetGet-PyPI-Client/1.0")
-            .build()?)
+    /// The shared client, not a fresh one per request.
+    ///
+    /// This used to build a `reqwest::Client` on every call — a blocking rustls +
+    /// platform-root-store setup on the async runtime. See `shared_http_client`.
+    async fn http_client() -> Result<reqwest::Client> {
+        shared_http_client().await
     }
 
     /// Raise one response event and hand it to the LLM. The single LLM entry point for
@@ -433,7 +492,9 @@ impl PypiClient {
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
-        let results = Self::perform_search_packages(client_id, query, limit, &status_tx).await?;
+        let index_url = Self::index_url(&app_state, client_id).await?;
+        let results =
+            Self::perform_search_packages(client_id, query, limit, &index_url, &status_tx).await?;
         Self::notify(
             client_id,
             &PYPI_SEARCH_RESULTS_EVENT,
@@ -458,9 +519,17 @@ impl PypiClient {
         client_id: ClientId,
         query: String,
         _limit: u64,
+        index_url: &str,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<PypiSearchResults> {
-        let url = format!("https://pypi.org/search/?q={}", urlencoding::encode(&query));
+        // Built from the configured index, not hardcoded to pypi.org. Nothing is
+        // contacted here, but the URL is handed to the model as somewhere to go — and a
+        // client pointed at a private index was being told to go to the public one.
+        let url = format!(
+            "{}/search/?q={}",
+            index_url.trim_end_matches('/'),
+            urlencoding::encode(&query)
+        );
 
         Log::new(Some(status_tx)).info(format!(
             "PyPI client {} searching for: {}",
@@ -527,7 +596,7 @@ impl PypiClient {
         // First, get package info to find download URLs
         let info_url = format!("{}/pypi/{}/json", index_url, package_name);
 
-        let http_client = Self::http_client()?;
+        let http_client = Self::http_client().await?;
 
         let json: serde_json::Value = http_client.get(&info_url).send().await?.json().await?;
 
@@ -563,22 +632,44 @@ impl PypiClient {
             client_id, file_name
         ));
 
-        // Download the file
-        let response = http_client.get(download_url).send().await?;
-        let bytes = response.bytes().await?;
+        // Streamed and counted, not buffered. `response.bytes().await?` held the entire
+        // distribution in memory and then used it for nothing but `.len()` — and
+        // `download_url` comes out of the index's own JSON, so that size was chosen by
+        // whatever this client was pointed at. Nothing is stored either way: NetGet
+        // implements no storage, so a download here *is* a fetch-and-report.
+        let mut response = http_client.get(download_url).send().await?;
+        if let Some(len) = response.content_length() {
+            if len > MAX_DOWNLOAD_BYTES {
+                anyhow::bail!(
+                    "{} advertises {} bytes, over the {} byte limit; refusing to download it",
+                    file_name,
+                    len,
+                    MAX_DOWNLOAD_BYTES
+                );
+            }
+        }
+        let mut received: usize = 0;
+        while let Some(chunk) = response.chunk().await? {
+            received += chunk.len();
+            if received as u64 > MAX_DOWNLOAD_BYTES {
+                anyhow::bail!(
+                    "{} exceeded the {} byte limit mid-transfer; aborting",
+                    file_name,
+                    MAX_DOWNLOAD_BYTES
+                );
+            }
+        }
 
         info!(
             "PyPI client {} downloaded {} ({} bytes)",
-            client_id,
-            file_name,
-            bytes.len()
+            client_id, file_name, received
         );
 
         Ok(PypiDownload {
             package_name,
             version: target_version,
             filename: file_name,
-            size: bytes.len(),
+            size: received,
         })
     }
 
@@ -607,7 +698,7 @@ impl PypiClient {
         let index_url = Self::index_url(app_state, client_id).await?;
         let info_url = format!("{}/pypi/{}/json", index_url, package_name);
 
-        let http_client = Self::http_client()?;
+        let http_client = Self::http_client().await?;
 
         let json: serde_json::Value = http_client.get(&info_url).send().await?.json().await?;
 
@@ -774,8 +865,14 @@ impl PypiClient {
                     let limit = data["limit"].as_u64().unwrap_or(20);
                     let requested = query.clone();
 
-                    let results =
-                        Self::perform_search_packages(client_id, query, limit, status_tx).await?;
+                    let results = Self::perform_search_packages(
+                        client_id,
+                        query,
+                        limit,
+                        &Self::index_url(app_state, client_id).await?,
+                        status_tx,
+                    )
+                    .await?;
                     let event_data = serde_json::json!({
                         "query": results.query,
                         "results": results.results,

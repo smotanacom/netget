@@ -87,7 +87,10 @@ pub static PYPI_FILE_DOWNLOADED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "pypi_file_downloaded",
         "Package file downloaded from PyPI",
-        json!({"type": "placeholder", "event_id": "pypi_file_downloaded"}),
+        // A real answer, not `{"type": "placeholder"}`. This event *is* raised, and with
+        // a placeholder example and no attached actions the model was steered to
+        // `show_message`, which `execute_action` rejects.
+        json!({"type": "get_package_info", "package_name": "requests"}),
     )
     .with_parameters(vec![
         Parameter {
@@ -256,28 +259,21 @@ impl Protocol for PypiClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "PyPI"
     }
+    /// Clones of the `LazyLock` statics the client actually raises, so the catalog the
+    /// model is shown and the events it receives cannot diverge.
+    ///
+    /// This used to hand-build a second set of `EventType`s with the same ids, no
+    /// parameters, and `{"type": "placeholder", "event_id": ...}` as the response
+    /// example. `EventType::effective_response_example` cannot repair a placeholder
+    /// without an attached action, so it fell through to `show_message` — which this
+    /// protocol's own `execute_action` rejects as unknown. The model was being taught an
+    /// answer its own client refuses.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "pypi_connected",
-                "Triggered when PyPI client is initialized",
-                json!({"type": "placeholder", "event_id": "pypi_connected"}),
-            ),
-            EventType::new(
-                "pypi_package_info_received",
-                "Triggered when package info is received",
-                json!({"type": "placeholder", "event_id": "pypi_package_info_received"}),
-            ),
-            EventType::new(
-                "pypi_search_results_received",
-                "Triggered when search results are received",
-                json!({"type": "placeholder", "event_id": "pypi_search_results_received"}),
-            ),
-            EventType::new(
-                "pypi_file_downloaded",
-                "Triggered when a file is downloaded",
-                json!({"type": "placeholder", "event_id": "pypi_file_downloaded"}),
-            ),
+            PYPI_CLIENT_CONNECTED_EVENT.clone(),
+            PYPI_PACKAGE_INFO_EVENT.clone(),
+            PYPI_SEARCH_RESULTS_EVENT.clone(),
+            PYPI_FILE_DOWNLOADED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
@@ -372,8 +368,20 @@ impl Client for PypiClientProtocol {
     > {
         Box::pin(async move {
             use crate::client::pypi::PypiClient;
+            // The declared startup parameter, honoured. `index_url` has been in
+            // `get_startup_parameters()` since this client was written and nothing
+            // read it: `connect()` forwarded `ctx.remote_addr` and dropped
+            // `ctx.startup_params` on the floor, so the advertised knob did nothing
+            // when turned. `?`, never `unwrap()` - an undeclared or wrong-typed key
+            // must produce a clean error naming it, not a panic in the connect task.
+            let remote_addr = match ctx.startup_params.as_ref() {
+                Some(params) => params
+                    .get_optional_string("index_url")?
+                    .unwrap_or(ctx.remote_addr),
+                None => ctx.remote_addr,
+            };
             PypiClient::connect_with_llm_actions(
-                ctx.remote_addr,
+                remote_addr,
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,

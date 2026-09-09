@@ -167,6 +167,20 @@ fn bad_gateway() -> Response<Full<Bytes>> {
         .expect("502 response with a literal body is always valid")
 }
 
+/// The 413 for a request body over [`MAX_REQUEST_BODY_BYTES`].
+///
+/// Static text: the peer learns the fact and the limit, never why the read failed.
+fn payload_too_large() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(413)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .body(Full::new(Bytes::from(format!(
+            "Payload Too Large: request bodies are limited to {} bytes\n",
+            crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES
+        ))))
+        .expect("413 response with a literal body is always valid")
+}
+
 /// Build the reply for an LLM/backend failure.
 ///
 /// The two categories get distinct HTTP codes on purpose: pip retries a 503 with
@@ -185,8 +199,78 @@ fn llm_failure_response(failure: crate::utils::WireFailure) -> Response<Full<Byt
         .expect("failure response with a literal body is always valid")
 }
 
-/// Handle a single PyPI request with integrated LLM actions
+/// Approximate the bytes this request cost on the wire.
+///
+/// hyper hands us a parsed `Request`, so the original head is gone; this
+/// reconstructs its size from the parts that survive. It is an estimate, and
+/// deliberately so — the alternative is a `↓` counter frozen at 0, which reads as
+/// "this peer sent nothing" rather than "we did not measure".
+fn approximate_request_bytes(req: &Request<Incoming>) -> u64 {
+    use hyper::body::Body;
+    let head: usize = req.method().as_str().len()
+        + req.uri().to_string().len()
+        + 12 // " HTTP/1.1\r\n" plus the blank line terminating the head
+        + req
+            .headers()
+            .iter()
+            .map(|(name, value)| name.as_str().len() + value.len() + 4)
+            .sum::<usize>();
+    head as u64 + req.body().size_hint().lower()
+}
+
+/// Record one request/response exchange against the connection's counters, then
+/// return the response unchanged.
+///
+/// `update_connection_stats` is what the dashboard rail's `↓ ↑` columns and the
+/// connection-scoped task prompts read, and it is what keeps `last_activity`
+/// moving. Without it a busy PyPI server draws every peer as idle having sent
+/// and received nothing.
+#[allow(clippy::too_many_arguments)]
 async fn handle_pypi_request_with_llm_actions(
+    req: Request<Incoming>,
+    connection_id: ConnectionId,
+    server_id: crate::state::ServerId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<PypiProtocol>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let bytes_received = approximate_request_bytes(&req);
+    let response = handle_pypi_request_with_llm_actions_inner(
+        req,
+        connection_id,
+        server_id,
+        llm_client,
+        app_state.clone(),
+        status_tx,
+        protocol,
+    )
+    .await;
+
+    let bytes_sent = response
+        .as_ref()
+        .ok()
+        .and_then(|resp| {
+            use hyper::body::Body;
+            resp.body().size_hint().exact()
+        })
+        .unwrap_or(0);
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            Some(bytes_received),
+            Some(bytes_sent),
+            Some(1),
+            Some(1),
+        )
+        .await;
+
+    response
+}
+
+/// Handle a single PyPI request with integrated LLM actions
+async fn handle_pypi_request_with_llm_actions_inner(
     req: Request<Incoming>,
     connection_id: ConnectionId,
     server_id: crate::state::ServerId,
@@ -214,12 +298,31 @@ async fn handle_pypi_request_with_llm_actions(
         }
     }
 
-    // Read body
-    let body_bytes = match req.into_body().collect().await {
+    // Read the body, bounded. `Incoming` has no default limit, and this body is
+    // buffered whole *and* interpolated into the LLM prompt below, so an
+    // unauthenticated POST of arbitrary length would allocate twice over — the
+    // unbounded-upload shape. `Limited` errors as soon as the cap is passed rather
+    // than after buffering, so an oversized request costs at most the cap.
+    let body_bytes = match http_body_util::Limited::new(
+        req.into_body(),
+        crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES,
+    )
+    .collect()
+    .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            Log::new(Some(&status_tx)).error(format!("Failed to read request body: {}", e));
-            Bytes::new()
+            // Do NOT fall through to an empty body: a truncated request handed to the
+            // model looks like a complete one, and the model would answer a request it
+            // never saw. 413 is the honest reply, and it costs no LLM call.
+            Log::new(Some(&status_tx)).warn(format!(
+                "PyPI {} {} decision=refused_body_too_large (limit {} bytes) \u{2192} 413: {}",
+                method,
+                uri,
+                crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES,
+                e
+            ));
+            return Ok(payload_too_large());
         }
     };
 

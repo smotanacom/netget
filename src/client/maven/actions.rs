@@ -457,8 +457,20 @@ impl Client for MavenClientProtocol {
     > {
         Box::pin(async move {
             use crate::client::maven::MavenClient;
+            // The declared startup parameter, honoured. `repository_url` has been in
+            // `get_startup_parameters()` since this client was written and nothing
+            // read it: `connect()` forwarded `ctx.remote_addr` and dropped
+            // `ctx.startup_params` on the floor, so the advertised knob did nothing
+            // when turned. `?`, never `unwrap()` - an undeclared or wrong-typed key
+            // must produce a clean error naming it, not a panic in the connect task.
+            let remote_addr = match ctx.startup_params.as_ref() {
+                Some(params) => params
+                    .get_optional_string("repository_url")?
+                    .unwrap_or(ctx.remote_addr),
+                None => ctx.remote_addr,
+            };
             MavenClient::connect_with_llm_actions(
-                ctx.remote_addr,
+                remote_addr,
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,

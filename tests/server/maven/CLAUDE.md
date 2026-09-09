@@ -44,12 +44,33 @@ All tests treat NetGet as a black box:
 
 **Test Suite 4: Real Maven CLI** (`test_maven_cli_download`)
 
-- Tests with actual `mvn` command (if available)
-- Creates temporary project with pom.xml
-- Configures custom repository pointing to NetGet
-- Runs `mvn dependency:resolve`
-- **LLM Calls**: 1 (server startup)
-- **Status**: Marked with `#[ignore]` - requires Maven installation
+- Drives the actual `mvn` binary; **runs by default**, and **fails rather than skips**
+  when `mvn` is missing
+- Serves POM, JAR and their `.sha1` companions from one branching mock rule
+- Runs `mvn dependency:get -Dartifact=com.netget.test:maven-test:1.0.0`
+- Asserts the artifact Maven **stored**: the JAR and POM read back out of Maven's local
+  repository must be byte-for-byte what NetGet served. Maven only writes them after
+  verifying the checksums, which are computed by `shasum` rather than by NetGet
+- Asserts every `Downloading from` line names 127.0.0.1
+- **LLM Calls**: 1 (server startup); the artifact requests are all mock-handled
+- **Requirements**: `mvn` on PATH, `shasum`, and a `~/.m2/repository` that has cached
+  `maven-dependency-plugin` at least once. The test fails with an explicit message
+  naming any of these
+
+**How it stays offline.** `dependency:get` needs `maven-dependency-plugin`, which a
+fresh `-Dmaven.repo.local` cannot resolve without Maven Central. Maven 3.9's *split
+local repository* is the way out: writes go to a throwaway head
+(`-Dmaven.repo.local`), reads fall back to the machine's existing cache
+(`-Dmaven.repo.local.tail`), so plugins resolve locally and the user's real `~/.m2` is
+never written to. A test-owned `settings.xml` mirrors `*` at the NetGet port, which
+suppresses `central` and anything in the user's own settings.
+
+**What this replaced.** The previous version was `#[ignore]`d, printed "Maven CLI not
+found, skipping test" and returned `Ok(())`, asserted **nothing** on the happy path
+(`if success { println!("✓") } else { println!("⚠ inconclusive") }`), and was started
+with no `.with_mock()` — which builds a strict empty mock where every LLM call 500s, so
+`start_netget_server` could never get its `open_server` action back. It could not have
+passed under any circumstances, and this file described it as merely optional.
 
 ## Test Efficiency
 
@@ -70,7 +91,7 @@ All tests treat NetGet as a black box:
 - Each test creates ONE server instance
 - Multiple artifact requests reuse same server
 - HTTP requests don't trigger additional LLM calls (server already primed)
-- Maven CLI test is optional (requires mvn installation)
+- The Maven CLI test is **not** optional: it fails when mvn is absent, because a skip-when-missing gate is a silent pass rather than evidence
 
 ### Runtime Performance
 
@@ -125,16 +146,14 @@ All tests treat NetGet as a black box:
 
 - Rust toolchain installed
 - NetGet compiled in release mode: `./cargo-isolated.sh build --release --no-default-features --features maven`
-- Optional: Maven CLI installed (for test_maven_cli_download)
+- **Required**: the Maven CLI on PATH, `shasum`, and a `~/.m2/repository` that has cached `maven-dependency-plugin` (warm it once with `mvn -B dependency:get -Dartifact=junit:junit:4.13.2`)
 
 ### Run Maven Tests Only
 
 ```bash
-# Run all Maven tests (except Maven CLI test)
-./cargo-isolated.sh test --no-default-features --features maven --test maven
-
-# Run with Maven CLI test (requires mvn)
-./cargo-isolated.sh test --no-default-features --features maven --test maven -- --ignored
+# Every Maven test, the real-CLI one included — nothing here is ignored
+./cargo-isolated.sh test --no-default-features --features maven --test server \
+    -- server::maven --test-threads=100
 ```
 
 ### Important Notes
@@ -155,9 +174,11 @@ All tests treat NetGet as a black box:
 
 **Maven CLI test**:
 
-- Uses local repository (127.0.0.1)
-- May cache artifacts in ~/.m2/repository
-- Does NOT contact Maven Central for test artifact
+- Resolves everything through 127.0.0.1: a test-owned `settings.xml` mirrors `*` at the
+  NetGet port, and the test asserts no `Downloading from` line names anything else
+- Writes into a throwaway local repository, never into `~/.m2/repository`. It *reads*
+  from `~/.m2` as the split-repository tail so plugins resolve without Maven Central
+- Does NOT contact Maven Central, for the test artifact or for anything else
 
 ## Known Issues and Limitations
 

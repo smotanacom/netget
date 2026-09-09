@@ -282,9 +282,16 @@ ProtocolConnectionInfo::Maven {
 ### State Updates
 
 - Connection state tracked in `ServerInstance.connections`
-- Each request increments `packets_received` and `bytes_received`
-- Each response increments `packets_sent` and `bytes_sent`
-- `last_activity` updated on each request
+- Each request/response pair calls `update_connection_stats` once, from the thin
+  wrapper around the request handler: `bytes_received` (the request head plus its
+  body), `bytes_sent` (the response body hyper will write), and one packet in each
+  direction. That wrapper exists because the counters were **never updated at all** —
+  this section claimed they were while every peer drew as idle with `0 ↓ 0 ↑`
+- `bytes_received` is an estimate: hyper hands the handler a parsed `Request`, so the
+  original head is reconstructed from the parts that survive. An estimate is the right
+  answer here; a frozen 0 reads as "this peer sent nothing" rather than "we did not
+  measure"
+- `last_activity` therefore advances on every request
 - UI updates via `__UPDATE_UI__` message
 
 ## Known Limitations
@@ -297,9 +304,13 @@ ProtocolConnectionInfo::Maven {
 
 ### 2. No Streaming
 
-- Artifact content fully buffered before sending
-- Large JARs (>100MB) may exhaust memory
+- Artifact content fully buffered before sending; large JARs (>100MB) may exhaust memory
 - No support for chunked responses
+- Inbound is bounded: Maven GETs carry no body, but the body must still be drained for
+  keep-alive, so it is drained through `http_body_util::Limited` at
+  this module's own `MAX_REQUEST_BODY_BYTES` (8 MiB) and anything larger is refused
+  with **413**. Without the cap an unauthenticated peer could make this server buffer an
+  arbitrary number of bytes it then threw away
 
 ### 3. No Maven Deploy
 
@@ -434,26 +445,50 @@ Return 403 Forbidden for unauthorized requests
 
 ### E2E Testing with mvn CLI
 
-The mocked tests in `tests/server/maven/e2e_test.rs` run by default. The Maven
-CLI test in the same file is `#[ignore]`d because it needs both `mvn` and a live
-model; run it with `--ignored`.
+`tests/server/maven/e2e_test.rs::test_maven_cli_download` drives the **real `mvn`
+binary** and runs by default. It **fails rather than skips** when `mvn` is missing, so
+Maven is a requirement wherever this suite runs — deliberately, following `npm`'s
+real-CLI test.
 
-To exercise the server against `mvn` without a model, start it with a script
-handler and point Maven at it:
+What it asserts is the artifact Maven *stored*, not the status codes it saw:
+`mvn dependency:get` resolves `com.netget.test:maven-test:1.0.0`, verifies the `.sha1`
+companions (computed by `shasum`, an implementation NetGet does not own), writes the
+files into its local repository, and the test then reads them back and compares them
+byte-for-byte with what NetGet served.
 
-```bash
-mvn -B dependency:get \
-  -Dartifact=com.netget.test:maven-test:1.0.0 \
-  -DremoteRepositories=netget::::http://127.0.0.1:8080/ \
-  -Dmaven.repo.local=/tmp/repo
-```
+**It contacts nothing outside 127.0.0.1**, and arranging that is the reason the test
+could not simply be un-ignored:
+
+- `dependency:get` needs `maven-dependency-plugin`, which a fresh `-Dmaven.repo.local`
+  cannot resolve without Maven Central.
+- Maven 3.9's **split local repository** solves it: writes go to a throwaway head
+  (`-Dmaven.repo.local`), reads fall back to the machine's existing cache
+  (`-Dmaven.repo.local.tail=$HOME/.m2/repository`), so plugins are found locally and
+  never fetched. The user's real `~/.m2` is never written to.
+- A test-owned `settings.xml` mirrors `*` at the NetGet port, which suppresses `central`
+  and anything in the user's own settings. The test asserts every `Downloading from`
+  line names 127.0.0.1.
+
+The test therefore also fails, with an explicit message, if `~/.m2/repository` has never
+cached the dependency plugin.
+
+**What it replaced is worth recording.** The previous version was `#[ignore]`d, printed
+"Maven CLI not found, skipping test" and returned `Ok(())`, asserted **nothing** on the
+happy path (`if success { println!("✓") } else { println!("⚠ inconclusive") }`), and was
+started with no `.with_mock()` — which builds a strict empty mock where every LLM call
+500s, so `start_netget_server` could never even get its `open_server` action back. It
+could not have passed under any circumstances, and this file described it as a Maven CLI
+test that merely "requires Maven installation".
 
 This validates:
 
 - Maven path parsing correctness
-- HTTP compatibility with Maven client
+- HTTP compatibility with a real Maven client
 - Artifact content integrity (Maven checks the `.sha1` against what it received)
-- Metadata XML format correctness
+
+**Maven stays Experimental.** The JAR served is a text placeholder, not a real archive,
+so no client has yet *used* an artifact from this repository — only fetched and
+checksum-verified one.
 
 ### Test Efficiency Target
 

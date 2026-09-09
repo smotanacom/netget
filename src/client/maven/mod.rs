@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::maven::actions::MAVEN_CLIENT_CONNECTED_EVENT;
@@ -52,6 +52,70 @@ enum Dispatch {
     Await,
 }
 
+/// Cap a repository document before it becomes event data.
+///
+/// `pom_content` and `metadata_content` went into the event verbatim, hence into the
+/// LLM prompt verbatim. `maven-metadata.xml` for a busy artifact is routinely hundreds
+/// of kilobytes and a hostile repository can return arbitrarily more, so this was an
+/// unbounded prompt driven by a remote peer — and, before the depth bound below, an
+/// amplifier: every follow-up turn shipped another full document.
+///
+/// Char-boundary truncation via `truncate_for_log`, never `&s[..N]`.
+fn truncate_document(body: String) -> String {
+    const MAX_DOCUMENT_BYTES: usize = 16 * 1024;
+    if body.len() <= MAX_DOCUMENT_BYTES {
+        return body;
+    }
+    crate::utils::truncate_for_log(&body, MAX_DOCUMENT_BYTES)
+}
+
+/// The one `reqwest::Client` this protocol uses, built once.
+///
+/// Building a client is a **blocking** operation: it sets up the rustls stack and
+/// loads the platform root store, which on macOS reads the keychain through
+/// Security.framework, synchronously and serialised across processes. Every request
+/// here used to build a fresh one on the async runtime, which parks a tokio worker —
+/// the systemic defect `CLAUDE.md` records as having stalled a whole client runtime.
+///
+/// So: `OnceCell`, and `spawn_blocking` for the build itself.
+static SHARED_HTTP_CLIENT: tokio::sync::OnceCell<reqwest::Client> =
+    tokio::sync::OnceCell::const_new();
+
+async fn shared_http_client() -> Result<reqwest::Client> {
+    SHARED_HTTP_CLIENT
+        .get_or_try_init(|| async {
+            tokio::task::spawn_blocking(|| {
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(30))
+                    .user_agent("NetGet-Maven/1.0")
+                    .build()
+            })
+            .await
+            .context("building the HTTP client panicked")?
+            .context("failed to build the HTTP client")
+        })
+        .await
+        .cloned()
+}
+
+/// How many model turns a single injected action may spawn before the chain is cut.
+///
+/// The Maven follow-up cycle is genuinely self-referential: `notify_maven` asks the
+/// model, `execute_maven_action` runs what it answered, `apply_action` awaits the HTTP
+/// exchange and then `spawn_notify` raises a response event — which is `notify_maven`
+/// again. Nothing counted the turns, so a model (or the static handler this protocol's
+/// own `get_startup_examples()` documents) that answers `maven_pom_received` with
+/// another `download_pom` looped forever, burning one HTTP request *and one LLM call*
+/// per turn, and registering two fresh tasks each time so the abort set grew without
+/// bound too.
+///
+/// npm and pypi bound this structurally — their `run_follow_ups` routes only through
+/// `perform_*` helpers that raise no event, so the chain is one deep. Maven's shape
+/// cannot do that (its whole point is that a follow-up *is* a new turn), so it takes
+/// the other answer CLAUDE.md gives: a depth bound, not silence. No boxing is needed
+/// because the cycle already passes through `tokio::spawn`.
+const MAX_FOLLOWUP_DEPTH: u8 = 6;
+
 /// Maven client that interacts with Maven repositories
 pub struct MavenClient;
 
@@ -69,6 +133,7 @@ impl MavenClient {
         client_id: ClientId,
         result: ClientActionResult,
         dispatch: Dispatch,
+        depth: u8,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
@@ -107,6 +172,7 @@ impl MavenClient {
                             app_state,
                             Self::download_artifact(
                                 client_id,
+                                depth + 1,
                                 group_id,
                                 artifact_id,
                                 version,
@@ -135,6 +201,7 @@ impl MavenClient {
                         let detail = format!("download_artifact {coords} -> {}", fetch.summary);
                         Self::spawn_notify(
                             client_id,
+                            depth + 1,
                             app_state,
                             &crate::client::maven::actions::MAVEN_CLIENT_ARTIFACT_DOWNLOADED_EVENT,
                             fetch.event_data,
@@ -155,6 +222,7 @@ impl MavenClient {
                             app_state,
                             Self::download_pom(
                                 client_id,
+                                depth + 1,
                                 group_id,
                                 artifact_id,
                                 version,
@@ -181,6 +249,7 @@ impl MavenClient {
                         let detail = format!("download_pom {coords} -> {}", fetch.summary);
                         Self::spawn_notify(
                             client_id,
+                            depth + 1,
                             app_state,
                             &crate::client::maven::actions::MAVEN_CLIENT_POM_RECEIVED_EVENT,
                             fetch.event_data,
@@ -201,6 +270,7 @@ impl MavenClient {
                             app_state,
                             Self::search_versions(
                                 client_id,
+                                depth + 1,
                                 group_id,
                                 artifact_id,
                                 app_state.clone(),
@@ -225,6 +295,7 @@ impl MavenClient {
                         let detail = format!("search_versions {coords} -> {}", fetch.summary);
                         Self::spawn_notify(
                             client_id,
+                            depth + 1,
                             app_state,
                             &crate::client::maven::actions::MAVEN_CLIENT_METADATA_RECEIVED_EVENT,
                             fetch.event_data,
@@ -265,6 +336,7 @@ impl MavenClient {
     /// the LLM call (which a manual routing rule can park for the intercept timeout).
     async fn spawn_notify(
         client_id: ClientId,
+        depth: u8,
         app_state: &Arc<AppState>,
         event_type: &'static crate::protocol::EventType,
         event_data: serde_json::Value,
@@ -275,7 +347,7 @@ impl MavenClient {
         let llm = llm_client.clone();
         let tx = status_tx.clone();
         let handle = tokio::spawn(async move {
-            Self::notify_maven(client_id, event_type, event_data, state, llm, tx).await;
+            Self::notify_maven(client_id, depth, event_type, event_data, state, llm, tx).await;
         });
         app_state.register_client_task(client_id, handle).await;
     }
@@ -284,12 +356,27 @@ impl MavenClient {
     /// answers. The single LLM entry point for every Maven operation.
     async fn notify_maven(
         client_id: ClientId,
+        depth: u8,
         event_type: &'static crate::protocol::EventType,
         event_data: serde_json::Value,
         app_state: Arc<AppState>,
         llm_client: OllamaClient,
         status_tx: mpsc::UnboundedSender<String>,
     ) {
+        if depth > MAX_FOLLOWUP_DEPTH {
+            warn!(
+                "Maven client {} cut a follow-up chain at depth {} (limit {}): the model \
+                 kept answering each response event with another repository operation. \
+                 The chain is stopped, not the client.",
+                client_id, depth, MAX_FOLLOWUP_DEPTH
+            );
+            let _ = status_tx.send(format!(
+                "[WARN] Maven client {} follow-up chain cut at depth {}",
+                client_id, MAX_FOLLOWUP_DEPTH
+            ));
+            return;
+        }
+
         let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
             return;
         };
@@ -328,6 +415,7 @@ impl MavenClient {
                         Ok(ClientActionResult::Custom { name, data }) => {
                             Self::execute_maven_action(
                                 client_id,
+                                depth,
                                 name,
                                 data,
                                 app_state.clone(),
@@ -336,9 +424,24 @@ impl MavenClient {
                             );
                         }
                         Ok(ClientActionResult::Disconnect) => {
+                            // This arm used to log the disconnect and do nothing else,
+                            // so the log asserted something that had not happened.
                             info!("Maven client {} disconnecting", client_id);
+                            app_state
+                                .update_client_status(client_id, ClientStatus::Disconnected)
+                                .await;
                         }
-                        _ => {}
+                        Ok(other) => {
+                            debug!("Maven client {} action result: {:?}", client_id, other);
+                        }
+                        Err(e) => {
+                            // `_ => {}` swallowed this: a model answering with an unknown
+                            // or malformed action produced no log at all.
+                            warn!(
+                                "Maven client {} could not execute the model's action: {}",
+                                client_id, e
+                            );
+                        }
                     }
                 }
             }
@@ -356,6 +459,7 @@ impl MavenClient {
     /// same reason — `register_client_task` is async.
     fn execute_maven_action(
         client_id: ClientId,
+        depth: u8,
         name: String,
         data: serde_json::Value,
         app_state: Arc<AppState>,
@@ -369,6 +473,7 @@ impl MavenClient {
                 client_id,
                 result,
                 Dispatch::Await,
+                depth,
                 &app_state,
                 &llm_client,
                 &status_tx,
@@ -408,6 +513,7 @@ impl MavenClient {
                     client_id,
                     result,
                     Dispatch::Await,
+                    0,
                     &app_state,
                     &llm_client,
                     &status_tx,
@@ -574,6 +680,7 @@ impl MavenClient {
                                 client_id,
                                 result,
                                 Dispatch::Spawn,
+                                0,
                                 &app_state,
                                 &_llm_client,
                                 &status_tx,
@@ -656,6 +763,7 @@ impl MavenClient {
     #[allow(clippy::too_many_arguments)]
     pub async fn download_artifact(
         client_id: ClientId,
+        depth: u8,
         group_id: String,
         artifact_id: String,
         version: String,
@@ -676,6 +784,7 @@ impl MavenClient {
         .await?;
         Self::notify_maven(
             client_id,
+            depth,
             &crate::client::maven::actions::MAVEN_CLIENT_ARTIFACT_DOWNLOADED_EVENT,
             fetch.event_data,
             app_state,
@@ -713,14 +822,23 @@ impl MavenClient {
             client_id, group_id, artifact_id, version, artifact_url
         ));
 
-        match Self::http_client()?.get(&artifact_url).send().await {
+        match Self::http_client().await?.get(&artifact_url).send().await {
             Ok(response) => {
                 let status = response.status();
                 let status_code = status.as_u16();
 
                 if status.is_success() {
                     let content_length = response.content_length().unwrap_or(0);
-                    let body_bytes = response.bytes().await.unwrap_or_default();
+                    // `unwrap_or_default()` here turned a reset or a timeout
+                    // mid-body into `""`, and the caller then reported
+                    // "HTTP 200 (0 bytes)" and raised the response event with an empty
+                    // artifact. The model reasoned about a repository answer that never
+                    // arrived, and nothing was logged. Propagate instead: every caller
+                    // already handles `Err`.
+                    let body_bytes = response
+                        .bytes()
+                        .await
+                        .context("reading the artifact body")?;
 
                     info!(
                         "Maven client {} artifact downloaded: {} bytes",
@@ -758,6 +876,7 @@ impl MavenClient {
     /// Download and parse POM file, then hand it to the LLM.
     pub async fn download_pom(
         client_id: ClientId,
+        depth: u8,
         group_id: String,
         artifact_id: String,
         version: String,
@@ -776,6 +895,7 @@ impl MavenClient {
         .await?;
         Self::notify_maven(
             client_id,
+            depth,
             &crate::client::maven::actions::MAVEN_CLIENT_POM_RECEIVED_EVENT,
             fetch.event_data,
             app_state,
@@ -803,13 +923,16 @@ impl MavenClient {
             client_id, group_id, artifact_id, version, pom_url
         ));
 
-        match Self::http_client()?.get(&pom_url).send().await {
+        match Self::http_client().await?.get(&pom_url).send().await {
             Ok(response) => {
                 let status = response.status();
                 let status_code = status.as_u16();
 
                 if status.is_success() {
-                    let pom_content = response.text().await.unwrap_or_default();
+                    // See the note in `perform_download_artifact`: a failed body read
+                    // must not be reported as an empty-but-successful POM.
+                    let pom_content =
+                        truncate_document(response.text().await.context("reading the POM body")?);
 
                     info!(
                         "Maven client {} POM downloaded: {} bytes",
@@ -847,6 +970,7 @@ impl MavenClient {
     /// Search for artifact versions (via maven-metadata.xml) and hand them to the LLM.
     pub async fn search_versions(
         client_id: ClientId,
+        depth: u8,
         group_id: String,
         artifact_id: String,
         app_state: Arc<AppState>,
@@ -858,6 +982,7 @@ impl MavenClient {
                 .await?;
         Self::notify_maven(
             client_id,
+            depth,
             &crate::client::maven::actions::MAVEN_CLIENT_METADATA_RECEIVED_EVENT,
             fetch.event_data,
             app_state,
@@ -884,13 +1009,20 @@ impl MavenClient {
             client_id, group_id, artifact_id, metadata_url
         ));
 
-        match Self::http_client()?.get(&metadata_url).send().await {
+        match Self::http_client().await?.get(&metadata_url).send().await {
             Ok(response) => {
                 let status = response.status();
                 let status_code = status.as_u16();
 
                 if status.is_success() {
-                    let metadata_content = response.text().await.unwrap_or_default();
+                    // See the note in `perform_download_artifact`: a failed body read
+                    // must not be reported as empty-but-successful metadata.
+                    let metadata_content = truncate_document(
+                        response
+                            .text()
+                            .await
+                            .context("reading the maven-metadata.xml body")?,
+                    );
 
                     info!(
                         "Maven client {} metadata received: {} bytes",
@@ -942,10 +1074,11 @@ impl MavenClient {
             .context("No repository URL found")
     }
 
-    fn http_client() -> Result<reqwest::Client> {
-        Ok(reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("NetGet-Maven/1.0")
-            .build()?)
+    /// The shared client, not a fresh one per request.
+    ///
+    /// This used to build a `reqwest::Client` on every call — a blocking rustls +
+    /// platform-root-store setup on the async runtime. See `shared_http_client`.
+    async fn http_client() -> Result<reqwest::Client> {
+        shared_http_client().await
     }
 }

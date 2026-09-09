@@ -119,61 +119,113 @@ async fn test_npm_client_search_packages() {
     );
 }
 
+/// `download_tarball` fetches, reports, and writes nothing to disk.
+///
+/// This test used to be `#[ignore]`d, point at the public `registry.npmjs.org`, and
+/// assert on the **real filesystem** — `output_path.exists()` after
+/// `NpmClient::download_tarball(..., "/tmp/lodash-test.tgz", ...)`. That was the
+/// coverage for an arbitrary-file-write driven by LLM output; the write is gone, and
+/// so is the test that certified it. What replaces it runs by default against a
+/// loopback stub, which is what the rest of this protocol's live tests already do.
 #[tokio::test]
-#[ignore] // Requires Ollama, network access, and writes to filesystem
-async fn test_npm_client_download_tarball() {
-    let (app_state, llm_client, status_tx) = setup_test().await;
+async fn download_tarball_reports_the_bytes_and_writes_no_file() {
+    use std::sync::Mutex as StdMutex;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
-    // Register client
+    const TARBALL: &[u8] = b"not-a-real-tgz-but-exactly-31-bytes";
+
+    // A stand-in registry: the packument on any /-prefixed path, the tarball bytes on
+    // /pkg.tgz. Nothing leaves this machine.
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind stub");
+    let port = listener.local_addr().unwrap().port();
+    let seen: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let seen_task = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let seen = seen_task.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let line = String::from_utf8_lossy(&buf[..n])
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                seen.lock().unwrap().push(line.clone());
+                let resp: Vec<u8> = if line.contains("/pkg.tgz") {
+                    let mut r = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        TARBALL.len()
+                    )
+                    .into_bytes();
+                    r.extend_from_slice(TARBALL);
+                    r
+                } else {
+                    let body = format!(
+                        r#"{{"name":"demo","dist-tags":{{"latest":"1.0.0"}},"versions":{{"1.0.0":{{"dist":{{"tarball":"http://127.0.0.1:{port}/pkg.tgz","integrity":"sha512-deadbeef"}}}}}}}}"#
+                    );
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .into_bytes()
+                };
+                let _ = sock.write_all(&resp).await;
+                let _ = sock.flush().await;
+            });
+        }
+    });
+
+    let (app_state, llm_client, status_tx) = setup_test().await;
+    let registry = format!("http://127.0.0.1:{port}");
     let client = ClientInstance::new(
-        ClientId::new(0), // overwritten by add_client with the real allocated id
-        "https://registry.npmjs.org".to_string(),
+        ClientId::new(0),
+        registry.clone(),
         "NPM".to_string(),
-        "Download the latest lodash package".to_string(),
+        String::new(),
     );
     let client_id = app_state.add_client(client).await;
+    app_state
+        .update_client_status(client_id, ClientStatus::Connected)
+        .await;
+    app_state
+        .with_client_mut(client_id, |c| {
+            c.set_protocol_field("registry_url".to_string(), serde_json::json!(registry));
+        })
+        .await;
 
-    // Connect to NPM registry
-    let result = NpmClient::connect_with_llm_actions(
-        "https://registry.npmjs.org".to_string(),
-        llm_client.clone(),
-        app_state.clone(),
-        status_tx.clone(),
+    let summary = NpmClient::download_tarball(
         client_id,
-    )
-    .await;
-
-    assert!(result.is_ok(), "Failed to connect NPM client: {:?}", result);
-
-    // Download tarball to temp directory
-    let output_path = std::env::temp_dir().join("lodash-test.tgz");
-    let output_path_str = output_path.to_str().unwrap().to_string();
-
-    let download_result = NpmClient::download_tarball(
-        client_id,
-        "lodash".to_string(),
+        "demo".to_string(),
         "latest".to_string(),
-        output_path_str.clone(),
         app_state.clone(),
         status_tx.clone(),
     )
-    .await;
+    .await
+    .expect("download_tarball should succeed against the stub registry");
 
     assert!(
-        download_result.is_ok(),
-        "Failed to download tarball: {:?}",
-        download_result
+        summary.contains(&TARBALL.len().to_string()),
+        "the summary does not report how many bytes arrived: {summary}"
+    );
+    assert!(
+        summary.contains("sha512-deadbeef"),
+        "the summary does not carry the integrity the registry advertised: {summary}"
+    );
+    assert!(
+        summary.contains("not saved"),
+        "the summary should say plainly that nothing was stored: {summary}"
     );
 
-    // Verify file exists
-    assert!(output_path.exists(), "Tarball file was not created");
-
-    // Verify file has content
-    let metadata = std::fs::metadata(&output_path).unwrap();
-    assert!(metadata.len() > 0, "Tarball file is empty");
-
-    // Cleanup
-    let _ = std::fs::remove_file(&output_path);
+    let requests = seen.lock().unwrap().clone();
+    assert!(
+        requests.iter().any(|r| r.contains("/pkg.tgz")),
+        "the tarball itself was never fetched: {requests:?}"
+    );
 }
 
 #[tokio::test]

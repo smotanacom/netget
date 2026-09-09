@@ -538,8 +538,13 @@ impl Protocol for OciRegistryProtocol {
                  refuses to serve content whose hash does not match the digest requested",
             )
             .e2e_testing(
-                "Validated against crane 0.21.6 (google/go-containerregistry) over plain HTTP on \
-                 127.0.0.1, both with and without --insecure: crane catalog, crane ls, \
+                "Validated against crane (google/go-containerregistry) over plain HTTP on \
+                 127.0.0.1 in \
+                 tests/server/oci_registry/e2e_test.rs::test_oci_registry_against_crane, \
+                 which is not #[ignore]d and now FAILS rather than skips when crane is \
+                 absent - until September 2026 it printed \"crane not installed - skipping\" \
+                 and returned Ok(()), so this claim rested on a test that passed vacuously \
+                 wherever crane was missing: crane catalog, crane ls, \
                  crane manifest (by tag and by the digest crane itself computed), crane digest, \
                  crane config and crane blob all succeed, and crane's own re-hashing of every \
                  manifest and blob it fetches is the assertion. Mocked E2E in \
@@ -852,11 +857,20 @@ fn execute_error(action: &Value) -> Result<ActionResult> {
         .and_then(|v| v.as_str())
         .unwrap_or("request refused")
         .to_string();
-    let status = action
-        .get("status")
-        .and_then(|v| v.as_u64())
-        .map(|s| s as u16)
-        .unwrap_or_else(|| oci_error_status(&code));
+    // Range-checked, not truncated. `as u16` silently wraps: a model answering
+    // `status: 65736` would have produced a **200**, so an explicit refusal would
+    // have reached crane as a success carrying an error envelope in the body — the
+    // fail-open shape, arrived at by arithmetic. Refuse the action instead; the
+    // message goes back to the model, which can retry.
+    let status = match action.get("status").and_then(|v| v.as_u64()) {
+        None => oci_error_status(&code),
+        Some(s) if (400..=599).contains(&s) => s as u16,
+        Some(s) => bail!(
+            "send_oci_error status {} is not an HTTP error status (400-599). An error \
+             envelope must not be served under a 2xx: the client would read it as success.",
+            s
+        ),
+    };
     Ok(ActionResult::Custom {
         name: "oci_error".to_string(),
         data: json!({
