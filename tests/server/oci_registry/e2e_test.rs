@@ -557,16 +557,67 @@ async fn test_oci_registry_refuses_mismatched_content() -> E2EResult<()> {
 ///
 /// Handlers are deterministic (static + one script), so this costs exactly one LLM
 /// call — the server start — and crane can make as many requests as it likes.
-/// Skipped where `crane` or `python3` is absent.
-#[tokio::test]
+///
+/// **This test fails rather than skips when `crane` or `python3` is missing**, and
+/// that is the point of it. It used to print "crane not installed - skipping" and
+/// return `Ok(())`, so on any runner without crane it was a green pass that had
+/// asserted nothing — while this file's own header claims "a real, independent OCI
+/// client accepts what we serve" and `metadata()` claims validation "against crane
+/// 0.21.6". A silent skip is how a maturity claim outlives the thing that justified
+/// it; `tests/server/npm/e2e_test.rs::test_npm_with_real_cli` is the shape copied
+/// here. The cost is that `crane` and `python3` are now requirements wherever this
+/// suite runs — deliberately, because the alternative is an unfalsifiable claim.
+///
+/// `python3` is needed for the blob-dispatching *script handler*, not by crane.
+///
+/// `flavor = "multi_thread"`: every `crane` invocation below is a **blocking**
+/// `std::process::Command`, and the in-process mock Ollama server is spawned onto
+/// this test's own runtime. On the default current-thread runtime a blocking crane
+/// call holds the only worker, so the moment any handler misses and falls through to
+/// the model, crane waits on netget, netget waits on the mock, and the mock cannot
+/// run because crane owns the thread. Today's handlers are all deterministic so it
+/// happens not to deadlock; that is luck, not design.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_oci_registry_against_crane() -> E2EResult<()> {
-    if Command::new("crane").arg("version").output().is_err() {
-        println!("crane not installed - skipping the real-client test");
-        return Ok(());
+    match Command::new("crane").arg("version").output() {
+        Ok(out) if out.status.success() => {
+            println!("crane {}", String::from_utf8_lossy(&out.stdout).trim())
+        }
+        Ok(out) => {
+            return Err(format!(
+                "`crane version` exited {}: this test's whole point is driving the real \
+                 google/go-containerregistry client against NetGet's registry",
+                out.status
+            )
+            .into())
+        }
+        Err(e) => {
+            return Err(format!(
+                "crane is not available ({e}): this test's whole point is driving the real \
+                 google/go-containerregistry client against NetGet's registry, and skipping \
+                 it would leave the OCI registry's real-client claim resting on nothing. \
+                 Install it with `brew install crane` or from \
+                 https://github.com/google/go-containerregistry/releases"
+            )
+            .into())
+        }
     }
-    if Command::new("python3").arg("--version").output().is_err() {
-        println!("python3 not installed - skipping the real-client test");
-        return Ok(());
+    match Command::new("python3").arg("--version").output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            return Err(format!(
+                "`python3 --version` exited {}: the blob script handler needs it",
+                out.status
+            )
+            .into())
+        }
+        Err(e) => {
+            return Err(format!(
+                "python3 is not available ({e}): the blob-dispatching script handler needs \
+                 it, and without the handler this test would fall through to the model"
+            )
+            .into())
+        }
     }
 
     // Dispatches a blob request on the requested digest. A static handler cannot:
