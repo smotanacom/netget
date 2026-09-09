@@ -6,6 +6,11 @@ Elasticsearch-compatible server implementing the Elasticsearch HTTP/JSON REST AP
 and cluster management operations with full LLM control over responses. This is a "virtual" search engine where the LLM
 maintains data and search results through conversation context.
 
+**State**: `Experimental`, and it stays there. The only e2e evidence is `reqwest`, a generic
+HTTP client, which proves an HTTP server answers — not that the Elasticsearch API on top of it
+is right. `metadata()` claimed "curl / elasticsearch client"; neither has ever been pointed at
+this server. Promoting it means driving it with the official `elasticsearch` crate or a real
+client.
 **Port**: 9200 (default Elasticsearch port)
 **Protocol**: HTTP/1.1 with JSON payloads
 **API Version**: Elasticsearch 7.x/8.x compatible
@@ -49,6 +54,41 @@ maintains data and search results through conversation context.
 - Response body is JSON with operation results
 - Standard HTTP status codes (200, 201, 404, 500)
 - Custom header: `X-elastic-product: Elasticsearch`
+
+### Request body limit
+
+The body is bounded at `MAX_REQUEST_BODY_BYTES` (8 MiB) with `http_body_util::Limited`; a
+larger one is refused with **413** and a `circuit_breaking_exception` envelope, *before* any
+LLM call. `Incoming` has no default limit, so this used to buffer whatever an unauthenticated
+peer chose to send — a single `POST /_bulk` was enough — and the body is then embedded whole
+in an LLM prompt, so there is no legitimate large one either.
+
+The old `Err` arm fell through with an **empty** body, which is worse than the limit being
+absent: the handler was shown a request with no body and answered it as though the client had
+sent none, so a truncated bulk index read as an empty one.
+
+The constant is local rather than shared because `server::http_common` is gated on
+`any(feature = "http", "http2", "oauth2", …)` and `elasticsearch` is not in that list — the
+same exit `xmlrpc` takes. Adding `couchdb` and `elasticsearch` to that gate in
+`src/server/mod.rs` would let both share `http_common::MAX_REQUEST_BODY_BYTES`.
+
+### Fields that cannot be defaulted
+
+Every default an action supplies is an assertion, and three were the affirmative one:
+
+| Action | Field | Old default | Why it had to go |
+|---|---|---|---|
+| `send_index_response` | `result` | `"created"` | it is what makes the reply **201 Created**, so an omitted value reported a document as newly indexed that nothing said had been indexed |
+| `send_cluster_health` | `status` | `"green"` | the whole content of a health check; a handler that said nothing reported a fully-allocated cluster. Now `required` in the declaration too |
+| `send_get_response` | `found` | `false` | decides 200-with-a-document versus 404 either way, and a mistyped `"true"` (a string, not a JSON boolean) silently became "no such document" |
+
+`send_bulk_response`'s `errors` stays optional but is no longer assumed: when it is omitted it
+is **derived** from `items` — any entry carrying an `error` object or a 4xx/5xx `status` makes
+it `true`. Clients check that flag before deciding whether to walk `items` at all, so
+defaulting it to `false` hid per-item failures the handler had itself reported. An explicit
+value still wins.
+
+`tests/server/elasticsearch/refusal_test.rs` covers all of this plus the 413.
 
 ### Stateless Operation
 

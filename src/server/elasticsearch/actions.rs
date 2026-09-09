@@ -338,7 +338,7 @@ fn send_cluster_health_action() -> ActionDefinition {
                 description: "Cluster status: 'green', 'yellow', or 'red'. Anything else is \
                               rejected"
                     .to_string(),
-                required: false,
+                required: true,
             },
             Parameter {
                 name: "number_of_nodes".to_string(),
@@ -388,6 +388,24 @@ fn parse_status_code(action: &Value) -> Result<u16> {
     }
 
     Ok(raw as u16)
+}
+
+/// Did one entry of a `_bulk` response report a failure?
+///
+/// An item is `{"<op>": {"_index": …, "status": 201}}`, and Elasticsearch marks a failed one
+/// with an `error` object and a 4xx/5xx `status`. Used only when the handler omits `errors`,
+/// so the top-level flag agrees with the items beneath it rather than defaulting to "none".
+fn bulk_item_failed(item: &Value) -> bool {
+    let Some(obj) = item.as_object() else {
+        return false;
+    };
+    obj.values().any(|op| {
+        op.get("error").is_some_and(|e| !e.is_null())
+            || op
+                .get("status")
+                .and_then(|s| s.as_u64())
+                .is_some_and(|s| s >= 400)
+    })
 }
 
 /// Serialize a response body. Serializing a `serde_json::Value` cannot fail, so the
@@ -444,8 +462,15 @@ impl Protocol for ElasticsearchProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("hyper v1.5 HTTP server with manual ES API")
             .llm_control("Search, index, cluster operations")
-            .e2e_testing("curl / elasticsearch client")
-            .notes("Virtual data (no persistence)")
+            // Neither curl nor the `elasticsearch` crate has ever been pointed at this
+            // server: `tests/server/elasticsearch/e2e_test.rs` drives `reqwest`, which proves
+            // an HTTP server answers — not that the Elasticsearch API on top of it is right.
+            // That is exactly why this is Experimental rather than Beta.
+            .e2e_testing("reqwest (a generic HTTP client); no Elasticsearch client has been used")
+            .notes(
+                "Virtual data (no persistence). Request bodies are bounded at 8 MiB and a \
+                 larger one is refused with 413 before any model call",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
@@ -617,10 +642,21 @@ impl Server for ElasticsearchProtocol {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("Missing id"))?;
 
+                // Declared `required: true`, and it decides the status: "created" answers
+                // 201. Defaulting to it meant an omitted or misspelled value reported a
+                // document as newly indexed that nothing said had been indexed at all.
                 let result = action
                     .get("result")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("created");
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "send_index_response requires `result` — Elasticsearch's own \
+                             values are \"created\", \"updated\", \"deleted\", \
+                             \"not_found\" and \"noop\". \"created\" answers 201, so it \
+                             cannot be assumed"
+                        )
+                    })?;
 
                 let response = serde_json::json!({
                     "_index": index,
@@ -645,10 +681,19 @@ impl Server for ElasticsearchProtocol {
                 })
             }
             "send_get_response" => {
+                // Declared `required: true`. It decides 200-with-a-document versus 404, so
+                // either default is a claim about the index — and a mistyped `"true"` (a
+                // string, not a JSON boolean) silently became "no such document".
                 let found = action
                     .get("found")
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "send_get_response requires `found` (a JSON boolean, not a \
+                             string); it decides whether the reply is the document (200) or \
+                             a 404, and only the handler knows which"
+                        )
+                    })?;
 
                 let index = action
                     .get("index")
@@ -696,10 +741,19 @@ impl Server for ElasticsearchProtocol {
                     .get("items")
                     .ok_or_else(|| anyhow::anyhow!("Missing items"))?;
 
-                let errors = action
-                    .get("errors")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                // `errors` is what every client checks before deciding whether to walk
+                // `items` at all, so defaulting it to `false` hid per-item failures the
+                // handler had actually reported. When it is omitted, derive it from the
+                // items rather than assume the happy answer: an item carrying an `error`
+                // object or a 4xx/5xx `status` means errors occurred, and that is
+                // observable rather than guessed.
+                let errors = match action.get("errors").and_then(|v| v.as_bool()) {
+                    Some(explicit) => explicit,
+                    None => items
+                        .as_array()
+                        .map(|entries| entries.iter().any(bulk_item_failed))
+                        .unwrap_or(false),
+                };
 
                 let response = serde_json::json!({
                     "took": 10,
@@ -758,10 +812,21 @@ impl Server for ElasticsearchProtocol {
                     .and_then(|v| v.as_str())
                     .unwrap_or("llm-elasticsearch");
 
+                // "green" is the affirmative answer — "every shard is allocated, the
+                // cluster is fully healthy" — and it was what a handler that said nothing
+                // produced. That is the fail-open shape: an outage reported as health.
+                // There is no safe default here, because every value is an assertion, so
+                // the handler has to state one.
                 let status = action
                     .get("status")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("green");
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "send_cluster_health requires `status`: \"green\", \"yellow\" \
+                             or \"red\". It is the whole content of a health check and \
+                             \"green\" is a claim that every shard is allocated"
+                        )
+                    })?;
 
                 if !matches!(status, "green" | "yellow" | "red") {
                     return Err(anyhow::anyhow!(

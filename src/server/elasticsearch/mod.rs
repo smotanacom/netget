@@ -26,6 +26,14 @@ use crate::server::ElasticsearchProtocol;
 use crate::state::app_state::AppState;
 use crate::{console_error, console_info};
 
+/// How much of a request body is read before the request is refused with 413.
+///
+/// Same value and same reasoning as `http_common::MAX_REQUEST_BODY_BYTES`, defined locally
+/// because `server::http_common` is gated on `any(feature = "http", "http2", "oauth2", …)`
+/// and `elasticsearch` is not in that list — the same exit `xmlrpc` takes. Adding
+/// `elasticsearch` to the gate in `src/server/mod.rs` would let this share the constant.
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
 /// Elasticsearch server that delegates search/index operations to LLM
 pub struct ElasticsearchServer;
 
@@ -170,16 +178,48 @@ async fn handle_elasticsearch_request_with_llm(
     let uri = req.uri().to_string();
     let path = req.uri().path().to_string();
 
-    // Read JSON body
-    let body_bytes = match req.into_body().collect().await {
+    // Read the JSON body, bounded.
+    //
+    // `Incoming` has no default limit, so this used to buffer whatever an unauthenticated
+    // peer chose to send — a single `POST /_bulk` was enough — and the body is then embedded
+    // whole in an LLM prompt, so there is no legitimate large one either. `Limited` errors as
+    // soon as the cap is passed rather than after buffering it. Elasticsearch's own answer
+    // to an oversized request is 413 with a `circuit_breaking_exception`-shaped envelope.
+    //
+    // An unreadable body must **not** fall through as empty, which is what the old `Err` arm
+    // did: the handler was then shown a request with no body and answered it as though the
+    // client had sent none, so a truncated bulk index read as an empty one.
+    let body_bytes = match http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
+            error!(
+                "Elasticsearch {} {}: refusing request body ({}); limit is {} bytes",
+                method, path, e, MAX_REQUEST_BODY_BYTES
+            );
             console_error!(
                 status_tx,
-                "Failed to read Elasticsearch request body: {}",
-                e
+                "Elasticsearch {} {} → 413 (request body over {} bytes)",
+                method,
+                path,
+                MAX_REQUEST_BODY_BYTES
             );
-            Bytes::new()
+            let reason = format!(
+                "netget: request body exceeds {} bytes",
+                MAX_REQUEST_BODY_BYTES
+            );
+            let body = serde_json::json!({
+                "error": {
+                    "root_cause": [{"type": "circuit_breaking_exception", "reason": reason}],
+                    "type": "circuit_breaking_exception",
+                    "reason": reason,
+                },
+                "status": 413,
+            })
+            .to_string();
+            return Ok(build_es_response(413, body));
         }
     };
 

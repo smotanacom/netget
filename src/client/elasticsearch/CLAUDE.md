@@ -125,8 +125,13 @@ Each operation builds the appropriate HTTP request:
 
 ### Sync Actions (Response-Triggered)
 
+A client's tool list is async ∪ sync ∪ the firing event's actions, so all five operation
+verbs are offered on `elasticsearch_response_received` and all five are dispatched:
+
 1. **index_document**: Index follow-up documents based on search results
 2. **search**: Perform additional searches based on results
+3. **get_document** / **delete_document**: act on a specific hit
+4. **bulk_operation**: batch follow-up work in one `_bulk` request
 
 ### Event Types
 
@@ -149,6 +154,14 @@ Each operation builds the appropriate HTTP request:
     nowhere. The model could not read the results of a search it had itself asked for.
     The recursion this avoided is real (report → action → report), so the call is boxed;
     the depth bound is what actually keeps it finite.
+
+    **Every** verb the model is offered on this event has a dispatch arm: `search`,
+    `get_document`, `delete_document`, `index_document` and `bulk_operation`. The last was
+    missing and logged as "skipped", so the one verb that batches work was the one the
+    model could not use in reply to a result — an advertised verb with no arm is the same
+    defect one level down. Its NDJSON body comes from `build_bulk_ndjson`, shared with the
+    direct path, and travels as `RequestBody::Ndjson`: Elasticsearch refuses a `_bulk`
+    request whose content type says `application/json`.
 
 ## Logging Strategy
 

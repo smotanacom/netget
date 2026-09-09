@@ -23,6 +23,15 @@ use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 use crate::utils::truncate::truncate_for_log;
 
+/// The body of a one-shot follow-up request.
+///
+/// Two encodings, because `_bulk` is NDJSON and every other endpoint is JSON, and
+/// Elasticsearch refuses a bulk request whose content type says `application/json`.
+enum RequestBody {
+    Json(serde_json::Value),
+    Ndjson(String),
+}
+
 /// Elasticsearch client that interacts with Elasticsearch clusters
 pub struct ElasticsearchClient;
 
@@ -432,23 +441,13 @@ impl ElasticsearchClient {
     }
 
     /// Execute bulk operations
-    pub async fn bulk_operation(
-        client_id: ClientId,
-        operations: Vec<serde_json::Value>,
-        app_state: Arc<AppState>,
-        llm_client: OllamaClient,
-        status_tx: mpsc::UnboundedSender<String>,
-    ) -> Result<u16> {
-        let (cluster_url, authorization) = Self::cluster_endpoint(&app_state, client_id).await?;
-        let url = format!("{}/_bulk", cluster_url);
-
-        info!(
-            "Elasticsearch client {} executing {} bulk operations",
-            client_id,
-            operations.len()
-        );
-
-        // Build NDJSON bulk request body
+    /// Build the NDJSON body for a `_bulk` request.
+    ///
+    /// Extracted so the follow-up path can reach it too: `bulk_operation` is advertised to
+    /// the model on `elasticsearch_response_received` like every other verb, but the
+    /// follow-up dispatch had no arm for it and logged "skipped", so the one verb that
+    /// batches work was the one the model could not use in reply to a result.
+    fn build_bulk_ndjson(operations: Vec<serde_json::Value>) -> Result<String> {
         let mut bulk_body = String::new();
         for op in operations {
             let action = op
@@ -510,6 +509,27 @@ impl ElasticsearchClient {
                 _ => return Err(anyhow::anyhow!("Unknown bulk action: {}", action)),
             }
         }
+
+        Ok(bulk_body)
+    }
+
+    pub async fn bulk_operation(
+        client_id: ClientId,
+        operations: Vec<serde_json::Value>,
+        app_state: Arc<AppState>,
+        llm_client: OllamaClient,
+        status_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<u16> {
+        let (cluster_url, authorization) = Self::cluster_endpoint(&app_state, client_id).await?;
+        let url = format!("{}/_bulk", cluster_url);
+
+        info!(
+            "Elasticsearch client {} executing {} bulk operations",
+            client_id,
+            operations.len()
+        );
+
+        let bulk_body = Self::build_bulk_ndjson(operations)?;
 
         let http_client = reqwest::Client::new();
         let response = Self::authorize(http_client.post(&url), &authorization)
@@ -843,19 +863,22 @@ impl ElasticsearchClient {
     /// caller that holds the command loop: an event handler may park this call for a human
     /// answer.
     /// Issue one Elasticsearch request and return `(status, body)`. Raises no event and
-    /// calls no LLM.
+    /// calls no LLM **itself**.
     ///
-    /// Follow-up actions the model returns for `elasticsearch_response_received` run
-    /// through here. Calling `search`/`index_document`/... instead would be recursive --
-    /// each of those ends in `spawn_response_notification`, which calls
-    /// `call_llm_with_response`, which is where the follow-ups are executed -- and rustc
-    /// rejects the resulting async type. Raising nothing also bounds the chain: one search
-    /// cannot drive the model round in circles.
+    /// Follow-up actions the model returns for `elasticsearch_response_received` run through
+    /// here rather than through `search`/`index_document`/..., because each of those ends in
+    /// `spawn_response_notification`, which calls `call_llm_with_response`, which is where
+    /// the follow-ups are executed — and rustc rejects the resulting async type.
+    ///
+    /// The caller reports the result itself, bounded by [`Self::MAX_FOLLOWUP_DEPTH`]. It used
+    /// not to, and the comment here claimed that raising nothing "bounds the chain": it did,
+    /// at one step, which meant a search issued in reply to an index confirmation returned
+    /// its hits to nobody. The bound is the depth counter, not the silence.
     async fn run_request_once(
         client_id: ClientId,
         method: reqwest::Method,
         path: &str,
-        body: Option<serde_json::Value>,
+        body: Option<RequestBody>,
         app_state: &Arc<AppState>,
     ) -> Result<(u16, serde_json::Value)> {
         let (cluster_url, authorization) = Self::cluster_endpoint(app_state, client_id).await?;
@@ -866,8 +889,14 @@ impl ElasticsearchClient {
         );
         let http_client = reqwest::Client::new();
         let mut req = Self::authorize(http_client.request(method, &url), &authorization);
-        if let Some(b) = body {
-            req = req.json(&b);
+        match body {
+            Some(RequestBody::Json(b)) => req = req.json(&b),
+            // `_bulk` is NDJSON and Elasticsearch rejects it outright when it arrives as
+            // `application/json`, so the content type has to travel with the body.
+            Some(RequestBody::Ndjson(b)) => {
+                req = req.header("Content-Type", "application/x-ndjson").body(b)
+            }
+            None => {}
         }
         let response = req.send().await.context("Elasticsearch request failed")?;
         let status_code = response.status().as_u16();
@@ -968,8 +997,10 @@ impl ElasticsearchClient {
                     // search hits and then fetching one of the documents, or refining the
                     // query, is exactly what a search client is for, and none of it worked.
                     //
-                    // `run_request_once` issues the request and raises no event, which both
-                    // breaks the cycle and bounds the chain.
+                    // `run_request_once` issues the request without raising an event itself;
+                    // this loop reports the outcome, bounded by MAX_FOLLOWUP_DEPTH. Every
+                    // verb the model is offered on this event has an arm here — an advertised
+                    // verb with no arm is the same defect one level down.
                     use crate::llm::actions::client_trait::{Client, ClientActionResult};
                     for action in actions {
                         let Ok(ClientActionResult::Custom { name, data }) =
@@ -991,8 +1022,10 @@ impl ElasticsearchClient {
                             "search" => Some((
                                 reqwest::Method::POST,
                                 format!("{index}/_search"),
-                                Some(serde_json::json!({"query": data.get("query").cloned()
-                                    .unwrap_or(serde_json::json!({"match_all": {}}))})),
+                                Some(RequestBody::Json(serde_json::json!({
+                                    "query": data.get("query").cloned()
+                                        .unwrap_or(serde_json::json!({"match_all": {}}))
+                                }))),
                             )),
                             "get_document" => data.get("id").and_then(|v| v.as_str()).map(|id| {
                                 (reqwest::Method::GET, format!("{index}/_doc/{id}"), None)
@@ -1005,12 +1038,39 @@ impl ElasticsearchClient {
                             "index_document" => Some((
                                 reqwest::Method::POST,
                                 format!("{index}/_doc"),
-                                data.get("document").cloned(),
+                                data.get("document").cloned().map(RequestBody::Json),
                             )),
+                            // `_bulk` is cluster-wide and every entry names its own index,
+                            // so it deliberately ignores `index` — the same exemption
+                            // `apply_action` makes. It used to fall through to the arm below
+                            // and be logged as skipped, which left the one verb that batches
+                            // work unusable in reply to a result.
+                            "bulk_operation" => {
+                                let ops = data
+                                    .get("operations")
+                                    .and_then(|v| v.as_array())
+                                    .cloned()
+                                    .unwrap_or_default();
+                                match Self::build_bulk_ndjson(ops) {
+                                    Ok(ndjson) => Some((
+                                        reqwest::Method::POST,
+                                        "_bulk".to_string(),
+                                        Some(RequestBody::Ndjson(ndjson)),
+                                    )),
+                                    Err(e) => {
+                                        error!(
+                                            "Elasticsearch client {} follow-up bulk_operation \
+                                             is malformed: {}",
+                                            client_id, e
+                                        );
+                                        None
+                                    }
+                                }
+                            }
                             other => {
                                 info!(
-                                    "Elasticsearch client {} follow-up '{}' has no \
-                                     non-notifying path; skipped",
+                                    "Elasticsearch client {} follow-up '{}' has no wire \
+                                     effect; skipped",
                                     client_id, other
                                 );
                                 None
