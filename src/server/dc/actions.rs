@@ -180,8 +180,8 @@ impl Protocol for DcProtocol {
                 .state(DevelopmentState::Experimental)
                 .implementation("Manual NMDC protocol implementation - text-based with pipe delimiters")
                 .llm_control("Authentication (Lock/Key/Hello), chat messages, search results, user management (kick/redirect)")
-                .e2e_testing("Not yet implemented")
-                .notes("NMDC protocol only (ADC not supported). No key validation or P2P connection handling.")
+                .e2e_testing("tokio::net::TcpStream speaking NMDC by hand (tests/server/dc/): the $Lock handshake, chat, search, kick/redirect, the injected-peer path, and the fail-closed reply when the model is unreachable. No third-party DC++ client, so this stays Experimental")
+                .notes("NMDC protocol only (ADC not supported). No key validation or P2P connection handling. Commands are bounded at 64 KiB; interpolated action values have | \\r \\n stripped so one field cannot inject a second command.")
                 .build()
     }
     fn description(&self) -> &'static str {
@@ -277,11 +277,17 @@ impl Server for DcProtocol {
         })
     }
     fn execute_action(&self, action: serde_json::Value) -> Result<ActionResult> {
+        use crate::server::dc::nmdc_field as f;
+
         let action_type = action
             .get("type")
             .and_then(|v| v.as_str())
             .context("Missing action type")?;
 
+        // Every arm below builds `$Something {}|`, so a `|` inside any interpolated value ends
+        // the command early and the remainder is parsed by the client as a second command.
+        // `f()` strips the three framing characters; `send_dc_raw` is deliberately exempt,
+        // because sending an arbitrary frame is what it is for.
         match action_type {
             "send_dc_lock" => {
                 let lock = action
@@ -293,7 +299,7 @@ impl Server for DcProtocol {
                     .and_then(|v| v.as_str())
                     .unwrap_or("NetGetHub");
 
-                let msg = format!("$Lock {} Pk={}|", lock, pk);
+                let msg = format!("$Lock {} Pk={}|", f(lock), f(pk));
                 Ok(ActionResult::Output(msg.into_bytes()))
             }
             "send_dc_hello" => {
@@ -302,7 +308,7 @@ impl Server for DcProtocol {
                     .and_then(|v| v.as_str())
                     .context("Missing nickname")?;
 
-                let msg = format!("$Hello {}|", nickname);
+                let msg = format!("$Hello {}|", f(nickname));
                 Ok(ActionResult::Output(msg.into_bytes()))
             }
             "send_dc_hubname" => {
@@ -311,7 +317,7 @@ impl Server for DcProtocol {
                     .and_then(|v| v.as_str())
                     .context("Missing hub name")?;
 
-                let msg = format!("$HubName {}|", name);
+                let msg = format!("$HubName {}|", f(name));
                 Ok(ActionResult::Output(msg.into_bytes()))
             }
             "send_dc_message" => {
@@ -328,6 +334,7 @@ impl Server for DcProtocol {
                     .and_then(|v| v.as_str())
                     .context("Missing message")?;
 
+                let (target, source, message) = (f(target), f(source), f(message));
                 let msg = format!(
                     "$To: {} From: {} $<{}> {}|",
                     target, source, source, message
@@ -344,7 +351,7 @@ impl Server for DcProtocol {
                     .and_then(|v| v.as_str())
                     .context("Missing message")?;
 
-                let msg = format!("<{}> {}|", source, message);
+                let msg = format!("<{}> {}|", f(source), f(message));
                 Ok(ActionResult::Output(msg.into_bytes()))
             }
             "send_dc_userlist" => {
@@ -353,10 +360,8 @@ impl Server for DcProtocol {
                     .and_then(|v| v.as_array())
                     .context("Missing users array")?;
 
-                let user_list: Vec<String> = users
-                    .iter()
-                    .filter_map(|u| u.as_str().map(|s| s.to_string()))
-                    .collect();
+                let user_list: Vec<String> =
+                    users.iter().filter_map(|u| u.as_str().map(f)).collect();
 
                 let msg = format!("$NickList {}$$|", user_list.join("$$"));
                 Ok(ActionResult::Output(msg.into_bytes()))
@@ -383,7 +388,12 @@ impl Server for DcProtocol {
                 // $SR source filename\x05size slots/totalslots\x05hubname|
                 let msg = format!(
                     "$SR {} {}\x05{} {}/{}\x05{}|",
-                    source, filename, size, slots, slots, hub_name
+                    f(source),
+                    f(filename),
+                    size,
+                    slots,
+                    slots,
+                    f(hub_name)
                 );
                 Ok(ActionResult::Output(msg.into_bytes()))
             }
@@ -393,7 +403,7 @@ impl Server for DcProtocol {
                     .and_then(|v| v.as_str())
                     .context("Missing nickname")?;
 
-                let msg = format!("$Kick {}|", nickname);
+                let msg = format!("$Kick {}|", f(nickname));
                 Ok(ActionResult::Output(msg.into_bytes()))
             }
             "send_dc_redirect" => {
@@ -402,7 +412,7 @@ impl Server for DcProtocol {
                     .and_then(|v| v.as_str())
                     .context("Missing address")?;
 
-                let msg = format!("$ForceMove {}|", address);
+                let msg = format!("$ForceMove {}|", f(address));
                 Ok(ActionResult::Output(msg.into_bytes()))
             }
             "send_dc_raw" => {
@@ -753,8 +763,15 @@ fn send_dc_redirect_action() -> ActionDefinition {
 fn wait_for_more_action() -> ActionDefinition {
     ActionDefinition {
         name: "wait_for_more".to_string(),
-        description: "Send nothing and wait for the client to finish. Correct when the command \
-            received so far is incomplete."
+        // The old text was "Correct when the command received so far is incomplete", which
+        // cannot happen: the server raises an event only once it has read the `|` terminator,
+        // so every command reaching the model is already whole. There is no accumulating state
+        // here and none is needed. What the action is genuinely for is the very common NMDC
+        // case of a command that wants no reply.
+        description: "Answer this command with nothing and keep the connection open. Correct \
+            for the many NMDC commands a hub does not reply to ($Version, $MyINFO, $GetINFO). \
+            You will never be shown a partial command - the hub raises an event only after the \
+            closing '|' - so this is not for reassembling anything."
             .to_string(),
         parameters: vec![],
         example: json!({"type": "wait_for_more"}),

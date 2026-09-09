@@ -21,6 +21,33 @@ use tokio::sync::mpsc;
 /// rather than presenting the topic as the name.
 const DEFAULT_HUB_NAME: &str = "NetGetHub";
 
+/// Largest single NMDC command accepted from a client, in bytes.
+///
+/// NMDC frames by `|`, and the accumulator grew until one arrived — with no cap and no timeout,
+/// an **unauthenticated** peer that connects and never sends a `|` grows it as fast as its link
+/// allows until the process dies. That is the whole attack: `nc host 411 < /dev/zero`. Real
+/// commands are tens of bytes; `$MyINFO` with a long description is the largest and stays well
+/// under a kilobyte, so 64 KiB is generous and still finite.
+const MAX_COMMAND_LEN: usize = 64 * 1024;
+
+/// Strip the NMDC framing characters from a value that goes inside a command.
+///
+/// Every command this hub writes is `format!("$Something {}|", value)`, so a `|` anywhere in
+/// `value` ends the command early and everything after it is parsed by the client as a *second*
+/// command — `$Kick`, `$ForceMove`, anything. `\r` and `\n` go for the same reason. The values
+/// come from the model, and a hub that echoes a user's chat line back is putting peer-controlled
+/// text through that format string.
+///
+/// `hub_name_command` has always done this for its two startup parameters; the ten action
+/// executors did not. `send_dc_raw` is deliberately exempt — sending an arbitrary frame is its
+/// entire declared purpose.
+pub(crate) fn nmdc_field(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| *c != '|' && *c != '\r' && *c != '\n')
+        .collect()
+}
+
 /// Build the `$HubName` command from the `hub_name` / `hub_topic` startup parameters, or
 /// `None` when neither was supplied.
 ///
@@ -269,13 +296,34 @@ impl DcServer {
                 .await;
         }
 
+        // Buffered: this loop reads a byte at a time looking for `|`, and unbuffered that was
+        // one syscall per byte of every command.
+        let mut read_half = tokio::io::BufReader::new(read_half);
         let mut buffer = Vec::new();
 
-        loop {
+        // Labelled so `close_connection` can leave the *connection* loop. It used to `break`
+        // out of the inner `for protocol_result in ...` only, so the model asking to hang up
+        // logged "DC closing connection N", skipped the remaining actions in that one batch,
+        // and then went straight back to reading commands. The action's own description says
+        // "Disconnect this client without sending anything further"; it did neither.
+        'connection: loop {
             let mut byte = [0u8; 1];
             match read_half.read_exact(&mut byte).await {
                 Ok(_) => {
                     buffer.push(byte[0]);
+
+                    // A client that never sends the `|` terminator must not be able to grow
+                    // this buffer without limit; see MAX_COMMAND_LEN.
+                    if buffer.len() > MAX_COMMAND_LEN {
+                        Log::new(Some(status_clone)).warn(format!(
+                            "DC connection {} sent {} bytes with no '|' terminator (limit {}); \
+                             closing: decision=oversize_command",
+                            connection_id,
+                            buffer.len(),
+                            MAX_COMMAND_LEN
+                        ));
+                        break;
+                    }
 
                     // Check for pipe delimiter
                     if byte[0] == b'|' {
@@ -411,11 +459,14 @@ impl DcServer {
                                         ActionResult::Output(data) => {
                                             let mut write = write_half_arc.lock().await;
                                             if let Err(e) = write.write_all(&data).await {
+                                                // The socket is gone; reading on is pointless
+                                                // and every further LLM call would be spent on
+                                                // answers nobody can receive.
                                                 log.error(format!(
                                                     "Failed to write DC response: {}",
                                                     e
                                                 ));
-                                                break;
+                                                break 'connection;
                                             }
                                             let _ = write.flush().await;
                                             drop(write);
@@ -441,11 +492,11 @@ impl DcServer {
                                             ));
                                         }
                                         ActionResult::CloseConnection => {
-                                            log.debug(format!(
-                                                "DC closing connection {}",
+                                            log.info(format!(
+                                                "DC closing connection {}: decision=model_close",
                                                 connection_id
                                             ));
-                                            break;
+                                            break 'connection;
                                         }
                                         _ => {}
                                     }
