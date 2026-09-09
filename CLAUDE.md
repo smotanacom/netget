@@ -1110,6 +1110,31 @@ Read before assuming a subsystem is sound:
   at connect and dropped it), and pass `tls_built_in_root_certs(false)` when
   `danger_accept_invalid_certs` is set, since nothing will be checked against those roots.
 
+- **A recursive parser without a depth bound kills the whole process, and `tokio::spawn`
+  cannot save you.** A Rust stack overflow is a `SIGSEGV` against the guard page, not a panic —
+  so unlike the swallowed-panic class above, there is nothing to catch and no task to lose in
+  isolation: the entire NetGet process dies. Three protocols had this, all reachable
+  **pre-authentication**. AMQP's field tables are recursive and cost the peer **five bytes per
+  level**, so one 128 KiB frame bought ~26 000 levels; NATS recursed once per blank line, and
+  8 KB of newlines is a single `read`. Both are now bounded (`MAX_FIELD_TABLE_DEPTH = 32`;
+  real tables are depth 2), and the AMQP bound was verified by *removing* it and watching the
+  test binary abort with `stack overflow`. **If a decoder can call itself, it needs a counter.**
+
+- **Bound the *declared* size, not the remainder.** NATS's `HPUB` limit was applied to
+  `total − header`, leaving `header` unbounded — and `header == total` passes every check with
+  a zero-length body. `HPUB x 4000000000 4000000000` is thirty bytes on the wire and buffers
+  toward 4 GB, and `usize::MAX` then overflowed the offset arithmetic. Check the number the
+  peer gave you before you do arithmetic on it. Related: `Cargo.toml` has no `[profile.dev]`,
+  so `overflow-checks` is **on** in debug and test builds and **off** in release — STOMP's
+  `content-length: 18446744073709551615` panicked in every test build and wrapped harmlessly in
+  the shipped one, which is exactly backwards from where you want to find it.
+
+- **An `optional = true` dev-dependency means its evidence never runs in the blocking CI job.**
+  `lapin` is optional, so AMQP's Beta rating rests on a test the gate does not execute —
+  the same hole as a skip-when-missing gate, wearing different clothes. `async-nats` and
+  `async-stomp` are unconditional and do run. When a rating depends on a third-party client,
+  check whether that client is actually compiled where the gate runs.
+
 - **`nfsserve` 0.10.2 has a pre-auth remote DoS and we have not fixed it.** It resizes
   buffers from a wire-supplied 31/32-bit length with no cap, so a **~40-byte unauthenticated**
   `MOUNTPROC3_MNT` carrying a `dirpath` length of `0xFFFFFFFF` asks for 4 GiB and Rust aborts
