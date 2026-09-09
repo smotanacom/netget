@@ -667,6 +667,27 @@ a test to make it pass.
   fixes rather than busywork. **Answer those before launching the remaining 36.**
 - Everything after the pilot is unstarted.
 
+## Two operational corrections learned in wave 2
+
+**A shared `CARGO_TARGET_DIR` corrupts binary-spawning test suites.** It was the
+right call for disk (39 private target trees would refill the disk), but
+`tests/examples`, `tests/terminal_snapshot` and every suite that spawns
+`target/debug/netget` read a binary another agent may be rebuilding *right now*.
+The DNS batch saw ten client tests fail with `Client protocol 'DNS' exists but is
+not compiled into this build`; all ten passed unchanged in a private target dir.
+
+So: **share the target dir for ordinary builds, but verify binary-spawning suites
+in a private one** — `CARGO_TARGET_DIR=/tmp/verify-<batch>`. Treat any
+"protocol exists but is not compiled in" failure during a wave as contention
+until proven otherwise; it is an artefact, not a regression.
+
+**A blocking `std::process::Command::output()` deadlocks the in-process mock
+model.** The test's current-thread runtime is shared with the mock Ollama server,
+so a blocking `dig` waits for a model that cannot run until `dig` returns. It
+presents as `;; connection timed out` against a perfectly healthy server. Use the
+async spawn. Related: `start_netget_server` returns when startup is *parsed*, not
+when the socket is bound.
+
 ## The 39 batches
 
 ```
