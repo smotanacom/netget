@@ -96,15 +96,23 @@ mod mdns_client_tests {
         // (it has no `Drop` impl), and dropping it early would not stop it either.
         let responder = mdns_sd::ServiceDaemon::new()
             .map_err(|e| format!("failed to create the advertising mDNS daemon: {e}"))?;
+        //
+        // The address is left to `enable_addr_auto()` rather than pinned to 127.0.0.1.
+        // Loopback carries no multicast route: a service announced only on 127.0.0.1 is
+        // registered without error and never reaches the group, so the browsing client hears
+        // nothing and the failure looks like a broken client. Letting the daemon fill in the
+        // host's real interface addresses is what `src/server/mdns/` does too, via
+        // `get_local_ip()`.
         let info = mdns_sd::ServiceInfo::new(
             SERVICE_TYPE,
             INSTANCE,
             "netget-client-probe.local.",
-            "127.0.0.1",
+            "",
             8080,
             &[("probe", "1")][..],
         )
-        .map_err(|e| format!("failed to build the probe ServiceInfo: {e}"))?;
+        .map_err(|e| format!("failed to build the probe ServiceInfo: {e}"))?
+        .enable_addr_auto();
         responder
             .register(info)
             .map_err(|e| format!("failed to advertise the probe service: {e}"))?;
