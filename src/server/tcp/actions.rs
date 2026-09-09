@@ -461,7 +461,16 @@ fn send_tcp_data_action() -> ActionDefinition {
 fn wait_for_more_action() -> ActionDefinition {
     ActionDefinition {
         name: "wait_for_more".to_string(),
-        description: "Wait for more data before responding (accumulate incomplete protocol data)"
+        // The old text was "accumulate incomplete protocol data", which promises something the
+        // server does not do: WaitForMore only sets ConnectionState::Accumulating, and the
+        // payload you were shown is dropped. Only bytes arriving *during* the LLM call are
+        // merged in, via queued_data. Kept word-for-word in step with the QUIC action of the
+        // same name - the two raw-stream protocols should not drift apart on this.
+        description: "Answer this event with nothing and wait for the peer to send more. Use \
+            it when the bytes you were given are an incomplete message. IMPORTANT: the bytes \
+            in THIS event are not repeated in the next one - each event carries only what \
+            has arrived since the last. If you need this fragment to make sense of what comes \
+            next, put it in your memory now, because you will not be shown it again."
             .to_string(),
         parameters: vec![],
         example: json!({
