@@ -57,6 +57,18 @@ enum Dispatch {
 /// that parameter's own description names as the default.
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
+/// Deepest `<array>`/`<struct>` nesting NetGet will walk in either direction.
+///
+/// Both conversions below are recursive, and one of them walks a value that came off the
+/// network. A recursive walk with no counter is a stack overflow, which in Rust is a `SIGSEGV`
+/// against the guard page rather than a panic — `tokio::spawn` cannot contain it and the whole
+/// NetGet process dies. 64 is far past anything an XML-RPC API expresses; real structs are
+/// depth 2 or 3.
+///
+/// **This bound does not make the client safe against a hostile server, and cannot.** See
+/// [`XmlRpcClient::xmlrpc_value_to_json`].
+const MAX_VALUE_DEPTH: usize = 64;
+
 /// XML-RPC client that calls methods on remote servers
 pub struct XmlRpcClient;
 
@@ -636,8 +648,19 @@ impl XmlRpcClient {
         })
     }
 
-    /// Convert JSON value to xmlrpc::Value
+    /// Convert JSON value to xmlrpc::Value, bounded at [`MAX_VALUE_DEPTH`].
+    ///
+    /// The input is model output, which `serde_json` already caps at its own 128-level
+    /// recursion limit, so this bound is belt-and-braces on that side. It is the *other*
+    /// direction that matters — see [`Self::xmlrpc_value_to_json`].
     fn json_to_xmlrpc_value(json: serde_json::Value) -> Result<xmlrpc::Value> {
+        Self::json_to_xmlrpc_value_at(json, 0)
+    }
+
+    fn json_to_xmlrpc_value_at(json: serde_json::Value, depth: usize) -> Result<xmlrpc::Value> {
+        if depth >= MAX_VALUE_DEPTH {
+            anyhow::bail!("parameter nesting deeper than {} levels", MAX_VALUE_DEPTH);
+        }
         match json {
             serde_json::Value::Null => Ok(xmlrpc::Value::String("".to_string())),
             serde_json::Value::Bool(b) => Ok(xmlrpc::Value::Bool(b)),
@@ -658,22 +681,50 @@ impl XmlRpcClient {
             serde_json::Value::Array(arr) => {
                 let mut xmlrpc_arr = Vec::new();
                 for item in arr {
-                    xmlrpc_arr.push(Self::json_to_xmlrpc_value(item)?);
+                    xmlrpc_arr.push(Self::json_to_xmlrpc_value_at(item, depth + 1)?);
                 }
                 Ok(xmlrpc::Value::Array(xmlrpc_arr))
             }
             serde_json::Value::Object(obj) => {
                 let mut xmlrpc_struct = BTreeMap::new();
                 for (key, value) in obj {
-                    xmlrpc_struct.insert(key, Self::json_to_xmlrpc_value(value)?);
+                    xmlrpc_struct.insert(key, Self::json_to_xmlrpc_value_at(value, depth + 1)?);
                 }
                 Ok(xmlrpc::Value::Struct(xmlrpc_struct))
             }
         }
     }
 
-    /// Convert xmlrpc::Value to JSON
+    /// Convert an `xmlrpc::Value` from a server's reply into JSON for the model, bounded at
+    /// [`MAX_VALUE_DEPTH`]. Anything deeper is replaced by a marker string rather than walked.
+    ///
+    /// The walk is recursive over a value that came off the network, and a recursive walk with
+    /// no counter is a stack overflow — `SIGSEGV` against the guard page, not a panic, so
+    /// `tokio::spawn` cannot contain it and the whole NetGet process dies.
+    ///
+    /// **The bound here closes NetGet's half of the problem and not the crate's.** `xmlrpc`
+    /// 0.15's own `Parser::parse_value` → `parse_value_inner` → `parse_value` recurses with no
+    /// depth counter and no cap on the response body, so a malicious or compromised XML-RPC
+    /// server can overflow the stack *before* a single value reaches this function:
+    /// `<value><array><data>` is about twenty bytes per level. There is no way to bound it from
+    /// here — `Request::call_url` owns the HTTP fetch and the parse, and the only alternative
+    /// entry point (`Request::call` with a `Transport`) takes a `reqwest` **0.11**
+    /// `RequestBuilder`, a different major version from the 0.12 this crate depends on.
+    ///
+    /// So: **do not point this client at an untrusted XML-RPC server.** It is documented rather
+    /// than half-fixed, the way `nfsserve`'s pre-auth DoS is in the root CLAUDE.md. Fixing it
+    /// properly means replacing `xmlrpc`'s parser or the crate.
     fn xmlrpc_value_to_json(value: &xmlrpc::Value) -> serde_json::Value {
+        Self::xmlrpc_value_to_json_at(value, 0)
+    }
+
+    fn xmlrpc_value_to_json_at(value: &xmlrpc::Value, depth: usize) -> serde_json::Value {
+        if depth >= MAX_VALUE_DEPTH {
+            return serde_json::json!(format!(
+                "<nesting deeper than {} levels was not decoded>",
+                MAX_VALUE_DEPTH
+            ));
+        }
         match value {
             xmlrpc::Value::Int(i) => serde_json::json!(i),
             xmlrpc::Value::Int64(i) => serde_json::json!(i),
@@ -689,13 +740,16 @@ impl XmlRpcClient {
                 ))
             }
             xmlrpc::Value::Array(arr) => {
-                let json_arr: Vec<_> = arr.iter().map(Self::xmlrpc_value_to_json).collect();
+                let json_arr: Vec<_> = arr
+                    .iter()
+                    .map(|v| Self::xmlrpc_value_to_json_at(v, depth + 1))
+                    .collect();
                 serde_json::json!(json_arr)
             }
             xmlrpc::Value::Struct(s) => {
                 let mut obj = serde_json::Map::new();
                 for (key, value) in s {
-                    obj.insert(key.clone(), Self::xmlrpc_value_to_json(value));
+                    obj.insert(key.clone(), Self::xmlrpc_value_to_json_at(value, depth + 1));
                 }
                 serde_json::json!(obj)
             }

@@ -441,21 +441,31 @@ fn parse_method_call(xml: &str) -> Result<MethodCall> {
                     b"methodCall" => saw_method_call = true,
                     b"methodName" => in_method_name = true,
                     b"param" => current_param = None,
-                    b"value" => {
+                    // The depth guard is on every nesting element, not only `<value>`.
+                    // `<array>` and `<struct>` used to push a container with no check at all,
+                    // and a well-formed document may open one without an enclosing `<value>`:
+                    // `<array><array><array>…` is 7 bytes a level, so a body at the 4 MiB cap
+                    // pushed ~600 000 frames. Bounded by the body cap rather than unbounded,
+                    // but it is allocation a peer chooses and nothing needed.
+                    b"value" | b"array" | b"struct" => {
                         if value_frames.len() + containers.len() >= MAX_VALUE_DEPTH {
                             return Err(anyhow::anyhow!(
                                 "value nesting deeper than {} levels",
                                 MAX_VALUE_DEPTH
                             ));
                         }
-                        value_frames.push(None);
-                        current_type = None;
+                        match name.as_slice() {
+                            b"value" => {
+                                value_frames.push(None);
+                                current_type = None;
+                            }
+                            b"array" => containers.push(Container::Array(Vec::new())),
+                            _ => containers.push(Container::Struct {
+                                members: Vec::new(),
+                                pending_name: None,
+                            }),
+                        }
                     }
-                    b"array" => containers.push(Container::Array(Vec::new())),
-                    b"struct" => containers.push(Container::Struct {
-                        members: Vec::new(),
-                        pending_name: None,
-                    }),
                     b"name" => in_member_name = true,
                     b"i4" | b"int" | b"i8" | b"boolean" | b"string" | b"double"
                     | b"dateTime.iso8601" | b"base64" | b"nil" => {

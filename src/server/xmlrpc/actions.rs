@@ -148,10 +148,17 @@ impl XmlRpcProtocol {
     }
 
     fn execute_fault_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let code_i64 = action
-            .get("fault_code")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-32603);
+        // `fault_code` is declared `required: true`, and a value that is present but not a
+        // whole number is an error rather than a silent -32603. It used to be
+        // `.and_then(|v| v.as_i64()).unwrap_or(-32603)`, so the quoted form models routinely
+        // produce — `"fault_code": "-32601"` — became "internal error" on the wire: the model
+        // said "no such method" and the caller was told netget had broken. `as_integer`
+        // accepts the quoted form for the same reason every other field here does.
+        // Absent stays -32603, which is the honest default for "the handler did not say".
+        let code_i64 = match action.get("fault_code") {
+            Some(value) => Self::as_integer(value, "fault_code")?,
+            None => -32603,
+        };
         let code = i32::try_from(code_i64).map_err(|_| {
             anyhow::anyhow!("fault_code {} does not fit in an XML-RPC <int>", code_i64)
         })?;
