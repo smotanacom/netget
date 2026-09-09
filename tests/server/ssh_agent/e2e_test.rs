@@ -73,6 +73,65 @@ fn build_add_identity_ed25519(public_key: &[u8], private_key: &[u8], comment: &s
     msg
 }
 
+/// Wait for the server to bind its Unix socket, then connect.
+///
+/// This is a hard failure, not a note. Every test in this file used to wrap its whole body in
+/// `if socket_path.exists() { .. } else { println!("socket file not created") }`, so a server
+/// that never bound produced a green test which had asserted nothing at all about the
+/// protocol. The same shape swallowed connect errors, read errors and timeouts below.
+async fn connect_to_agent(path: &std::path::Path) -> E2EResult<UnixStream> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut last: Option<String> = None;
+    while std::time::Instant::now() < deadline {
+        if path.exists() {
+            match UnixStream::connect(path).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => last = Some(e.to_string()),
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(format!(
+        "SSH Agent server never accepted a connection on {:?} within 20s (last error: {})",
+        path,
+        last.as_deref().unwrap_or("socket file never appeared")
+    )
+    .into())
+}
+
+/// Send one agent message and return the reply.
+///
+/// Silence is a failure. The agent protocol is strictly request/response and the client blocks
+/// on the read, so "connection closed without response" and "response timeout" are defects to
+/// be reported, not conditions to print and step past.
+async fn agent_exchange(stream: &mut UnixStream, request: &[u8]) -> E2EResult<Vec<u8>> {
+    stream.write_all(request).await?;
+    stream.flush().await?;
+
+    let mut response = vec![0u8; 8192];
+    let n = tokio::time::timeout(Duration::from_secs(15), stream.read(&mut response))
+        .await
+        .map_err(|_| "timed out waiting for an SSH Agent reply")??;
+    if n == 0 {
+        return Err("SSH Agent closed the connection without replying".into());
+    }
+    if n < 5 {
+        return Err(format!("SSH Agent reply is {} bytes; the header alone is 5", n).into());
+    }
+    response.truncate(n);
+    Ok(response)
+}
+
+/// Number of keys in an IDENTITIES_ANSWER.
+fn identities_count(response: &[u8]) -> u32 {
+    assert!(
+        response.len() >= 9,
+        "IDENTITIES_ANSWER is {} bytes; it needs 5 for the header and 4 for the key count",
+        response.len()
+    );
+    u32::from_be_bytes([response[5], response[6], response[7], response[8]])
+}
+
 /// Parse SSH Agent message header (length and type)
 fn parse_message_header(data: &[u8]) -> Option<(u32, u8)> {
     if data.len() < 5 {
@@ -147,83 +206,25 @@ async fn test_ssh_agent_request_identities_with_mocks() -> E2EResult<()> {
 
     println!("SSH Agent server started on socket: {}", socket_path_str);
 
-    // Wait for server to create socket
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    let mut stream = connect_to_agent(&socket_path).await?;
+    println!("OK Connected to SSH Agent server");
 
-    // Verify socket exists
-    if !socket_path.exists() {
-        println!("⚠ Socket not created yet, waiting longer...");
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
+    // Let the connection_opened round-trip finish. Data arriving mid-call is queued by the
+    // per-connection state machine, so this is politeness rather than correctness.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-    if socket_path.exists() {
-        println!("✓ Unix socket created");
+    let response = agent_exchange(&mut stream, &build_request_identities()).await?;
+    let (length, msg_type) =
+        parse_message_header(&response).expect("Failed to parse response header");
+    println!("Received response: length={}, type={}", length, msg_type);
 
-        // Connect to SSH Agent server
-        match UnixStream::connect(&socket_path).await {
-            Ok(mut stream) => {
-                println!("✓ Connected to SSH Agent server");
-
-                // Wait for connection_opened event to complete
-                tokio::time::sleep(Duration::from_millis(500)).await;
-
-                // Send REQUEST_IDENTITIES
-                let request = build_request_identities();
-                stream.write_all(&request).await?;
-                stream.flush().await?;
-                println!("→ Sent REQUEST_IDENTITIES");
-
-                // Read response with timeout
-                let mut response = vec![0u8; 8192];
-                match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut response)).await
-                {
-                    Ok(Ok(n)) if n >= 5 => {
-                        let (length, msg_type) =
-                            parse_message_header(&response).expect("Failed to parse response");
-
-                        println!("← Received response: length={}, type={}", length, msg_type);
-
-                        // Verify response is IDENTITIES_ANSWER (12)
-                        assert_eq!(
-                            msg_type, 12,
-                            "Expected IDENTITIES_ANSWER (12), got {}",
-                            msg_type
-                        );
-
-                        // Parse number of keys
-                        if response.len() >= 9 {
-                            let num_keys = u32::from_be_bytes([
-                                response[5],
-                                response[6],
-                                response[7],
-                                response[8],
-                            ]);
-                            println!("  Number of keys: {}", num_keys);
-                            assert_eq!(num_keys, 1, "Expected 1 key from mock");
-                        }
-
-                        println!("✓ REQUEST_IDENTITIES test passed");
-                    }
-                    Ok(Ok(_)) => {
-                        println!("⚠ Connection closed without response");
-                    }
-                    Ok(Err(e)) => {
-                        println!("⚠ Read error: {}", e);
-                    }
-                    Err(_) => {
-                        println!("⚠ Response timeout");
-                    }
-                }
-            }
-            Err(e) => {
-                println!("⚠ Connection failed: {}", e);
-                println!("   Note: Server may not have created socket yet");
-            }
-        }
-    } else {
-        println!("⚠ Socket file not created: {}", socket_path_str);
-        println!("   Note: SSH Agent may need Unix socket support in server startup");
-    }
+    assert_eq!(
+        msg_type, 12,
+        "Expected IDENTITIES_ANSWER (12), got {}",
+        msg_type
+    );
+    assert_eq!(identities_count(&response), 1, "Expected 1 key from mock");
+    println!("OK REQUEST_IDENTITIES test passed");
 
     // Verify mocks
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -294,56 +295,28 @@ async fn test_ssh_agent_sign_request_with_mocks() -> E2EResult<()> {
     let mut server = helpers::start_netget_server(config).await?;
 
     println!("SSH Agent server started on socket: {}", socket_path_str);
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
-    if socket_path.exists() {
-        println!("✓ Unix socket created");
+    let mut stream = connect_to_agent(&socket_path).await?;
+    println!("OK Connected to SSH Agent server");
 
-        match UnixStream::connect(&socket_path).await {
-            Ok(mut stream) => {
-                println!("✓ Connected to SSH Agent server");
+    // Let the connection_opened round-trip finish. Data arriving mid-call is queued by the
+    // per-connection state machine, so this is politeness rather than correctness.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-                // Wait for connection_opened event to complete
-                tokio::time::sleep(Duration::from_millis(500)).await;
+    let key_blob = b"test_public_key";
+    let data_to_sign = b"test_data";
+    let response =
+        agent_exchange(&mut stream, &build_sign_request(key_blob, data_to_sign, 0)).await?;
 
-                // Send SIGN_REQUEST
-                let key_blob = b"test_public_key";
-                let data_to_sign = b"test_data";
-                let request = build_sign_request(key_blob, data_to_sign, 0);
-
-                stream.write_all(&request).await?;
-                stream.flush().await?;
-                println!("→ Sent SIGN_REQUEST");
-
-                // Read response
-                let mut response = vec![0u8; 8192];
-                match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut response)).await
-                {
-                    Ok(Ok(n)) if n >= 5 => {
-                        let (length, msg_type) =
-                            parse_message_header(&response).expect("Failed to parse response");
-
-                        println!("← Received response: length={}, type={}", length, msg_type);
-
-                        // Verify response is SIGN_RESPONSE (14)
-                        assert_eq!(
-                            msg_type, 14,
-                            "Expected SIGN_RESPONSE (14), got {}",
-                            msg_type
-                        );
-
-                        println!("✓ SIGN_REQUEST test passed");
-                    }
-                    Ok(Ok(_)) => println!("⚠ Connection closed without response"),
-                    Ok(Err(e)) => println!("⚠ Read error: {}", e),
-                    Err(_) => println!("⚠ Response timeout"),
-                }
-            }
-            Err(e) => println!("⚠ Connection failed: {}", e),
-        }
-    } else {
-        println!("⚠ Socket file not created");
-    }
+    let (length, msg_type) =
+        parse_message_header(&response).expect("Failed to parse response header");
+    println!("Received response: length={}, type={}", length, msg_type);
+    assert_eq!(
+        msg_type, 14,
+        "Expected SIGN_RESPONSE (14), got {}",
+        msg_type
+    );
+    println!("OK SIGN_REQUEST test passed");
 
     // Verify mocks
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -411,52 +384,27 @@ async fn test_ssh_agent_add_identity_with_mocks() -> E2EResult<()> {
     let mut server = helpers::start_netget_server(config).await?;
 
     println!("SSH Agent server started on socket: {}", socket_path_str);
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
-    if socket_path.exists() {
-        println!("✓ Unix socket created");
+    let mut stream = connect_to_agent(&socket_path).await?;
+    println!("OK Connected to SSH Agent server");
 
-        match UnixStream::connect(&socket_path).await {
-            Ok(mut stream) => {
-                println!("✓ Connected to SSH Agent server");
+    // Let the connection_opened round-trip finish. Data arriving mid-call is queued by the
+    // per-connection state machine, so this is politeness rather than correctness.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-                // Wait for connection_opened event to complete
-                tokio::time::sleep(Duration::from_millis(500)).await;
+    let public_key = b"test_public_key_32_bytes_here!!";
+    let private_key = b"test_private_key_64_bytes_here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
+    let response = agent_exchange(
+        &mut stream,
+        &build_add_identity_ed25519(public_key, private_key, "test-key"),
+    )
+    .await?;
 
-                // Send ADD_IDENTITY
-                let public_key = b"test_public_key_32_bytes_here!!";
-                let private_key = b"test_private_key_64_bytes_here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
-                let request = build_add_identity_ed25519(public_key, private_key, "test-key");
-
-                stream.write_all(&request).await?;
-                stream.flush().await?;
-                println!("→ Sent ADD_IDENTITY");
-
-                // Read response
-                let mut response = vec![0u8; 8192];
-                match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut response)).await
-                {
-                    Ok(Ok(n)) if n >= 5 => {
-                        let (length, msg_type) =
-                            parse_message_header(&response).expect("Failed to parse response");
-
-                        println!("← Received response: length={}, type={}", length, msg_type);
-
-                        // Verify response is SUCCESS (6)
-                        assert_eq!(msg_type, 6, "Expected SUCCESS (6), got {}", msg_type);
-
-                        println!("✓ ADD_IDENTITY test passed");
-                    }
-                    Ok(Ok(_)) => println!("⚠ Connection closed without response"),
-                    Ok(Err(e)) => println!("⚠ Read error: {}", e),
-                    Err(_) => println!("⚠ Response timeout"),
-                }
-            }
-            Err(e) => println!("⚠ Connection failed: {}", e),
-        }
-    } else {
-        println!("⚠ Socket file not created");
-    }
+    let (length, msg_type) =
+        parse_message_header(&response).expect("Failed to parse response header");
+    println!("Received response: length={}, type={}", length, msg_type);
+    assert_eq!(msg_type, 6, "Expected SUCCESS (6), got {}", msg_type);
+    println!("OK ADD_IDENTITY test passed");
 
     // Verify mocks
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -542,95 +490,51 @@ async fn test_ssh_agent_multiple_operations_with_mocks() -> E2EResult<()> {
     let mut server = helpers::start_netget_server(config).await?;
 
     println!("SSH Agent server started on socket: {}", socket_path_str);
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
-    if socket_path.exists() {
-        println!("✓ Unix socket created");
+    let mut stream = connect_to_agent(&socket_path).await?;
+    println!("OK Connected to SSH Agent server");
 
-        match UnixStream::connect(&socket_path).await {
-            Ok(mut stream) => {
-                println!("✓ Connected to SSH Agent server");
+    // Let the connection_opened round-trip finish. Data arriving mid-call is queued by the
+    // per-connection state machine, so this is politeness rather than correctness.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
-                // Wait for connection_opened event to complete
-                tokio::time::sleep(Duration::from_millis(500)).await;
+    // Operation 1: REQUEST_IDENTITIES
+    println!("Operation 1: REQUEST_IDENTITIES");
+    let response = agent_exchange(&mut stream, &build_request_identities()).await?;
+    assert_eq!(
+        parse_message_header(&response).expect("header").1,
+        12,
+        "Expected IDENTITIES_ANSWER"
+    );
+    println!("  OK got {} keys", identities_count(&response));
 
-                // Operation 1: REQUEST_IDENTITIES
-                println!("\n→ Operation 1: REQUEST_IDENTITIES");
-                stream.write_all(&build_request_identities()).await?;
-                stream.flush().await?;
+    // Operation 2: ADD_IDENTITY
+    println!("Operation 2: ADD_IDENTITY");
+    let public_key = b"test_public_key_32_bytes_here!!";
+    let private_key = b"test_private_key_64_bytes_here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
+    let response = agent_exchange(
+        &mut stream,
+        &build_add_identity_ed25519(public_key, private_key, "added-key"),
+    )
+    .await?;
+    assert_eq!(
+        parse_message_header(&response).expect("header").1,
+        6,
+        "Expected SUCCESS"
+    );
 
-                let mut response = vec![0u8; 8192];
-                if let Ok(Ok(n)) =
-                    tokio::time::timeout(Duration::from_secs(3), stream.read(&mut response)).await
-                {
-                    if n >= 9 {
-                        let num_keys = u32::from_be_bytes([
-                            response[5],
-                            response[6],
-                            response[7],
-                            response[8],
-                        ]);
-                        println!("  ✓ Got {} keys", num_keys);
-                        // Note: mock returns 1 key for both calls (stateless)
-                    }
-                }
+    // Operation 3: REQUEST_IDENTITIES again. The mock is stateless, so this asserts the
+    // server still answers correctly on a reused connection rather than that the key stuck.
+    println!("Operation 3: REQUEST_IDENTITIES");
+    let response = agent_exchange(&mut stream, &build_request_identities()).await?;
+    assert_eq!(
+        parse_message_header(&response).expect("header").1,
+        12,
+        "Expected IDENTITIES_ANSWER"
+    );
+    assert_eq!(identities_count(&response), 1, "Expected 1 key");
 
-                tokio::time::sleep(Duration::from_millis(500)).await;
-
-                // Operation 2: ADD_IDENTITY
-                println!("\n→ Operation 2: ADD_IDENTITY");
-                let public_key = b"test_public_key_32_bytes_here!!";
-                let private_key = b"test_private_key_64_bytes_here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
-                stream
-                    .write_all(&build_add_identity_ed25519(
-                        public_key,
-                        private_key,
-                        "added-key",
-                    ))
-                    .await?;
-                stream.flush().await?;
-
-                let mut response = vec![0u8; 8192];
-                if let Ok(Ok(n)) =
-                    tokio::time::timeout(Duration::from_secs(3), stream.read(&mut response)).await
-                {
-                    if n >= 5 {
-                        let (_, msg_type) = parse_message_header(&response).unwrap();
-                        println!("  ✓ Got response type: {}", msg_type);
-                        assert_eq!(msg_type, 6, "Expected SUCCESS");
-                    }
-                }
-
-                tokio::time::sleep(Duration::from_millis(500)).await;
-
-                // Operation 3: REQUEST_IDENTITIES (expect 1 key)
-                println!("\n→ Operation 3: REQUEST_IDENTITIES (should have 1 key)");
-                stream.write_all(&build_request_identities()).await?;
-                stream.flush().await?;
-
-                let mut response = vec![0u8; 8192];
-                if let Ok(Ok(n)) =
-                    tokio::time::timeout(Duration::from_secs(3), stream.read(&mut response)).await
-                {
-                    if n >= 9 {
-                        let num_keys = u32::from_be_bytes([
-                            response[5],
-                            response[6],
-                            response[7],
-                            response[8],
-                        ]);
-                        println!("  ✓ Got {} keys (expected 1)", num_keys);
-                        assert_eq!(num_keys, 1, "Expected 1 key after adding");
-                    }
-                }
-
-                println!("\n✓ All operations completed successfully");
-            }
-            Err(e) => println!("⚠ Connection failed: {}", e),
-        }
-    } else {
-        println!("⚠ Socket file not created");
-    }
+    println!("OK All operations completed");
 
     // Verify mocks
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -644,5 +548,95 @@ async fn test_ssh_agent_multiple_operations_with_mocks() -> E2EResult<()> {
     server.stop().await?;
 
     println!("=== Test completed ===\n");
+    Ok(())
+}
+
+/// An agent request the model does not answer must be REFUSED, not ignored.
+///
+/// This is the SSH-agent shape of the OAuth2 failure mode. Before the fix, an `Ok` LLM result
+/// carrying no usable action fell out of the loop having written nothing: the client sat on a
+/// read that would never complete, and an operator saw a hung agent rather than a denial. The
+/// LLM-error path already sent SSH_AGENT_FAILURE, so silence and refusal were reached by
+/// different routes and only one of them answered.
+///
+/// The mock returns an empty action array — the exact input that became an approval in
+/// OAuth2 — and the test asserts the wire answer is SSH_AGENT_FAILURE (5) and never
+/// SSH_AGENT_SUCCESS (6) or a fabricated IDENTITIES_ANSWER. `agent_exchange` fails on
+/// silence, so a regression to the old behaviour is a timeout failure, not a warning.
+#[tokio::test]
+async fn unanswered_request_fails_closed() -> E2EResult<()> {
+    let socket_path = std::env::temp_dir().join(format!(
+        "netget-test-agent-failclosed-{}.sock",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&socket_path);
+
+    let socket_path_str = socket_path.to_str().unwrap().to_string();
+    let prompt = format!("Start SSH Agent server on {}.", socket_path_str);
+
+    let config = NetGetConfig::new(&prompt)
+        .with_log_level("debug")
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Start SSH Agent server")
+                .respond_with_actions(serde_json::json!([{
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "SSH Agent",
+                    "instruction": "Decide what this agent will do",
+                    "startup_params": { "socket_path": socket_path_str }
+                }]))
+                .expect_calls(1)
+                .and()
+                .on_event("ssh_agent_connection_opened")
+                .respond_with_actions(serde_json::json!([]))
+                .expect_calls(1)
+                .and()
+                // The model answers, and answers with nothing at all.
+                .on_event("ssh_agent_request_identities")
+                .respond_with_actions(serde_json::json!([]))
+                .expect_calls(1)
+                .and()
+        });
+
+    let mut server = helpers::start_netget_server(config).await?;
+
+    let mut stream = connect_to_agent(&socket_path).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let response = agent_exchange(&mut stream, &build_request_identities()).await?;
+    let (_, msg_type) = parse_message_header(&response).expect("Failed to parse response header");
+
+    assert_eq!(
+        msg_type, 5,
+        "no decision MUST refuse: expected SSH_AGENT_FAILURE (5), got {}. \
+         6 would be SUCCESS and 12 an invented identity list; both would mean the server \
+         answered on the model's behalf",
+        msg_type
+    );
+
+    // The token must name the server as the decider. Reporting this as the model's refusal
+    // is the conflation that let an LLM outage read as a policy decision in OAuth2.
+    let mut seen = false;
+    for _ in 0..100 {
+        if server
+            .output_contains("decision=fail_closed_no_action")
+            .await
+        {
+            seen = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        seen,
+        "an unanswered request must be logged as decision=fail_closed_no_action. Output: {:?}",
+        server.get_output().await
+    );
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+
+    let _ = std::fs::remove_file(&socket_path);
+    server.stop().await?;
     Ok(())
 }
