@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tonic::transport::{Channel, Endpoint};
 use tower::{Service, ServiceExt};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::client::grpc::actions::{
     GRPC_CLIENT_CONNECTED_EVENT, GRPC_CLIENT_ERROR_EVENT, GRPC_CLIENT_RESPONSE_RECEIVED_EVENT,
@@ -585,24 +585,20 @@ fn make_grpc_call<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<GrpcCallReport>>> + Send + 'a>>
 {
     Box::pin(async move {
-        // Check if client is in idle state
-        {
-            let data = grpc_client_data.lock().await;
-            if matches!(data.state, ConnectionState::Processing) {
-                info!("gRPC client {} is busy, skipping request", client_id);
-                return Ok(None);
-            }
-        }
-
-        // Set state to Processing
-        {
-            let mut data = grpc_client_data.lock().await;
-            data.state = ConnectionState::Processing;
-        }
-
         info!("gRPC client {} calling {}/{}", client_id, service, method);
 
-        // Get descriptor pool and find method
+        // Everything that can fail happens **before** the connection is claimed.
+        //
+        // The state used to be set to `Processing` first and reset to `Idle` only after the
+        // network call returned, so any of the four `?`s below — an unknown method, a request
+        // the schema rejects, an unbuildable HTTP request — returned early and left the state
+        // machine `Processing` forever. Every later call then answered "the client is already
+        // processing a call", so one malformed request from the model permanently wedged the
+        // client with nothing in the log to say why.
+        //
+        // Nothing here touches the wire; the descriptor pool is read under the lock and the
+        // guard dropped before the conversion, so a slow encode does not block the command
+        // loop either.
         let (input_desc, output_desc) = {
             let data = grpc_client_data.lock().await;
             let method_desc = data
@@ -610,10 +606,7 @@ fn make_grpc_call<'a>(
                 .get_service_by_name(service)
                 .and_then(|s| s.methods().find(|m| m.name() == method))
                 .context(format!("Method {}/{} not found in schema", service, method))?;
-
-            let input_desc = method_desc.input();
-            let output_desc = method_desc.output();
-            (input_desc, output_desc)
+            (method_desc.input(), method_desc.output())
         };
 
         // Convert JSON request to protobuf
@@ -633,12 +626,6 @@ fn make_grpc_call<'a>(
 
         // Build gRPC request path
         let path = format!("/{}/{}", service, method);
-
-        // Get channel
-        let channel = {
-            let data = grpc_client_data.lock().await;
-            data.channel.clone()
-        };
 
         // Create HTTP request with gRPC framing
         use http::HeaderValue;
@@ -678,10 +665,23 @@ fn make_grpc_call<'a>(
             .body(body)
             .context("Failed to build HTTP request")?;
 
+        // Claim the connection and take the channel under one guard: the old check-then-set
+        // used two separate acquisitions, so two callers could both see `Idle`.
+        let channel = {
+            let mut data = grpc_client_data.lock().await;
+            if matches!(data.state, ConnectionState::Processing) {
+                info!("gRPC client {} is busy, skipping request", client_id);
+                return Ok(None);
+            }
+            data.state = ConnectionState::Processing;
+            data.channel.clone()
+        };
+
         // Make the call using the channel
         let result = call_grpc_unary(&channel, http_request).await;
 
-        // Reset to idle
+        // Reset to idle. From the claim above to here there is no `?`, so this cannot be
+        // skipped by an early return.
         {
             let mut data = grpc_client_data.lock().await;
             data.state = ConnectionState::Idle;
@@ -944,35 +944,41 @@ async fn call_grpc_unary(
         .await
         .context("gRPC call failed")?;
 
-    // Check gRPC status in headers
-    let status_code = response
-        .headers()
-        .get("grpc-status")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<i32>().ok())
-        .unwrap_or(-1);
+    // `grpc-status` is read from the HTTP/2 **trailers** as well as the initial headers.
+    //
+    // Reading only the headers is why this client mishandled every real gRPC server:
+    // grpc-go and tonic send the status in trailers on a normal unary call (headers carry it
+    // only in the "trailers-only" shape), so a genuine `5 NOT_FOUND` arrived here as "absent"
+    // — which this function treats as success — and the caller then got the meaningless
+    // "Response too short" from the empty body that accompanied it. NetGet's own gRPC server
+    // puts the status in the headers, so client-against-our-own-server never showed it.
+    let (parts, body) = response.into_parts();
+    let header_status = grpc_status_of(&parts.headers);
 
-    if status_code != 0 && status_code != -1 {
-        let status_message = response
-            .headers()
-            .get("grpc-message")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("Unknown error");
+    let collected = body
+        .collect()
+        .await
+        .context("Failed to read response body")?;
+    let trailers = collected.trailers().cloned();
+    let body_bytes = collected.to_bytes();
 
+    let (status_code, status_message) = match header_status {
+        Some(status) => (status, grpc_message_of(&parts.headers)),
+        None => match trailers.as_ref().and_then(grpc_status_of) {
+            Some(status) => (status, trailers.as_ref().and_then(grpc_message_of)),
+            // No status anywhere. Left permissive rather than an error: a body did arrive,
+            // and refusing it would break a peer that only sets the status on failure.
+            None => (0, None),
+        },
+    };
+
+    if status_code != 0 {
         return Err(anyhow::anyhow!(
             "gRPC error: status={}, message={}",
             status_code,
-            status_message
+            status_message.as_deref().unwrap_or("Unknown error")
         ));
     }
-
-    // Read response body
-    let body = response.into_body();
-    let body_bytes = body
-        .collect()
-        .await
-        .context("Failed to read response body")?
-        .to_bytes();
 
     // Decode gRPC framing (skip 5-byte header)
     if body_bytes.len() < 5 {
@@ -983,7 +989,28 @@ async fn call_grpc_unary(
     Ok(message_bytes.to_vec())
 }
 
+/// `grpc-status` from a header or trailer map, if it carries a parseable one.
+fn grpc_status_of(headers: &http::HeaderMap) -> Option<i32> {
+    headers
+        .get("grpc-status")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<i32>().ok())
+}
+
+/// `grpc-message` from a header or trailer map.
+fn grpc_message_of(headers: &http::HeaderMap) -> Option<String> {
+    headers
+        .get("grpc-message")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
+
 /// Convert JSON to dynamic protobuf message
+///
+/// A field name the message does not declare is reported rather than dropped: silently
+/// discarding it made a hallucinated field look like success — the request encoded without
+/// it and the server saw a default value with no indication anything was wrong. This mirrors
+/// what `src/server/grpc/mod.rs` already does in the opposite direction.
 fn json_to_dynamic_message(
     json: &serde_json::Value,
     descriptor: &MessageDescriptor,
@@ -992,9 +1019,18 @@ fn json_to_dynamic_message(
 
     if let Some(obj) = json.as_object() {
         for (field_name, value) in obj {
-            if let Some(field) = descriptor.get_field_by_name(field_name) {
-                let proto_value = json_to_proto_value(value, &field)?;
-                msg.set_field(&field, proto_value);
+            match descriptor.get_field_by_name(field_name) {
+                Some(field) => {
+                    let proto_value = json_to_field_value(value, &field)?;
+                    msg.set_field(&field, proto_value);
+                }
+                None => {
+                    warn!(
+                        "gRPC client: request field '{}' is not in message {}; ignoring",
+                        field_name,
+                        descriptor.full_name()
+                    );
+                }
             }
         }
     }
@@ -1002,50 +1038,180 @@ fn json_to_dynamic_message(
     Ok(msg)
 }
 
-/// Convert JSON value to protobuf value
+/// Convert a JSON value to the protobuf value for a field, honoring its cardinality.
+///
+/// [`json_to_proto_value`] looks only at `field.kind()`, which is the type of a single
+/// element. For a `repeated string` that is `Kind::String`, so `{"tags": ["a", "b"]}`
+/// produced `Value::String("")` — and `DynamicMessage::set_field` **panics** when the value
+/// does not match the field's cardinality, inside a `tokio::spawn`ed task that swallows the
+/// panic. Repeated and map fields could not be sent at all, and asking for one killed the
+/// call silently.
+///
+/// `is_map()` is tested first because a protobuf map field is also "repeated" (of its
+/// synthetic entry message), so `is_list()` would take the wrong branch.
+fn json_to_field_value(
+    json: &serde_json::Value,
+    field: &prost_reflect::FieldDescriptor,
+) -> Result<ProtoValue> {
+    if field.is_map() {
+        let entry = match field.kind() {
+            prost_reflect::Kind::Message(m) => m,
+            _ => anyhow::bail!("map field {} has no entry message", field.name()),
+        };
+        let key_field = entry.get_field(1).context("map entry has no key field")?;
+        let value_field = entry.get_field(2).context("map entry has no value field")?;
+
+        let obj = json
+            .as_object()
+            .with_context(|| format!("field {} is a map; expected a JSON object", field.name()))?;
+
+        let mut map = std::collections::HashMap::new();
+        for (k, v) in obj {
+            let key = match key_field.kind() {
+                prost_reflect::Kind::String => MapKey::String(k.clone()),
+                prost_reflect::Kind::Bool => MapKey::Bool(
+                    k.parse()
+                        .with_context(|| format!("map key '{}' is not a boolean", k))?,
+                ),
+                prost_reflect::Kind::Int32
+                | prost_reflect::Kind::Sint32
+                | prost_reflect::Kind::Sfixed32 => MapKey::I32(
+                    k.parse()
+                        .with_context(|| format!("map key '{}' is not an int32", k))?,
+                ),
+                prost_reflect::Kind::Int64
+                | prost_reflect::Kind::Sint64
+                | prost_reflect::Kind::Sfixed64 => MapKey::I64(
+                    k.parse()
+                        .with_context(|| format!("map key '{}' is not an int64", k))?,
+                ),
+                prost_reflect::Kind::Uint32 | prost_reflect::Kind::Fixed32 => MapKey::U32(
+                    k.parse()
+                        .with_context(|| format!("map key '{}' is not a uint32", k))?,
+                ),
+                prost_reflect::Kind::Uint64 | prost_reflect::Kind::Fixed64 => MapKey::U64(
+                    k.parse()
+                        .with_context(|| format!("map key '{}' is not a uint64", k))?,
+                ),
+                other => anyhow::bail!("unsupported protobuf map key type: {:?}", other),
+            };
+            map.insert(key, json_to_proto_value(v, &value_field)?);
+        }
+        return Ok(ProtoValue::Map(map));
+    }
+
+    if field.is_list() {
+        let arr = json.as_array().with_context(|| {
+            format!("field {} is repeated; expected a JSON array", field.name())
+        })?;
+        let mut list = Vec::with_capacity(arr.len());
+        for item in arr {
+            list.push(json_to_proto_value(item, field)?);
+        }
+        return Ok(ProtoValue::List(list));
+    }
+
+    json_to_proto_value(json, field)
+}
+
+/// Convert a single JSON value to a protobuf value of the field's element type.
+///
+/// Every branch used to end in `unwrap_or(0)` / `unwrap_or("")` / `unwrap_or_default()`, so a
+/// request the model got wrong was not refused — it went out carrying a **different value**
+/// than the one asked for, and the server had no way to tell. `{"a": "five"}` became `a = 0`
+/// and the reply answered a question nobody asked. Numbers are range-checked rather than
+/// truncated with `as` for the same reason, and an enum given a number is validated against
+/// the enum's declared values instead of silently becoming a valid-looking wrong variant.
+/// `src/server/grpc/mod.rs` had the same repair on its response path.
 fn json_to_proto_value(
     json: &serde_json::Value,
     field: &prost_reflect::FieldDescriptor,
 ) -> Result<ProtoValue> {
     use prost_reflect::Kind;
 
-    match field.kind() {
-        Kind::Double => Ok(ProtoValue::F64(json.as_f64().unwrap_or(0.0))),
-        Kind::Float => Ok(ProtoValue::F32(json.as_f64().unwrap_or(0.0) as f32)),
+    Ok(match field.kind() {
+        Kind::Double => {
+            ProtoValue::F64(json.as_f64().with_context(|| {
+                format!("field {} is a double; expected a number", field.name())
+            })?)
+        }
+        Kind::Float => ProtoValue::F32(
+            json.as_f64()
+                .with_context(|| format!("field {} is a float; expected a number", field.name()))?
+                as f32,
+        ),
         Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => {
-            Ok(ProtoValue::I32(json.as_i64().unwrap_or(0) as i32))
+            let n = json.as_i64().with_context(|| {
+                format!("field {} is an int32; expected an integer", field.name())
+            })?;
+            ProtoValue::I32(
+                i32::try_from(n).with_context(|| format!("{} does not fit in an int32", n))?,
+            )
         }
         Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => {
-            Ok(ProtoValue::I64(json.as_i64().unwrap_or(0)))
+            ProtoValue::I64(json.as_i64().with_context(|| {
+                format!("field {} is an int64; expected an integer", field.name())
+            })?)
         }
-        Kind::Uint32 | Kind::Fixed32 => Ok(ProtoValue::U32(json.as_u64().unwrap_or(0) as u32)),
-        Kind::Uint64 | Kind::Fixed64 => Ok(ProtoValue::U64(json.as_u64().unwrap_or(0))),
-        Kind::Bool => Ok(ProtoValue::Bool(json.as_bool().unwrap_or(false))),
-        Kind::String => Ok(ProtoValue::String(json.as_str().unwrap_or("").to_string())),
+        Kind::Uint32 | Kind::Fixed32 => {
+            let n = json.as_u64().with_context(|| {
+                format!(
+                    "field {} is a uint32; expected a non-negative integer",
+                    field.name()
+                )
+            })?;
+            ProtoValue::U32(
+                u32::try_from(n).with_context(|| format!("{} does not fit in a uint32", n))?,
+            )
+        }
+        Kind::Uint64 | Kind::Fixed64 => ProtoValue::U64(json.as_u64().with_context(|| {
+            format!(
+                "field {} is a uint64; expected a non-negative integer",
+                field.name()
+            )
+        })?),
+        Kind::Bool => ProtoValue::Bool(json.as_bool().with_context(|| {
+            format!("field {} is a bool; expected true or false", field.name())
+        })?),
+        Kind::String => ProtoValue::String(
+            json.as_str()
+                .with_context(|| format!("field {} is a string; expected a string", field.name()))?
+                .to_string(),
+        ),
         Kind::Bytes => {
             use base64::{engine::general_purpose, Engine as _};
-            let s = json.as_str().unwrap_or("");
-            let bytes = general_purpose::STANDARD.decode(s).unwrap_or_default();
-            Ok(ProtoValue::Bytes(bytes.into()))
+            let s = json.as_str().with_context(|| {
+                format!("field {} is bytes; expected a base64 string", field.name())
+            })?;
+            let bytes = general_purpose::STANDARD
+                .decode(s)
+                .with_context(|| format!("field {} is not valid base64", field.name()))?;
+            ProtoValue::Bytes(bytes.into())
         }
-        Kind::Message(msg_desc) => {
-            let msg = json_to_dynamic_message(json, &msg_desc)?;
-            Ok(ProtoValue::Message(msg))
-        }
+        Kind::Message(msg_desc) => ProtoValue::Message(json_to_dynamic_message(json, &msg_desc)?),
         Kind::Enum(enum_desc) => {
-            if let Some(number) = json.as_i64() {
-                Ok(ProtoValue::EnumNumber(number as i32))
-            } else if let Some(name) = json.as_str() {
-                if let Some(value) = enum_desc.get_value_by_name(name) {
-                    Ok(ProtoValue::EnumNumber(value.number()))
-                } else {
-                    Ok(ProtoValue::EnumNumber(0))
+            if let Some(n) = json.as_i64() {
+                let n = i32::try_from(n)
+                    .with_context(|| format!("{} is not a valid enum number", n))?;
+                if enum_desc.get_value(n).is_none() {
+                    anyhow::bail!("{} is not a value of enum {}", n, enum_desc.full_name());
+                }
+                ProtoValue::EnumNumber(n)
+            } else if let Some(s) = json.as_str() {
+                match enum_desc.get_value_by_name(s) {
+                    Some(value) => ProtoValue::EnumNumber(value.number()),
+                    None => {
+                        anyhow::bail!("'{}' is not a value of enum {}", s, enum_desc.full_name())
+                    }
                 }
             } else {
-                Ok(ProtoValue::EnumNumber(0))
+                anyhow::bail!(
+                    "field {} is an enum; expected its name or its number",
+                    field.name()
+                )
             }
         }
-    }
+    })
 }
 
 /// Convert dynamic protobuf message to JSON
