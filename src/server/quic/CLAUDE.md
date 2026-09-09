@@ -28,7 +28,17 @@ Consequences, in plain terms:
   nothing, which is the honest answer — the same fix applied when `ftp` used to
   resolve to TCP.
 
-**State**: Experimental. **Privilege**: declares `PrivilegedPort(443)`; the check
+**State**: **Beta** — `metadata()` has said so since the August 29 2026 sweep and this
+file still said Experimental; the code is authoritative. The evidence is
+`tests/server/quic/e2e_test.rs` driving a real `quinn::Endpoint` client through echo, a
+custom response, two concurrent streams and a binary round trip. Read the caveat before
+relying on the rating: the server frames with `quinn` too, so the peer is the same crate
+in the opposite role. Root `CLAUDE.md` accepts that for QUIC specifically (client and
+server are genuinely separate state machines, and quinn is the de-facto reference
+implementation) and cites it as the precedent that later admitted `webrtc`. What it does
+**not** establish is interoperability with anything the ALPN token advertises: no HTTP/3
+client can use this server at all (see below).
+**Privilege**: declares `PrivilegedPort(443)`; the check
 fires only when the requested port is actually below 1024.
 **Transport RFC**: 9000/9001 (QUIC), via quinn v0.11.
 **Feature**: `quic` (`dep:quinn`, `dep:rustls`, `dep:rustls-pemfile`, `dep:rcgen`,
@@ -46,8 +56,10 @@ fires only when the requested port is actually below 1024.
 
 **Sync actions** (available on stream/data events)
 
-- `send_quic_data` — `data` (required), `encoding` (optional)
-- `wait_for_more` — accumulate rather than reply
+- `send_quic_data` — `data` (required), `encoding` (optional). No `stream_id`: the
+  action always answers the stream that raised the event.
+- `wait_for_more` — answer with nothing and wait for more bytes. **It does not
+  re-deliver what you were just shown**; see "wait_for_more does not replay" below.
 - `close_this_stream`
 
 **No async actions.** `send_to_stream`, `close_stream` and `list_streams` used to
@@ -118,6 +130,29 @@ that do exist.
   an LLM call.
 - Stream lookups after re-acquiring the lock are fallible by nature (the peer can
   reset a stream mid-call) and are handled with `let … else`, not `unwrap`.
+- The mid-call queue is bounded by `MAX_STREAM_QUEUE_BYTES` (1 MiB). Data that arrives
+  while an LLM call is in flight is queued and merged into the next turn, and nothing
+  else limits it: a peer that keeps writing while the model thinks used to grow that
+  `Vec` for as long as it liked. Over the cap the stream is reset with
+  `H3_EXCESSIVE_LOAD` — RFC 9114's "the peer is exhibiting a behavior that might be
+  generating excessive load", which is exactly the situation — and logged as
+  `decision=refused_queue_too_large`. Other streams on the connection are untouched.
+
+### `wait_for_more` does not replay
+
+The state machine's `Accumulating` state is a label, not a buffer. On `wait_for_more`
+the payload the model was just shown is **dropped**; the next `quic_data_received`
+carries only what has arrived since. (Bytes that landed *during* the LLM call are in
+`queued_data` and do get merged — so partial accumulation happens, but never of the
+fragment that prompted the wait.)
+
+The action description now says this in as many words, because the model has to keep
+the fragment in its own memory. It previously read "accumulate incomplete protocol
+data", which promises the opposite of what happens.
+
+**`src/server/tcp/` has the identical shape**, and QUIC copied it. Do not "fix" it here
+alone: the two should change together, or the semantics diverge between the two raw
+stream protocols for no stated reason.
 
 ### Connection state
 
@@ -191,8 +226,8 @@ comes back as `Reset(0x0102)` rather than hanging.
   Filter traffic with a script handler instead.
 - Unidirectional streams, DATAGRAMs, 0-RTT, connection migration, stream
   priorities
-- Unbounded `wait_for_more` accumulation: no size cap, so a hostile peer can grow
-  the buffer indefinitely
+- Replay on `wait_for_more` — the fragment is not re-delivered (see above). The
+  mid-call queue that *does* exist is capped at 1 MiB.
 - A live `stream_count` in `ProtocolConnectionInfo`
 
 ## If a real HTTP/3 server is wanted

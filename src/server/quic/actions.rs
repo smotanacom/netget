@@ -6,59 +6,26 @@ use crate::llm::actions::{
 };
 use crate::protocol::log_template::LogTemplate;
 use crate::protocol::EventType;
-use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
 use anyhow::{Context, Result};
-use quinn::SendStream;
 use serde_json::json;
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
-use tokio::sync::Mutex;
+use std::sync::LazyLock;
 
-/// Stream data for QUIC protocol
-pub struct StreamData {
-    pub send_stream: Arc<Mutex<SendStream>>,
-}
-
-/// QUIC protocol action handler
-pub struct QuicProtocol {
-    /// Map of active streams (for async actions)
-    streams: Arc<Mutex<HashMap<ConnectionId, StreamData>>>,
-}
-
-impl Default for QuicProtocol {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// QUIC protocol action handler.
+///
+/// Deliberately stateless. It used to carry a `streams: Arc<Mutex<HashMap<..>>>` map with
+/// `add_stream` / `remove_stream` / `list_stream_ids` / `with_streams` and a `StreamData`
+/// struct — nothing in the tree ever called any of them. They were left over from the
+/// async `send_to_stream` / `close_stream` / `list_streams` actions that were removed for
+/// having no executor that owns a quinn `SendStream` (see `get_async_actions` below).
+/// A registry that is never populated reads as if the async path works; the real stream
+/// map lives in `src/server/quic/mod.rs`, owned by the server task that can write to it.
+#[derive(Default)]
+pub struct QuicProtocol;
 
 impl QuicProtocol {
     pub fn new() -> Self {
-        Self {
-            streams: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    pub fn with_streams(streams: Arc<Mutex<HashMap<ConnectionId, StreamData>>>) -> Self {
-        Self { streams }
-    }
-
-    /// Add a stream to the protocol handler
-    pub async fn add_stream(&self, stream_id: ConnectionId, send_stream: Arc<Mutex<SendStream>>) {
-        self.streams
-            .lock()
-            .await
-            .insert(stream_id, StreamData { send_stream });
-    }
-
-    /// Remove a stream from the protocol handler
-    pub async fn remove_stream(&self, stream_id: &ConnectionId) {
-        self.streams.lock().await.remove(stream_id);
-    }
-
-    /// Get list of active stream IDs
-    pub async fn list_stream_ids(&self) -> Vec<ConnectionId> {
-        self.streams.lock().await.keys().copied().collect()
+        Self
     }
 }
 
@@ -160,13 +127,20 @@ impl Protocol for QuicProtocol {
 
         // Deterministic: echo received stream data back on the same stream, no
         // LLM call.
+        // Note what this echoes: `data` AND `encoding`, passed straight through. Dropping
+        // `encoding` would put a hex *string* back on the wire for any non-printable
+        // payload instead of the bytes — the exact asymmetry the encoding field exists to
+        // remove, and what `test_quic_binary_echo_round_trip` guards. There is also no
+        // `stream_id` parameter on `send_quic_data` (the action always answers the stream
+        // that raised the event), so the old example taught the model a field that does
+        // not exist.
         let script = r#"import json, sys
 data = json.load(sys.stdin)
 event = data["event"]
 if data["event_type_id"] == "quic_data_received":
     actions = [{"type": "send_quic_data",
                 "data": str(event.get("data", "")),
-                "stream_id": event.get("stream_id", 0)}]
+                "encoding": event.get("encoding", "utf8")}]
 else:
     actions = []
 print(json.dumps({"actions": actions}))"#;
@@ -447,7 +421,15 @@ fn send_quic_data_action() -> ActionDefinition {
 fn wait_for_more_action() -> ActionDefinition {
     ActionDefinition {
         name: "wait_for_more".to_string(),
-        description: "Wait for more data before responding (accumulate incomplete protocol data)"
+        // The old text was "accumulate incomplete protocol data", which promises something
+        // the server does not do: the payload you were shown is not prepended to the next
+        // event. Only bytes that arrive *during* the LLM call are merged in. Saying so is
+        // the difference between a model that stores the fragment and one that loses it.
+        description: "Answer this event with nothing and wait for the peer to send more. Use \
+            it when the bytes you were given are an incomplete message. IMPORTANT: the bytes \
+            in THIS event are not repeated in the next one — each event carries only what \
+            has arrived since the last. If you need this fragment to make sense of what comes \
+            next, put it in your memory now, because you will not be shown it again."
             .to_string(),
         parameters: vec![],
         example: json!({
