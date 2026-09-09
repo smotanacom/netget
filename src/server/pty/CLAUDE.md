@@ -60,6 +60,12 @@ keeps its own `OwnedFd` on the slave open for the whole session, so clients can 
 freely without ending the server; the read loop also treats a stray `EIO` as "no client attached"
 and continues rather than dying.
 
+That `continue` is only safe because it is preceded by `guard.clear_ready()`. `AsyncFd::try_io`
+drops the cached readiness **only** when the closure reports `WouldBlock`; on any other outcome
+readiness stays set, so the next `readable().await` returns instantly and the loop pins a core.
+The heading is a claim about the code, not about the kernel — before the `clear_ready()` calls,
+an `EIO` (or a `read()==0`) would have spun in exactly the way this heading calls impossible.
+
 ## Failure and lifecycle
 
 - **`spawn()` awaits readiness** (PTY allocated, slave set raw, symlink created, master registered

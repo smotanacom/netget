@@ -143,18 +143,27 @@ else:
     actions = []
 print(json.dumps({"actions": actions}))"#;
 
+        // Protocol parameters go inside `startup_params`. `CommonAction::OpenServer`
+        // (`src/llm/actions/common.rs`) declares a fixed field set -- host, port, interface,
+        // mac_address, send_first, instruction, startup_params, event_handlers, scheduled_tasks --
+        // and serde silently drops anything else, so a top-level `pipe_path` never reaches
+        // `spawn()` and the server fails to start at all. These examples had it at the top level;
+        // `tests/examples/protocol_examples_test.rs` starts every protocol from its own declared
+        // examples and reported exactly that.
         StartupExamples::new(
             json!({
                 "type": "open_server",
                 "base_stack": "named_pipe",
-                "pipe_path": "./netget.fifo",
-                "response_pipe_path": "./netget.resp.fifo",
+                "startup_params": {
+                    "pipe_path": "./netget.fifo",
+                    "response_pipe_path": "./netget.resp.fifo"
+                },
                 "instruction": "FIFO server that answers each write with 'ACK: <data>'"
             }),
             json!({
                 "type": "open_server",
                 "base_stack": "named_pipe",
-                "pipe_path": "./netget.fifo",
+                "startup_params": { "pipe_path": "./netget.fifo" },
                 "event_handlers": [{
                     "event_pattern": "named_pipe_data_received",
                     "handler": {
@@ -167,8 +176,10 @@ print(json.dumps({"actions": actions}))"#;
             json!({
                 "type": "open_server",
                 "base_stack": "named_pipe",
-                "pipe_path": "./netget.fifo",
-                "response_pipe_path": "./netget.resp.fifo",
+                "startup_params": {
+                    "pipe_path": "./netget.fifo",
+                    "response_pipe_path": "./netget.resp.fifo"
+                },
                 "event_handlers": [{
                     "event_pattern": "named_pipe_data_received",
                     "handler": {

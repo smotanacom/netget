@@ -210,13 +210,20 @@ impl PtyServer {
 
                 let n = match read_result {
                     Ok(Ok(0)) => {
-                        // With the slave fd held open this should not occur; guard against a spin.
+                        // With the slave fd held open this should not occur. `clear_ready()` is
+                        // what makes `continue` safe: `try_io` only drops the cached readiness
+                        // when the closure reports WouldBlock, so continuing on any *other*
+                        // outcome leaves readiness set, `readable()` returns instantly and the
+                        // loop pins a core. Clearing it means the next pass really waits on the
+                        // fd.
+                        guard.clear_ready();
                         continue;
                     }
                     Ok(Ok(n)) => n,
                     Ok(Err(e)) => {
                         // EIO here means no slave is currently attached; treat other errors as fatal.
                         if e.raw_os_error() == Some(libc::EIO) {
+                            guard.clear_ready();
                             continue;
                         }
                         error!("PTY master read error: {}", e);

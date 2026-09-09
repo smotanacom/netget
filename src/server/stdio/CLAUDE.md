@@ -9,6 +9,13 @@ standard streams.
 **State**: Experimental. **Platform**: Unix only; the whole module is `#![cfg(unix)]`.
 **Privilege**: none.
 
+## What it can reach on the host
+
+Three file descriptors that already belong to the process: fd 0, fd 1 and fd 2. It creates no
+file, opens no path, binds nothing and spawns no process. What the model can do is put bytes on
+this process's stdout and stderr — so the blast radius is whatever the operator piped NetGet
+into, which is the operator's choice, not the model's.
+
 ## Coexistence — the subtlety, and how it is resolved
 
 This protocol takes over the process's real stdin/stdout, which collides with two things. Both are
@@ -18,6 +25,20 @@ handled:
    `ServerStatus::Error`) when `stdin` is a TTY. Refuse, don't corrupt the UI.
 2. **`--mcp` stdio** — MCP JSON-RPC owns stdin/stdout. `spawn()` returns `Err` when `--mcp` /
    `--mcp-stdio` is in the process argv (`--mcp-http` is a different flag and is allowed).
+
+**The TTY check really does cover the TUI**, which is worth stating because it is not obvious
+from this file alone: `Args::is_interactive` (`src/cli/args.rs`) requires **both** stdin and
+stdout to be terminals before either UI is entered, and `src/cli/mod.rs` enters the dashboard
+only under `args.is_interactive()`. So "the TUI is running" implies "stdin is a TTY", and the
+stdio server's condition is a superset of it — there is no arrangement where the dashboard is
+painting and this refusal does not fire.
+
+Neither refusal is exercised by a test, and the reasons differ.
+`running_as_mcp_stdio()` reads `std::env::args()`, which under a test binary is the harness's
+argv, so an in-process MCP server (as `tests/mcp_stdio_test.rs` builds) cannot reproduce it — it
+would need the real binary spawned with `--mcp` and driven over JSON-RPC. The TTY refusal needs a
+pty on fd 0 of the *test process*, which is shared with every other test in a 100-thread run.
+Both are checked by reading, above; neither should be assumed from a green suite.
 
 Only one stdio server may run per process (an `AtomicBool` claim, released on task end/abort).
 
@@ -96,4 +117,7 @@ and a line typed on its stdin answered by the mocked model with an uppercased li
   that the status text (`Using model` / `Waiting for connections`) instead appears on **stderr**,
   proving both IMPROVEMENTS-item-12 fixes: stdin not drained at bootstrap, status off stdout.
 
-Both confirm the single event round-trip via `verify_calls()`.
+- `test_stdio_llm_failure_writes_category_to_stderr_only` — the backend-failure path: a
+  category-only line on stderr, nothing on stdout, and none of the historically leaked tokens.
+
+All three confirm their LLM interaction via `verify_calls()`.

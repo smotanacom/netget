@@ -36,10 +36,18 @@ The read FIFO is opened `O_RDWR | O_NONBLOCK` and driven by tokio `AsyncFd`:
   writer close and busy-loop the readable() poll.
 - `O_NONBLOCK` is required for `AsyncFd`.
 
-The response FIFO is opened `O_RDWR` (blocking form, which also returns immediately because we are
-both ends): writes buffer in the kernel FIFO buffer even before a reader attaches, and the reader
-drains them when it opens the path. The server never reads the response FIFO, so an external
-reader gets all the bytes.
+The response FIFO is opened the same way — `O_RDWR | O_NONBLOCK`, wrapped in `AsyncFd` — and
+written with an awaited `writable()` loop bounded by `RESPONSE_WRITE_TIMEOUT` (5s). Writes buffer
+in the kernel FIFO buffer even before a reader attaches, and the reader drains them when it opens
+the path. The server never reads the response FIFO, so an external reader gets all the bytes.
+
+**Why not the blocking form.** It used to be `O_RDWR` blocking, written with
+`std::io::Write::write_all` from inside the async read loop. A FIFO holds 64 KiB and nothing here
+drains the response side, so once a model with no reader attached had produced that much, the
+`write_all` blocked **a tokio worker thread** — not merely this task — indefinitely. That is the
+`block_on`/`blocking_lock` class of defect CLAUDE.md lists under "Known systemic issues", reached
+without any explicit blocking call. Through `AsyncFd` the same condition parks only this task, and
+the timeout unparks it and logs, so the server keeps reading.
 
 ## What the model sees and controls
 
@@ -80,6 +88,9 @@ fix.
 - The read/dispatch loop is registered via `register_server_task`, so `stop_server` aborts it and
   releases the fds. A `FifoCleanup` guard is moved *into* the task, so aborting the task drops the
   guard and unlinks every FIFO node this server created — cleanup on stop, even on abort.
+  **Only nodes it created**: `ensure_fifo` returns whether it ran `mkfifo`, and a FIFO that was
+  already on disk (an operator's `mkfifo /tmp/app.fifo`, another process's endpoint) is reused but
+  never unlinked. Deleting a path we merely borrowed is deleting someone else's object.
 
 ## Not implemented
 

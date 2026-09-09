@@ -29,6 +29,12 @@ impl SocketFileProtocol {
     }
 }
 
+impl Default for SocketFileProtocol {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Implement Protocol trait (common functionality)
 impl Protocol for SocketFileProtocol {
     /// A Unix socket has no host and no port.
@@ -102,10 +108,17 @@ impl Protocol for SocketFileProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("Manual Unix domain socket handling with tokio")
+            .implementation("Manual Unix domain socket handling with tokio; socket file chmod 0600")
             .llm_control("Full byte stream control - all sent/received data")
-            .e2e_testing("tokio::net::UnixStream")
-            .notes("Unix domain socket for IPC - uses filesystem socket files instead of IP:port")
+            .e2e_testing("A real, independent tokio::net::UnixStream peer; no third-party client")
+            .notes(
+                "Unix domain socket for IPC - a filesystem socket file instead of IP:port. The \
+                 socket node is chmod'd to 0600 right after bind, because bind creates it \
+                 0777 & ~umask and both Linux and macOS check write permission on the node at \
+                 connect(2): the default would otherwise let any local user speak to it. The \
+                 peer is a local descriptor, so no independent third-party client exists and \
+                 nothing here supports a rating above Experimental.",
+            )
             .build()
     }
 
@@ -135,17 +148,24 @@ else:
     actions = []
 print(json.dumps({"actions": actions}))"#;
 
+        // Protocol parameters go inside `startup_params`. `CommonAction::OpenServer`
+        // (`src/llm/actions/common.rs`) declares a fixed field set -- host, port, interface,
+        // mac_address, send_first, instruction, startup_params, event_handlers, scheduled_tasks --
+        // and serde silently drops anything else, so a top-level `socket_path` never reaches
+        // `spawn()` and the server fails to start at all. These examples had it at the top level;
+        // `tests/examples/protocol_examples_test.rs` starts every protocol from its own declared
+        // examples and reported exactly that.
         StartupExamples::new(
             json!({
                 "type": "open_server",
                 "base_stack": "socket_file",
-                "socket_path": "./netget.sock",
+                "startup_params": { "socket_path": "./netget.sock" },
                 "instruction": "Unix socket IPC server that echoes data"
             }),
             json!({
                 "type": "open_server",
                 "base_stack": "socket_file",
-                "socket_path": "./netget.sock",
+                "startup_params": { "socket_path": "./netget.sock" },
                 "event_handlers": [{
                     "event_pattern": "socket_file_data_received",
                     "handler": {
@@ -158,7 +178,7 @@ print(json.dumps({"actions": actions}))"#;
             json!({
                 "type": "open_server",
                 "base_stack": "socket_file",
-                "socket_path": "./netget.sock",
+                "startup_params": { "socket_path": "./netget.sock" },
                 "event_handlers": [
                     {
                         "event_pattern": "socket_file_connection_opened",
@@ -366,11 +386,10 @@ fn close_this_connection_action() -> ActionDefinition {
 // ============================================================================
 
 pub static SEND_SOCKET_DATA_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| send_socket_data_action());
-pub static WAIT_FOR_MORE_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| wait_for_more_action());
+    LazyLock::new(send_socket_data_action);
+pub static WAIT_FOR_MORE_ACTION: LazyLock<ActionDefinition> = LazyLock::new(wait_for_more_action);
 pub static CLOSE_THIS_CONNECTION_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| close_this_connection_action());
+    LazyLock::new(close_this_connection_action);
 
 // ============================================================================
 // Socket File Event Type Constants

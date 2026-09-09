@@ -17,6 +17,23 @@ const OUT_FIFO: &str = "./tmp/netget-test-fifo.out";
 const FAIL_IN_FIFO: &str = "./tmp/netget-test-fifo-fail.in";
 const FAIL_OUT_FIFO: &str = "./tmp/netget-test-fifo-fail.out";
 
+/// Wait until `path` exists, rather than sleeping a fixed interval and hoping.
+///
+/// Startup returns when the harness has *parsed* the server's start line, not when the protocol
+/// has created its filesystem object, so the gap has to be waited out. A fixed sleep is enough
+/// alone and not when a hundred tests run together, which is the shape CLAUDE.md warns about
+/// under "Running tests".
+async fn wait_for_path(path: &str, secs: u64) -> E2EResult<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    while std::time::Instant::now() < deadline {
+        if std::path::Path::new(path).exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    Err(format!("{path} was never created within {secs}s").into())
+}
+
 /// Round-trip: a real writer writes to the input FIFO, the mocked LLM answers with
 /// write_named_pipe_data, and a real reader reads the model's bytes off the response FIFO.
 #[tokio::test]
@@ -54,8 +71,10 @@ async fn test_named_pipe_request_response() -> E2EResult<()> {
     }))
     .await?;
 
-    // Give the server time to mkfifo + open both FIFOs.
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    // Wait for both FIFO nodes, not for a guessed interval: opening a FIFO that does not exist
+    // yet fails outright, and opening one the server has not opened yet blocks.
+    wait_for_path(IN_FIFO, 30).await?;
+    wait_for_path(OUT_FIFO, 30).await?;
 
     // Real independent peer: open the FIFOs with std::fs and drive them. FIFO opens block on
     // peer availability, and reads block on data, so run them on a blocking thread under a timeout.
@@ -130,7 +149,8 @@ async fn test_named_pipe_llm_failure_answers_with_a_category_only() -> E2EResult
     }))
     .await?;
 
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    wait_for_path(FAIL_IN_FIFO, 30).await?;
+    wait_for_path(FAIL_OUT_FIFO, 30).await?;
 
     let response = tokio::time::timeout(
         Duration::from_secs(60),

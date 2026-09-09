@@ -139,18 +139,29 @@ else:
     actions = []
 print(json.dumps({"actions": actions}))"#;
 
+        // Protocol parameters go inside `startup_params`. `CommonAction::OpenServer`
+        // (`src/llm/actions/common.rs`) declares a fixed field set -- host, port, interface,
+        // mac_address, send_first, instruction, startup_params, event_handlers, scheduled_tasks --
+        // and serde silently drops anything else, so a top-level `link_path` never reaches
+        // `spawn()` and the server fails to start at all. These examples had it at the top level;
+        // `tests/examples/protocol_examples_test.rs` starts every protocol from its own declared
+        // examples and reported exactly that.
+        //
+        // `send_first` is the exception and stays at the top level: it *is* a declared
+        // `OpenServer` field, and `server_startup` folds it into `startup_params` for any
+        // protocol that declares it.
         StartupExamples::new(
             json!({
                 "type": "open_server",
                 "base_stack": "pty",
-                "link_path": "./netget.pty",
+                "startup_params": { "link_path": "./netget.pty" },
                 "send_first": true,
                 "instruction": "Print 'netget$ ' then act as a minimal shell"
             }),
             json!({
                 "type": "open_server",
                 "base_stack": "pty",
-                "link_path": "./netget.pty",
+                "startup_params": { "link_path": "./netget.pty" },
                 "event_handlers": [{
                     "event_pattern": "pty_input_received",
                     "handler": {
@@ -163,7 +174,7 @@ print(json.dumps({"actions": actions}))"#;
             json!({
                 "type": "open_server",
                 "base_stack": "pty",
-                "link_path": "./netget.pty",
+                "startup_params": { "link_path": "./netget.pty" },
                 "send_first": true,
                 "event_handlers": [
                     {

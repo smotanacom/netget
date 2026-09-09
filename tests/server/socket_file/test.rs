@@ -12,6 +12,23 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
+/// Wait until `path` exists, rather than sleeping a fixed interval and hoping.
+///
+/// Startup returns when the harness has *parsed* the server's start line, not when the protocol
+/// has created its filesystem object, so the gap has to be waited out. A fixed sleep is enough
+/// alone and not when a hundred tests run together, which is the shape CLAUDE.md warns about
+/// under "Running tests".
+async fn wait_for_path(path: &str, secs: u64) -> E2EResult<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    while std::time::Instant::now() < deadline {
+        if std::path::Path::new(path).exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    Err(format!("{path} was never created within {secs}s").into())
+}
+
 #[tokio::test]
 async fn test_socket_echo() -> E2EResult<()> {
     println!("\n=== E2E Test: Socket File Echo Server ===");
@@ -55,8 +72,25 @@ async fn test_socket_echo() -> E2EResult<()> {
     ).await?;
     println!("Server started with socket file");
 
-    // Wait a bit for socket file to be created
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for the socket node itself, not for a guessed interval.
+    wait_for_path("./tmp/netget-test-echo.sock", 30).await?;
+
+    // The node must be owner-only. `bind` creates it 0777 & ~umask (srwxr-xr-x under the usual
+    // umask 022), and both Linux and macOS check write permission on the node at connect(2), so
+    // the default let any local user speak to it; the server chmods it 0600 right after bind.
+    // This cannot prove another uid is refused — the test runs as one user — but it does fail if
+    // the chmod is ever dropped.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata("./tmp/netget-test-echo.sock")?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "socket node should be owner-only, got {mode:o}"
+        );
+    }
 
     // VALIDATION: Send data and verify echo response
     println!("Connecting Unix socket client...");
@@ -152,8 +186,8 @@ async fn test_socket_ping_pong() -> E2EResult<()> {
     .await?;
     println!("Server started with socket file");
 
-    // Wait a bit for socket file to be created
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for the socket node itself, not for a guessed interval.
+    wait_for_path("./tmp/netget-test-ping.sock", 30).await?;
 
     // VALIDATION: Verify PING/PONG
     println!("Connecting Unix socket client...");
@@ -242,8 +276,8 @@ async fn test_socket_line_protocol() -> E2EResult<()> {
     ).await?;
     println!("Server started with socket file");
 
-    // Wait a bit for socket file to be created
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for the socket node itself, not for a guessed interval.
+    wait_for_path("./tmp/netget-test-line.sock", 30).await?;
 
     // VALIDATION: Send line and verify response
     println!("Connecting Unix socket client...");

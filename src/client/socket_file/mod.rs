@@ -199,91 +199,146 @@ impl SocketFileClient {
                         let data = buffer[..n].to_vec();
                         trace!("Socket File client {} received {} bytes", client_id, n);
 
-                        // Handle data with LLM
-                        let mut client_data_lock = client_data.lock().await;
+                        // A round-trip is already in flight: queue these bytes and let the
+                        // in-flight round-trip pick them up when it finishes. They used to be
+                        // queued and then *cleared* without ever being shown to the model.
+                        {
+                            let mut guard = client_data.lock().await;
+                            if guard.state != ConnectionState::Idle {
+                                guard.queued_data.extend_from_slice(&data);
+                                guard.state = ConnectionState::Accumulating;
+                                continue;
+                            }
+                            guard.state = ConnectionState::Processing;
+                        }
 
-                        match client_data_lock.state {
-                            ConnectionState::Idle => {
-                                // Process immediately
-                                client_data_lock.state = ConnectionState::Processing;
-                                drop(client_data_lock);
+                        let mut pending = data;
+                        let mut disconnect = false;
 
-                                // Call LLM
-                                if let Some(instruction) =
-                                    app_state.get_instruction_for_client(client_id).await
-                                {
-                                    let protocol = Arc::new(crate::client::socket_file::actions::SocketFileClientProtocol::new());
-                                    let event = Event::new(
-                                        &SOCKET_FILE_CLIENT_DATA_RECEIVED_EVENT,
-                                        serde_json::json!({
-                                            "data_hex": hex::encode(&data),
-                                            "data_length": data.len(),
-                                        }),
-                                    );
+                        loop {
+                            let Some(instruction) =
+                                app_state.get_instruction_for_client(client_id).await
+                            else {
+                                break;
+                            };
 
-                                    match call_llm_for_client(
-                                        &llm_client,
-                                        &app_state,
-                                        client_id.to_string(),
-                                        &instruction,
-                                        &client_data.lock().await.memory,
-                                        Some(&event),
-                                        protocol.as_ref(),
-                                        &status_tx,
-                                    )
-                                    .await
-                                    {
-                                        Ok(ClientLlmResult {
-                                            actions,
-                                            memory_updates,
-                                        }) => {
-                                            // Update memory
-                                            if let Some(mem) = memory_updates {
-                                                client_data.lock().await.memory = mem;
-                                            }
+                            // Copy the memory OUT of the mutex before the call. Passing
+                            // `&client_data.lock().await.memory` as an argument keeps the guard
+                            // alive for the whole `match` that awaits it - a lock held across an
+                            // LLM call, and a self-deadlock the moment the arm re-locks to store
+                            // a memory update.
+                            let memory = client_data.lock().await.memory.clone();
 
-                                            // Execute actions
-                                            for action in actions {
-                                                use crate::llm::actions::client_trait::Client;
-                                                match protocol.as_ref().execute_action(action) {
-                                                    Ok(crate::llm::actions::client_trait::ClientActionResult::SendData(bytes)) => {
-                                                        if let Ok(_) = write_half_arc.lock().await.write_all(&bytes).await {
-                                                            trace!("Socket File client {} sent {} bytes", client_id, bytes.len());
-                                                        }
-                                                    }
-                                                    Ok(crate::llm::actions::client_trait::ClientActionResult::Disconnect) => {
-                                                        info!("Socket File client {} disconnecting", client_id);
-                                                        break;
-                                                    }
-                                                    _ => {}
+                            let protocol =
+                                crate::client::socket_file::actions::SocketFileClientProtocol::new(
+                                );
+                            let (data_str, encoding) = if pending
+                                .iter()
+                                .all(|&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+                            {
+                                (String::from_utf8_lossy(&pending).to_string(), "utf8")
+                            } else {
+                                (hex::encode(&pending), "hex")
+                            };
+                            let event = Event::new(
+                                &SOCKET_FILE_CLIENT_DATA_RECEIVED_EVENT,
+                                serde_json::json!({
+                                    "data": data_str,
+                                    "encoding": encoding,
+                                    "data_length": pending.len(),
+                                }),
+                            );
+
+                            let result = call_llm_for_client(
+                                &llm_client,
+                                &app_state,
+                                client_id.to_string(),
+                                &instruction,
+                                &memory,
+                                Some(&event),
+                                &protocol,
+                                &status_tx,
+                            )
+                            .await;
+
+                            match result {
+                                Ok(ClientLlmResult {
+                                    actions,
+                                    memory_updates,
+                                }) => {
+                                    if let Some(mem) = memory_updates {
+                                        client_data.lock().await.memory = mem;
+                                    }
+
+                                    use crate::llm::actions::client_trait::{
+                                        Client, ClientActionResult,
+                                    };
+                                    for action in actions {
+                                        match protocol.execute_action(action) {
+                                            Ok(ClientActionResult::SendData(bytes)) => {
+                                                let mut guard = write_half_arc.lock().await;
+                                                match guard.write_all(&bytes).await {
+                                                    Ok(()) => trace!(
+                                                        "Socket File client {} sent {} bytes",
+                                                        client_id,
+                                                        bytes.len()
+                                                    ),
+                                                    Err(e) => error!(
+                                                        "Socket File client {} write failed: {}",
+                                                        client_id, e
+                                                    ),
                                                 }
                                             }
-                                        }
-                                        Err(e) => {
-                                            error!(
-                                                "LLM error for Socket File client {}: {}",
+                                            Ok(ClientActionResult::Disconnect) => {
+                                                // Actually hang up. This used to `break` the
+                                                // action loop only, so the socket stayed open and
+                                                // the model's decision did nothing.
+                                                disconnect = true;
+                                                break;
+                                            }
+                                            Ok(_) => {}
+                                            Err(e) => error!(
+                                                "Socket File client {} rejected an action: {}",
                                                 client_id, e
-                                            );
+                                            ),
                                         }
                                     }
                                 }
-
-                                // Process queued data if any
-                                let mut client_data_lock = client_data.lock().await;
-                                if !client_data_lock.queued_data.is_empty() {
-                                    client_data_lock.queued_data.clear();
+                                Err(e) => {
+                                    error!("LLM error for Socket File client {}: {}", client_id, e);
                                 }
-                                client_data_lock.state = ConnectionState::Idle;
                             }
-                            ConnectionState::Processing => {
-                                // Queue data
-                                client_data_lock.queued_data.extend_from_slice(&data);
-                                client_data_lock.state = ConnectionState::Accumulating;
+
+                            if disconnect {
+                                break;
                             }
-                            ConnectionState::Accumulating => {
-                                // Continue queuing
-                                client_data_lock.queued_data.extend_from_slice(&data);
+
+                            // Anything that arrived during the call becomes the next payload,
+                            // exactly as the socket_file *server* does it.
+                            let queued = {
+                                let mut guard = client_data.lock().await;
+                                std::mem::take(&mut guard.queued_data)
+                            };
+                            if queued.is_empty() {
+                                break;
                             }
+                            pending = queued;
+                        }
+
+                        client_data.lock().await.state = ConnectionState::Idle;
+
+                        if disconnect {
+                            info!("Socket File client {} disconnecting", client_id);
+                            let _ = write_half_arc.lock().await.shutdown().await;
+                            app_state
+                                .update_client_status(client_id, ClientStatus::Disconnected)
+                                .await;
+                            let _ = status_tx.send(format!(
+                                "[CLIENT] Socket File client {} disconnected (model)",
+                                client_id
+                            ));
+                            let _ = status_tx.send("__UPDATE_UI__".to_string());
+                            break;
                         }
                     }
                     Err(e) => {
