@@ -108,6 +108,18 @@ const fn with_display(wire: Wire, display: &'static str) -> Wire {
     }
 }
 
+/// Attach a caveat to an otherwise-correct entry.
+///
+/// Distinct from [`offline`], which says "there is no capture command for this at all".
+/// These protocols *do* have a working command; the note warns about a way the obvious
+/// capture still shows you the wrong thing.
+const fn with_note(wire: Wire, note: &'static str) -> Wire {
+    Wire {
+        note: Some(note),
+        ..wire
+    }
+}
+
 const PLAIN_TCP: Wire = Wire {
     transport: Transport::Tcp,
     decode_as: None,
@@ -121,6 +133,18 @@ const PLAIN_UDP: Wire = Wire {
     display: None,
     note: None,
 };
+
+const TFTP_TID_NOTE: &str = "A `udp port 69` filter captures only the initial RRQ/WRQ. TFTP \
+    then moves the transfer to an ephemeral TID port, so every DATA and ACK packet is missed. \
+    Capture the host instead (drop the port from the filter) and use the `tftp` display filter.";
+
+const ARP_LOOPBACK_NOTE: &str = "`arp` is an Ethernet-only BPF keyword and is rejected on \
+    loopback, which is DLT_NULL on macOS. Capture on a real interface; ARP is not carried on lo0 \
+    at all, so there would be nothing to see there anyway. Same trap as isis.";
+
+const QUIC_ALPN_NOTE: &str = "NetGet's QUIC server negotiates ALPN `h3` while sending raw stream \
+    bytes rather than RFC 9114 frames, so Wireshark hands the payload to its HTTP/3 sub-dissector \
+    and reports malformed frames. That is expected - read the QUIC stream payload directly.";
 
 const USB_NOTE: &str = "USB is not network traffic. Wireshark can capture it from usbmon on \
                         Linux (tshark -D lists usbmonN) or the XHC20 device on macOS after \
@@ -146,7 +170,17 @@ pub fn wire_for(protocol: &str) -> Wire {
         "tcp" | "reverse_shell" | "dc" | "zookeeper" | "svn" => PLAIN_TCP,
         "udp" => PLAIN_UDP,
         "tls" | "dot" | "tor_relay" => tcp("tls"),
-        "quic" => udp("quic"),
+        "quic" => with_note(udp("quic"), QUIC_ALPN_NOTE),
+        // The discovery family. All three are UDP and all three were falling through to the
+        // PLAIN_TCP default, which is simply the wrong transport. Dissector names checked
+        // against this machine's tshark: present in `-G protocols` and accepted by
+        // `-d udp.port==N,<name>` (a bogus name is rejected there, so the check is real).
+        "ssdp" => udp("ssdp"),
+        "llmnr" => udp("llmnr"),
+        "netbios_ns" => udp("nbns"),
+        // http3 is a client-only protocol name, and it reaches wire_for through
+        // CaptureTarget::client. Without an arm it defaulted to plain TCP; it is QUIC.
+        "http3" => with_display(udp("quic"), "http3 || quic"),
         // ---- web ---------------------------------------------------------
         "http" | "websocket" | "proxy" | "webdav" | "jsonrpc" | "xmlrpc" | "openapi" | "openai"
         | "ollama" | "mcp" | "oauth2" | "openid" | "saml_idp" | "saml_sp" | "s3" | "sqs"
@@ -168,7 +202,12 @@ pub fn wire_for(protocol: &str) -> Wire {
         "ftp" => tcp("ftp"),
         "whois" => tcp("whois"),
         "socks5" => tcp("socks"),
-        "git" => tcp("git"),
+        // NetGet's git server implements Smart **HTTP** only - the payload starts
+        // "GET /...info/refs?service=git-upload-pack HTTP/1.1". Wireshark's `git`
+        // dissector decodes pkt-line directly over TCP, i.e. git:// on 9418, and will not
+        // decode this. The trap is that our own examples use port 9418, which makes the
+        // wrong entry look right.
+        "git" => tcp("http"),
         // ---- databases / brokers -----------------------------------------
         "mysql" => tcp("mysql"),
         "postgresql" => tcp("pgsql"),
@@ -187,7 +226,9 @@ pub fn wire_for(protocol: &str) -> Wire {
         // ---- remote desktop / files / industrial -------------------------
         "vnc" => tcp("vnc"),
         "rdp" => with_display(tcp("tpkt"), "rdp"),
-        "smb" => with_display(tcp("nbss"), "smb2 || smb"),
+        // This server writes no NetBIOS session-service header, so a `nbss` decode-as has
+        // nothing to key on and never resolves. Point at smb2 directly until framing exists.
+        "smb" => with_display(tcp("smb2"), "smb2 || smb"),
         "nfs" => with_display(tcp("rpc"), "nfs"),
         "modbus" => tcp("mbtcp"),
         // IPP is an HTTP payload; Wireshark reaches it through the http
@@ -201,7 +242,9 @@ pub fn wire_for(protocol: &str) -> Wire {
         "mdns" => udp("mdns"),
         "ntp" => udp("ntp"),
         "dhcp" | "bootp" => udp("dhcp"),
-        "tftp" => udp("tftp"),
+        // `udp port 69` captures only the RRQ/WRQ: TFTP then moves to an ephemeral TID
+        // port for DATA/ACK, so a port-69 filter shows the request and none of the transfer.
+        "tftp" => with_note(udp("tftp"), TFTP_TID_NOTE),
         "snmp" => udp("snmp"),
         "syslog" => either("syslog"),
         "radius" => udp("radius"),
@@ -221,7 +264,9 @@ pub fn wire_for(protocol: &str) -> Wire {
         "icmp" => raw("icmp", "icmp"),
         "igmp" => raw("igmp", "igmp"),
         "ospf" => raw("ip proto 89", "ospf"),
-        "arp" => raw("arp", "arp"),
+        // Same trap as isis: `arp` is an Ethernet-only BPF keyword and is rejected on
+        // loopback (DLT_NULL on macOS). Capture on a real interface.
+        "arp" => with_note(raw("arp", "arp"), ARP_LOOPBACK_NOTE),
         // `isis` is an Ethernet-only BPF keyword and is rejected outright on a
         // loopback device, so let the display filter do the selecting.
         "isis" => raw("", "isis"),
