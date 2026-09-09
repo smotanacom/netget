@@ -57,9 +57,17 @@ them to act on and their results were discarded.
 | Situation | Result |
 |---|---|
 | `hg_error` action | that HTTP status and message |
-| Action for a different command, or no action | `500`, WARN naming the event and what was expected |
-| LLM call fails | `500` |
+| Action for a different command, or no action | `500` carrying only a `WireFailure` category; `decision=fail_closed_no_action` naming what was expected |
+| LLM/handler call fails, backend saturated | `503` + `Retry-After: 1`; `decision=fail_closed_overloaded` |
+| LLM/handler call fails otherwise | `500` carrying only a category; `decision=fail_closed_llm_error` |
+| Request body over `MAX_REQUEST_BODY_BYTES` (1 MiB) | `413`, nothing buffered past the cap |
 | `heads` with no valid node | the null node `000…0` (an empty repository) |
+
+The peer gets a category, the log gets the error: `WireFailure::text()` is a
+`&'static str`, so nothing derived from the failure — backend URL, model name,
+anyhow chain — reaches an `hg` client. `decision=` tags (as in
+`src/server/radius/`) keep "the model refused" (`model_reject`), "the model said
+nothing usable" (`fail_closed_no_action`) and "the call errored" apart in the log.
 
 ## Implementation
 
@@ -68,9 +76,15 @@ through `call_llm`, so script and static `event_handlers` work.
 `actions.rs` — action and event definitions, capability filtering, bundle
 construction.
 
-**No storage**: nothing is written to disk, no `.hg` directory exists, and no
-state survives a request beyond the per-connection list of repository names used
-for the UI.
+**No storage**: nothing is written to disk, no `.hg` directory exists, nothing
+shells out to `hg`, and no state survives a request beyond the per-connection list
+of repository names used for the UI. A repository name from the URL only ever
+becomes a `String`.
+
+**Request bodies are bounded.** Only `getbundle` has a body, and it is read
+through `http_body_util::Limited` at 1 MiB and refused with `413` beyond that. A
+plain `collect()` let one unauthenticated client grow the process by whatever it
+cared to send.
 
 ## Not implemented
 
@@ -113,5 +127,7 @@ documentation, but no real Mercurial client has ever spoken to this server, and
 modern `hg` prefers bundle2 and the `batch` command, neither of which exists
 here. Treat "works with hg" as unproven.
 
-`tests/server/mercurial/` exists but is **not declared in `tests/server/mod.rs`**,
-so it is never compiled or run.
+`tests/server/mercurial/` **is** declared in `tests/server/mod.rs` (behind
+`#[cfg(feature = "mercurial")]`) and runs: five mocked e2e cases. This file claimed
+the opposite — the mod.rs footgun was real when it was written and has since been
+fixed tree-wide.

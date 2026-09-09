@@ -50,6 +50,14 @@ use crate::{console_error, console_info};
 /// empty repository.
 const NULL_NODE: &str = "0000000000000000000000000000000000000000";
 
+/// Largest request body this server will buffer, in bytes.
+///
+/// Only `getbundle` has a body at all, and hg puts its arguments there only when they are too
+/// long for a URL — kilobytes at most. An unbounded `collect()` lets one unauthenticated
+/// client grow the process by whatever it cares to send, so the read is capped and an
+/// oversized body is refused with 413.
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
 /// Shared per-request context.
 struct RequestContext {
     llm_client: OllamaClient,
@@ -225,13 +233,21 @@ async fn handle_mercurial_request(
         "getbundle" => {
             // hg sends getbundle as a GET with the arguments in the query string, or as a
             // POST when they are too long for a URL. Accept both.
-            let body_len = match req.collect().await {
+            // Bounded read: `Limited` errors as soon as the cap is passed rather than after
+            // buffering the whole thing, so an oversized body costs at most the cap.
+            let limited = http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES);
+            let body_len = match limited.collect().await {
                 Ok(collected) => collected.to_bytes().len(),
                 Err(e) => {
-                    console_error!(ctx.status_tx, "Failed to read request body: {}", e);
+                    console_error!(
+                        ctx.status_tx,
+                        "Mercurial refusing request body ({}); limit is {} bytes",
+                        e,
+                        MAX_REQUEST_BODY_BYTES
+                    );
                     return Ok(build_error_response(
-                        StatusCode::BAD_REQUEST,
-                        "Failed to read request body",
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "request body is too large",
                     ));
                 }
             };

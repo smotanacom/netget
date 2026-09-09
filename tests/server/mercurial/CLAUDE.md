@@ -11,21 +11,23 @@ commands work correctly over HTTP transport.
 - **HTTP client validation**: Uses reqwest to test protocol endpoints directly
 - **Protocol compliance**: Validates response formats for capabilities, heads, branchmap, and listkeys
 - **Error handling**: Tests non-existent repository handling
-- **LLM-based**: All tests use LLM for flexibility and realistic responses
+- **Fully mocked**: every test runs against the in-process mock model
+  (`tests/helpers/mock_ollama.rs`). **No Ollama is required and none is contacted.**
+  This document used to describe real model calls, 15-20 second startups and a "~5%
+  failure rate" from model variability — none of which applies to a mock that
+  answers deterministically. What is left of that framing below should be read as
+  the aspiration it was, not as measured behaviour.
 
 ## LLM Call Budget
 
-- `test_mercurial_capabilities()`: 1 LLM call (server startup)
-- `test_mercurial_heads()`: 1 LLM call (server startup)
-- `test_mercurial_branchmap()`: 1 LLM call (server startup)
-- `test_mercurial_listkeys()`: 1 LLM call (server startup)
-- `test_mercurial_repository_not_found()`: 1 LLM call (server startup)
-- **Total: 5 LLM calls** (one per test)
+Nine mocked rules across the five tests: one startup rule each, plus the command
+event each test exercises (`hg_capabilities`, `hg_heads`, `hg_branchmap`,
+`hg_listkeys`, and two for the not-found case). Every rule carries
+`.expect_calls(...)` and each test finishes with `wait_for_mocks(30)` then
+`verify_mocks()`, so an unmatched rule fails the test rather than falling through
+to a real model.
 
-**Why 5 calls?**: Each test spawns a separate server with different configuration. Tests are independent and validate
-different aspects of the protocol.
-
-**Within budget**: < 10 LLM calls as per protocol guidelines ✓
+**Real Ollama calls: 0.**
 
 ## Client Library
 
@@ -96,7 +98,12 @@ to prevent overload.
 2. HTTP GET request to `/?cmd=capabilities`
 3. Validate HTTP 200 response
 4. Verify newline-separated capability strings
-5. Check for required capabilities (batch, branchmap, getbundle)
+5. Check for required capabilities — `branchmap`, `getbundle`, `listkeys`
+
+**Not `batch`.** `sanitize_capabilities` filters the model's answer down to what
+the server actually implements and logs what it drops, precisely so the server
+cannot advertise a command it would then 404. A test asserting `batch` would be
+asserting a bug.
 
 **What it validates**:
 
