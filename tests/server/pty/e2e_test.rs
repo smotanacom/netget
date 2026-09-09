@@ -13,6 +13,23 @@ use std::time::Duration;
 
 const LINK: &str = "./tmp/netget-test.pty";
 
+/// Wait until `path` exists, rather than sleeping a fixed interval and hoping.
+///
+/// Startup returns when the harness has *parsed* the server's start line, not when the protocol
+/// has created its filesystem object, so the gap has to be waited out. A fixed sleep is enough
+/// alone and not when a hundred tests run together, which is the shape CLAUDE.md warns about
+/// under "Running tests".
+async fn wait_for_path(path: &str, secs: u64) -> E2EResult<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    while std::time::Instant::now() < deadline {
+        if std::path::Path::new(path).exists() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    Err(format!("{path} was never created within {secs}s").into())
+}
+
 /// The model role-plays a shell: it prints a prompt on connect (send_first / pty_opened) and
 /// answers a typed `whoami` with `root`. A real terminal client opens the slave and checks both.
 #[tokio::test]
@@ -57,8 +74,9 @@ async fn test_pty_prompt_and_command() -> E2EResult<()> {
     }))
     .await?;
 
-    // Give the server time to allocate the PTY, create the symlink, and emit the banner.
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    // Wait for the symlink the server creates, not for a guessed interval: opening it before it
+    // exists fails outright. The banner is then waited for by the read below, which blocks.
+    wait_for_path(LINK, 30).await?;
 
     // Real terminal client: open the slave device through the symlink and drive it. PTY reads
     // block until data, so run on a blocking thread under a timeout.
