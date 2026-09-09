@@ -29,23 +29,10 @@ pub struct UploadPackRequest {
     pub done: bool,
 }
 
-impl UploadPackRequest {
-    pub fn wants_side_band(&self) -> bool {
-        self.capabilities
-            .iter()
-            .any(|c| c == "side-band-64k" || c == "side-band")
-    }
-
-    /// Side-band-64k allows 65519 payload bytes per packet; side-band (the older form) 999.
-    /// One byte of that payload is the band identifier.
-    pub fn side_band_chunk_size(&self) -> usize {
-        if self.capabilities.iter().any(|c| c == "side-band-64k") {
-            65515
-        } else {
-            995
-        }
-    }
-}
+// No side-band helpers here: `BASE_CAPABILITIES` deliberately does not advertise
+// `side-band`/`side-band-64k`, so nothing can select it and nothing multiplexes the
+// response. `wants_side_band()` and `side_band_chunk_size()` used to sit here with no
+// caller at all, which read as support the server does not have.
 
 /// Parse a `git-upload-pack` request body.
 ///

@@ -111,6 +111,19 @@ protocol is honest about not being usable by a real `svn checkout`: it handles
 short, single-line command tuples, which covers honeypots and protocol
 experiments.
 
+**The read is bounded at `MAX_COMMAND_BYTES` (64 KiB).** `read_line` grows its
+`String` until it sees a newline, so an unbounded read let one peer that never
+sends `\n` grow the process without limit — before authentication, before
+negotiation, on nothing but an open socket. A line that reaches the cap with no
+newline is not a command any svn client sends, so the connection is logged and
+closed rather than kept alive holding the allocation. A real command tuple in the
+subset implemented here is a few hundred bytes.
+
+The greeting action takes no `realm`: the greeting tuple has no slot for one (in
+ra_svn the realm travels in the auth-request that follows the client's mechanism
+choice, which this server does not implement). It used to be declared and read
+into a `_realm` local, so a model that supplied it changed nothing on the wire.
+
 ## Not implemented
 
 svndiff / delta transfer, the editor commands used by checkout and commit,

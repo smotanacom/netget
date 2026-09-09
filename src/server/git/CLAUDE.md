@@ -5,9 +5,13 @@ HTTP protocol v0 over hyper. The model describes a repository as ordinary
 structured data — a branch, a commit message, a list of `{path, content}` files
 — and the server compiles that into real Git objects and a real pack file.
 
-**State**: Experimental — LLM-authored, now human-reviewed and verified against
-the real `git` binary (2.54). **Privilege**: none; the default port 9418 is
-above 1024. **Spec**: [Smart HTTP](https://git-scm.com/docs/http-protocol),
+**State**: Beta. The evidence is `tests/server/git/e2e_test.rs`, which is **not**
+`#[ignore]`d and does **not** skip when git is missing (`run_git_command` returns
+`Err` if the binary cannot be spawned, and every caller propagates it): the real
+`git` binary completes a Smart HTTP clone, `git fsck --full` validates the pack
+we sent, and `git show HEAD:README.md` asserts exact blob bytes. This file said
+"Experimental" long after `metadata()` said `Beta`; the code was right.
+**Privilege**: none; the default port 9418 is above 1024. **Spec**: [Smart HTTP](https://git-scm.com/docs/http-protocol),
 [pack protocol](https://git-scm.com/docs/pack-protocol),
 [pkt-line](https://git-scm.com/docs/protocol-common#_pkt_line_format).
 
@@ -73,9 +77,19 @@ cause, because git's own message does not.
 |---|---|
 | `git_error` action | that HTTP status and message; git prints `remote: Error: …` |
 | Invalid path (`..`, absolute, `.git`, NUL) or file/dir collision | `500` naming the offending path |
-| No `git_repository` and no `git_error` | `500`, WARN log |
-| LLM call fails | `500` |
+| No `git_repository` and no `git_error` | `500` carrying only a `WireFailure` category; `decision=fail_closed_no_action` |
+| LLM/handler call fails, backend saturated | `503` + `Retry-After: 1`; `decision=fail_closed_overloaded` |
+| LLM/handler call fails otherwise | `500` carrying only a category; `decision=fail_closed_llm_error` |
+| `POST /git-upload-pack` body over `MAX_UPLOAD_PACK_BYTES` (1 MiB) | `413`, nothing buffered past the cap |
 | Advertised commit ≠ packed commit | pack is still sent, ERROR logged; git aborts |
+
+**The peer gets a category, the log gets the error.** `WireFailure::text()` is a
+`&'static str`, so the backend URL, the model name and our own retry machinery
+cannot reach a `git clone`'s terminal. `decision=` tags keep the three failure
+shapes greppable apart (`fail_closed_*` vs the model's own refusal,
+`decision=model_reject`), as in `src/server/radius/`. A saturated backend is
+distinguished from a broken one because a bare `500` would have git record a
+permanent fault where `503` + `Retry-After` tells it to come back.
 
 ## Implementation
 
@@ -83,9 +97,20 @@ cause, because git's own message does not.
 `pack.rs` — SHA-1, Git objects, tree building, pack v2 writer.
 `pktline.rs` — pkt-line encoding and `git-upload-pack` request parsing.
 
-**No storage.** Nothing is written to disk, no `.git` directory exists, and no
-repository state survives a request. Each request rebuilds the objects from the
-snapshot supplied for that request.
+**No storage.** Nothing is written to disk, no `.git` directory exists, no
+repository state survives a request, and nothing shells out to `git` or links
+`git2`/`gix`. Each request rebuilds the objects from the snapshot supplied for
+that request; a repository name from the URL only ever becomes a `String` in an
+event, never a path. (The Git **client**, `src/client/git/`, is the opposite by
+design: it drives libgit2 against real directories.)
+
+**Request bodies are bounded.** `POST /git-upload-pack` is read through
+`http_body_util::Limited` at 1 MiB and refused with `413` beyond it. A plain
+`collect()` would let one unauthenticated client grow the process by whatever it
+cared to send — the shape of the `nfsserve` pre-auth DoS in the root
+`CLAUDE.md`. The wire *is* length-prefixed (pkt-line), and `pktline.rs` never
+allocates from that length: it slices the buffer it already has and stops at the
+first header that runs past the end.
 
 **SHA-1 is implemented in `pack.rs`.** The `sha1` crate is a dev-dependency of
 this workspace and is not linked into the binary; Git object IDs are SHA-1 by

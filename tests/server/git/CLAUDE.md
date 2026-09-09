@@ -42,6 +42,29 @@ client is requesting references") is what broke this suite in the first place â€
 exact phrase never existed in any prompt template shipped alongside `git_advertise_refs`
 in this codebase; it was stale even at the time it was written. Match on the event id.
 
+## This suite is the Beta rating
+
+`git` is the only Beta protocol in the version-control family, and this file is the
+evidence. Two properties are what make it evidence rather than decoration, and both
+must survive any edit:
+
+- **Not `#[ignore]`d.** Every test runs in an ordinary `cargo test`.
+- **It fails when `git` is absent.** `run_git_command` spawns the binary and returns
+  `Err` if the spawn fails; every caller propagates with `?`. There is no
+  `SKIP: git is not installed` branch. Root `CLAUDE.md` records four protocols
+  (`kubernetes`, `oci_registry`, `maven`, `websocket`) held back from Beta precisely
+  because their real-client tests return `Ok(())` when the binary is missing, which
+  is a silent pass. Do not add such a branch here.
+
+## Readiness, not sleeps
+
+`start_netget_server` returns when startup is *parsed*, not when the listener is
+bound, so each test waits for the server's own `Git server listening on` log line
+before the first request, and calls `wait_for_mocks(30)` before `verify_mocks()`.
+They previously slept a fixed 500ms and verified immediately: enough when a test
+runs alone, not when a hundred run together, and a connection refused rather than a
+slow test when it is not.
+
 ## LLM Call Budget
 
 - `test_git_clone_with_system_git()`: 1 mock call (startup) + 2 mock calls (info/refs,

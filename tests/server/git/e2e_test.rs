@@ -146,7 +146,10 @@ async fn test_git_clone_with_system_git() -> E2EResult<()> {
     let port = server.port;
     println!("Git server started on port {}", port);
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Wait for the socket, not a fixed interval: `start_netget_server` returns when
+    // startup is *parsed*, not when the listener is bound, and under --test-threads a
+    // 500ms guess is a connection refused rather than a slow test.
+    server.wait_for_log("Git server listening on", 30).await?;
 
     let temp_dir = create_temp_dir()?;
     let clone_path = temp_dir.path().join("test-repo");
@@ -226,6 +229,9 @@ async fn test_git_clone_with_system_git() -> E2EResult<()> {
         );
     }
 
+    // Wait for the exchange the mocks describe before asserting on it; `verify_mocks`
+    // remains the thing that asserts.
+    server.wait_for_mocks(30).await;
     timeout(Duration::from_secs(30), server.verify_mocks())
         .await
         .map_err(|_| "Mock verification timeout")??;
@@ -279,7 +285,10 @@ async fn test_git_info_refs_endpoint() -> E2EResult<()> {
     let port = server.port;
     println!("Git server started on port {}", port);
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Wait for the socket, not a fixed interval: `start_netget_server` returns when
+    // startup is *parsed*, not when the listener is bound, and under --test-threads a
+    // 500ms guess is a connection refused rather than a slow test.
+    server.wait_for_log("Git server listening on", 30).await?;
 
     let client = reqwest::Client::new();
     let url = format!(
@@ -365,6 +374,9 @@ async fn test_git_info_refs_endpoint() -> E2EResult<()> {
         "advertisement must end with a flush-pkt"
     );
 
+    // Wait for the exchange the mocks describe before asserting on it; `verify_mocks`
+    // remains the thing that asserts.
+    server.wait_for_mocks(30).await;
     timeout(Duration::from_secs(30), server.verify_mocks())
         .await
         .map_err(|_| "Mock verification timeout")??;
@@ -432,7 +444,10 @@ async fn test_git_repository_not_found() -> E2EResult<()> {
     let port = server.port;
     println!("Git server started on port {}", port);
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Wait for the socket, not a fixed interval: `start_netget_server` returns when
+    // startup is *parsed*, not when the listener is bound, and under --test-threads a
+    // 500ms guess is a connection refused rather than a slow test.
+    server.wait_for_log("Git server listening on", 30).await?;
 
     let client = reqwest::Client::new();
 
@@ -467,6 +482,9 @@ async fn test_git_repository_not_found() -> E2EResult<()> {
         "the repository that does exist must succeed"
     );
 
+    // Wait for the exchange the mocks describe before asserting on it; `verify_mocks`
+    // remains the thing that asserts.
+    server.wait_for_mocks(30).await;
     timeout(Duration::from_secs(30), server.verify_mocks())
         .await
         .map_err(|_| "Mock verification timeout")??;
@@ -544,7 +562,10 @@ async fn test_git_multiple_repositories() -> E2EResult<()> {
     let port = server.port;
     println!("Git server started on port {}", port);
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Wait for the socket, not a fixed interval: `start_netget_server` returns when
+    // startup is *parsed*, not when the listener is bound, and under --test-threads a
+    // 500ms guess is a connection refused rather than a slow test.
+    server.wait_for_log("Git server listening on", 30).await?;
 
     let temp_dir = create_temp_dir()?;
 
@@ -584,6 +605,9 @@ async fn test_git_multiple_repositories() -> E2EResult<()> {
         "backend clone must not contain frontend's file"
     );
 
+    // Wait for the exchange the mocks describe before asserting on it; `verify_mocks`
+    // remains the thing that asserts.
+    server.wait_for_mocks(30).await;
     timeout(Duration::from_secs(30), server.verify_mocks())
         .await
         .map_err(|_| "Mock verification timeout")??;
@@ -652,7 +676,10 @@ print(json.dumps({"actions": [{
     let port = server.port;
     println!("Git server with scripting started on port {}", port);
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // Wait for the socket, not a fixed interval: `start_netget_server` returns when
+    // startup is *parsed*, not when the listener is bound, and under --test-threads a
+    // 500ms guess is a connection refused rather than a slow test.
+    server.wait_for_log("Git server listening on", 30).await?;
 
     let client = reqwest::Client::new();
 
@@ -703,6 +730,9 @@ print(json.dumps({"actions": [{
     let log_subject = run_git_command(&["log", "-1", "--format=%s"], Some(&clone_path))?;
     assert_eq!(log_subject.trim(), "Scripted commit");
 
+    // Wait for the exchange the mocks describe before asserting on it; `verify_mocks`
+    // remains the thing that asserts.
+    server.wait_for_mocks(30).await;
     timeout(Duration::from_secs(30), server.verify_mocks())
         .await
         .map_err(|_| "Mock verification timeout")??;

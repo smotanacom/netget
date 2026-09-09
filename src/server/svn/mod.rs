@@ -12,9 +12,18 @@ use actions::{SVN_COMMAND_EVENT, SVN_GREETING_EVENT};
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
+
+/// Largest command line this server will buffer, in bytes.
+///
+/// `read_line` grows its `String` until it sees a newline, so an unbounded read lets one
+/// peer that never sends `\n` grow the process without limit — no authentication, no
+/// negotiation, just an open socket. A real ra_svn command tuple is a few hundred bytes;
+/// 64 KiB is far above anything the subset implemented here can produce and far below a
+/// memory problem.
+const MAX_COMMAND_BYTES: u64 = 64 * 1024;
 
 pub struct SvnServer;
 
@@ -150,7 +159,10 @@ async fn handle_svn_connection(
     );
 
     // Send greeting event to LLM
-    let greeting_event = Event::new(&SVN_GREETING_EVENT, serde_json::json!({}));
+    let greeting_event = Event::new(
+        &SVN_GREETING_EVENT,
+        serde_json::json!({ "client_ip": peer_addr.ip().to_string() }),
+    );
 
     log.debug(format!("SVN sending greeting to {}", peer_addr));
 
@@ -277,7 +289,25 @@ async fn handle_svn_connection(
     loop {
         buffer.clear();
 
-        match buf_reader.read_line(&mut buffer).await {
+        // Bounded: `Take` stops the read at the cap instead of buffering until a newline
+        // that a hostile peer need never send. Rebuilt each iteration so the limit is
+        // per-line, not per-connection.
+        let read = (&mut buf_reader)
+            .take(MAX_COMMAND_BYTES)
+            .read_line(&mut buffer)
+            .await;
+
+        // The cap was reached with no newline in sight: this is not a command any svn
+        // client sends, so stop reading rather than keep the peer's allocation alive.
+        if matches!(&read, Ok(n) if *n as u64 == MAX_COMMAND_BYTES && !buffer.ends_with('\n')) {
+            log.warn(format!(
+                "SVN command line from {} exceeded {} bytes with no newline; closing",
+                peer_addr, MAX_COMMAND_BYTES
+            ));
+            break;
+        }
+
+        match read {
             Ok(0) => {
                 log.info(format!("SVN client {} disconnected", peer_addr));
 
@@ -320,6 +350,7 @@ async fn handle_svn_connection(
                         "command_line": command_line,
                         "command": parsed_command.command,
                         "args": parsed_command.args,
+                        "client_ip": peer_addr.ip().to_string(),
                     }),
                 );
 
