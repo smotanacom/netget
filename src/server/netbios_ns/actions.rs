@@ -50,6 +50,12 @@ pub struct RequestContext {
     /// The question's NAME field, verbatim, terminator included. Echoing the bytes preserves
     /// any NetBIOS scope the sender used without this code having to re-encode it.
     pub name_field: Vec<u8>,
+    /// The question's decoded name and suffix, so a positive answer can be *checked* against
+    /// what was actually asked. See the executor: the wire always carries `name_field`, so
+    /// without this the model's `name`/`suffix` would be decoration and a model answering
+    /// for the wrong host would still emit a valid answer for the right one.
+    pub question_name: String,
+    pub question_suffix: u8,
     /// TTL used when the action omits one (the `default_ttl` startup parameter).
     pub default_ttl: u32,
     /// Owner node type used when the action omits one (the `node_type` startup parameter).
@@ -84,22 +90,18 @@ impl NetbiosNsProtocol {
 // Parameter helpers
 // ===========================================================================================
 
-/// Read the suffix octet. Accepts a number (`0`, `32`, `27`) or a hex string (`"0x20"`,
-/// `"20"`), because models produce both and the suffix is a control value they must never
-/// have to embed in the name string.
+/// Read the suffix octet, through the one shared parser
+/// ([`packet::parse_suffix_value`]) that the NBNS **client**'s actions also use — so a
+/// suffix seen in an event really can be handed straight back, and the two halves cannot
+/// drift into reading `"20"` as two different names.
+///
+/// Required here (unlike on the client, where it defaults to 0): a response names the
+/// service, and guessing which one is guessing which name is being answered for.
 fn parse_suffix(action: &serde_json::Value) -> Result<u8> {
     let value = action
         .get("suffix")
         .context("action needs a 'suffix' (the NetBIOS service selector, e.g. 0 for a workstation, 32 for a file server)")?;
-    if let Some(n) = value.as_u64() {
-        return u8::try_from(n).context("'suffix' must be a single octet (0-255)");
-    }
-    if let Some(s) = value.as_str() {
-        let trimmed = s.trim().trim_start_matches("0x").trim_start_matches("0X");
-        return u8::from_str_radix(trimmed, 16)
-            .with_context(|| format!("'suffix' string '{}' is not a hex octet", s));
-    }
-    anyhow::bail!("'suffix' must be a number (0-255) or a hex string such as \"0x20\"")
+    packet::parse_suffix_value(Some(value))
 }
 
 fn parse_name(action: &serde_json::Value) -> Result<String> {
@@ -379,11 +381,36 @@ impl Server for NetbiosNsProtocol {
                     addresses.push(AddressEntry { flags, address });
                 }
 
-                // The name the model gives is checked against the name that was asked about
-                // only in the log — a server may legitimately answer for an alias — but the
-                // NAME field on the wire is the question's, verbatim. Answering a query for
-                // one name with an RR naming another is exactly how a cache gets poisoned.
-                let _ = parse_name(&action);
+                // The NAME field on the wire is the question's, verbatim — RFC 1002 §4.2.13's
+                // answer RR names the queried name, and there is no form of positive answer
+                // that names a different one. So `name`/`suffix` cannot change what is sent,
+                // and a model that supplies the wrong ones is answering for a host it did not
+                // mean to. **Refused rather than ignored**: an answer is a cache entry, and
+                // silently substituting the queried name for the one the model named is the
+                // fail-open shape this protocol exists to avoid. The model's own log line
+                // would have read `-> NetBIOS name PRINTER<0x00>` while the wire said
+                // `FILESERVER<0x20>`.
+                let claimed_name = parse_name(&action)?;
+                let claimed_suffix = parse_suffix(&action)?;
+                if !claimed_name.eq_ignore_ascii_case(&ctx.question_name)
+                    || claimed_suffix != ctx.question_suffix
+                {
+                    anyhow::bail!(
+                        "this query asked about '{}'<{:#04x}> but the response names \
+                         '{}'<{:#04x}>. A positive NetBIOS name response always answers for \
+                         the name that was queried (RFC 1002 §4.2.13), so it cannot carry a \
+                         different one — the querier would cache your addresses against \
+                         '{}'<{:#04x}> regardless. To point that name at another host, put \
+                         that host's addresses in 'addresses'. To say this name is not held \
+                         here, use send_netbios_negative_response or no_response.",
+                        ctx.question_name,
+                        ctx.question_suffix,
+                        claimed_name,
+                        claimed_suffix,
+                        ctx.question_name,
+                        ctx.question_suffix,
+                    );
+                }
 
                 let bytes = packet::encode_name_query_response(
                     ctx.trn_id,

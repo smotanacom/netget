@@ -119,6 +119,14 @@ model cannot be expected to hand-encode a control octet into text, and `FILESERV
 string (`"00:11:22:33:44:55"`) parsed by the executor, and for addresses, which are dotted
 quads. There are no raw bytes and no base64 anywhere in this vocabulary.
 
+A **bare** digit string is refused. `"20"` spells both 32 (hex, the conventional NetBIOS
+notation — `<20>` is the file server) and 20 (decimal), and the two select *different names*,
+so sniffing it is the `send_tcp_data` text-or-hex trap in a form where the failure is a wrong
+name rather than wrong bytes. `packet::parse_suffix_value` is the one implementation, shared
+with the NBNS **client**'s actions: the two used to disagree on exactly this input — the
+server read `"20"` as hex, the client as decimal — under a doc comment claiming they used the
+same contract. One function is what makes that claim true.
+
 ### Per-request protocol instances
 
 The registry's `NetbiosNsProtocol` is context-free and **cannot build a response**;
@@ -140,6 +148,16 @@ departure from how `dns` does it (where `query_id` is an action parameter). Thre
 
 This is the `radius`/`ntp` precedent — identifier and authenticator carried in the request
 context — not a deviation from repo practice.
+
+**`name` and `suffix` on `send_netbios_name_response` are therefore checked, not used.** The
+wire always carries the question's NAME field, so those two parameters cannot change what is
+sent — and a model that supplies the wrong ones is answering for a host it did not mean to.
+The executor refuses the mismatch instead of quietly substituting the queried name: RFC 1002
+§4.2.13's answer RR names the queried name and there is no positive form that names another,
+so the only thing a mismatch can mean is that the model is confused about which name it is
+vouching for. Ignoring it was a real defect here — the log template would have printed
+`-> NetBIOS name PRINTER<0x00>` while the datagram said `FILESERVER<0x20>`, and the querier
+would have cached the addresses against the latter.
 
 ## Startup parameters
 
@@ -178,8 +196,11 @@ Samba's `nmblookup` is a genuine third-party client, and the request literals in
 
 But `nmblookup` cannot be pointed at another port. Verified rather than assumed:
 
-- `nmblookup --help` and `nmblookup(1)` offer no port option. `-U` takes an address only;
-  `-U 127.0.0.1:13137` fails to parse the target.
+- `nmblookup --help` and `nmblookup(1)` offer no port option. `-U` takes an address only, and
+  `-U 127.0.0.1:13137` does **not** fail loudly — it is accepted and the `:13137` is ignored.
+  Re-measured September 2026 with a socket bound to 127.0.0.1:13137 while `nmblookup -U
+  127.0.0.1:13137 FILESERVER` ran: **nothing arrived on 13137 at all**. (`-r/--root-port`
+  selects the *source* port, not the destination.)
 - `--option="nbt port=13137"` is *accepted* by the smb.conf parser — it is a real Samba
   parameter for the source4 NBT **server** — and is ignored by this client. Confirmed by
   packet capture: with that option set, the query still went to `127.0.0.1.137`, and a socket

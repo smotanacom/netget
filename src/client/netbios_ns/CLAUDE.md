@@ -53,7 +53,10 @@ protocol actually requires structural instead of aspirational:
   (not DEBUG: a well-formed answer to a question we did not ask is either a stray late reply or
   somebody trying to get a name into our cache, and it is rare enough that logging every one
   costs nothing). Three things are thrown away here and each is real: a datagram from an
-  unrelated conversation, one that does not decode, and a *request* (`R=0`).
+  unrelated conversation, one that does not decode, and a *request* (`R=0`, which
+  `wire::parse_response` refuses outright — answering one would make this client a reflector).
+  **Only the first of the three is WARN**; the other two arrive as an undecodable datagram and
+  are logged at DEBUG, because a socket on a link sees malformed traffic as background noise.
 - **Silence is a normal answer.** A node that does not hold the queried name says nothing —
   there is no refusal to send. The deadline raises `netbios_query_timeout`, which is an
   ordinary event on the ordinary path, not an error. Its payload carries `ignored_datagrams`,
@@ -123,10 +126,19 @@ may resolve to different hosts, so folding the suffix into the name string silen
 questions into one. `mac_address` is a formatted `"00:11:22:33:44:55"` string and addresses are
 dotted quads. **There are no raw bytes and no base64 anywhere in this vocabulary.**
 
-`parse_suffix` accepts a number (`32`) or a hex string (`"0x20"`) — the same contract the NBNS
-server's actions use, so a suffix observed in an event can be handed straight back. A bare
-decimal string is decimal: `"20"` means twenty, not `0x20`. Only the sender knows which was
-meant, so the ambiguity is documented rather than sniffed.
+`parse_suffix` accepts a number (`32`) or an explicitly-prefixed hex string (`"0x20"`), and it
+is **literally the same function** the NBNS server's actions call
+(`crate::server::netbios_ns::packet::parse_suffix_value`), so a suffix observed in an event can
+be handed straight back and the two halves cannot drift.
+
+A **bare** digit string is refused. That is not fussiness: the two halves used to disagree on
+exactly this input — the server read `"20"` as hex (0x20, the file server) and this client read
+it as decimal (20 = 0x14) — under a doc comment in `wire.rs` asserting they used the same
+contract. Same JSON, two different NetBIOS names, in one session, on a protocol whose entire
+hazard is answering for or asking about the wrong name. It is the `send_tcp_data` text-or-hex
+ambiguity the root `CLAUDE.md` records, and it gets the same answer: the sender says which, and
+neither side sniffs. `tests/client/netbios_ns/e2e_test.rs::the_two_halves_read_a_suffix_the_same_way`
+pins the agreement across both spellings and both rejections.
 
 ## Startup parameters
 
@@ -183,7 +195,10 @@ privileged CI lane running a real one. Byte-identical queries are necessary and 
 - **NetBIOS scopes** beyond what the codec echoes.
 - **The datagram service (UDP 138) and session service (TCP 139)** are different protocols.
 - **IPv6**: NBNS is IPv4-only by construction — its resource records carry four-octet
-  addresses, so `resolve_target` refuses a target with no IPv4 address.
+  addresses. `resolve_target` refuses a hostname that resolves to no IPv4 address, but a
+  *literal* IPv6 `remote_addr` short-circuits the lookup and is returned unchecked, while the
+  socket is unconditionally bound to `0.0.0.0`. So an IPv6 literal is accepted at startup and
+  fails later on `send_to` rather than being refused up front.
 
 ## Example prompts
 

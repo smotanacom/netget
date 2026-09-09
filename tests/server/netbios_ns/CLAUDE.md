@@ -35,8 +35,15 @@ independent Python encoder before being written down, and they match byte for by
 | `encodes_a_node_status_response_with_a_raw_name_list` | `NUM_NAMES` + 18 per name + 46 of statistics; the name list is **raw** 16 octets, not encoded 32; UNIT_ID is the MAC and every other statistic is zero |
 | `parses_and_formats_mac_addresses` | the formatted-string contract, both separators, and two rejections |
 | `refuses_datagrams_that_are_not_answerable_requests` | a response (`R=1`), truncation, header-only, a wrong first-label length, a compression pointer, and an over-long datagram |
+| `a_positive_answer_may_not_name_a_different_name_than_the_query` | the model's `name`/`suffix` must agree with the question, and a bare `"20"` suffix is refused as ambiguous |
 
 LLM calls: **0**. Runtime: milliseconds.
+
+The last one covers a fail-open hole that was open: the wire always carries the *question's*
+NAME field, so `name` and `suffix` could not change what was sent and the executor discarded
+them. A model answering a query for `FILESERVER<0x20>` with `{"name": "PRINTER"}` therefore
+emitted a valid answer **for FILESERVER<0x20>** carrying PRINTER's addresses, while its own log
+template printed `-> NetBIOS name PRINTER<0x00>`. The querier caches that.
 
 The `R=1` case is worth calling out: a server that answers a *response* is a reflector, and
 UDP source addresses are trivially spoofed.
