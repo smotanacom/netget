@@ -127,6 +127,118 @@ mod mysql_client_tests {
         Ok(())
     }
 
+    /// **The model's answer to a query result must reach the wire.**
+    ///
+    /// The client used to decode the follow-up actions and throw them away:
+    /// `protocol.execute_action(..)` is pure — it returns a `Custom { name: "mysql_query" }`
+    /// and nothing put it on the connection — and every arm but `Disconnect` fell into a
+    /// `trace!`. So a model answering `mysql_result_received` with `execute_query` issued no
+    /// query and sent no bytes. Nothing failed; the client simply went deaf after one turn.
+    ///
+    /// The existing tests could not see it because they answer `mysql_result_received` with
+    /// `wait_for_more` and `expect_at_least(0)` — the one shape that asks for nothing.
+    ///
+    /// This asserts the chain from the **server's** side, which is the only place the effect
+    /// is real: `mysql_query` must fire **twice**, once for the query the connect event asked
+    /// for and once for the follow-up. Before the fix it fires once.
+    ///
+    /// LLM calls: server 1 startup + 2 queries; client 1 startup + 1 connect + 2 results = 7.
+    #[tokio::test]
+    async fn a_follow_up_query_from_the_model_actually_reaches_the_server() -> E2EResult<()> {
+        let server_config =
+            NetGetConfig::new("Listen on port {AVAILABLE_PORT} via MySQL. Answer SELECT queries.")
+                .with_mock(|mock| {
+                    mock.on_instruction_containing("Listen on port")
+                        .and_instruction_containing("MySQL")
+                        .respond_with_actions(serde_json::json!([
+                            {
+                                "type": "open_server",
+                                "port": 0,
+                                "base_stack": "MySQL",
+                                "instruction": "Answer SELECT queries"
+                            }
+                        ]))
+                        .expect_calls(1)
+                        .and()
+                        // ONE rule, branching on the event. Two rules on the same event with no way
+                        // to tell them apart is first-match-wins: the first answers everything and
+                        // the second reports zero calls.
+                        .on_event("mysql_query")
+                        .respond_with_actions_from_event(|e| {
+                            let query = e["query"].as_str().unwrap_or("").to_uppercase();
+                            let value = if query.contains("SECOND") { 2 } else { 1 };
+                            serde_json::json!([
+                                {
+                                    "type": "mysql_query_response",
+                                    "columns": [{"name": "n", "type": "INT"}],
+                                    "rows": [[value]]
+                                }
+                            ])
+                        })
+                        // The assertion. One call means the follow-up never left the client.
+                        .expect_calls(2)
+                        .and()
+                });
+
+        let mut server = start_netget_server(server_config).await?;
+        server.wait_for_any(&["listening", "Running"], 30).await;
+
+        let client_config = NetGetConfig::new(format!(
+            "Connect to 127.0.0.1:{} via MySQL. Run a query, then run a second one.",
+            server.port
+        ))
+        .with_mock(|mock| {
+            // The result rule is stateful: the first result asks for the second query, the
+            // second result stops. `to_response_string` is rendered once per request, so a
+            // stateful closure advances exactly one step per call.
+            let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            mock.on_instruction_containing("Connect to")
+                .and_instruction_containing("MySQL")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_client",
+                        "remote_addr": format!("127.0.0.1:{}", server.port),
+                        "protocol": "MySQL",
+                        "instruction": "Run a query, then run a second one"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mysql_connected")
+                .respond_with_actions(serde_json::json!([
+                    { "type": "execute_query", "query": "SELECT 1 AS first" }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mysql_result_received")
+                .respond_with_actions_from_event(move |_| {
+                    if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        // This is the answer that used to be decoded and dropped.
+                        serde_json::json!([
+                            { "type": "execute_query", "query": "SELECT 2 AS second" }
+                        ])
+                    } else {
+                        serde_json::json!([{ "type": "wait_for_more" }])
+                    }
+                })
+                // Twice: once for each query's rows. One means the chain stopped at depth 1.
+                .expect_calls(2)
+                .and()
+        });
+
+        let mut client = start_netget_client(client_config).await?;
+        client.wait_for_any(&["connected"], 30).await;
+
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
+        server.verify_mocks().await?;
+        client.verify_mocks().await?;
+
+        server.stop().await?;
+        client.stop().await?;
+        Ok(())
+    }
+
     /// Test MySQL client with database selection
     /// LLM calls: 2 (server startup, client connection)
     #[tokio::test]

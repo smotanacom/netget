@@ -12,7 +12,12 @@ Black-box E2E tests using NetGet binary. Tests verify PostgreSQL client function
 ## LLM Call Budget
 
 **Target:** < 10 calls
-**Actual:** 6 calls total across 3 tests
+**Actual:** 6 calls, all in `a_query_result_drives_exactly_one_more_query`.
+
+**The other three tests are `#[ignore]`d** — they configure no `.with_mock()` and so need
+`--use-ollama`. Until `a_query_result_drives_exactly_one_more_query` was added, this client's
+entire model-driven path ran in no test at all; only the zero-LLM command-channel test
+executed. Read this budget as describing one running test, not three.
 
 - test_postgresql_client_connect_and_query: 2 calls (server + client)
 - test_postgresql_client_llm_controlled_queries: 2 calls (server + client)

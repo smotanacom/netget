@@ -118,18 +118,16 @@ impl Protocol for RedisClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "Redis"
     }
+    /// The **statics**, not fresh `EventType::new(..)` copies.
+    ///
+    /// This used to build a second, different `EventType` for each id: no parameters, and a
+    /// `{"type": "placeholder"}` example. Those are what the registry and the model-facing
+    /// docs surface, while the emitted events carry the statics above — two sources of truth
+    /// for the same event id, and they had already drifted.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "redis_connected",
-                "Triggered when Redis client connects to server",
-                json!({"type": "placeholder", "event_id": "redis_connected"}),
-            ),
-            EventType::new(
-                "redis_response_received",
-                "Triggered when Redis client receives a response",
-                json!({"type": "placeholder", "event_id": "redis_response_received"}),
-            ),
+            REDIS_CLIENT_CONNECTED_EVENT.clone(),
+            REDIS_CLIENT_RESPONSE_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {

@@ -152,18 +152,16 @@ impl Protocol for MysqlClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "MySQL"
     }
+    /// The **statics**, not fresh `EventType::new(..)` copies.
+    ///
+    /// This used to build a second, different `EventType` for each id: no parameters, and a
+    /// `{"type": "placeholder"}` example. Those are what the registry and the model-facing
+    /// docs surface, while the emitted events carry the statics above — two sources of truth
+    /// for the same event id, and they had already drifted.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "mysql_connected",
-                "Triggered when MySQL client connects to server",
-                json!({"type": "placeholder", "event_id": "mysql_connected"}),
-            ),
-            EventType::new(
-                "mysql_result_received",
-                "Triggered when MySQL client receives a query result",
-                json!({"type": "placeholder", "event_id": "mysql_result_received"}),
-            ),
+            MYSQL_CLIENT_CONNECTED_EVENT.clone(),
+            MYSQL_CLIENT_RESULT_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {

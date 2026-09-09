@@ -94,8 +94,24 @@ Loop
 - **Trigger:** Query result received from server
 - **Data:**
     - `result`: Array of row objects (JSON)
-    - `row_count`: Number of rows returned
+    - `affected_rows` / `row_count`: number of rows (both are sent; the event type declares
+      `affected_rows`, the emit site had historically sent only `row_count`, so the model was
+      promised a field that never arrived)
 - **LLM Decision:** Analyze results, execute follow-up queries, commit/rollback transaction
+
+**The answer to this event is executed**, and that was not always true. The loop used to call
+`protocol.execute_action(..)` — which is pure, returning a `Custom { name: "mysql_query" }`
+that nothing put on the connection — and then `trace!` everything but `Disconnect`. So a model
+answering `mysql_result_received` with `execute_query` issued no query and sent no bytes, on
+the LLM path and on the dashboard's `[ send ]` path alike.
+
+Closing the loop makes it self-referential (a query raises a result event, whose answer may be
+another query), so `execute_llm_action` returns an explicitly boxed `+ Send` future — an
+`async fn` that awaits itself is infinitely sized (E0391), and two mutually-recursive `async
+fn`s defeat `Send` inference — and the chain is capped at `MAX_FOLLOWUP_DEPTH` (4). Past the
+cap the actions are dropped with a WARN rather than looping forever.
+`tests/client/mysql/e2e_test.rs::a_follow_up_query_from_the_model_actually_reaches_the_server`
+asserts it from the server's side, which is the only place the effect is real.
 
 ### Actions
 
