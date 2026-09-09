@@ -11,9 +11,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
-use crate::client::git::actions::GIT_CLIENT_CONNECTED_EVENT;
+use crate::client::git::actions::{
+    GIT_CLIENT_CONNECTED_EVENT, GIT_OPERATION_COMPLETED_EVENT, GIT_OPERATION_ERROR_EVENT,
+};
 use crate::client::llm_budget::call_llm_for_client;
 use crate::llm::actions::client_trait::{Client, ClientActionResult};
 use crate::llm::ollama_client::OllamaClient;
@@ -32,6 +34,9 @@ use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 #[derive(Default)]
 struct GitSession {
     repo_path: Option<PathBuf>,
+    /// The `local_path` startup parameter, used as the clone destination when a
+    /// `git_clone` action does not name one.
+    local_path: Option<String>,
     username: Option<String>,
     password: Option<String>,
 }
@@ -52,11 +57,35 @@ async fn read_field(app_state: &AppState, client_id: ClientId, key: &str) -> Opt
 /// What one executed action did. Shared vocabulary between the connected-event handler
 /// and the injected-command loop.
 enum Applied {
-    /// The action ran; `detail` says what it did.
-    Ran(String),
+    /// The action ran. `detail` is the one-line summary the dashboard shows; `output` is
+    /// what the operation produced (log text, diff, branch list) for the model to read in
+    /// the `git_operation_completed` event.
+    Ran {
+        detail: String,
+        output: Option<String>,
+    },
     /// The action asked to end the session.
     Disconnect,
 }
+
+impl Applied {
+    /// A result with nothing for the model to read beyond the summary.
+    fn ran(detail: impl Into<String>) -> Self {
+        Applied::Ran {
+            detail: detail.into(),
+            output: None,
+        }
+    }
+}
+
+/// How many times an operation's result may be answered by another operation before this
+/// client stops reporting. A model may reasonably chain clone -> log -> checkout; without a
+/// bound, one that answers `git_status` with `git_status` would loop on the LLM forever.
+const MAX_FOLLOWUP_DEPTH: u8 = 6;
+
+/// The largest operation output handed to the model, in bytes. A diff or a log can be
+/// arbitrarily long and the whole thing would crowd out the rest of the prompt.
+const MAX_OUTPUT_BYTES_FOR_MODEL: usize = 8000;
 
 /// Git client that performs Git operations
 pub struct GitClient;
@@ -102,22 +131,30 @@ impl GitClient {
         // freshly created client - `repo_path` started `None` and only a clone could
         // ever set it - even though the documented contract is that `remote_addr` may
         // be "a local path (for existing repo)".
+        //
+        // `local_path` is tried the same way, and for the same reason: all three startup
+        // examples tell the model to set it, and until now nothing in the client read it.
+        let local_path = read_field(&app_state, client_id, "local_path").await;
         let session = Arc::new(Mutex::new(GitSession {
-            repo_path: match Repository::open(&remote_addr) {
-                Ok(repo) => {
-                    let path = repo
-                        .workdir()
-                        .map(|w| w.to_path_buf())
-                        .unwrap_or_else(|| PathBuf::from(&remote_addr));
-                    info!(
-                        "Git client {} opened existing repository at {}",
-                        client_id,
-                        path.display()
-                    );
-                    Some(path)
-                }
-                Err(_) => None,
-            },
+            repo_path: [Some(remote_addr.clone()), local_path.clone()]
+                .into_iter()
+                .flatten()
+                .find_map(|candidate| match Repository::open(&candidate) {
+                    Ok(repo) => {
+                        let path = repo
+                            .workdir()
+                            .map(|w| w.to_path_buf())
+                            .unwrap_or_else(|| PathBuf::from(&candidate));
+                        info!(
+                            "Git client {} opened existing repository at {}",
+                            client_id,
+                            path.display()
+                        );
+                        Some(path)
+                    }
+                    Err(_) => None,
+                }),
+            local_path,
             // Seed the declared credentials. They were plumbed all the way to
             // `Cred::userpass_plaintext` but the session was built with
             // `..Default::default()`, so both were always `None` and authenticated
@@ -189,30 +226,24 @@ impl GitClient {
                     }
 
                     // Execute initial actions through the same path injected commands
-                    // use, so the git2 dispatch exists exactly once.
+                    // use, so the git2 dispatch exists exactly once. Each result is
+                    // reported back to the model as a git_operation_completed /
+                    // git_operation_error event, so a clone can be followed by a log and
+                    // the log's text actually reaches the model.
                     for action in actions {
-                        match Self::execute_git_action(
-                            &action,
+                        if Self::run_and_report(
+                            action,
                             &protocol,
                             &llm_session,
                             client_id,
                             &llm_client,
                             &app_state,
                             &status_tx,
+                            0,
                         )
                         .await
                         {
-                            Ok(Applied::Ran(detail)) => {
-                                info!("Git client {}: {}", client_id, detail);
-                            }
-                            Ok(Applied::Disconnect) => break,
-                            Err(e) => {
-                                error!("Git client {} action error: {}", client_id, e);
-                                let _ = status_tx.send(format!(
-                                    "[CLIENT] Git client {} error: {}",
-                                    client_id, e
-                                ));
-                            }
+                            break;
                         }
                     }
                 }
@@ -271,7 +302,7 @@ impl GitClient {
                 // push, to the remote) over sockets it owns and never reports byte
                 // counts for, so a number here would be invented. `Executed` carries
                 // what the operation actually produced instead.
-                Ok(Applied::Ran(detail)) => Ok(ClientSendOutcome::Executed { detail }),
+                Ok(Applied::Ran { detail, .. }) => Ok(ClientSendOutcome::Executed { detail }),
                 Ok(Applied::Disconnect) => Ok(ClientSendOutcome::Disconnected),
                 // `execute_git_action` returns `Err` both for an action the protocol
                 // rejects and for a git2 operation that failed. Only the first is
@@ -325,6 +356,133 @@ impl GitClient {
         info!("Git client {} command loop ended", client_id);
     }
 
+    /// Run one action and report what it produced back to the model, then run whatever the
+    /// model answers with. Returns `true` when the session ended.
+    ///
+    /// Boxed because it is genuinely self-referential: an action raises an event, the event
+    /// is answered with more actions, and those come back here. An `async fn` that awaits
+    /// itself has an infinitely-sized future (E0391), and `+ Send` has to be named because
+    /// this is awaited inside a `tokio::spawn`.
+    #[allow(clippy::too_many_arguments)]
+    fn run_and_report<'a>(
+        action: serde_json::Value,
+        protocol: &'a Arc<GitClientProtocol>,
+        session: &'a Arc<Mutex<GitSession>>,
+        client_id: ClientId,
+        llm_client: &'a OllamaClient,
+        app_state: &'a Arc<AppState>,
+        status_tx: &'a mpsc::UnboundedSender<String>,
+        depth: u8,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move {
+            let operation = action
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            let event = match Self::execute_git_action(
+                &action, protocol, session, client_id, llm_client, app_state, status_tx,
+            )
+            .await
+            {
+                Ok(Applied::Ran { detail, output }) => {
+                    info!("Git client {}: {}", client_id, detail);
+                    let mut data = serde_json::json!({
+                        "operation": operation,
+                        "detail": detail,
+                    });
+                    if let Some(output) = output {
+                        data["output"] = serde_json::Value::String(crate::utils::truncate_for_llm(
+                            &output,
+                            MAX_OUTPUT_BYTES_FOR_MODEL,
+                        ));
+                    }
+                    Event::new(&GIT_OPERATION_COMPLETED_EVENT, data)
+                }
+                Ok(Applied::Disconnect) => return true,
+                Err(e) => {
+                    error!("Git client {} action error: {}", client_id, e);
+                    let _ =
+                        status_tx.send(format!("[CLIENT] Git client {} error: {}", client_id, e));
+                    Event::new(
+                        &GIT_OPERATION_ERROR_EVENT,
+                        serde_json::json!({
+                            "operation": operation,
+                            "error": e.to_string(),
+                        }),
+                    )
+                }
+            };
+
+            if depth >= MAX_FOLLOWUP_DEPTH {
+                warn!(
+                    "Git client {} reached the follow-up depth limit ({}); not reporting {} \
+                     to the model",
+                    client_id, MAX_FOLLOWUP_DEPTH, event.event_type.id
+                );
+                return false;
+            }
+
+            let instruction = app_state
+                .get_instruction_for_client(client_id)
+                .await
+                .unwrap_or_default();
+            let memory = app_state
+                .get_memory_for_client(client_id)
+                .await
+                .unwrap_or_default();
+
+            match call_llm_for_client(
+                llm_client,
+                app_state,
+                client_id.to_string(),
+                &instruction,
+                &memory,
+                Some(&event),
+                protocol.as_ref(),
+                status_tx,
+            )
+            .await
+            {
+                Ok(ClientLlmResult {
+                    actions,
+                    memory_updates,
+                }) => {
+                    if let Some(mem) = memory_updates {
+                        app_state.set_memory_for_client(client_id, mem).await;
+                    }
+                    for action in actions {
+                        if Self::run_and_report(
+                            action,
+                            protocol,
+                            session,
+                            client_id,
+                            llm_client,
+                            app_state,
+                            status_tx,
+                            depth + 1,
+                        )
+                        .await
+                        {
+                            return true;
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Nothing is written to a wire here: git2 owns any socket and no peer is
+                    // waiting on us, so silence costs nothing but the log must say why.
+                    error!(
+                        "LLM error for Git client {} on {}: {}",
+                        client_id, event.event_type.id, e
+                    );
+                }
+            }
+
+            false
+        })
+    }
+
     /// Execute a Git action based on LLM decision (or on an injected command).
     ///
     /// Every git2 call is blocking - `Repository::clone` and `remote.push` do real
@@ -352,25 +510,26 @@ impl GitClient {
                 let _ = status_tx.send("__UPDATE_UI__".to_string());
                 return Ok(Applied::Disconnect);
             }
-            ClientActionResult::WaitForMore => return Ok(Applied::Ran("wait_for_more".into())),
-            ClientActionResult::NoAction => return Ok(Applied::Ran("no_action".into())),
+            ClientActionResult::WaitForMore => return Ok(Applied::ran("wait_for_more")),
+            ClientActionResult::NoAction => return Ok(Applied::ran("no_action")),
             ClientActionResult::SendData(_) => {
-                return Ok(Applied::Ran(
-                    "send_data has no meaning for a Git client (git2 owns any socket)".into(),
+                return Ok(Applied::ran(
+                    "send_data has no meaning for a Git client (git2 owns any socket)",
                 ))
             }
             ClientActionResult::Multiple(_) => {
-                return Ok(Applied::Ran(
-                    "multiple results are not produced by the Git client".into(),
+                return Ok(Applied::ran(
+                    "multiple results are not produced by the Git client",
                 ))
             }
         };
 
         // Copy the session out; git2 is synchronous, so nothing awaits while we hold it.
-        let (repo_path, username, password) = {
+        let (repo_path, local_path, username, password) = {
             let guard = session.lock().await;
             (
                 guard.repo_path.clone(),
+                guard.local_path.clone(),
                 guard.username.clone(),
                 guard.password.clone(),
             )
@@ -378,11 +537,12 @@ impl GitClient {
 
         let op_status_tx = status_tx.clone();
         let op_name = name.clone();
-        let (detail, new_repo_path) = tokio::task::spawn_blocking(move || {
+        let outcome = tokio::task::spawn_blocking(move || {
             Self::run_git_operation(
                 &op_name,
                 &data,
                 repo_path,
+                local_path.as_deref(),
                 username.as_deref(),
                 password.as_deref(),
                 client_id,
@@ -392,26 +552,28 @@ impl GitClient {
         .await
         .context("Git operation task panicked")??;
 
-        if let Some(path) = new_repo_path {
+        if let Some(path) = outcome.repo_path {
             session.lock().await.repo_path = Some(path);
         }
 
-        Ok(Applied::Ran(detail))
+        Ok(Applied::Ran {
+            detail: outcome.detail,
+            output: outcome.output,
+        })
     }
 
     /// The blocking half of [`Self::execute_git_action`]: one git2 operation.
-    ///
-    /// Returns the human-readable detail of what happened, plus the repository path when
-    /// the operation established one (`git_clone`).
+    #[allow(clippy::too_many_arguments)]
     fn run_git_operation(
         name: &str,
         data: &serde_json::Value,
         repo_path: Option<PathBuf>,
+        local_path: Option<&str>,
         username: Option<&str>,
         password: Option<&str>,
         client_id: ClientId,
         status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<(String, Option<PathBuf>)> {
+    ) -> Result<OperationOutcome> {
         // Every verb but `git_clone` needs an open repository. This used to be a silent
         // `if let Some(..)` that did nothing when no repository was open, so a model (or
         // an operator) got success-shaped silence for an operation that never ran.
@@ -430,10 +592,16 @@ impl GitClient {
                     .get("url")
                     .and_then(|v| v.as_str())
                     .context("Missing url")?;
+                // `path` falls back to the client's `local_path` startup parameter, which is
+                // what every startup example sets and what nothing used to read.
                 let path = data
                     .get("path")
                     .and_then(|v| v.as_str())
-                    .context("Missing path")?;
+                    .or(local_path)
+                    .context(
+                        "git_clone needs a 'path' to clone into, or a 'local_path' startup \
+                         parameter on the client",
+                    )?;
 
                 info!("Git client {} cloning {} to {}", client_id, url, path);
                 let _ = status_tx.send(format!(
@@ -448,10 +616,11 @@ impl GitClient {
                     "[CLIENT] Git client {} clone successful",
                     client_id
                 ));
-                Ok((
-                    format!("git_clone {url} -> {path}"),
-                    Some(PathBuf::from(path)),
-                ))
+                Ok(OperationOutcome {
+                    detail: format!("git_clone {url} -> {path}"),
+                    output: None,
+                    repo_path: Some(PathBuf::from(path)),
+                })
             }
             "git_fetch" => {
                 let remote_name = data
@@ -466,14 +635,16 @@ impl GitClient {
                 );
                 Self::git_fetch(path, remote_name, username, password)
                     .with_context(|| format!("fetch from {remote_name} failed"))?;
-                Ok((format!("git_fetch from '{remote_name}'"), None))
+                Ok(OperationOutcome::summary(format!(
+                    "git_fetch from '{remote_name}'"
+                )))
             }
             "git_status" => {
                 let path = require_repo()?;
                 info!("Git client {} getting status", client_id);
                 let status_text = Self::git_status(path).context("status failed")?;
                 info!("Git client {} status: {}", client_id, status_text);
-                Ok((
+                Ok(OperationOutcome::with_output(
                     format!(
                         "git_status: {}",
                         if status_text.trim().is_empty() {
@@ -482,7 +653,7 @@ impl GitClient {
                             status_text.trim().replace('\n', "; ")
                         }
                     ),
-                    None,
+                    status_text,
                 ))
             }
             "git_list_branches" => {
@@ -496,7 +667,10 @@ impl GitClient {
                 let branches = Self::git_list_branches(path, include_remote)
                     .context("list branches failed")?;
                 info!("Git client {} branches: {}", client_id, branches.join(", "));
-                Ok((format!("git_list_branches: {}", branches.join(", ")), None))
+                Ok(OperationOutcome::with_output(
+                    format!("git_list_branches: {}", branches.join(", ")),
+                    branches.join("\n"),
+                ))
             }
             "git_log" => {
                 let max_count =
@@ -507,9 +681,11 @@ impl GitClient {
                 let log_text = Self::git_log(path, max_count).context("log failed")?;
                 info!("Git client {} log retrieved", client_id);
                 debug!("Log:\n{}", log_text);
-                Ok((
+                // The log itself goes to the model, not just its line count: an
+                // instruction like "show me the last 5 commits" is unanswerable otherwise.
+                Ok(OperationOutcome::with_output(
                     format!("git_log: {} line(s)", log_text.lines().count()),
-                    None,
+                    log_text,
                 ))
             }
             "git_pull" => {
@@ -524,7 +700,10 @@ impl GitClient {
                 let result = Self::git_pull(path, remote_name, branch, username, password)
                     .with_context(|| format!("pull from {remote_name} failed"))?;
                 info!("Git client {} pull: {}", client_id, result);
-                Ok((format!("git_pull: {result}"), None))
+                Ok(OperationOutcome::with_output(
+                    format!("git_pull: {result}"),
+                    result,
+                ))
             }
             "git_push" => {
                 let remote_name = data
@@ -538,7 +717,10 @@ impl GitClient {
                 let result = Self::git_push(path, remote_name, branch, username, password)
                     .with_context(|| format!("push to {remote_name} failed"))?;
                 info!("Git client {} push: {}", client_id, result);
-                Ok((format!("git_push: {result}"), None))
+                Ok(OperationOutcome::with_output(
+                    format!("git_push: {result}"),
+                    result,
+                ))
             }
             "git_checkout" => {
                 let target = data
@@ -555,7 +737,10 @@ impl GitClient {
                 let result = Self::git_checkout(path, target, create)
                     .with_context(|| format!("checkout of {target} failed"))?;
                 info!("Git client {} checkout: {}", client_id, result);
-                Ok((format!("git_checkout: {result}"), None))
+                Ok(OperationOutcome::with_output(
+                    format!("git_checkout: {result}"),
+                    result,
+                ))
             }
             "git_delete_branch" => {
                 let branch = data
@@ -571,14 +756,20 @@ impl GitClient {
                     Self::git_delete_branch(path, branch, force, remote, username, password)
                         .with_context(|| format!("delete of branch {branch} failed"))?;
                 info!("Git client {} delete branch: {}", client_id, result);
-                Ok((format!("git_delete_branch: {result}"), None))
+                Ok(OperationOutcome::with_output(
+                    format!("git_delete_branch: {result}"),
+                    result,
+                ))
             }
             "git_list_tags" => {
                 let path = require_repo()?;
                 info!("Git client {} listing tags", client_id);
                 let tags = Self::git_list_tags(path).context("list tags failed")?;
                 info!("Git client {} tags: {}", client_id, tags);
-                Ok((format!("git_list_tags: {tags}"), None))
+                Ok(OperationOutcome::with_output(
+                    format!("git_list_tags: {tags}"),
+                    tags,
+                ))
             }
             "git_create_tag" => {
                 let tag_name = data
@@ -593,7 +784,10 @@ impl GitClient {
                 let result = Self::git_create_tag(path, tag_name, target, message)
                     .with_context(|| format!("creation of tag {tag_name} failed"))?;
                 info!("Git client {} create tag: {}", client_id, result);
-                Ok((format!("git_create_tag: {result}"), None))
+                Ok(OperationOutcome::with_output(
+                    format!("git_create_tag: {result}"),
+                    result,
+                ))
             }
             "git_diff" => {
                 let target = data.get("target").and_then(|v| v.as_str());
@@ -606,17 +800,16 @@ impl GitClient {
                 info!("Git client {} getting diff", client_id);
                 let diff_text = Self::git_diff(path, target, staged).context("diff failed")?;
                 info!("Git client {} diff: {}", client_id, diff_text);
-                Ok((
+                Ok(OperationOutcome::with_output(
                     format!("git_diff: {} byte(s) of diff", diff_text.len()),
-                    None,
+                    diff_text,
                 ))
             }
             other => {
                 debug!("Unhandled Git action: {}", other);
-                Ok((
-                    format!("custom result '{other}' is not handled by the Git client"),
-                    None,
-                ))
+                Ok(OperationOutcome::summary(format!(
+                    "custom result '{other}' is not handled by the Git client"
+                )))
             }
         }
     }
@@ -1091,6 +1284,38 @@ impl GitClient {
                 deletions,
                 patch_text.lines().take(50).collect::<Vec<_>>().join("\n")
             ))
+        }
+    }
+}
+
+/// What one git2 operation produced.
+struct OperationOutcome {
+    /// One-line summary for the operator and the log.
+    detail: String,
+    /// The text the operation produced — commit log, diff, branch list, status — for the
+    /// model to read. `None` for operations whose whole result fits in `detail`.
+    ///
+    /// Before this existed, `git_log` reported "12 line(s)" and threw the log away, so a
+    /// model instructed to "show me the last 5 commits" could never see one.
+    output: Option<String>,
+    /// The repository the operation established, when it established one (`git_clone`).
+    repo_path: Option<PathBuf>,
+}
+
+impl OperationOutcome {
+    fn summary(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+            output: None,
+            repo_path: None,
+        }
+    }
+
+    fn with_output(detail: impl Into<String>, output: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+            output: Some(output.into()),
+            repo_path: None,
         }
     }
 }

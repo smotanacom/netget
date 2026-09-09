@@ -69,6 +69,12 @@ requirements. This is a placeholder and doesn't represent an actual network endp
 - `remote_url`: URL of the remote repository (for clone/fetch/push)
 - `username`/`password`: Authentication credentials
 
+**Startup parameters:** `local_path`, `username`, `password` — all three are read
+by `connect_with_llm_actions`. `local_path` is opened as the working repository if
+it already is one, and is the default destination for a `git_clone` that omits
+`path`; it was declared and read by *nothing* while all three startup examples told
+the model to set it.
+
 **State Flow:**
 
 1. Client initializes with target (URL or local path)
@@ -122,9 +128,32 @@ User Instruction → git_connected event
 
 ### Event Types
 
-1. **git_connected**: Client initialized, ready for operations
-2. **git_operation_completed**: Operation succeeded (includes result details)
-3. **git_operation_error**: Operation failed (includes error message)
+1. **git_connected** (`repository_path`): client initialized, ready for operations.
+2. **git_operation_completed** (`operation`, `detail`, `output`): the verb ran.
+   `output` is what it produced — the commit log, the diff, the branch list, the
+   status text — truncated to 8 KiB for the prompt.
+3. **git_operation_error** (`operation`, `error`): the verb failed.
+
+**Until September 2026 the last two were declared and raised by nothing**, so the
+loop drawn above did not exist: the model got one turn on the connected event and
+then went deaf. `git_log` reported "12 line(s)" to the operator and threw the log
+away, so "show me the last 5 commits" was unanswerable. They were also declared as
+throwaway `EventType`s inside `get_event_types()` whose example action was
+`{"type": "placeholder"}` — a shape `execute_action` rejects, rendered verbatim
+into the documentation the model reads — and whose `git_connected` was a *different*
+value from the `GIT_CLIENT_CONNECTED_EVENT` the client actually raises. All three
+are now the real statics, and `GitClient::run_and_report` emits the two operation
+events for every action the LLM path runs.
+
+**The chain is bounded, not cut.** action → event → action is genuinely
+self-referential, so `run_and_report` returns `Pin<Box<dyn Future … + Send>>`
+(an `async fn` awaiting itself is E0391, and `+ Send` must be named because this is
+awaited inside a `tokio::spawn`) and `MAX_FOLLOWUP_DEPTH = 6` stops a model that
+answers `git_status` with `git_status`.
+
+**The injected-command path does not report.** `[ send ]` returns the outcome to
+the operator who pressed it; spending LLM budget on their behalf is not what that
+button means. Only the LLM path chains.
 
 ### Action Types
 
@@ -258,6 +287,17 @@ Errors are propagated to the LLM via `git_operation_error` events:
 ## Testing Strategy
 
 See `tests/client/git/CLAUDE.md` for test implementation details.
+
+`tests/client/git/operation_events_test.rs` pins the loop above: a temp repository
+with one commit, an in-process mock model, `git_connected` → `git_log` →
+`git_operation_completed` **matched on the commit subject appearing in `output`** →
+`disconnect`. Matching on the payload rather than the event id is what makes it a
+test of the report rather than of a name. A second case does the same for
+`git_operation_error` via a checkout of a branch that does not exist.
+
+Both `e2e_test.rs` cases remain `#[ignore]`d: they clone from github.com, which
+CLAUDE.md forbids. Note one of them mocks `git_operation_completed` — written
+against an event that could not fire, and never noticed because the test never ran.
 
 **Test Approach:**
 

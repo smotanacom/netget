@@ -28,6 +28,68 @@ pub static GIT_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     }])
 });
 
+/// Raised after every Git verb that ran, carrying what it produced.
+///
+/// This and [`GIT_OPERATION_ERROR_EVENT`] used to be declared inside `get_event_types()` as
+/// throwaway `EventType`s with a `{"type": "placeholder"}` example, and **nothing raised
+/// either of them**. The model therefore got exactly one turn — the connected event — and
+/// then went deaf: it could ask for a log and never see one. `CLAUDE.md` records this shape
+/// ("event declared and never emitted") as one of the three ways a client throws the model's
+/// answer away.
+pub static GIT_OPERATION_COMPLETED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "git_operation_completed",
+        "A Git operation finished; `output` carries what it produced",
+        json!({ "type": "disconnect" }),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "operation".to_string(),
+            type_hint: "string".to_string(),
+            description: "The action that ran, e.g. 'git_clone' or 'git_log'".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "detail".to_string(),
+            type_hint: "string".to_string(),
+            description: "One-line summary of what the operation did".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "output".to_string(),
+            type_hint: "string".to_string(),
+            description:
+                "What the operation produced - the commit log, the diff, the branch list, the \
+                 status. Truncated if very long. Absent for operations that produce no text."
+                    .to_string(),
+            required: false,
+        },
+    ])
+});
+
+/// Raised when a Git verb failed, carrying the reason.
+pub static GIT_OPERATION_ERROR_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "git_operation_error",
+        "A Git operation failed",
+        json!({ "type": "disconnect" }),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "operation".to_string(),
+            type_hint: "string".to_string(),
+            description: "The action that failed, e.g. 'git_clone'".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "error".to_string(),
+            type_hint: "string".to_string(),
+            description: "Why it failed, as reported by git".to_string(),
+            required: true,
+        },
+    ])
+});
+
 /// Git client protocol action handler
 pub struct GitClientProtocol;
 
@@ -43,7 +105,14 @@ impl Protocol for GitClientProtocol {
         vec![
             ParameterDefinition {
                 name: "local_path".to_string(),
-                description: "Local path for Git operations (clone destination or existing repo)"
+                // Read by `GitClient::connect_with_llm_actions`: it seeds the session when it
+                // names a repository that already exists, and is the default destination for
+                // a `git_clone` that omits `path`. It was declared and read by nothing at all
+                // — an advertised knob that did nothing when turned — while all three startup
+                // examples told the model to set it.
+                description: "Local path for Git operations: opened as the working repository \
+                              if it already is one, and used as the clone destination when \
+                              git_clone omits 'path'"
                     .to_string(),
                 type_hint: "string".to_string(),
                 required: false,
@@ -80,8 +149,11 @@ impl Protocol for GitClientProtocol {
                         Parameter {
                             name: "path".to_string(),
                             type_hint: "string".to_string(),
-                            description: "Local path to clone into".to_string(),
-                            required: true,
+                            description:
+                                "Local path to clone into (default: the client's local_path \
+                                 startup parameter, if one was given)"
+                                    .to_string(),
+                            required: false,
                         },
                     ],
                     example: json!({
@@ -339,22 +411,15 @@ impl Protocol for GitClientProtocol {
         "Git"
     }
     fn get_event_types(&self) -> Vec<EventType> {
+        // The statics the client actually raises. This used to build three throwaway
+        // `EventType`s whose example action was `{"type": "placeholder"}` — a shape
+        // `execute_action` rejects, rendered verbatim into the documentation the model
+        // reads — and whose `git_connected` was a *different* value from the one
+        // `GitClient::connect_with_llm_actions` raises.
         vec![
-            EventType::new(
-                "git_connected",
-                "Triggered when Git client is initialized",
-                json!({"type": "placeholder", "event_id": "git_connected"}),
-            ),
-            EventType::new(
-                "git_operation_completed",
-                "Triggered when a Git operation completes successfully",
-                json!({"type": "placeholder", "event_id": "git_operation_completed"}),
-            ),
-            EventType::new(
-                "git_operation_error",
-                "Triggered when a Git operation fails",
-                json!({"type": "placeholder", "event_id": "git_operation_error"}),
-            ),
+            GIT_CLIENT_CONNECTED_EVENT.clone(),
+            GIT_OPERATION_COMPLETED_EVENT.clone(),
+            GIT_OPERATION_ERROR_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
