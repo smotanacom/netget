@@ -242,6 +242,22 @@ impl TlsServer {
                                         Ok(n) => {
                                             let data = Bytes::copy_from_slice(&buffer[..n]);
 
+                                            // Keep the rail's down/up counters and
+                                            // `last_activity` moving. Nothing else updates
+                                            // them for TLS, so every connection was drawn
+                                            // with 0B in both directions however much it
+                                            // carried.
+                                            app_state_for_read
+                                                .update_connection_stats(
+                                                    server_id,
+                                                    connection_id,
+                                                    Some(n as u64),
+                                                    None,
+                                                    Some(1),
+                                                    None,
+                                                )
+                                                .await;
+
                                             // Data summary + full payload are FileOnly: the
                                             // tls_data_received event template renders the
                                             // equivalent lines to the TUI, so streaming the
@@ -305,6 +321,18 @@ impl TlsServer {
                                                 .lock()
                                                 .await
                                                 .remove(&connection_id);
+                                            // Close it in AppState as well. Dropping only the
+                                            // map entry left the connection drawn as Active
+                                            // for the life of the server, and every later
+                                            // stat update targeted a peer that was gone.
+                                            app_state_for_read
+                                                .close_connection_on_server(
+                                                    server_id,
+                                                    connection_id,
+                                                )
+                                                .await;
+                                            let _ = status_tx_for_read
+                                                .send("__UPDATE_UI__".to_string());
                                             break;
                                         }
                                     }
@@ -407,6 +435,16 @@ impl TlsServer {
                                         ));
                                     }
                                     log.debug(format!("Sent banner to {connection_id}"));
+                                    app_state
+                                        .update_connection_stats(
+                                            server_id,
+                                            connection_id,
+                                            None,
+                                            Some(output_data.len() as u64),
+                                            None,
+                                            Some(1),
+                                        )
+                                        .await;
                                 }
                             }
                             ActionResult::CloseConnection => {
@@ -642,6 +680,16 @@ impl TlsServer {
                                         output_data.len(),
                                         connection_id
                                     ));
+                                    app_state
+                                        .update_connection_stats(
+                                            server_id,
+                                            connection_id,
+                                            None,
+                                            Some(output_data.len() as u64),
+                                            None,
+                                            Some(1),
+                                        )
+                                        .await;
                                 }
                             }
                             ActionResult::CloseConnection => {
