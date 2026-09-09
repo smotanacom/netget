@@ -27,3 +27,22 @@ runners lack ffmpeg; run manually:
 ```
 
 Localhost only.
+
+---
+
+## parser_test.rs — a complete request behind non-text bytes
+
+`parse_rtsp_request` used to decode the **whole** read buffer as UTF-8 before looking for the
+header terminator, so anything the buffer happened to contain past the end of a valid request
+invalidated the request too — a multi-byte character split across two TCP segments, a binary
+body, a second pipelined request still arriving. The connection then sat with a fully-formed
+request unanswered until the 1 MiB overflow closed it: a head-of-line stall that reads as a hung
+server.
+
+Two tests, in-process with a static handler and **zero LLM calls**:
+
+- `rtsp_answers_a_plain_request` — the control. A lone OPTIONS is answered 200 with its CSeq
+  echoed. Without it, the next test proves nothing.
+- `rtsp_answers_a_complete_request_followed_by_non_utf8_bytes` — the same OPTIONS with a trailing
+  `0xFF` in the same segment. `0xFF` is never valid UTF-8 and is exactly what the leading byte of
+  a split multi-byte character looks like to the old whole-buffer decode.
