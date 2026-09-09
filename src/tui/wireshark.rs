@@ -175,6 +175,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // PLAIN_TCP default, which is simply the wrong transport. Dissector names checked
         // against this machine's tshark: present in `-G protocols` and accepted by
         // `-d udp.port==N,<name>` (a bogus name is rejected there, so the check is real).
+        // The DynamoDB *client* reports protocol_name() "DynamoDB" -> "dynamodb", which the
+        // web arm above does not list (it has only the server's "dynamo"), so it fell through
+        // to PLAIN_TCP and lost the HTTP dissector.
+        "dynamodb" => tcp("http"),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),

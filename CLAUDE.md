@@ -218,6 +218,14 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   2131 decoder: an independent reading of the spec, but not an independent implementation.
 
   Re-derive this list rather than trusting it; the counts drift.
+
+  **And check that the mechanism giving the evidence its force actually covers every verb the
+  rating names.** `s3`'s Beta rests on each operation being pinned to `expect_calls(1)` through
+  a `retry` helper — the point being that a response rust-s3 *rejects* makes it retry, which
+  breaks the count. But `head_object` and `delete_object` were issued **outside** that helper,
+  with their errors swallowed into a `println!("[INFO] …")`, so those two verbs were named in
+  the Beta claim while asserted by nothing. The rating was right; two fifths of its evidence
+  was decorative.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
   majority (100 of the 136 `src/server/*/actions.rs` the script below walks). Note the script
   reports one `NONE`: `src/server/http_common/actions.rs`, which is a shared response helper
@@ -1116,6 +1124,25 @@ Read before assuming a subsystem is sound:
   `http` and `openapi` all rebuilt it every time, and `http`/`openapi` additionally built one
   at connect and dropped it), and pass `tls_built_in_root_certs(false)` when
   `danger_accept_invalid_certs` is set, since nothing will be checked against those roots.
+
+- **A client that loses its target must fail, never fall back to the real service.** The
+  DynamoDB client took the address as `_remote_addr` and dropped it, so with no explicit
+  `endpoint_url` the AWS SDK resolved its default — `https://dynamodb.<region>.amazonaws.com` —
+  and signed with whatever ambient credentials the machine had. **A client the operator pointed
+  at localhost issued real reads and writes against real AWS**, and that is the shape of the
+  protocol's own startup examples. The S3 client had the mirror image: it read its parameters
+  from `protocol_data`, which nothing populates before `connect()`, so every client signed with
+  empty credentials and was pinned to `us-east-1`.
+
+  Any client wrapping a vendor SDK inherits that SDK's defaults, and those defaults point at
+  production. Read the target, and if it is missing, **refuse to connect** — do not let a
+  library's fallback decide where NetGet's traffic goes.
+
+  Related and worth knowing: **no server in the cloud family validates any signature**, and
+  none puts `Authorization` / `X-Amz-Date` into the event either, so the model cannot make that
+  decision on their behalf — every request is served unconditionally. Snowflake shows the model
+  `has_auth_token` as a **boolean that is true for any token**, including one the server never
+  issued. That is fine for a mock, but it must be said out loud rather than implied away.
 
 - **A recursive parser without a depth bound kills the whole process, and `tokio::spawn`
   cannot save you.** A Rust stack overflow is a `SIGSEGV` against the guard page, not a panic —
