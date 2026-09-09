@@ -71,7 +71,34 @@ through conversation context rather than persistent storage.
    `WireFailure` category. It used to return `{}`, which *is* the documented success body for
    PutItem and DeleteItem — so a declined write looked performed — and reads as "no such item"
    for GetItem.
-9. Close connection (HTTP/1.1 without keep-alive)
+9. The connection stays open for the next request — `http1::serve_connection` honours
+   HTTP/1.1 keep-alive, and the AWS SDK reuses the connection. (This step used to say
+   "close connection (HTTP/1.1 without keep-alive)", contradicting the connection-handling
+   section below in the same file.)
+
+### Failure semantics — and the `decision=` tags
+
+Every request is logged with a stable `decision=` tag, as `src/server/radius/` does, so an
+operator can tell the model's answer from netget failing to reach one:
+
+- `decision=model_answer` / `decision=model_reject` — the model produced a `dynamo_response`;
+  reject is a 4xx/5xx status it chose itself (DEBUG)
+- `decision=fail_closed_no_action` — the handler ran and produced no `dynamo_response`. WARN,
+  answered `500 InternalServerError` (step 8 above)
+- `decision=fail_closed_body_rejected` — the request body exceeded `MAX_REQUEST_BYTES`
+  (4 MiB) or could not be read. WARN, answered `413 RequestEntityTooLarge`, which is
+  DynamoDB's own error for this. The request never reaches the model: a body truncated to
+  nothing used to arrive as a well-formed operation with no arguments
+- `decision=fail_closed_llm_error category=Overloaded|Unavailable` — netget could not reach
+  a decision. WARN, and the **only** place the error text is written; it goes to
+  `netget.log` and the status stream and never to the peer
+
+On an LLM failure the peer gets a category from `crate::utils::WireFailure`, never the error
+itself, and the two categories keep distinct codes: `Overloaded` → `503`
+`ServiceUnavailable` + `Retry-After: 5`, which the AWS SDK's default retry policy honours,
+and `Unavailable` → `500` `InternalServerError`, which is terminal. Both used to be a
+hardcoded `500 {"__type":"InternalServerError","message":"Internal server error"}`, so a
+transient backend saturation looked like a permanent fault and the SDK did not retry.
 
 ### Operation Detection
 
@@ -162,8 +189,8 @@ body='{"__type":"ResourceNotFoundException","message":"Table not found"}'
 - Connection state stored in `ServerInstance.connections` HashMap
 - No protocol-specific connection state is recorded (`ProtocolConnectionInfo::empty()`);
   there is no `recent_operations` list
-- Tracks: remote_addr, local_addr. `bytes_sent`/`bytes_received` are initialised to 0 and
-  never updated
+- Tracks: remote_addr, local_addr, and `bytes_received`/`bytes_sent`, updated once per
+  request/response pair so the rail's counters move
 - Status: Active → Closed when the connection ends
 
 ### Concurrency
@@ -178,9 +205,15 @@ body='{"__type":"ResourceNotFoundException","message":"Table not found"}'
 ### Protocol Features
 
 - **No persistent storage** - data only exists in LLM conversation context
-- **No authentication** - AWS signature verification not implemented
+- **No authentication** - AWS SigV4 is neither parsed nor validated, and none of the
+  signing headers (`Authorization`, `X-Amz-Date`, `X-Amz-Security-Token`) are put into
+  `dynamo_request`, so the model cannot make an authentication decision either. Every
+  request is served unconditionally, signed or not
 - **HTTP/1.1 only** - no HTTP/2 support
-- **No streaming** - full request/response buffering
+- **No streaming** - full request/response buffering, capped at `MAX_REQUEST_BYTES` (4 MiB)
+  in `mod.rs`; a larger body is refused with `413 RequestEntityTooLarge` and never reaches
+  the model. DynamoDB itself allows 16 MiB for BatchWriteItem, so a batch that large is
+  refused here — the model could not usefully read it anyway
 - **Limited operations** - only common CRUD operations supported
 - **No transactions** - no atomic multi-item operations
 - **No TTL** - time-to-live not supported

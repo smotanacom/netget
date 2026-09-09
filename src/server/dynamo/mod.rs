@@ -10,8 +10,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
+use http_body_util::{BodyExt, Full, Limited};
+use hyper::body::{Body, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -26,6 +26,14 @@ use crate::server::connection::ConnectionId;
 use crate::server::DynamoProtocol;
 use crate::state::app_state::AppState;
 use crate::{console_error, console_info};
+
+/// Largest request body this server will buffer.
+///
+/// The body was read with an unbounded `req.into_body().collect()`, so a single request
+/// could grow the process without limit. DynamoDB caps an item at 400 KiB and a
+/// BatchWriteItem at 16 MiB; 4 MiB covers every single-item operation with headroom, and
+/// the model could not usefully read a larger body anyway.
+const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 /// DynamoDB server that delegates API operations to LLM
 pub struct DynamoServer;
@@ -147,9 +155,53 @@ impl DynamoServer {
 }
 
 /// Handle a single DynamoDB request with LLM
+/// Handle a single DynamoDB request with LLM, then record what crossed the wire.
+///
+/// The rail's byte counters and the connection-scoped task prompts read
+/// `bytes_received`/`bytes_sent`, and this server left both at the zero it registered the
+/// connection with, so every DynamoDB peer showed no traffic at all however much it moved.
 async fn handle_dynamo_request_with_llm(
     req: Request<Incoming>,
-    _connection_id: ConnectionId,
+    connection_id: ConnectionId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<DynamoProtocol>,
+    server_id: crate::state::ServerId,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let received = req.body().size_hint().lower();
+    let response = handle_dynamo_request_inner(
+        req,
+        llm_client,
+        app_state.clone(),
+        status_tx.clone(),
+        protocol,
+        server_id,
+    )
+    .await;
+
+    let sent = response
+        .as_ref()
+        .ok()
+        .and_then(|resp| resp.body().size_hint().exact())
+        .unwrap_or(0);
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            Some(received),
+            Some(sent),
+            Some(1),
+            Some(1),
+        )
+        .await;
+    let _ = status_tx.send("__UPDATE_UI__".to_string());
+
+    response
+}
+
+async fn handle_dynamo_request_inner(
+    req: Request<Incoming>,
     llm_client: OllamaClient,
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
@@ -170,12 +222,34 @@ async fn handle_dynamo_request_with_llm(
         .unwrap_or("Unknown")
         .to_string();
 
-    // Read JSON body
-    let body_bytes = match req.into_body().collect().await {
+    // Read the JSON body, capped at MAX_REQUEST_BYTES. Refuse rather than continue with an
+    // empty body: an operation whose parameters were truncated away used to reach the model
+    // as a well-formed request with no arguments, and be answered as one. 413
+    // RequestEntityTooLarge is DynamoDB's own error for this.
+    let body_bytes = match Limited::new(req.into_body(), MAX_REQUEST_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            console_error!(status_tx, "Failed to read DynamoDB request body: {}", e);
-            Bytes::new()
+            warn!(
+                "DynamoDB {} decision=fail_closed_body_rejected (limit {} bytes): {}",
+                operation, MAX_REQUEST_BYTES, e
+            );
+            console_error!(
+                status_tx,
+                "DynamoDB refusing {}: request body exceeds {} bytes",
+                operation,
+                MAX_REQUEST_BYTES
+            );
+            return Ok(build_dynamo_response(
+                413,
+                serde_json::json!({
+                    "__type": "RequestEntityTooLarge",
+                    "message": "request body rejected",
+                })
+                .to_string(),
+            ));
         }
     };
 
@@ -242,9 +316,23 @@ async fn handle_dynamo_request_with_llm(
                                 data.get("status").and_then(|v| v.as_u64()).unwrap_or(200) as u16;
                             let body = data.get("body").and_then(|v| v.as_str()).unwrap_or("{}");
 
-                            debug!("DynamoDB response: status={}", status);
+                            // `decision=` is a stable grep target, as in `src/server/radius/`:
+                            // an operator has to be able to tell the model answering from
+                            // netget failing to reach one.
+                            let decision = if (400..=599).contains(&status) {
+                                "model_reject"
+                            } else {
+                                "model_answer"
+                            };
+                            debug!(
+                                "DynamoDB {} decision={} status={}",
+                                operation, decision, status
+                            );
                             let log = Log::new(Some(&status_tx));
-                            log.debug(format!("DynamoDB → {} response", status));
+                            log.debug(format!(
+                                "DynamoDB {} decision={} → {}",
+                                operation, decision, status
+                            ));
                             log.trace(format!("DynamoDB response body: {}", body));
 
                             return Ok(build_dynamo_response(status, body.to_string()));
@@ -283,15 +371,44 @@ async fn handle_dynamo_request_with_llm(
             Ok(build_dynamo_response(500, error_response.to_string()))
         }
         Err(e) => {
-            console_error!(status_tx, "LLM error for DynamoDB request: {}", e);
+            // netget could not reach a decision at all. The peer gets a category, the log
+            // gets the error. The two categories map onto DynamoDB's own retryable and
+            // non-retryable faults so an SDK backs off rather than recording a permanent
+            // failure: `ServiceUnavailable` (503) is retried by every AWS SDK's default
+            // policy, `InternalServerError` (500) is the terminal one. Collapsing both onto
+            // 500, as this used to, makes transient backend saturation look permanent.
+            let failure = crate::utils::WireFailure::classify(&e);
+            warn!(
+                "DynamoDB {} decision=fail_closed_llm_error category={:?}: {}",
+                operation, failure, e
+            );
+            console_error!(
+                status_tx,
+                "DynamoDB {} failing closed ({:?}): {}",
+                operation,
+                failure,
+                e
+            );
 
-            // Return DynamoDB error format
-            let error_response = serde_json::json!({
-                "__type": "InternalServerError",
-                "message": "Internal server error"
-            });
+            let (status, aws_type) = match failure {
+                crate::utils::WireFailure::Overloaded => (503, "ServiceUnavailable"),
+                crate::utils::WireFailure::Unavailable => (500, "InternalServerError"),
+            };
 
-            Ok(build_dynamo_response(500, error_response.to_string()))
+            let mut response = build_dynamo_response(
+                status,
+                serde_json::json!({
+                    "__type": aws_type,
+                    "message": failure.text(),
+                })
+                .to_string(),
+            );
+            if failure == crate::utils::WireFailure::Overloaded {
+                response
+                    .headers_mut()
+                    .insert("Retry-After", hyper::header::HeaderValue::from_static("5"));
+            }
+            Ok(response)
         }
     }
 }
