@@ -9,10 +9,27 @@
 
 use super::super::super::helpers::{self, E2EResult, NetGetConfig};
 use hickory_client::client::{AsyncClient, ClientHandle};
-use hickory_client::rr::{DNSClass, Name, RecordType};
+use hickory_client::op::ResponseCode;
+use hickory_client::rr::{DNSClass, Name, RData, RecordType};
 use hickory_client::udp::UdpClientStream;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
+
+/// The single A record in a reply's answer section, as an address.
+///
+/// `None` when the answer section does not hold exactly one A record — which must fail the
+/// test rather than pass quietly. `assert!(!answers.is_empty())` was the previous bar, and it
+/// passes for an executor that ignores the `ip` it was given.
+fn answer_a(response: &hickory_client::op::DnsResponse) -> Option<Ipv4Addr> {
+    let answers = response.answers();
+    if answers.len() != 1 {
+        return None;
+    }
+    match answers[0].data() {
+        Some(RData::A(addr)) => Some(addr.0),
+        _ => None,
+    }
+}
 
 #[tokio::test]
 async fn test_dns_a_record_query() -> E2EResult<()> {
@@ -62,8 +79,16 @@ async fn test_dns_a_record_query() -> E2EResult<()> {
     let server = helpers::start_netget_server(server_config).await?;
     println!("DNS server started on port {}", server.port);
 
-    // Wait for DNS server to fully initialize
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Wait on the server's own readiness line, not a fixed sleep.
+    //
+    // `start_netget_server` returns when startup has been *parsed*; the UDP socket may not be
+    // bound for a moment longer, and a datagram to an unbound local port draws an ICMP port
+    // unreachable rather than being queued. 500ms was usually enough and is not a guarantee
+    // under `--test-threads=100`.
+    server
+        .wait_for_log("DNS server listening on", 20)
+        .await
+        .map_err(|e| format!("DNS server never reported a listening socket: {e}"))?;
 
     // VALIDATION: Use hickory-client to query DNS
     println!("Querying example.com A record...");
@@ -80,21 +105,19 @@ async fn test_dns_a_record_query() -> E2EResult<()> {
     let response = client.query(name, DNSClass::IN, RecordType::A).await?;
 
     println!("DNS response received:");
-    let answers = response.answers();
-    assert!(
-        !answers.is_empty(),
-        "Expected at least one A record in response"
+    assert_eq!(
+        answer_a(&response),
+        Some("93.184.216.34".parse::<Ipv4Addr>().unwrap()),
+        "example.com must resolve to the address its handler chose; got {:?}",
+        response.answers()
+    );
+    assert_eq!(
+        response.response_code(),
+        ResponseCode::NoError,
+        "a successful A answer must carry RCODE 0"
     );
 
-    for record in answers {
-        println!("  Record: {:?}", record);
-    }
-
-    // Check that we got a response
-    println!(
-        "✓ DNS A record query succeeded with {} answers",
-        answers.len()
-    );
+    println!("✓ DNS A record query returned 93.184.216.34");
 
     // Verify mock expectations were met
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -170,8 +193,16 @@ async fn test_dns_multiple_records() -> E2EResult<()> {
     let server = helpers::start_netget_server(server_config).await?;
     println!("DNS server started on port {}", server.port);
 
-    // Wait for server to initialize
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Wait on the server's own readiness line, not a fixed sleep.
+    //
+    // `start_netget_server` returns when startup has been *parsed*; the UDP socket may not be
+    // bound for a moment longer, and a datagram to an unbound local port draws an ICMP port
+    // unreachable rather than being queued. 500ms was usually enough and is not a guarantee
+    // under `--test-threads=100`.
+    server
+        .wait_for_log("DNS server listening on", 20)
+        .await
+        .map_err(|e| format!("DNS server never reported a listening socket: {e}"))?;
 
     // VALIDATION: Query multiple domains
     let address: SocketAddr = format!("127.0.0.1:{}", server.port).parse()?;
@@ -183,27 +214,28 @@ async fn test_dns_multiple_records() -> E2EResult<()> {
     println!("Querying example.com...");
     let name1 = Name::from_str("example.com.")?;
     let response1 = client.query(name1, DNSClass::IN, RecordType::A).await?;
-    assert!(
-        !response1.answers().is_empty(),
-        "Expected answer for example.com"
+    // The two domains answer with different addresses, so a reply routed to the wrong
+    // question is visible here. Asserting only that *some* record came back could not
+    // tell the two apart.
+    assert_eq!(
+        answer_a(&response1),
+        Some("1.2.3.4".parse::<Ipv4Addr>().unwrap()),
+        "example.com must resolve to 1.2.3.4; got {:?}",
+        response1.answers()
     );
-    println!(
-        "  ✓ example.com returned {} records",
-        response1.answers().len()
-    );
+    println!("  ✓ example.com returned 1.2.3.4");
 
     // Query mail.example.com
     println!("Querying mail.example.com...");
     let name2 = Name::from_str("mail.example.com.")?;
     let response2 = client.query(name2, DNSClass::IN, RecordType::A).await?;
-    assert!(
-        !response2.answers().is_empty(),
-        "Expected answer for mail.example.com"
+    assert_eq!(
+        answer_a(&response2),
+        Some("5.6.7.8".parse::<Ipv4Addr>().unwrap()),
+        "mail.example.com must resolve to its own address, not example.com's; got {:?}",
+        response2.answers()
     );
-    println!(
-        "  ✓ mail.example.com returned {} records",
-        response2.answers().len()
-    );
+    println!("  ✓ mail.example.com returned 5.6.7.8");
 
     // Verify mock expectations were met
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -263,8 +295,16 @@ async fn test_dns_txt_record() -> E2EResult<()> {
     let server = helpers::start_netget_server(server_config).await?;
     println!("DNS server started on port {}", server.port);
 
-    // Wait for server to initialize
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Wait on the server's own readiness line, not a fixed sleep.
+    //
+    // `start_netget_server` returns when startup has been *parsed*; the UDP socket may not be
+    // bound for a moment longer, and a datagram to an unbound local port draws an ICMP port
+    // unreachable rather than being queued. 500ms was usually enough and is not a guarantee
+    // under `--test-threads=100`.
+    server
+        .wait_for_log("DNS server listening on", 20)
+        .await
+        .map_err(|e| format!("DNS server never reported a listening socket: {e}"))?;
 
     // VALIDATION: Query TXT record
     let address: SocketAddr = format!("127.0.0.1:{}", server.port).parse()?;
@@ -278,13 +318,21 @@ async fn test_dns_txt_record() -> E2EResult<()> {
 
     println!("DNS TXT response received:");
     let answers = response.answers();
-    assert!(!answers.is_empty(), "Expected at least one TXT record");
+    assert_eq!(answers.len(), 1, "Expected exactly one TXT record");
 
-    for record in answers {
-        println!("  TXT Record: {:?}", record);
-    }
+    let txt = match answers[0].data() {
+        Some(RData::TXT(txt)) => txt
+            .iter()
+            .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+            .collect::<String>(),
+        other => panic!("expected a TXT record in the answer section, got {other:?}"),
+    };
+    assert_eq!(
+        txt, "v=spf1 include:_spf.example.com ~all",
+        "the TXT record must carry the text the handler chose"
+    );
 
-    println!("✓ DNS TXT record query succeeded");
+    println!("✓ DNS TXT record returned the expected text");
 
     // Verify mock expectations were met
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -342,8 +390,16 @@ async fn test_dns_nxdomain() -> E2EResult<()> {
     let server = helpers::start_netget_server(server_config).await?;
     println!("DNS server started on port {}", server.port);
 
-    // Wait for server to initialize
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Wait on the server's own readiness line, not a fixed sleep.
+    //
+    // `start_netget_server` returns when startup has been *parsed*; the UDP socket may not be
+    // bound for a moment longer, and a datagram to an unbound local port draws an ICMP port
+    // unreachable rather than being queued. 500ms was usually enough and is not a guarantee
+    // under `--test-threads=100`.
+    server
+        .wait_for_log("DNS server listening on", 20)
+        .await
+        .map_err(|e| format!("DNS server never reported a listening socket: {e}"))?;
 
     // VALIDATION: Query an unknown domain
     let address: SocketAddr = format!("127.0.0.1:{}", server.port).parse()?;
@@ -351,23 +407,49 @@ async fn test_dns_nxdomain() -> E2EResult<()> {
     let (mut client, bg) = AsyncClient::connect(stream).await?;
     tokio::spawn(bg);
 
-    println!("Querying unknown.example.com (should get NXDOMAIN or empty response)...");
+    println!("Querying unknown.example.com, which the handler answers with NXDOMAIN...");
     let name = Name::from_str("unknown.example.com.")?;
 
-    // Try to query - might get an error or empty response depending on implementation
-    match client.query(name, DNSClass::IN, RecordType::A).await {
-        Ok(response) => {
-            // Server might return empty answers or NXDOMAIN response code
-            println!("  Response code: {:?}", response.response_code());
-            println!("  Answers: {}", response.answers().len());
-            println!("  ✓ DNS server responded (implementation-dependent behavior)");
-        }
-        Err(e) => {
-            // Might get an error for NXDOMAIN
-            println!("  Got error (expected for NXDOMAIN): {:?}", e);
-            println!("  ✓ DNS server indicated domain not found");
-        }
-    }
+    // This is the assertion the test exists for, and it was missing: the old version
+    // matched on `Ok`/`Err` and printed "implementation-dependent behavior" in one arm and
+    // "server indicated domain not found" in the other, so *every* outcome passed —
+    // including NOERROR with an empty answer section, which means the opposite of NXDOMAIN
+    // to a resolver. Nothing about this is implementation-dependent: the mock forces
+    // `send_dns_nxdomain`, so RCODE 3 is the only correct answer.
+    let response = client
+        .query(name.clone(), DNSClass::IN, RecordType::A)
+        .await?;
+
+    assert_eq!(
+        response.response_code(),
+        ResponseCode::NXDomain,
+        "send_dns_nxdomain must set RCODE 3; got {:?} with {} answers",
+        response.response_code(),
+        response.answers().len()
+    );
+    assert!(
+        response.answers().is_empty(),
+        "NXDOMAIN carries no answer records; got {:?}",
+        response.answers()
+    );
+    // With no answer section, the echoed question is the only thing tying this reply to
+    // the query — a resolver discards it otherwise.
+    assert_eq!(
+        response.queries().len(),
+        1,
+        "the reply must echo exactly one question"
+    );
+    assert_eq!(
+        response.queries()[0].name(),
+        &name,
+        "the reply must echo the queried name"
+    );
+    assert_eq!(
+        response.queries()[0].query_type(),
+        RecordType::A,
+        "send_dns_nxdomain defaults query_type to A, which is what was asked"
+    );
+    println!("  ✓ NXDOMAIN (RCODE 3), no answers, question echoed");
 
     // Verify mock expectations were met
     // Wait for the exchange the mocks describe, rather than trusting a fixed
