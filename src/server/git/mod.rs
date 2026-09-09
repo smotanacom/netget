@@ -44,6 +44,7 @@ use crate::server::git::actions::{
 };
 use crate::server::git::pack::{build_repo, hex_id, write_pack, BuiltRepo, CommitMeta, RepoFile};
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 
 /// Capabilities advertised on the first ref line.
 ///
@@ -53,6 +54,14 @@ use crate::state::app_state::AppState;
 /// the capability keeps every response in the one framing that is always right, at the cost of
 /// no progress or error side-channel during transfer.
 const BASE_CAPABILITIES: &str = "no-progress agent=netget";
+
+/// Largest `POST /git-upload-pack` body this server will buffer, in bytes.
+///
+/// The body is a list of `want`/`have` lines and is tiny in practice - a clone of a
+/// single-commit repository sends a few hundred bytes. An unbounded `collect()` lets one
+/// unauthenticated client grow the process by whatever it cares to send, so the read is
+/// capped and an oversized body is refused with 413.
+const MAX_UPLOAD_PACK_BYTES: usize = 1024 * 1024;
 
 /// Shared per-request context, so each handler does not take nine positional arguments.
 struct RequestContext {
@@ -239,14 +248,19 @@ async fn handle_git_request(
                 .unwrap_or("")
                 .to_string();
 
-            let body_bytes = match req.collect().await {
+            // Bounded read: `Limited` errors as soon as the cap is passed rather than after
+            // buffering the whole thing, so an oversized body costs at most the cap.
+            let limited = http_body_util::Limited::new(req.into_body(), MAX_UPLOAD_PACK_BYTES);
+            let body_bytes = match limited.collect().await {
                 Ok(collected) => collected.to_bytes(),
                 Err(e) => {
-                    Log::new(Some(&ctx.status_tx))
-                        .error(format!("Failed to read request body: {}", e));
+                    Log::new(Some(&ctx.status_tx)).error(format!(
+                        "Git refusing upload-pack body ({}); limit is {} bytes",
+                        e, MAX_UPLOAD_PACK_BYTES
+                    ));
                     return Ok(build_error_response(
-                        StatusCode::BAD_REQUEST,
-                        "Failed to read request body",
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "git-upload-pack request body is too large",
                     ));
                 }
             };
@@ -448,6 +462,14 @@ enum Outcome {
 }
 
 /// Raise the event, then turn whatever the handler or model produced into a repository.
+///
+/// Three failure shapes are kept apart by a `decision=` tag, as in `src/server/radius/`:
+/// the call itself failed (`fail_closed_overloaded` / `fail_closed_llm_error`), the model
+/// answered with a refusal (`model_reject`), or the model answered nothing this endpoint
+/// can use (`fail_closed_no_action`). The peer is told only a
+/// [`WireFailure`] category — 503 + `Retry-After` when the backend is saturated so git
+/// backs off, 500 otherwise — never the error text, which names the backend, the model and
+/// our own retry machinery.
 async fn resolve_repository(
     ctx: &RequestContext,
     event: &Event,
@@ -464,11 +486,23 @@ async fn resolve_repository(
     {
         Ok(result) => result,
         Err(e) => {
-            Log::new(Some(&ctx.status_tx)).warn(format!("Git LLM error on {}: {}", event.id(), e));
-            return Err(build_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Server could not produce a repository for this request",
+            let failure = WireFailure::classify(&e);
+            let decision = if failure.is_overloaded() {
+                "fail_closed_overloaded"
+            } else {
+                "fail_closed_llm_error"
+            };
+            Log::new(Some(&ctx.status_tx)).error(format!(
+                "Git {} decision={} error: {}",
+                event.id(),
+                decision,
+                e
             ));
+            return Err(if failure.is_overloaded() {
+                build_retryable_error_response(failure.text())
+            } else {
+                build_error_response(StatusCode::INTERNAL_SERVER_ERROR, failure.text())
+            });
         }
     };
 
@@ -497,6 +531,13 @@ async fn resolve_repository(
                     .and_then(|v| v.as_str())
                     .unwrap_or("Error");
                 let code = data.get("code").and_then(|v| v.as_u64()).unwrap_or(500) as u16;
+                // The model answered, and its answer was a refusal — distinct in the log
+                // from both "answered nothing" and "the call errored".
+                Log::new(Some(&ctx.status_tx)).info(format!(
+                    "Git {} decision=model_reject code={}",
+                    event.id(),
+                    code
+                ));
                 return Ok(Outcome::Error(build_error_response(
                     StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                     message,
@@ -506,13 +547,14 @@ async fn resolve_repository(
         }
     }
 
+    // The call succeeded and the answer contained neither a repository nor a refusal.
     Log::new(Some(&ctx.status_tx)).warn(format!(
-        "Git: no git_repository/git_error action for {}",
+        "Git {} decision=fail_closed_no_action (expected git_repository or git_error)",
         event.id()
     ));
     Err(build_error_response(
         StatusCode::INTERNAL_SERVER_ERROR,
-        "No repository was provided for this request",
+        WireFailure::Unavailable.text(),
     ))
 }
 
@@ -656,6 +698,18 @@ fn build_error_response(status: StatusCode, message: &str) -> Response<Full<Byte
     Response::builder()
         .status(status)
         .header("Content-Type", "text/plain")
+        .body(Full::new(Bytes::from(format!("Error: {}\n", message))))
+        .expect("static header values are valid")
+}
+
+/// A retryable failure: 503 with `Retry-After`, so git reports "server unavailable, retry"
+/// rather than recording a permanent fault as a bare 500 would. Same shape as
+/// `src/server/http_common/handler.rs` and `src/server/mercurial/mod.rs`.
+fn build_retryable_error_response(message: &str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header("Content-Type", "text/plain")
+        .header(hyper::header::RETRY_AFTER, "1")
         .body(Full::new(Bytes::from(format!("Error: {}\n", message))))
         .expect("static header values are valid")
 }
