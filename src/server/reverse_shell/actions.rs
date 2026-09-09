@@ -401,9 +401,16 @@ pub static REVERSE_SHELL_SESSION_OPENED_EVENT: LazyLock<EventType> = LazyLock::n
             "prompt": "www-data@web01:/var/www$ "
         }),
     )
+    // NO_SHELL_OUTPUT belongs here because the description above offers "stay silent and wait
+    // for their first command" as a choice, and without this action there was no way to say it:
+    // `call_llm` builds the tool list from the event, so a model taking the description at its
+    // word answered with zero actions — which `consult` reads as FailClosed::NoUsableAnswer and
+    // `apply` turns into a failure notice and a FIN. Following the documentation dropped the
+    // session. The alternative example below named the same verb the model had not been given.
     .with_actions(vec![
         SEND_SHELL_PROMPT_ACTION.clone(),
         SEND_SHELL_OUTPUT_ACTION.clone(),
+        NO_SHELL_OUTPUT_ACTION.clone(),
         END_SHELL_SESSION_ACTION.clone(),
     ])
     .with_alternative_example(json!({ "type": "no_shell_output" }))

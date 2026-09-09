@@ -30,12 +30,20 @@ would otherwise answer a network event with `open_server`.
 
 ## LLM call budget
 
-**Total: 6.**
+**Total: 9.**
 
 | Test | Calls |
 |---|---|
 | `test_reverse_shell_command_output` | 3 (start + session_opened + command) |
 | `test_reverse_shell_fails_closed_on_no_answer` | 3 (start + session_opened + command) |
+| `test_silent_greeting_keeps_the_session` | 3 (start + session_opened + command) |
+
+`test_silent_greeting_keeps_the_session` covers the one case the other two cannot: a
+`session_opened` answered with `no_shell_output` must leave the session usable. Answering with
+*nothing* is `NoUsableAnswer` and hangs up, and until `no_shell_output` was added to that
+event's actions the model had no way to express the difference — so a model following the
+event's own description ("stay silent and wait for their first command") dropped the session.
+The middle step, asserting a silent two-second gap after connect, is what separates the two.
 
 Every rule is `expect_calls(1)`, so a call the server should not have made fails the run.
 
