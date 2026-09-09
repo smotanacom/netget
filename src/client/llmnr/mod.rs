@@ -74,6 +74,17 @@ const DEFAULT_RESPONSE_WAIT_SECS: u64 = 2;
 /// otherwise run until the per-client LLM budget stopped it, having flooded the link.
 const MAX_FOLLOWUP_DEPTH: usize = 6;
 
+/// How many rejection reasons one query keeps.
+///
+/// Rejecting a datagram costs no LLM call, so the collection loop will process as many as
+/// arrive — and an LLMNR querier sits on an ephemeral port on a *multicast* link, where the
+/// query it just sent is visible to everyone. Without a cap, one flood inside the response
+/// window allocates a `String` per datagram, sends one unbounded status message per datagram,
+/// and then puts the whole list into the model's prompt as `discard_reasons`. Ten is enough
+/// to see the pattern (they repeat); `discarded_count` still reports the true total, so
+/// nothing about the *count* is softened — only the transcript is.
+const MAX_RECORDED_DISCARDS: usize = 10;
+
 pub struct LlmnrClient;
 
 /// One host's answer to one query.
@@ -107,8 +118,11 @@ struct QueryOutcome {
     bytes_sent: usize,
     waited_secs: u64,
     responses: Vec<ResponderAnswer>,
-    /// One plain-language reason per datagram that arrived and was rejected.
+    /// One plain-language reason per rejected datagram, **capped at
+    /// [`MAX_RECORDED_DISCARDS`]**. `discarded_total` is the honest count.
     discarded: Vec<String>,
+    /// How many datagrams were rejected in all, whether or not a reason was kept for them.
+    discarded_total: usize,
 }
 
 impl QueryOutcome {
@@ -125,10 +139,7 @@ impl QueryOutcome {
         if self.responses.is_empty() {
             format!(
                 "llmnr_query {} {} -> no responder ({} datagram(s) discarded), {} bytes sent",
-                self.name,
-                self.record_type,
-                self.discarded.len(),
-                self.bytes_sent
+                self.name, self.record_type, self.discarded_total, self.bytes_sent
             )
         } else {
             format!(
@@ -141,7 +152,7 @@ impl QueryOutcome {
                     .map(|r| format!("{}={}", r.responder_address, r.primary()))
                     .collect::<Vec<_>>()
                     .join(", "),
-                self.discarded.len(),
+                self.discarded_total,
                 self.bytes_sent
             )
         }
@@ -525,6 +536,7 @@ impl LlmnrClient {
 
         let mut responses: Vec<ResponderAnswer> = Vec::new();
         let mut discarded: Vec<String> = Vec::new();
+        let mut discarded_total = 0usize;
         let bytes_sent;
 
         {
@@ -597,18 +609,33 @@ impl LlmnrClient {
                         }
                     }
                     Err(reason) => {
-                        // Loud on both channels: an unmatched datagram addressed to this
-                        // querier's ephemeral port is either a stale answer or somebody
-                        // guessing, and both are worth seeing.
-                        warn!(
-                            "LLMNR querier {} discarded a datagram from {}: {}",
-                            client_id, from, reason
-                        );
-                        Log::new(Some(status_tx)).warn(format!(
-                            "[CLIENT] LLMNR querier {} discarded a response from {}: {}",
-                            client_id, from, reason
-                        ));
-                        discarded.push(format!("{from}: {reason}"));
+                        discarded_total += 1;
+                        // Loud on both channels for the first few: an unmatched datagram
+                        // addressed to this querier's ephemeral port is either a stale answer
+                        // or somebody guessing, and both are worth seeing. Past the cap the
+                        // reasons repeat, and *that* is when a flood is in progress — the one
+                        // situation in which a message per datagram on an unbounded channel
+                        // is the wrong thing to do. The total is still counted.
+                        if discarded.len() < MAX_RECORDED_DISCARDS {
+                            warn!(
+                                "LLMNR querier {} discarded a datagram from {}: {}",
+                                client_id, from, reason
+                            );
+                            Log::new(Some(status_tx)).warn(format!(
+                                "[CLIENT] LLMNR querier {} discarded a response from {}: {}",
+                                client_id, from, reason
+                            ));
+                            discarded.push(format!("{from}: {reason}"));
+                        } else {
+                            trace!(
+                                "LLMNR querier {} discarded a datagram from {}: {} \
+                                 (past the first {} — reporting the count only)",
+                                client_id,
+                                from,
+                                reason,
+                                MAX_RECORDED_DISCARDS
+                            );
+                        }
                     }
                 }
             }
@@ -623,6 +650,7 @@ impl LlmnrClient {
             waited_secs: wire.response_wait_secs,
             responses,
             discarded,
+            discarded_total,
         })
     }
 
@@ -741,13 +769,11 @@ impl LlmnrClient {
                 outcome.record_type,
                 outcome.target,
                 outcome.waited_secs,
-                outcome.discarded.len()
+                outcome.discarded_total
             );
             log.info(format!(
                 "[CLIENT] LLMNR {} {}: no host claims this name ({} datagram(s) discarded)",
-                outcome.record_type,
-                outcome.name,
-                outcome.discarded.len()
+                outcome.record_type, outcome.name, outcome.discarded_total
             ));
             events.push(Event::new(
                 &LLMNR_QUERY_TIMEOUT_EVENT,
@@ -757,7 +783,7 @@ impl LlmnrClient {
                     "record_type": outcome.record_type,
                     "target": outcome.target.to_string(),
                     "waited_secs": outcome.waited_secs,
-                    "discarded_count": outcome.discarded.len(),
+                    "discarded_count": outcome.discarded_total,
                     "discard_reasons": outcome.discarded,
                 }),
             ));
