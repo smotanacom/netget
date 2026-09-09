@@ -7,7 +7,17 @@ SVN protocol commands and generate appropriate responses.
 
 **Status**: Experimental Protocol Testing
 **Client**: Manual TCP connection with SVN protocol parsing
-**Model**: qwen2.5-coder:0.5b (fast, efficient for testing)
+**Model**: the in-process mock (`tests/helpers/mock_ollama.rs`). No Ollama, no
+`--ignored`; the whole directory compiles and runs under
+`--no-default-features --features svn`.
+
+Three files, not one — this document used to describe only the first:
+
+| File | What it covers | LLM calls |
+|---|---|---|
+| `e2e_test.rs` | the five mocked command cases below | 13 mocked |
+| `llm_failure_test.rs` | a dead backend produces a well-formed `failure` tuple carrying only a `WireFailure` category, then EOF | 0 (backend unreachable by design) |
+| `peer_inject_test.rs` | `send_to_peer` writes a success tuple to a raw socket, the counters move, `close_connection` sends EOF | 0 |
 
 ## Test Coverage
 
@@ -49,7 +59,11 @@ SVN protocol commands and generate appropriate responses.
 3. Send `( get-dir )` command
 4. Verify response contains directory entries (trunk, branches, tags)
 
-**Expected**: `( success ( ( "trunk" dir ... ) ( "branches" dir ... ) ( "tags" dir ... ) ) )`
+**Expected**: `( success ( 0 ( ) ( ( 5:trunk dir 0 false 1 ( ) ( ) ) … ) ) )` —
+**counted strings, not quoted ones.** svn has no quoting mechanism: a string is
+its byte length, a colon, then the raw bytes. This document showed `"trunk"`,
+which is five characters and two stray quote marks that no svn parser accepts,
+and which the server stopped emitting when `send_svn_list` was repaired.
 
 **LLM Calls**: 2 (startup + 1 command)
 
@@ -63,7 +77,8 @@ SVN protocol commands and generate appropriate responses.
 3. Send command
 4. Verify response contains "failure" and error message
 
-**Expected**: `( failure ( ( 210005 0 0 0 "Path not found" 0 0 ) ) )`
+**Expected**: `( failure ( ( 210005 14:Path not found 0: 0 ) ) )` — the tuple is
+`( apr-err message:string file:string line:number )`, with counted strings.
 
 **LLM Calls**: 2 (startup + 1 command)
 
@@ -138,26 +153,25 @@ SVN protocol commands and generate appropriate responses.
 ### Setup
 
 ```bash
-# Build with SVN feature
-./cargo-isolated.sh build --release --no-default-features --features svn
-
-# Run tests with Ollama
-./cargo-isolated.sh test --no-default-features --features svn --test server::svn::e2e_test -- --ignored
+# --test names a target, so `--test server` then filter by module path.
+./cargo-isolated.sh test --no-default-features --features svn \
+    --test server -- server::svn --test-threads=100
 ```
 
 ### Requirements
 
-- Ollama running on localhost:11434
-- Model qwen2.5-coder:0.5b downloaded
-- OLLAMA_LOCK_PATH set for concurrent test safety
-- Port 3690+ available for binding
+Nothing external. The mock model runs in-process, every socket binds
+`127.0.0.1:0`, and no test is `#[ignore]`d. (This section used to require Ollama,
+a downloaded model and `OLLAMA_LOCK_PATH`; the tests have been mocked for a long
+time, and `--ollama-lock` is a documented no-op — see the root `CLAUDE.md`.)
 
 ### Debugging
 
 Enable trace logging to see full SVN protocol messages:
 
 ```bash
-RUST_LOG=netget=trace ./cargo-isolated.sh test --no-default-features --features svn --test server::svn::e2e_test -- --ignored --nocapture
+RUST_LOG=netget=trace ./cargo-isolated.sh test --no-default-features --features svn \
+    --test server -- server::svn --nocapture
 ```
 
 ## Future Improvements

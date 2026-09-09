@@ -208,11 +208,6 @@ impl SvnProtocol {
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
             .unwrap_or_else(|| vec!["ANONYMOUS"]);
 
-        let _realm = action
-            .get("realm")
-            .and_then(|v| v.as_str())
-            .unwrap_or("svn");
-
         // SVN protocol greeting format (simplified)
         // ( success ( 2 2 ( ) ( edit-pipeline svndiff1 absent-entries ) ) )
         let mut response = format!("( success ( {} {} ( ", min_version, max_version);
@@ -390,19 +385,16 @@ fn send_greeting_action() -> ActionDefinition {
                 description: "Authentication mechanisms (default: [\"ANONYMOUS\"])".to_string(),
                 required: false,
             },
-            Parameter {
-                name: "realm".to_string(),
-                type_hint: "string".to_string(),
-                description: "Authentication realm (default: \"svn\")".to_string(),
-                required: false,
-            },
         ],
+        // No `realm` parameter: the greeting tuple has no slot for one. In ra_svn the realm
+        // travels in the auth-request that follows the client's mechanism choice, and this
+        // server does not implement that exchange. It used to be declared here and read into
+        // a `_realm` local, so a model that supplied it changed nothing on the wire.
         example: json!({
             "type": "send_svn_greeting",
             "min_version": 2,
             "max_version": 2,
-            "mechanisms": ["ANONYMOUS"],
-            "realm": "svn"
+            "mechanisms": ["ANONYMOUS"]
         }),
         log_template: Some(
             LogTemplate::new()
@@ -546,7 +538,12 @@ pub static SVN_GREETING_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             "max_version": 2
         }),
     )
-    .with_parameters(vec![])
+    .with_parameters(vec![Parameter {
+        name: "client_ip".to_string(),
+        type_hint: "string".to_string(),
+        description: "Address of the connecting client".to_string(),
+        required: false,
+    }])
     .with_actions(vec![send_greeting_action(), close_connection_action()])
     .with_log_template(
         LogTemplate::new()
@@ -587,6 +584,12 @@ pub static SVN_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             description: "Command arguments".to_string(),
             required: false,
         },
+        Parameter {
+            name: "client_ip".to_string(),
+            type_hint: "string".to_string(),
+            description: "Address of the connecting client".to_string(),
+            required: false,
+        },
     ])
     .with_actions(vec![
         send_success_action(),
@@ -602,7 +605,9 @@ pub static SVN_COMMAND_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     }))
     .with_log_template(
         LogTemplate::new()
-            .with_info("{client_ip} SVN {command} ({duration_ms}ms)")
+            // No {duration_ms}: nothing measures one for this event, so the placeholder
+            // rendered as an empty string and the line read "… SVN get-dir (ms)".
+            .with_info("{client_ip} SVN {command}")
             .with_debug("SVN command from {client_ip}: {command}")
             .with_trace("SVN command: {command_line}"),
     )
