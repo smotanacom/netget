@@ -475,12 +475,23 @@ impl NFSFileSystem for LlmNfsFileSystem {
                             return Err(nfsstat3::NFS3ERR_ACCES);
                         }
 
-                        let data = action
-                            .get("data")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .as_bytes()
-                            .to_vec();
+                        // `data` is declared `required: true`. Defaulting it to "" made a
+                        // response that omitted it a *successful* read of an empty file —
+                        // the fail-open shape, since a client cannot tell that from a file
+                        // that is genuinely empty. `remove` and `rename` already refuse in
+                        // this situation; so does this now. A genuinely empty file is still
+                        // expressible as `"data": ""`, which is a decision rather than a
+                        // silence.
+                        let Some(data) = action.get("data").and_then(|v| v.as_str()) else {
+                            warn!(
+                                "NFS read: nfs_read_response for fileid {} omitted the required \
+                                 `data` field (decision=fail_closed_no_data); refusing rather \
+                                 than reporting a successful read of an empty file",
+                                id
+                            );
+                            return Err(nfsstat3::NFS3ERR_SERVERFAULT);
+                        };
+                        let data = data.as_bytes().to_vec();
 
                         let eof = action.get("eof").and_then(|v| v.as_bool()).unwrap_or(true);
 
@@ -581,7 +592,18 @@ impl NFSFileSystem for LlmNfsFileSystem {
                             return Err(nfsstat3::NFS3ERR_ACCES);
                         }
 
-                        let fileid = action.get("fileid").and_then(|v| v.as_u64()).unwrap_or(0);
+                        // `fileid` is declared `required: true`. Defaulting it to 0 let a
+                        // response that omitted it report a successful CREATE carrying the
+                        // one fileid NFS treats as invalid, which a client then caches.
+                        let Some(fileid) = action.get("fileid").and_then(|v| v.as_u64()) else {
+                            warn!(
+                                "NFS create: nfs_create_response for {} omitted the required \
+                                 `fileid` (decision=fail_closed_no_fileid); refusing rather \
+                                 than reporting success with the invalid fileid 0",
+                                filename_str
+                            );
+                            return Err(nfsstat3::NFS3ERR_SERVERFAULT);
+                        };
 
                         match self.build_fattr3(&action) {
                             Ok(mut attrs) => {
@@ -840,11 +862,21 @@ impl NFSFileSystem for LlmNfsFileSystem {
                             return Err(nfsstat3::NFS3ERR_NOTDIR);
                         }
 
-                        let entries_json = action
-                            .get("entries")
-                            .and_then(|v| v.as_array())
-                            .cloned()
-                            .unwrap_or_default();
+                        // `entries` is declared `required: true`. Defaulting it to an empty
+                        // array made a response that omitted it a successful enumeration of
+                        // an empty directory — a positive assertion the handler never made.
+                        // An actually-empty directory is still expressible as
+                        // `"entries": []`.
+                        let Some(entries_json) =
+                            action.get("entries").and_then(|v| v.as_array()).cloned()
+                        else {
+                            warn!(
+                                "NFS readdir: nfs_readdir_response omitted the required \
+                                 `entries` array (decision=fail_closed_no_entries); refusing \
+                                 rather than reporting the directory as empty"
+                            );
+                            return Err(nfsstat3::NFS3ERR_SERVERFAULT);
+                        };
 
                         let mut entries = Vec::new();
                         for entry in entries_json {

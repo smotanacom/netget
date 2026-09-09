@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::llm::actions::client_trait::{Client as ClientTrait, ClientActionResult};
@@ -175,8 +175,28 @@ impl NfsClient {
             .register_client_task(client_id, task_handle)
             .await;
 
-        // Return a dummy socket address (NFS doesn't use direct sockets)
-        Ok(format!("{}:2049", server).parse()?)
+        // The address the dashboard shows for this client.
+        //
+        // This used to be `format!("{}:2049", server).parse()?`, which is wrong twice. The
+        // `?` runs *after* the export is mounted and after both tasks are spawned and
+        // registered, so for any non-literal-IP `server` — `fileserver.local:/home`, which
+        // the docs give as an example — `connect()` returned `Err` on a connection that had
+        // in fact succeeded and was still running: the client was reported as failed while
+        // its mount and its two tasks stayed alive. And when it did parse, the port was
+        // hardcoded 2049 regardless of `nfs_port`, so the rail named a port the client had
+        // never spoken to.
+        //
+        // `nfs3_client` only dials a literal IP (`Nfs3ConnectionBuilder` parses `server` as
+        // an `IpAddr`), so if the mount above succeeded then `server` parses here too. Fall
+        // back to an unspecified address rather than failing a live connection.
+        let shown_port = nfs_port.unwrap_or(2049);
+        let shown_addr = server
+            .parse::<std::net::IpAddr>()
+            .map(|ip| SocketAddr::new(ip, shown_port))
+            .unwrap_or_else(|_| {
+                SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0)
+            });
+        Ok(shown_addr)
     }
 
     /// Handle NFS operations with LLM integration
@@ -290,9 +310,26 @@ impl NfsClient {
                 return Ok(());
             }
             ClientActionResult::Custom { name, data } => {
-                let result_data = Self::perform_op(connection, fh_cache, &name, data).await?;
-
-                info!("NFS client {} completed operation: {}", client_id, name);
+                // A `?` here used to short-circuit past `report_operation`, so every NFS
+                // error status — `Read failed: NFS3ERR_ACCES`, a lookup on a path that does
+                // not exist — died as a log line and raised no event. The model that asked
+                // for the operation got silence and could neither retry nor adapt: the
+                // action chain simply stopped. That is the "asks the model what to do and
+                // throws the answer away" shape from the root CLAUDE.md, one step further
+                // along. The failure is now an event like any other result.
+                let result_data = match Self::perform_op(connection, fh_cache, &name, data).await {
+                    Ok(result_data) => {
+                        info!("NFS client {} completed operation: {}", client_id, name);
+                        result_data
+                    }
+                    Err(e) => {
+                        warn!("NFS client {} operation {} failed: {}", client_id, name, e);
+                        serde_json::json!({
+                            "success": false,
+                            "error": e.to_string(),
+                        })
+                    }
+                };
 
                 Box::pin(Self::report_operation(
                     connection,

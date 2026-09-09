@@ -63,12 +63,13 @@ The LLM can perform all standard NFS operations:
 
 - Root file handle obtained from MOUNT protocol
 - Per-file handles obtained via lookup operations
-- Handles cached by nfs3_client library
+- Handles cached by NetGet, in `fh_cache`
 
 **Path Resolution**:
 
 - Paths are relative to mounted export root
-- Library handles file handle lookup/caching
+- The handle cache is NetGet's own `HashMap<String, nfs_fh3>` in `mod.rs`, **not** something
+  `nfs3_client` does for us — this section used to credit the library for it
 - LLM works with human-readable paths
 
 ## LLM Integration
@@ -153,12 +154,15 @@ The LLM can perform all standard NFS operations:
 
 ### Error Handling
 
-Operations return structured errors via result event:
+A failed operation raises `nfs_operation_result` with
+`{"success": false, "error": "<NFS status>"}` in `result`, so the model can retry or adapt.
 
-- File not found → error in lookup
-- Permission denied → NFS3ERR_ACCES
-- Not a directory → NFS3ERR_NOTDIR
-- Disk full → NFS3ERR_NOSPC
+This was false until recently, and the failure was silent: `execute_action` propagated
+`perform_op`'s error with `?`, which short-circuited *past* `report_operation`. Every NFS
+error status — `Read failed: NFS3ERR_ACCES`, a lookup on a path that does not exist — died as
+one log line and raised no event at all, so a model told to read a missing file got silence
+and the action chain simply stopped. This section described the intended behaviour rather
+than the implemented one.
 
 ## Limitations
 
@@ -337,13 +341,21 @@ NFS client addresses use a special format to specify both server and export path
 - **With port**: `server:2049:/export/path`
 - **Default port**: `server:/export/path` (uses port 2049)
 - **IPv4**: `192.168.1.100:/data`
-- **Hostname**: `fileserver.local:/home/shared`
+
+**A hostname does not work.** `nfs3_client`'s `Nfs3ConnectionBuilder` parses the server string
+as an `IpAddr`, so `fileserver.local:/home/shared` and `nfs.example.com:2050:/backups` — both
+of which this section used to give as working examples — fail at connect. Use a literal
+address. `localhost` is not one; write `127.0.0.1`.
+
+**The port in the address is discarded**, which the "Port selection" section below explains:
+the transport reaches the three RPC programs through portmapper on 111 unless
+`portmapper_port` / `mount_port` / `nfs_port` override it. `server:2050:/export` parses but
+does not connect to 2050.
 
 **Examples:**
 
-- `192.168.1.100:/export/data` - Connect to 192.168.1.100 port 2049, mount /export/data
-- `nfs.example.com:2050:/backups` - Connect to nfs.example.com port 2050, mount /backups
-- `localhost:/home` - Connect to localhost port 2049, mount /home
+- `192.168.1.100:/export/data` - mount /export/data on 192.168.1.100, ports via portmapper
+- `127.0.0.1:/home` - mount /home on the local machine
 
 ## References
 
@@ -419,7 +431,15 @@ Target: < 10 LLM calls per test suite
 
 ## Implementation Status
 
-**COMPLETE** - The NFS client is fully implemented with all 10 file operations:
+**Experimental**, matching `metadata()`. All ten file operations are implemented and the
+`command_channel_test` drives a real one end-to-end against NetGet's own NFS server — but the
+four `e2e_test.rs` tests are all `#[ignore]`d and configure no mocks, so nothing else in the
+suite exercises this client. This section used to open with "**COMPLETE** ... ✅ Compiles
+cleanly (zero errors, zero warnings) ... ⏳ Ready for E2E testing", which is the kind of claim
+the repo's doc-honesty rule exists to catch: a clean compile is not evidence of anything, and
+the E2E tests it says the client is "ready for" already exist and do not run.
+
+The ten operations:
 
 1. **nfs3_client Integration** - Using nfs3_client v0.7 with tokio feature:
     - `Nfs3ConnectionBuilder::new(TokioConnector, server, export_path).mount().await`
@@ -451,11 +471,16 @@ Target: < 10 LLM calls per test suite
         - set_atime/set_mtime enums
 
 4. **Current Status**:
-    - ✅ Compiles cleanly (zero errors, zero warnings)
-    - ✅ All operations properly integrated with LLM event system
-    - ✅ Sends operation_result events after each operation
-    - ✅ Recursive action execution for multi-step workflows
-    - ⏳ Ready for E2E testing with actual NFS server
+    - Operations are wired into the LLM event system and raise `nfs_operation_result` on both
+      success and failure
+    - Recursive action execution for multi-step workflows — **with no depth bound**. The
+      root `CLAUDE.md` prescribes a `MAX_FOLLOWUP_DEPTH` of 4-8 for exactly this shape; here
+      the only backstop is the LLM budget, so a model that answers every result with another
+      operation runs until the budget is spent.
+    - `disconnect` sets the status and drops the command handle but sends no UMNT and closes
+      no connection; the keep-alive poll in `handle_nfs_operations` keeps running until the
+      client is removed from `AppState`.
+    - Not covered by any running E2E test (see above).
 
 ### Current Limitations
 
