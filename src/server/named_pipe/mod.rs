@@ -15,6 +15,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc;
 use tracing::error;
@@ -30,6 +31,10 @@ use crate::utils::WireFailure;
 
 /// Removes the FIFO node(s) this server created when the read task ends — including when the task
 /// is aborted by `stop_server`, because aborting drops the task future and with it this guard.
+///
+/// Only nodes **this server** created are listed. A FIFO that already existed belongs to whoever
+/// made it — an operator's `mkfifo /tmp/app.fifo`, another process's endpoint — and unlinking it
+/// on stop deletes someone else's object.
 struct FifoCleanup(Vec<PathBuf>);
 
 impl Drop for FifoCleanup {
@@ -65,13 +70,16 @@ fn describe_file_type(ft: &std::fs::FileType) -> &'static str {
 /// `path` comes from the LLM or an MCP caller, so — exactly like `socket_file` — an existing node
 /// is only reused when it really is a FIFO. Anything else (a regular file, a symlink, a socket) is
 /// refused with a message naming what was found, rather than being clobbered.
-fn ensure_fifo(path: &Path) -> Result<()> {
+///
+/// Returns `true` when this call created the node, which is what decides whether the cleanup
+/// guard may unlink it on stop.
+fn ensure_fifo(path: &Path) -> Result<bool> {
     match std::fs::symlink_metadata(path) {
         Ok(meta) => {
             use std::os::unix::fs::FileTypeExt;
             if meta.file_type().is_fifo() {
-                // Reuse the existing FIFO.
-                return Ok(());
+                // Reuse the existing FIFO — and remember we did not make it.
+                return Ok(false);
             }
             anyhow::bail!(
                 "Refusing to use {:?}: it exists but is not a FIFO (it is a {}). Delete it \
@@ -89,7 +97,7 @@ fn ensure_fifo(path: &Path) -> Result<()> {
                 return Err(std::io::Error::last_os_error())
                     .with_context(|| format!("Failed to create FIFO {:?}", path));
             }
-            Ok(())
+            Ok(true)
         }
         Err(e) => Err(e).with_context(|| format!("Failed to stat {:?}", path)),
     }
@@ -112,19 +120,32 @@ fn open_fifo_rdwr_nonblocking(path: &Path) -> Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-/// Open `path` O_RDWR (blocking) for writing responses.
+/// How long a write to the response FIFO may wait for the reader to make room.
+///
+/// A FIFO holds 64 KiB; past that, `write()` blocks until a reader drains it. Nothing here
+/// reads the response FIFO, so with no reader attached the model's output eventually fills the
+/// buffer and the write cannot complete — and the reply is stale by then anyway.
+const RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Open the response FIFO O_RDWR | O_NONBLOCK and register it with the runtime.
 ///
 /// O_RDWR succeeds immediately even before a reader attaches, and lets us buffer a response into
 /// the kernel FIFO buffer that the reader drains when it opens the path.
-fn open_fifo_rdwr(path: &Path) -> Result<File> {
-    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| anyhow::anyhow!("invalid FIFO path: {:?}", path))?;
-    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("Failed to open response FIFO {:?}", path));
-    }
-    Ok(unsafe { File::from_raw_fd(fd) })
+///
+/// **O_NONBLOCK is the important half.** This used to be a blocking fd written with
+/// `std::io::Write::write_all` from inside the async read loop: once the 64 KiB buffer filled
+/// with nobody reading, that `write_all` blocked *a tokio worker thread* — not just this task —
+/// for as long as the condition lasted, which for an unread FIFO is forever. Driven through
+/// `AsyncFd` the same situation parks only this task, and the timeout below unparks it.
+fn open_response_fifo(path: &Path) -> Result<AsyncFd<File>> {
+    let file = open_fifo_rdwr_nonblocking(path)
+        .with_context(|| format!("Failed to open response FIFO {:?}", path))?;
+    AsyncFd::new(file).with_context(|| {
+        format!(
+            "Failed to register response FIFO {:?} with the async runtime",
+            path
+        )
+    })
 }
 
 /// Named pipe server.
@@ -144,7 +165,7 @@ impl NamedPipeServer {
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
     ) -> Result<()> {
-        ensure_fifo(&pipe_path)?;
+        let created_read_fifo = ensure_fifo(&pipe_path)?;
         let read_file = open_fifo_rdwr_nonblocking(&pipe_path)?;
         let async_read = AsyncFd::new(read_file).with_context(|| {
             format!(
@@ -153,14 +174,19 @@ impl NamedPipeServer {
             )
         })?;
 
-        // Track every node we created so the cleanup guard removes them on stop.
-        let mut created: Vec<PathBuf> = vec![pipe_path.clone()];
+        // Track only the nodes we actually created, so the cleanup guard never unlinks a FIFO
+        // that was already there when we started.
+        let mut created: Vec<PathBuf> = Vec::new();
+        if created_read_fifo {
+            created.push(pipe_path.clone());
+        }
 
         let response_file = match &response_pipe_path {
             Some(rp) => {
-                ensure_fifo(rp)?;
-                created.push(rp.clone());
-                Some(open_fifo_rdwr(rp)?)
+                if ensure_fifo(rp)? {
+                    created.push(rp.clone());
+                }
+                Some(open_response_fifo(rp)?)
             }
             None => None,
         };
@@ -203,7 +229,11 @@ impl NamedPipeServer {
 
                 let n = match read_result {
                     Ok(Ok(0)) => {
-                        // With O_RDWR a real EOF should not occur; guard against a busy loop.
+                        // With O_RDWR a real EOF should not occur. `clear_ready()` is what makes
+                        // this `continue` safe: `try_io` only drops the cached readiness when the
+                        // closure reports WouldBlock, so continuing on any other outcome leaves
+                        // readiness set and the loop spins on a core instead of waiting.
+                        guard.clear_ready();
                         continue;
                     }
                     Ok(Ok(n)) => n,
@@ -252,7 +282,7 @@ impl NamedPipeServer {
                         for pr in result.protocol_results {
                             if let ActionResult::Output(bytes) = pr {
                                 wrote += bytes.len();
-                                Self::write_response(&mut response_file, &bytes, &status_tx);
+                                Self::write_response(&mut response_file, &bytes, &status_tx).await;
                             }
                             // CloseConnection / WaitForMore / others are meaningless for a
                             // connectionless FIFO sink and are intentionally ignored.
@@ -292,7 +322,7 @@ impl NamedPipeServer {
                             "Named pipe {:?} decision={}: {}",
                             pipe_path, decision, e
                         ));
-                        Self::write_failure_notice(&mut response_file, failure, &status_tx);
+                        Self::write_failure_notice(&mut response_file, failure, &status_tx).await;
                     }
                 }
             }
@@ -313,8 +343,8 @@ impl NamedPipeServer {
     ///
     /// When no `response_pipe_path` was configured there is no reply channel at all, and silence
     /// is the only correct behaviour; it is logged, not invented.
-    fn write_failure_notice(
-        response_file: &mut Option<File>,
+    async fn write_failure_notice(
+        response_file: &mut Option<AsyncFd<File>>,
         failure: WireFailure,
         status_tx: &mpsc::UnboundedSender<String>,
     ) {
@@ -330,20 +360,20 @@ impl NamedPipeServer {
         let mut line = String::with_capacity(failure.prefixed_text().len() + 1);
         line.push_str(failure.prefixed_text());
         line.push('\n');
-        if let Err(e) = f.write_all(line.as_bytes()).and_then(|_| f.flush()) {
+        if let Err(e) = Self::write_fifo(f, line.as_bytes()).await {
             log.error(format!("Named pipe failure-notice write error: {}", e));
         }
     }
 
     /// Write `bytes` to the response FIFO, or warn if none was configured.
-    fn write_response(
-        response_file: &mut Option<File>,
+    async fn write_response(
+        response_file: &mut Option<AsyncFd<File>>,
         bytes: &[u8],
         status_tx: &mpsc::UnboundedSender<String>,
     ) {
         let log = Log::new(Some(status_tx));
         match response_file {
-            Some(f) => match f.write_all(bytes).and_then(|_| f.flush()) {
+            Some(f) => match Self::write_fifo(f, bytes).await {
                 Ok(()) => {
                     // FileOnly: the write_named_pipe_data action's own log_template already
                     // reports "-> FIFO {data_len}B" to the TUI at INFO.
@@ -363,6 +393,43 @@ impl NamedPipeServer {
                     bytes.len()
                 ));
             }
+        }
+    }
+
+    /// Write every byte to the non-blocking response FIFO, bounded by
+    /// [`RESPONSE_WRITE_TIMEOUT`].
+    ///
+    /// The bound matters as much as the async-ness: a FIFO nobody reads fills at 64 KiB and then
+    /// never becomes writable again, so an unbounded wait would leave the read loop parked for
+    /// the life of the server, silently ignoring every later write.
+    async fn write_fifo(file: &mut AsyncFd<File>, bytes: &[u8]) -> std::io::Result<()> {
+        let write_all = async {
+            let mut written = 0usize;
+            while written < bytes.len() {
+                let mut guard = file.writable().await?;
+                match guard.try_io(|inner| inner.get_ref().write(&bytes[written..])) {
+                    Ok(Ok(0)) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "response FIFO accepted no bytes",
+                        ))
+                    }
+                    Ok(Ok(n)) => written += n,
+                    Ok(Err(e)) => return Err(e),
+                    Err(_would_block) => continue,
+                }
+            }
+            Ok(())
+        };
+        match tokio::time::timeout(RESPONSE_WRITE_TIMEOUT, write_all).await {
+            Ok(res) => res,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "response FIFO did not accept the write within {}s (is anything reading it?)",
+                    RESPONSE_WRITE_TIMEOUT.as_secs()
+                ),
+            )),
         }
     }
 }
