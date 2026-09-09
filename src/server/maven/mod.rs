@@ -304,8 +304,92 @@ fn bad_gateway() -> Response<Full<Bytes>> {
         .expect("502 response with a literal body is always valid")
 }
 
-/// Handle a single Maven artifact request with integrated LLM actions
+/// The 413 for a request body over `MAX_REQUEST_BODY_BYTES`.
+///
+/// Static text: the peer learns the fact and the limit, never why the read failed.
+fn payload_too_large() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(413)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .body(Full::new(Bytes::from(format!(
+            "Payload Too Large: request bodies are limited to {} bytes\n",
+            crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES
+        ))))
+        .expect("413 response with a literal body is always valid")
+}
+
+/// Approximate the bytes this request cost on the wire.
+///
+/// hyper hands us a parsed `Request`, so the original head is gone; this
+/// reconstructs its size from the parts that survive. It is an estimate, and
+/// deliberately so — the alternative is a `↓` counter frozen at 0, which reads as
+/// "this peer sent nothing" rather than "we did not measure".
+fn approximate_request_bytes(req: &Request<Incoming>) -> u64 {
+    use hyper::body::Body;
+    let head: usize = req.method().as_str().len()
+        + req.uri().to_string().len()
+        + 12 // " HTTP/1.1\r\n" plus the blank line terminating the head
+        + req
+            .headers()
+            .iter()
+            .map(|(name, value)| name.as_str().len() + value.len() + 4)
+            .sum::<usize>();
+    head as u64 + req.body().size_hint().lower()
+}
+
+/// Record one request/response exchange against the connection's counters, then
+/// return the response unchanged.
+///
+/// `update_connection_stats` is what the dashboard rail's `↓ ↑` columns and the
+/// connection-scoped task prompts read, and it is what keeps `last_activity`
+/// moving. Without it a busy Maven server draws every peer as idle having sent
+/// and received nothing.
+#[allow(clippy::too_many_arguments)]
 async fn handle_maven_request_with_llm(
+    req: Request<Incoming>,
+    connection_id: ConnectionId,
+    server_id: crate::state::ServerId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<MavenProtocol>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    let bytes_received = approximate_request_bytes(&req);
+    let response = handle_maven_request_with_llm_inner(
+        req,
+        connection_id,
+        server_id,
+        llm_client,
+        app_state.clone(),
+        status_tx,
+        protocol,
+    )
+    .await;
+
+    let bytes_sent = response
+        .as_ref()
+        .ok()
+        .and_then(|resp| {
+            use hyper::body::Body;
+            resp.body().size_hint().exact()
+        })
+        .unwrap_or(0);
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            Some(bytes_received),
+            Some(bytes_sent),
+            Some(1),
+            Some(1),
+        )
+        .await;
+
+    response
+}
+
+/// Handle a single Maven artifact request with integrated LLM actions
+async fn handle_maven_request_with_llm_inner(
     req: Request<Incoming>,
     connection_id: ConnectionId,
     server_id: crate::state::ServerId,
@@ -326,15 +410,27 @@ async fn handle_maven_request_with_llm(
         }
     }
 
-    // Read body (usually empty for Maven GET requests)
-    let _body_bytes = match req.into_body().collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            // Non-fatal: Maven GETs have no body; proceed with an empty one.
-            log.warn(format!("Failed to read request body: {}", e));
-            Bytes::new()
-        }
-    };
+    // Drain the body, bounded. Maven GETs carry no body, but `Incoming` has no
+    // default limit and the body must still be consumed for keep-alive, so an
+    // unauthenticated peer could otherwise make this server buffer an arbitrary
+    // number of bytes it then throws away. `Limited` errors as soon as the cap is
+    // passed rather than after buffering the whole thing.
+    if let Err(e) = http_body_util::Limited::new(
+        req.into_body(),
+        crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES,
+    )
+    .collect()
+    .await
+    {
+        log.warn(format!(
+            "Maven {} {} decision=refused_body_too_large (limit {} bytes) -> 413: {}",
+            method,
+            uri,
+            crate::server::http_common::handler::MAX_REQUEST_BODY_BYTES,
+            e
+        ));
+        return Ok(payload_too_large());
+    }
 
     // Summary + full payload FileOnly: the maven_artifact_request event template
     // renders the equivalent line to the TUI.

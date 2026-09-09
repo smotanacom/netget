@@ -56,7 +56,23 @@ impl Protocol for MavenProtocol {
             .llm_control(
                 "Artifact availability, content generation (POM, JAR, checksums), version metadata",
             )
-            .e2e_testing("mvn CLI client - target < 10 LLM calls")
+            .e2e_testing(
+                "The real `mvn` binary, in \
+                 tests/server/maven/e2e_test.rs::test_maven_cli_download, which is not \
+                 #[ignore]d and fails rather than skips when mvn is absent: \
+                 `mvn dependency:get` resolves com.netget.test:maven-test:1.0.0, verifies \
+                 the .sha1 companions (computed by `shasum`, not by NetGet) and writes the \
+                 artifact into its local repository, and the test asserts the stored JAR and \
+                 POM are byte-for-byte what NetGet served. Nothing outside 127.0.0.1 is \
+                 contacted: a test-owned settings.xml mirrors * at the server under test and \
+                 Maven's split local repository resolves its own plugins from the machine's \
+                 existing ~/.m2 cache. Three further mocked suites cover POM/JAR/checksum/\
+                 metadata routing, multi-version and classifier selection; \
+                 llm_failure_test.rs asserts the fail-closed 500/503 and that no internal \
+                 error text reaches the wire. Still Experimental: the JAR served is a text \
+                 placeholder rather than a real archive, so no client has yet *used* an \
+                 artifact from this repository, only fetched and checksum-verified one",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
