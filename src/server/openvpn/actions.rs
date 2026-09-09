@@ -173,7 +173,14 @@ impl Protocol for OpenvpnProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .connectionless()
+            // Deliberately NOT `.connectionless()`. The flag drives
+            // `AppState::cleanup_old_connections`, which evicts any connection idle for 10
+            // seconds - and an OpenVPN peer is the opposite of connectionless: it holds a
+            // reliability window, a TLS session and a key-exchange state machine, and every
+            // packet it sends has to be read in the light of its last one. Ten seconds is
+            // less than a single accept_peer decision takes, so the flag deleted live
+            // handshakes out from under themselves. Idle peers are this server's own job:
+            // `sweep_loop` forgets them after 120s and closes their connection then.
             // Experimental, not Beta. A real openvpn client now completes the
             // control-channel TLS handshake and the key method 2 exchange
             // against this server, which is genuinely more than "the front of
@@ -342,9 +349,12 @@ fn accept_peer_action() -> ActionDefinition {
         name: "accept_peer".to_string(),
         description: "Answer this peer's session reset with P_CONTROL_HARD_RESET_SERVER_V2 and \
                       start tracking it, acknowledging the control packets it sends next. This \
-                      is enforced: without it, nothing is sent to the peer. It does not create \
-                      a tunnel - this server has no TLS control channel or data channel, so an \
-                      accepted client's handshake stalls after its ClientHello."
+                      is enforced: without it, nothing is sent to the peer. An accepted peer \
+                      goes on to complete a real TLS handshake over the control channel and \
+                      send its key method 2 message, which arrives as \
+                      openvpn_client_key_exchange - but it never gets a tunnel: this server \
+                      answers no PUSH_REQUEST and has no data channel, so the client stalls \
+                      there."
             .to_string(),
         parameters: vec![Parameter {
             name: "reason".to_string(),
