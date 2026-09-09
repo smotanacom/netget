@@ -155,7 +155,15 @@ mod kafka_client_tests {
 
         // ApiVersions -> Metadata -> kafka_connected -> Produce -> kafka_message_delivered,
         // with a model round trip at three of those steps across two processes.
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        //
+        // Waiting on the mocks rather than on a clock, and waiting *before* the assertions
+        // rather than after them. `captured` is filled by the broker's produce rule, so the
+        // assertion below is only meaningful once that rule has fired - a fixed five seconds
+        // is enough alone and not when a hundred tests run together, and the failure it
+        // produces reads as "the client never sent the record" rather than "the test looked
+        // too early".
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
 
         assert_eq!(
             client.protocol, "Kafka",
@@ -195,11 +203,6 @@ mod kafka_client_tests {
 
         println!("✅ Kafka client produced a record the broker decoded field for field");
 
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        server.wait_for_mocks(30).await;
-        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
@@ -371,9 +374,12 @@ mod kafka_client_tests {
 
         let client = start_netget_client(client_config).await?;
 
-        // Everything happens in the first poll round; the sleep only has to outlast the
-        // client process, which non-interactive mode ends shortly after startup.
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // Everything happens in the first poll round. Wait for the exchange the mocks
+        // describe, and wait for it *before* the assertions: `fetch_offsets` and `committed`
+        // are filled by the broker's own rules, so asserting on them ahead of the wait is
+        // asserting on a snapshot that may be one round trip short.
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
 
         assert_eq!(
             client.protocol, "Kafka",
@@ -402,11 +408,6 @@ mod kafka_client_tests {
 
         println!("✅ Kafka client polled, decoded a record batch, advanced and committed");
 
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        server.wait_for_mocks(30).await;
-        client.wait_for_mocks(30).await;
         server.verify_mocks().await?;
         client.verify_mocks().await?;
 
