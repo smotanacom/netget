@@ -37,7 +37,6 @@ enum ConnectionState {
 struct ConnectionData {
     state: ConnectionState,
     queued_data: Vec<u8>,
-    memory: String,
     write_half: Arc<Mutex<tokio::io::WriteHalf<UnixStream>>>,
 }
 
@@ -107,6 +106,25 @@ impl SocketFileServer {
         let listener = tokio::net::UnixListener::bind(&socket_path)
             .with_context(|| format!("Failed to bind to socket path: {:?}", socket_path))?;
 
+        // Owner-only (0600). `bind` creates the node with 0777 & ~umask, which on a default
+        // umask of 022 is `srwxr-xr-x`: on both Linux and macOS the kernel checks write
+        // permission on the socket node at connect(2), so every local user could speak to a
+        // server the model was told to run for one process. The model or an MCP caller chooses
+        // `socket_path`, and a predictable path under a world-writable directory is the classic
+        // local-escalation shape, so the default has to be closed. There is a brief window
+        // between bind and chmod; closing it entirely means a private directory, which is the
+        // caller's choice of path, not ours.
+        std::fs::set_permissions(
+            &socket_path,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to restrict permissions on socket file {:?} to owner-only",
+                socket_path
+            )
+        })?;
+
         Log::new(Some(&status_tx))
             .info(format!("Socket file server listening on {:?}", socket_path));
 
@@ -171,7 +189,6 @@ impl SocketFileServer {
                             ConnectionData {
                                 state: ConnectionState::Idle,
                                 queued_data: Vec::new(),
-                                memory: String::new(),
                                 write_half: write_half_arc.clone(),
                             },
                         );
@@ -226,6 +243,20 @@ impl SocketFileServer {
                                     Ok(n) => {
                                         let data = Bytes::copy_from_slice(&buffer[..n]);
 
+                                        // Feeds the dashboard rail's counters and refreshes
+                                        // `last_activity`; this protocol never called it, so a
+                                        // live connection read 0B/0B in the tree forever.
+                                        app_state_clone
+                                            .update_connection_stats(
+                                                server_id,
+                                                connection_id,
+                                                Some(n as u64),
+                                                None,
+                                                Some(1),
+                                                None,
+                                            )
+                                            .await;
+
                                         // Data summary + full payload are FileOnly: the
                                         // socket_file_data_received event template renders the
                                         // equivalent lines to the TUI, so streaming the payload
@@ -236,11 +267,8 @@ impl SocketFileServer {
                                             b.is_ascii_graphic() || b.is_ascii_whitespace()
                                         }) {
                                             let data_str = String::from_utf8_lossy(&data);
-                                            let preview = if data_str.len() > 100 {
-                                                format!("{}...", &data_str[..100])
-                                            } else {
-                                                data_str.to_string()
-                                            };
+                                            let preview =
+                                                crate::utils::truncate_for_log(&data_str, 100);
                                             log.debug(format!(
                                                 "Socket file received {} bytes on {}: {}",
                                                 n, connection_id, preview
@@ -355,6 +383,16 @@ impl SocketFileServer {
                                 if let Err(e) = write.write_all(&output_data).await {
                                     log.error(format!("Failed to send socket file banner: {}", e));
                                 } else {
+                                    app_state
+                                        .update_connection_stats(
+                                            server_id,
+                                            connection_id,
+                                            None,
+                                            Some(output_data.len() as u64),
+                                            None,
+                                            Some(1),
+                                        )
+                                        .await;
                                     // Sent-data summary + payload are FileOnly: the
                                     // send_socket_data action template already reports the
                                     // send to the TUI.
@@ -363,11 +401,8 @@ impl SocketFileServer {
                                         .all(|&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
                                     {
                                         let data_str = String::from_utf8_lossy(&output_data);
-                                        let preview = if data_str.len() > 100 {
-                                            format!("{}...", &data_str[..100])
-                                        } else {
-                                            data_str.to_string()
-                                        };
+                                        let preview =
+                                            crate::utils::truncate_for_log(&data_str, 100);
                                         log.debug(format!(
                                             "Socket file sent {} bytes to {}: {}",
                                             output_data.len(),
@@ -496,10 +531,23 @@ impl SocketFileServer {
             return;
         }
 
-        // Merge any queued data with new data
+        // Merge any queued data with new data.
+        //
+        // Not `unwrap()`: the map lock was released after the state read above, so the
+        // connection can legitimately be gone by now - the peer reset, or another task ran
+        // `close_this_connection`. `unwrap()` panicked inside a `tokio::spawn`, which swallows
+        // the panic: the bytes vanished, the log said nothing, and the server stayed Running.
         let mut all_data = {
             let mut conns = connections.lock().await;
-            let conn_data = conns.get_mut(&connection_id).unwrap();
+            let Some(conn_data) = conns.get_mut(&connection_id) else {
+                debug!(
+                    "socket-file connection {} went away before its {} received bytes could be \
+                     processed",
+                    connection_id,
+                    data.len()
+                );
+                return;
+            };
             conn_data.state = ConnectionState::Processing;
             let mut merged = conn_data.queued_data.clone();
             merged.extend_from_slice(&data);
@@ -508,15 +556,6 @@ impl SocketFileServer {
         };
 
         loop {
-            // Get memory
-            let memory = {
-                let conns = connections.lock().await;
-                conns
-                    .get(&connection_id)
-                    .map(|c| c.memory.clone())
-                    .unwrap_or_default()
-            };
-
             // Get write_half for context
             let write_half = {
                 let conns = connections.lock().await;
@@ -566,13 +605,6 @@ impl SocketFileServer {
                 Ok(execution_result) => {
                     debug!("LLM socket file response received");
 
-                    // Update memory
-                    connections
-                        .lock()
-                        .await
-                        .entry(connection_id)
-                        .and_modify(|conn| conn.memory = memory.clone());
-
                     // Display messages
                     for msg in execution_result.messages {
                         let _ = status_tx.send(msg);
@@ -593,6 +625,16 @@ impl SocketFileServer {
                                         e
                                     ));
                                 } else {
+                                    app_state
+                                        .update_connection_stats(
+                                            server_id,
+                                            connection_id,
+                                            None,
+                                            Some(output_data.len() as u64),
+                                            None,
+                                            Some(1),
+                                        )
+                                        .await;
                                     // Sent-data summary + payload are FileOnly: the
                                     // send_socket_data action template already reports the
                                     // send to the TUI.
@@ -601,11 +643,8 @@ impl SocketFileServer {
                                         .all(|&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
                                     {
                                         let data_str = String::from_utf8_lossy(&output_data);
-                                        let preview = if data_str.len() > 100 {
-                                            format!("{}...", &data_str[..100])
-                                        } else {
-                                            data_str.to_string()
-                                        };
+                                        let preview =
+                                            crate::utils::truncate_for_log(&data_str, 100);
                                         log.debug(format!(
                                             "Socket file sent {} bytes to {}: {}",
                                             output_data.len(),

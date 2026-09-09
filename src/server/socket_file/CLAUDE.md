@@ -4,9 +4,28 @@ Raw byte-stream server over a Unix domain socket. The model sees exactly the
 bytes the client sent and decides exactly what bytes go back — the same contract
 as `tcp`, addressed by filesystem path instead of IP:port.
 
-**State**: Experimental. **Platform**: Unix only; the whole module is
-`#![cfg(unix)]`. **Privilege**: none — access is controlled by filesystem
-permissions on the socket file, not by port numbers.
+**State**: Experimental — the peer is a local descriptor, so no third-party client
+exists to validate against and nothing can raise this rating on the usual
+evidence. **Platform**: Unix only; the whole module is `#![cfg(unix)]`.
+**Privilege**: none — access is controlled by filesystem permissions on the
+socket file, not by port numbers.
+
+## What it can reach on the host
+
+One filesystem object: the socket node at `socket_path`, created by `bind` and
+removed only when the path already held a socket (see below). It executes
+nothing, spawns no process, and opens no other path. The bytes on the socket are
+whatever the model authors.
+
+**The node is chmod'd `0600` immediately after `bind`.** `bind` creates it with
+`0777 & ~umask` — `srwxr-xr-x` under the usual `umask 022` — and both Linux and
+macOS check write permission on the socket node at `connect(2)`, so the default
+let *any* local user talk to a server the operator started for one process. The
+model or an MCP caller chooses `socket_path`, and a predictable path under a
+world-writable directory is the classic local-escalation shape. There is a short
+window between `bind` and `chmod`; closing it completely means putting the socket
+in a directory only the owner can traverse, which is the caller's choice of path
+rather than something this protocol can impose.
 
 ## Startup
 
@@ -62,6 +81,18 @@ Per connection: `ReadHalf` owned by a reader task, `WriteHalf` behind
 `Arc<Mutex<…>>` in the shared map, and an Idle → Processing → Accumulating state
 machine that serialises LLM calls and queues data that arrives mid-call.
 
+`update_connection_stats` is called on every read and every write, so the
+dashboard rail's `↓/↑` counters and `last_activity` reflect the connection. This
+protocol used not to call it at all and every live connection read `0B/0B`.
+
+**Every map lookup after the first is fallible, and none of them may panic.**
+The lock is released between the state read and the merge, so the connection can
+legitimately be gone by the time the merge runs — the peer reset, or another task
+ran `close_this_connection`. That merge used `.unwrap()`, inside a
+`tokio::spawn` that swallows the panic: the bytes vanished, the log said nothing,
+and the server stayed `Running`. It is a `let … else { return }` with a DEBUG
+line naming the connection and the byte count.
+
 **The connection is registered in the accept loop, before either task is
 spawned.** It used to be registered by the banner task, which raced the reader:
 `handle_data_with_actions` returns silently when the connection is not in the
@@ -71,7 +102,11 @@ log line. Verified: before the fix the log stopped at "received 5 bytes"; after
 it, the handler runs.
 
 Dual logging throughout: DEBUG summaries with a 100-character preview, TRACE full
-payloads (text as a string, binary as hex), to both `netget.log` and the TUI.
+payloads (text as a string, binary as hex), to both `netget.log` and the TUI. The
+preview goes through `crate::utils::truncate_for_log` rather than `&s[..100]`:
+the slice sat inside an all-printable-ASCII branch and so could not panic today,
+but it is one edit to the guard away from the multi-byte-UTF-8 crash that
+`truncate_for_log` exists to prevent.
 
 ### When the LLM call fails
 
@@ -94,9 +129,10 @@ Three outcomes stay distinguishable in the log:
 
 ## Not implemented
 
-Peer credentials (`SO_PEERCRED` — a Unix socket can identify the connecting
-process; the model is not told), idle timeouts, backpressure, and any
-bound on how much `wait_for_more` accumulates. `SocketAddr` is required by
+A `mode` startup parameter: the socket is always `0600` and there is no way to
+ask for group access. Peer credentials (`SO_PEERCRED` — a Unix socket can
+identify the connecting process; the model is not told), idle timeouts,
+backpressure, and any bound on how much `wait_for_more` accumulates. `SocketAddr` is required by
 internal APIs, so connections report the placeholder `127.0.0.1:0`; the real path
 is in `protocol_info.socket_path`.
 
@@ -133,6 +169,7 @@ LLM calls):
 - `nc -U` works, but macOS `nc` exits on stdin EOF, so
   `printf ping | nc -U …` can miss the reply; keep stdin open or use a real
   client.
+- `ls -l` on the socket path shows `srw-------` after start.
 
 `tests/server/socket_file/` is declared in `tests/server/mod.rs` and runs against
 the mock LLM.

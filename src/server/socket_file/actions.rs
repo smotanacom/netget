@@ -29,6 +29,12 @@ impl SocketFileProtocol {
     }
 }
 
+impl Default for SocketFileProtocol {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Implement Protocol trait (common functionality)
 impl Protocol for SocketFileProtocol {
     /// A Unix socket has no host and no port.
@@ -102,10 +108,17 @@ impl Protocol for SocketFileProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("Manual Unix domain socket handling with tokio")
+            .implementation("Manual Unix domain socket handling with tokio; socket file chmod 0600")
             .llm_control("Full byte stream control - all sent/received data")
-            .e2e_testing("tokio::net::UnixStream")
-            .notes("Unix domain socket for IPC - uses filesystem socket files instead of IP:port")
+            .e2e_testing("A real, independent tokio::net::UnixStream peer; no third-party client")
+            .notes(
+                "Unix domain socket for IPC - a filesystem socket file instead of IP:port. The \
+                 socket node is chmod'd to 0600 right after bind, because bind creates it \
+                 0777 & ~umask and both Linux and macOS check write permission on the node at \
+                 connect(2): the default would otherwise let any local user speak to it. The \
+                 peer is a local descriptor, so no independent third-party client exists and \
+                 nothing here supports a rating above Experimental.",
+            )
             .build()
     }
 
@@ -366,11 +379,10 @@ fn close_this_connection_action() -> ActionDefinition {
 // ============================================================================
 
 pub static SEND_SOCKET_DATA_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| send_socket_data_action());
-pub static WAIT_FOR_MORE_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| wait_for_more_action());
+    LazyLock::new(send_socket_data_action);
+pub static WAIT_FOR_MORE_ACTION: LazyLock<ActionDefinition> = LazyLock::new(wait_for_more_action);
 pub static CLOSE_THIS_CONNECTION_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| close_this_connection_action());
+    LazyLock::new(close_this_connection_action);
 
 // ============================================================================
 // Socket File Event Type Constants
