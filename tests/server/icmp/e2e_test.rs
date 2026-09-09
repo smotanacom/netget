@@ -39,7 +39,7 @@ mod tests {
 
         // Calculate ICMP checksum
         let icmp_checksum = {
-            use pnet::packet::icmp::{IcmpPacket, MutableIcmpPacket};
+            use pnet::packet::icmp::MutableIcmpPacket;
             let icmp_packet = MutableIcmpPacket::new(&mut icmp_buffer).unwrap();
             pnet::packet::icmp::checksum(&icmp_packet.to_immutable())
         };
@@ -126,20 +126,14 @@ You are an ICMP echo server. When you receive echo requests:
                 .and_event_data_contains("sequence", "1")
                 .respond_with_actions_from_event(|event_data| {
                     let source_ip = event_data["source_ip"].as_str().unwrap_or("127.0.0.1");
-                    let identifier = event_data["identifier"]
-                        .as_str()
-                        .and_then(|s| s.parse::<u16>().ok())
-                        .unwrap_or(1234);
-                    let sequence = event_data["sequence"]
-                        .as_str()
-                        .and_then(|s| s.parse::<u16>().ok())
-                        .unwrap_or(1);
+                    let identifier = event_data["identifier"].as_u64().unwrap_or(1234);
+                    let sequence = event_data["sequence"].as_u64().unwrap_or(1);
                     let payload_hex = event_data["payload_hex"].as_str().unwrap_or("");
 
                     serde_json::json!([{
                         "type": "send_echo_reply",
                         "source_ip": "127.0.0.1",
-                        "dest_ip": source_ip,
+                        "destination_ip": source_ip,
                         "identifier": identifier,
                         "sequence": sequence,
                         "payload_hex": payload_hex
@@ -153,20 +147,14 @@ You are an ICMP echo server. When you receive echo requests:
                 .and_event_data_contains("sequence", "2")
                 .respond_with_actions_from_event(|event_data| {
                     let source_ip = event_data["source_ip"].as_str().unwrap_or("127.0.0.1");
-                    let identifier = event_data["identifier"]
-                        .as_str()
-                        .and_then(|s| s.parse::<u16>().ok())
-                        .unwrap_or(5678);
-                    let sequence = event_data["sequence"]
-                        .as_str()
-                        .and_then(|s| s.parse::<u16>().ok())
-                        .unwrap_or(2);
+                    let identifier = event_data["identifier"].as_u64().unwrap_or(5678);
+                    let sequence = event_data["sequence"].as_u64().unwrap_or(2);
                     let payload_hex = event_data["payload_hex"].as_str().unwrap_or("");
 
                     serde_json::json!([{
                         "type": "send_echo_reply",
                         "source_ip": "127.0.0.1",
-                        "dest_ip": source_ip,
+                        "destination_ip": source_ip,
                         "identifier": identifier,
                         "sequence": sequence,
                         "payload_hex": payload_hex
@@ -186,13 +174,19 @@ You are an ICMP echo server. When you receive echo requests:
         // Create raw socket for sending and receiving ICMP
         let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))?;
         socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+        // `build_icmp_echo_request` below produces a whole IPv4 packet. Without IP_HDRINCL the
+        // kernel prepends one of its own and ours arrives as the ICMP message - which is
+        // exactly the "IP-in-IP encapsulation on loopback" the server still tolerates on its
+        // receive path. This test was the source of that traffic.
+        socket.set_header_included_v4(true)?;
 
         println!("✓ Opened raw ICMP socket for testing");
 
         // Test 1: Send ICMP Echo Request (identifier=1234, sequence=1)
         println!("\n[Test 1] ICMP Echo Request (identifier=1234, sequence=1)");
         let payload1 = b"Hello ICMP";
-        let request1 = build_icmp_echo_request(test_ip, test_ip, 1234, 1, payload1);
+        let mut request1 = build_icmp_echo_request(test_ip, test_ip, 1234, 1, payload1);
+        ::netget::server::icmp::prepare_ipv4_for_raw_send(&mut request1);
 
         socket.send_to(&request1, &SocketAddr::from((test_ip, 0)).into())?;
         println!("  Sent ICMP Echo Request");
@@ -249,7 +243,8 @@ You are an ICMP echo server. When you receive echo requests:
         // Test 2: Send ICMP Echo Request (identifier=5678, sequence=2)
         println!("\n[Test 2] ICMP Echo Request (identifier=5678, sequence=2)");
         let payload2 = b"Ping test 2";
-        let request2 = build_icmp_echo_request(test_ip, test_ip, 5678, 2, payload2);
+        let mut request2 = build_icmp_echo_request(test_ip, test_ip, 5678, 2, payload2);
+        ::netget::server::icmp::prepare_ipv4_for_raw_send(&mut request2);
 
         socket.send_to(&request2, &SocketAddr::from((test_ip, 0)).into())?;
         println!("  Sent ICMP Echo Request");
@@ -318,14 +313,20 @@ You are an ICMP echo server. When you receive echo requests:
         );
         println!("Mock verification: ✓ PASS");
 
-        // At least one test should pass (loopback ICMP can be unreliable)
-        if reply_found || reply_found2 {
-            println!("\n✓ ICMP server test passed");
-            Ok(())
-        } else {
-            println!("\n⚠ Warning: No Echo Replies received (loopback ICMP may be disabled)");
-            println!("  However, mock verification passed, so LLM integration is correct");
-            Ok(())
-        }
+        // No echo reply means the packet path did not work, and that is the only thing this
+        // test can say that `packet_codec_test.rs` cannot. Returning Ok() here made a run with
+        // zero replies indistinguishable from a passing one - which is how the missing
+        // IP_HDRINCL on the send socket survived for as long as it did.
+        //
+        // Caveat worth knowing when this fails: on loopback the kernel answers echo requests
+        // itself, so a reply arriving does not by itself prove netget sent it. The mock
+        // expectations above are what tie the reply to netget having been asked.
+        assert!(
+            reply_found || reply_found2,
+            "no ICMP echo reply was received for either request; the server's reply never \
+             reached the wire"
+        );
+        println!("\n✓ ICMP server test passed");
+        Ok(())
     }
 }

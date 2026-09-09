@@ -40,20 +40,16 @@ use actions::{
     ICMP_TIME_EXCEEDED_EVENT,
 };
 
-/// Connection state for LLM processing
-#[derive(Debug, Clone, PartialEq)]
-enum ConnectionState {
-    Idle,
-    #[allow(dead_code)]
-    Processing,
-    #[allow(dead_code)]
-    Accumulating,
-}
-
-/// Per-client data for LLM handling
+/// Per-client data for LLM handling.
+///
+/// Deliberately just the memory. There used to be a `ConnectionState`
+/// (`Idle`/`Processing`/`Accumulating`) here, copied from the connection-oriented servers and
+/// carrying `#[allow(dead_code)]` on two of its three variants: it was written once at
+/// construction and never read or transitioned, while this client's own CLAUDE.md described it
+/// as the thing that "prevents concurrent LLM calls on same client". Nothing prevented
+/// anything. It is gone rather than wired up, because the mechanism that actually serialises
+/// this client is its single receive loop awaiting each `call_llm_for_client` inline.
 struct ClientData {
-    #[allow(dead_code)]
-    state: ConnectionState,
     memory: String,
 }
 
@@ -71,6 +67,10 @@ struct PendingRequest {
 
 /// How long a request waits for its reply before `icmp_timeout` is raised.
 const ICMP_REPLY_TIMEOUT_SECS: u64 = 5;
+
+/// Largest payload that still fits an ICMP message inside one unfragmented IPv4 datagram:
+/// 65535 total, less the 20-byte IPv4 header and the 8-byte ICMP header.
+const MAX_ICMP_PAYLOAD: usize = 65535 - 20 - 8;
 
 impl IcmpClient {
     /// Connect ICMP client with LLM action handling
@@ -95,6 +95,16 @@ impl IcmpClient {
         let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))
             .context("Failed to create raw ICMP socket (need root/CAP_NET_RAW)")?;
 
+        // `build_echo_request` produces a *complete* IPv4 packet, header included. Without
+        // IP_HDRINCL the kernel prepends a header of its own and our 20 bytes become the first
+        // 20 bytes of the ICMP message, so the target sees ICMP type 0x45 (69, unassigned) and
+        // no ping this client sent could ever have been answered. It is also what makes the
+        // advertised `ttl` parameter mean anything: without the option the kernel picks the TTL
+        // and traceroute is impossible.
+        socket
+            .set_header_included_v4(true)
+            .context("Failed to set IP_HDRINCL on the raw ICMP socket")?;
+
         // Set socket to non-blocking
         socket
             .set_nonblocking(true)
@@ -108,7 +118,6 @@ impl IcmpClient {
 
         // Initialize client data
         let client_data = Arc::new(Mutex::new(ClientData {
-            state: ConnectionState::Idle,
             memory: String::new(),
         }));
 
@@ -148,12 +157,20 @@ impl IcmpClient {
                 }),
             );
 
+            // Copy the memory out and drop the guard *before* the call. A
+            // `client_data.lock().await.memory` written inline in the scrutinee keeps its
+            // temporary guard alive for the whole `match`, so the `Ok` arm below - which locks
+            // again to store `memory_updates` - waited on a lock only it could release.
+            // `tokio::sync::Mutex` is not reentrant: that is a permanent hang, and it fired on
+            // every successful call that returned memory.
+            let memory_snapshot = client_data.lock().await.memory.clone();
+
             match call_llm_for_client(
                 &llm_client,
                 &app_state,
                 client_id.to_string(),
                 &instruction,
-                &client_data.lock().await.memory,
+                &memory_snapshot,
                 Some(&event),
                 protocol.as_ref(),
                 &status_tx,
@@ -184,7 +201,12 @@ impl IcmpClient {
                     }
                 }
                 Err(e) => {
-                    error!("ICMP client LLM call failed: {}", e);
+                    // ICMP defines no way to tell a peer "I cannot answer" - see the server's
+                    // CLAUDE.md - so nothing goes on the wire and the log carries the decision.
+                    error!(
+                        "ICMP client {} decision=fail_closed_llm_error on icmp_connected                          (nothing sent): {}",
+                        client_id, e
+                    );
                 }
             }
         }
@@ -329,13 +351,18 @@ impl IcmpClient {
                             if let Some(instruction) =
                                 state_clone.get_instruction_for_client(client_id).await
                             {
+                                // Snapshot the memory and release the lock before the call -
+                                // holding the guard in the scrutinee deadlocks the `Ok` arm
+                                // below. See the connected-event path.
+                                let memory_snapshot = client_data_clone.lock().await.memory.clone();
+
                                 // Call LLM
                                 match call_llm_for_client(
                                     &llm_clone,
                                     &state_clone,
                                     client_id.to_string(),
                                     &instruction,
-                                    &client_data_clone.lock().await.memory,
+                                    &memory_snapshot,
                                     Some(&event),
                                     protocol_clone.as_ref(),
                                     &status_clone,
@@ -363,7 +390,12 @@ impl IcmpClient {
                                         }
                                     }
                                     Err(e) => {
-                                        error!("ICMP client LLM call failed: {}", e);
+                                        error!(
+                                            "ICMP client {} decision=fail_closed_llm_error on                                              {} (nothing sent): {}",
+                                            client_id,
+                                            event.event_type.id,
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -415,12 +447,17 @@ impl IcmpClient {
                                         "waited_ms": req.sent_at.elapsed().as_millis() as u64,
                                     }),
                                 );
+                                // Same guard-in-the-scrutinee deadlock as the two calls
+                                // above: the `.clone()` copied the string but did nothing about
+                                // the lock, which stayed held for the whole `match`.
+                                let memory_snapshot = client_data_clone.lock().await.memory.clone();
+
                                 match call_llm_for_client(
                                     &llm_clone,
                                     &state_clone,
                                     client_id.to_string(),
                                     &instruction,
-                                    &client_data_clone.lock().await.memory.clone(),
+                                    &memory_snapshot,
                                     Some(&event),
                                     protocol_clone.as_ref(),
                                     &status_clone,
@@ -448,7 +485,8 @@ impl IcmpClient {
                                         }
                                     }
                                     Err(e) => error!(
-                                        "ICMP client {} LLM error on icmp_timeout: {}",
+                                        "ICMP client {} decision=fail_closed_llm_error on \
+                                         icmp_timeout (nothing sent): {}",
                                         client_id, e
                                     ),
                                 }
@@ -607,8 +645,18 @@ impl IcmpClient {
                         hex::decode(payload_hex)?
                     };
 
+                    // An echo request cannot be larger than one unfragmented IPv4 datagram;
+                    // past this `set_total_length(ip_size as u16)` wraps and the header stops
+                    // describing the buffer.
+                    anyhow::ensure!(
+                        payload.len() <= MAX_ICMP_PAYLOAD,
+                        "payload_hex decodes to {} bytes; an ICMP echo request carries at most {}",
+                        payload.len(),
+                        MAX_ICMP_PAYLOAD
+                    );
+
                     // Build and send echo request
-                    let packet = Self::build_echo_request(
+                    let mut packet = Self::build_echo_request(
                         Ipv4Addr::UNSPECIFIED,
                         dest_ip,
                         identifier,
@@ -616,6 +664,11 @@ impl IcmpClient {
                         &payload,
                         ttl,
                     );
+
+                    // Last thing before the syscall: Darwin and FreeBSD want two header fields
+                    // in host byte order on an IP_HDRINCL socket. After this the buffer is no
+                    // longer a well-formed RFC 791 header, so nothing may parse it again.
+                    crate::server::icmp::prepare_ipv4_for_raw_send(&mut packet);
 
                     let dest_addr = SocketAddr::new(std::net::IpAddr::V4(dest_ip), 0);
                     let sent = socket.send_to(&packet, &dest_addr.into())?;
@@ -665,8 +718,12 @@ impl IcmpClient {
         }
     }
 
-    /// Build an ICMP echo request packet with IP header
-    fn build_echo_request(
+    /// Build an ICMP echo request packet with IP header.
+    ///
+    /// `pub` so `tests/client/icmp/action_codec_test.rs` can assert the bytes against RFC 792
+    /// without a raw socket: this is the only ICMP the client ever emits, and every other test
+    /// of it needs root.
+    pub fn build_echo_request(
         source_ip: Ipv4Addr,
         dest_ip: Ipv4Addr,
         identifier: u16,

@@ -14,21 +14,24 @@ Testing the ICMP client presents unique challenges due to raw socket requirement
 
 ## Test Approach
 
-### Option 1: Action Definition Testing (No Privileges Required)
+### Option 1: Action and codec testing (no privileges required)
 
-Test the client trait implementation without creating raw sockets:
+This is where the real coverage is: `action_codec_test.rs`. `IcmpClient::build_echo_request` is
+a pure function and `IcmpClientProtocol::execute_action` is a pure
+`Value -> ClientActionResult` mapping, so both can be pinned with no socket:
 
-```rust
-#[tokio::test]
-async fn test_icmp_client_actions() {
-    let protocol = IcmpClientProtocol;
-    let sync_actions = protocol.get_sync_actions();
+| Test | What it pins |
+|---|---|
+| `the_echo_request_matches_the_rfc_792_layout` | every field at its RFC 791/792 offset, both checksums *verified* by ones' complement sum, the model's `ttl` reaching the header, source left `0.0.0.0` for the kernel to fill |
+| `an_empty_payload_still_builds_a_whole_message` | a 28-byte request is legal |
+| `every_advertised_example_is_accepted_by_its_own_executor` | the shape the model copies |
+| `send_echo_request_normalises_its_parameters` | the documented defaults (1234 / 1 / 64) |
+| `wait_for_more_and_disconnect_are_real_answers` | both map to their `ClientActionResult` |
+| `malformed_actions_are_refused_rather_than_panicking` | eight shapes, including a **stringified identifier**, which used to be silently replaced by the default |
+| `the_model_is_offered_a_vocabulary_on_every_event` | clients union async ∪ sync ∪ the event's list, so the sync list must not be empty |
 
-    // Verify action definitions
-    assert!(sync_actions.iter().any(|a| a.name == "send_echo_request"));
-    assert!(sync_actions.iter().any(|a| a.name == "send_timestamp_request"));
-}
-```
+There is **no** `send_timestamp_request` to assert — the action is commented out because pnet
+0.35 has no timestamp packet types. This section previously asserted its existence.
 
 ### Option 2: Real Socket Testing (Privileged)
 
@@ -53,44 +56,45 @@ async fn test_icmp_echo_request() {
 }
 ```
 
-## Test Scenarios
+## Test Scenarios (privileged, none implemented)
+
+**Event ids, verified against `src/client/icmp/actions.rs`**: `icmp_connected`,
+`icmp_echo_reply`, `icmp_timeout`, `icmp_destination_unreachable`, `icmp_time_exceeded`. This
+file used to name `icmp_echo_reply_received` and `icmp_timestamp_reply_received`, neither of
+which exists — a mock written against them would never match, the event would fall through to
+a real LLM call, and the failure would surface two steps later.
+
+**Target 127.0.0.1, never a public address.** The repo forbids tests contacting external
+endpoints; earlier revisions of this file specified 8.8.8.8.
 
 ### Scenario 1: Echo Request → Echo Reply (Ping)
-
-- **Action**: `send_echo_request` to 8.8.8.8 or localhost
-- **Expected Event**: `icmp_echo_reply_received` with matching identifier/sequence
+- **Action**: `send_echo_request` to 127.0.0.1
+- **Expected Event**: `icmp_echo_reply` with matching identifier/sequence
 - **Verification**: RTT calculation, payload matching
 
-### Scenario 2: Timestamp Request → Timestamp Reply
-
-- **Action**: `send_timestamp_request` to localhost
-- **Expected Event**: `icmp_timestamp_reply_received`
-- **Verification**: Timestamp values (originate, receive, transmit)
+### Scenario 2: Timeout
+- **Action**: `send_echo_request` to an address on a discard route
+- **Expected Event**: `icmp_timeout` after `ICMP_REPLY_TIMEOUT_SECS`, carrying `waited_ms`
+- **Verification**: the pending entry is removed exactly once
 
 ### Scenario 3: Traceroute Simulation
-
 - **Action**: Multiple `send_echo_request` with increasing TTL
-- **Expected Events**:
-  - `icmp_time_exceeded` from intermediate hops
-  - `icmp_echo_reply_received` from destination
-- **Verification**: Hop tracking, RTT per hop
+- **Expected Events**: `icmp_time_exceeded` from intermediate hops, then `icmp_echo_reply`
+- **Verification**: hop tracking, RTT per hop. Note this is the scenario that could not have
+  worked before `IP_HDRINCL` was set — the kernel chose the TTL, so the model's value never
+  reached the wire.
 
 ### Scenario 4: Destination Unreachable
-
-- **Action**: `send_echo_request` to unreachable IP (e.g., 192.0.2.1)
+- **Action**: `send_echo_request` to an unreachable IP
 - **Expected Event**: `icmp_destination_unreachable`
-- **Verification**: Unreachable code (network, host, protocol)
+- **Verification**: unreachable code
 
 ## LLM Call Budget
 
-Target: < 5 calls per test suite
-
-- Echo request/reply: 1 call
-- Timestamp request/reply: 1 call
-- Traceroute simulation: 2-3 calls (multiple hops)
-- Destination unreachable: 1 call
-
-Total: ~5 LLM calls (within budget)
+Zero, today: every test that runs makes no LLM call at all. `command_channel_test.rs` points
+the client's LLM at `http://127.0.0.1:1` deliberately, and `action_codec_test.rs` never
+constructs a client. Any privileged test added later should budget one call per event it
+provokes and no more.
 
 ## Runtime
 

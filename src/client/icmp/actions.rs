@@ -50,13 +50,37 @@ impl Protocol for IcmpClientProtocol {
     }
 
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
-        use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
+        use crate::protocol::metadata::{
+            DevelopmentState, PrivilegeRequirement, ProtocolMetadataV2,
+        };
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
+            .privilege_requirement(PrivilegeRequirement::RawSockets)
+            .connectionless()
             .implementation("Raw IP sockets with pnet_packet for ICMP")
             .llm_control("Full control over ICMP message types, TTL, and payloads")
-            .e2e_testing("Real ICMP pings to public IPs (requires CAP_NET_RAW)")
+            .e2e_testing(
+                "tests/client/icmp/command_channel_test.rs runs unprivileged and asserts that \
+                 connect() fails, leaves no command handle and makes a later send fail fast; \
+                 tests/client/icmp/action_codec_test.rs asserts the echo request's bytes \
+                 field-by-field against RFC 791/792 with both checksums verified, that the \
+                 executor accepts each advertised example, and that malformed input is refused \
+                 rather than silently defaulted. Both stop at the socket. e2e_test.rs's two \
+                 ping/traceroute tests are #[ignore]d stubs that assert nothing. No test has \
+                 ever sent an ICMP packet.",
+            )
+            .notes(
+                "Needs root/CAP_NET_RAW: connect() opens SOCK_RAW/IPPROTO_ICMP and returns Err \
+                 without it. UNVERIFIED on the wire - no echo request from this client has been \
+                 observed leaving a socket, and until this pass none could have been right: the \
+                 socket did not set IP_HDRINCL while build_echo_request emits a complete IPv4 \
+                 packet, so the kernel prepended a second header and the target saw ICMP type \
+                 0x45. The advertised 'ttl' parameter depended on the same option and was \
+                 equally inert, which is why traceroute could not have worked. An earlier \
+                 version of this field claimed 'real ICMP pings to public IPs' as evidence; no \
+                 such test exists and the repo forbids contacting external endpoints.",
+            )
             .build()
     }
 
@@ -154,19 +178,15 @@ impl Client for IcmpClientProtocol {
                     .and_then(|v| v.as_str())
                     .context("Missing 'destination_ip' parameter")?;
 
-                let identifier = action
-                    .get("identifier")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(1234) as u16;
-
-                let sequence = action.get("sequence").and_then(|v| v.as_u64()).unwrap_or(1) as u16;
+                let identifier = optional_u16(&action, "identifier", 1234)?;
+                let sequence = optional_u16(&action, "sequence", 1)?;
 
                 let payload_hex = action
                     .get("payload_hex")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                let ttl = action.get("ttl").and_then(|v| v.as_u64()).unwrap_or(64) as u8;
+                let ttl = optional_u8(&action, "ttl", 64)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "send_echo_request".to_string(),
@@ -214,6 +234,41 @@ impl Client for IcmpClientProtocol {
             )),
         }
     }
+}
+
+/// Read an optional 16-bit action parameter.
+///
+/// Absent means `default`. **Present but not a number in range is an error**, which is the
+/// whole point: `as_u64().unwrap_or(1234)` turned `"identifier": "5678"` - a string, which a
+/// model produces readily - into 1234 without a word, so the reply the target sent could never
+/// be matched to the request. Silently substituting a default for a value the caller *did*
+/// supply is the same class of defect as a silent `as u16` truncation.
+fn optional_u16(action: &serde_json::Value, name: &str, default: u16) -> Result<u16> {
+    let Some(value) = action.get(name) else {
+        return Ok(default);
+    };
+    if value.is_null() {
+        return Ok(default);
+    }
+    let raw = value
+        .as_u64()
+        .with_context(|| format!("'{name}' must be a number, got {value}"))?;
+    u16::try_from(raw)
+        .with_context(|| format!("'{name}' must be a 16-bit ICMP field (0-65535), got {raw}"))
+}
+
+/// Read an optional 8-bit action parameter. Same reasoning as [`optional_u16`].
+fn optional_u8(action: &serde_json::Value, name: &str, default: u8) -> Result<u8> {
+    let Some(value) = action.get(name) else {
+        return Ok(default);
+    };
+    if value.is_null() {
+        return Ok(default);
+    }
+    let raw = value
+        .as_u64()
+        .with_context(|| format!("'{name}' must be a number, got {value}"))?;
+    u8::try_from(raw).with_context(|| format!("'{name}' must fit one byte (0-255), got {raw}"))
 }
 
 /// Action definition for send_echo_request

@@ -92,6 +92,27 @@ impl IcmpServer {
                 let send_socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))
                     .context("failed to create raw ICMP send socket")?;
 
+                // Every reply this server builds is a *complete* IPv4 packet: 20-byte header
+                // written by `build_echo_reply` / `build_destination_unreachable` /
+                // `build_time_exceeded`, then the ICMP message. Handing that to a
+                // SOCK_RAW/IPPROTO_ICMP socket with IP_HDRINCL off makes the kernel prepend a
+                // header of its own and treat our 20 bytes as the first 20 bytes of the ICMP
+                // *message* - so the peer reads ICMP type 0x45 (69, unassigned) and the reply is
+                // garbage. `IP_HDRINCL` is what says "the buffer starts at the IP header"; pnet's
+                // own Layer3 transport channel sets exactly this option for exactly this reason
+                // (pnet_transport 0.35, `transport_channel`).
+                send_socket
+                    .set_header_included_v4(true)
+                    .context("failed to set IP_HDRINCL on the raw ICMP send socket")?;
+
+                // The send socket is used from async tasks, so it must never park a Tokio
+                // worker: a raw send only blocks when the socket buffer is full, which is
+                // precisely the hostile case. Dropping a reply under that pressure (and logging
+                // it) is the correct outcome for a datagram protocol.
+                send_socket
+                    .set_nonblocking(true)
+                    .context("failed to put the raw ICMP send socket in non-blocking mode")?;
+
                 Ok((socket, Arc::new(send_socket)))
             };
 
@@ -168,9 +189,13 @@ impl IcmpServer {
                         let ip_payload = ip_packet.payload();
                         trace!("IP payload (ICMP data): {}", hex::encode(ip_payload));
 
-                        // Handle IP-in-IP encapsulation (common on loopback)
-                        // If the payload starts with an IP header (0x45 = version 4, header length 5),
-                        // parse it as an inner IP packet and use its payload instead
+                        // Tolerate a peer that wrote an IP header onto a socket without
+                        // IP_HDRINCL: the kernel then prepends its own header and the peer's
+                        // lands where the ICMP message should be, so we receive IP-in-IP. This
+                        // used to be described here as "common on loopback"; it is nothing to do
+                        // with loopback, it is that sender's bug (netget had it too - see the
+                        // IP_HDRINCL note on the send socket above). ICMP type 0x45 does not
+                        // exist, so the check cannot misfire on a well-formed message.
                         let icmp_data: Vec<u8>;
                         let icmp_payload = if ip_payload.len() >= 20 && ip_payload[0] == 0x45 {
                             if let Some(inner_ip) = Ipv4Packet::new(ip_payload) {
@@ -270,8 +295,15 @@ impl IcmpServer {
                                             serde_json::json!({
                                                 "source_ip": source_ip.to_string(),
                                                 "destination_ip": dest_ip.to_string(),
-                                                "identifier": identifier.to_string(),
-                                                "sequence": sequence.to_string(),
+                                                // Numbers, not strings. The event type
+                                                // declares both as `number` and
+                                                // `execute_send_echo_reply` reads them with
+                                                // `as_u64()`, so a stringified id made the
+                                                // protocol's own scripted startup example
+                                                // ("identifier": event["identifier"]) fail with
+                                                // "Missing 'identifier' parameter".
+                                                "identifier": identifier,
+                                                "sequence": sequence,
                                                 "payload_hex": payload_hex,
                                                 "ttl": ttl,
                                             }),
@@ -369,52 +401,60 @@ impl IcmpServer {
 
                                     // Send ICMP replies if any
                                     for protocol_result in execution_result.protocol_results {
-                                        if let Some(output_data) =
-                                            protocol_result.get_all_output().first()
-                                        {
+                                        // Every output, not just the first: an answer of two
+                                        // echo replies used to put one packet on the wire and
+                                        // drop the other without a word.
+                                        for mut output_data in protocol_result.get_all_output() {
                                             // Send packet via raw socket
                                             // Extract destination from the IP header in output_data
-                                            if let Some(ip_pkt) = Ipv4Packet::new(output_data) {
-                                                let dest_addr = std::net::SocketAddr::from((
-                                                    ip_pkt.get_destination(),
-                                                    0,
-                                                ));
-
-                                                match send_socket_clone
-                                                    .send_to(output_data, &dest_addr.into())
-                                                {
-                                                    Ok(_) => {
-                                                        packets_sent += 1;
-                                                        debug!(
-                                                            "ICMP sent {} bytes to {}",
-                                                            output_data.len(),
-                                                            dest_addr.ip()
-                                                        );
-                                                        let _ = status_clone.send(format!(
-                                                            "[DEBUG] ICMP sent {} bytes to {}",
-                                                            output_data.len(),
-                                                            dest_addr.ip()
-                                                        ));
-
-                                                        trace!(
-                                                            "ICMP reply (hex): {}",
-                                                            hex::encode(output_data)
-                                                        );
-                                                        let _ = status_clone.send(format!(
-                                                            "[TRACE] ICMP reply (hex): {}",
-                                                            hex::encode(output_data)
-                                                        ));
-                                                    }
-                                                    Err(e) => {
-                                                        error!("Failed to send ICMP reply: {}", e);
-                                                        let _ = status_clone.send(format!(
-                                                            "[ERROR] Failed to send ICMP reply: {}",
-                                                            e
-                                                        ));
-                                                    }
-                                                }
-                                            } else {
+                                            let dest_ip_of_reply = Ipv4Packet::new(&output_data)
+                                                .map(|ip_pkt| ip_pkt.get_destination());
+                                            let Some(reply_dest) = dest_ip_of_reply else {
                                                 error!("Failed to parse IP packet from LLM output");
+                                                continue;
+                                            };
+                                            let dest_addr =
+                                                std::net::SocketAddr::from((reply_dest, 0));
+
+                                            // Last thing before the syscall: on Darwin/FreeBSD
+                                            // the two fields below must reach the kernel in
+                                            // host byte order. After this the buffer is no
+                                            // longer a well-formed RFC 791 header, so nothing
+                                            // may parse it again.
+                                            prepare_ipv4_for_raw_send(&mut output_data);
+
+                                            match send_socket_clone
+                                                .send_to(&output_data, &dest_addr.into())
+                                            {
+                                                Ok(_) => {
+                                                    packets_sent += 1;
+                                                    debug!(
+                                                        "ICMP sent {} bytes to {}",
+                                                        output_data.len(),
+                                                        dest_addr.ip()
+                                                    );
+                                                    let _ = status_clone.send(format!(
+                                                        "[DEBUG] ICMP sent {} bytes to {}",
+                                                        output_data.len(),
+                                                        dest_addr.ip()
+                                                    ));
+
+                                                    trace!(
+                                                        "ICMP reply (hex): {}",
+                                                        hex::encode(&output_data)
+                                                    );
+                                                    let _ = status_clone.send(format!(
+                                                        "[TRACE] ICMP reply (hex): {}",
+                                                        hex::encode(&output_data)
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    error!("Failed to send ICMP reply: {}", e);
+                                                    let _ = status_clone.send(format!(
+                                                        "[ERROR] Failed to send ICMP reply: {}",
+                                                        e
+                                                    ));
+                                                }
                                             }
                                         }
                                     }
@@ -774,6 +814,56 @@ impl IcmpServer {
     }
     */
 }
+
+/// Put a finished IPv4 packet into the form the local kernel expects on an `IP_HDRINCL`
+/// raw socket, immediately before `send_to`.
+///
+/// On Linux every field goes out in network byte order, so this is a no-op. On Darwin and
+/// FreeBSD the raw-IP output path reads `ip_len` and `ip_off` in **host** byte order — XNU's
+/// `rip_output` sanity-checks `ip->ip_len > m->m_pkthdr.len` against the real buffer length, so
+/// a network-order length on a 28-byte packet reads as 7168 and the send fails outright with
+/// `EINVAL`. `pnet_transport` 0.35 does the same conversion for its Layer3 channel (see
+/// `send_to_impl`, `man 4 ip` "Raw IP Sockets"); this is that conversion, without taking on the
+/// whole transport channel.
+///
+/// The header checksum is zeroed rather than recomputed: it was calculated over the
+/// network-order fields and cannot be valid once two of them are byte-swapped, and every raw-IP
+/// implementation either always fills the checksum in (`man 7 raw` on Linux lists "IP Checksum:
+/// always filled in") or fills it when zero. Leaving a stale value is wrong in every case where
+/// zeroing is, and wrong in one case where zeroing is not.
+///
+/// **Not verified against a running kernel.** Nothing in this repo has ever sent on a raw
+/// socket; this is derived from the kernel sources and from pnet's long-standing workaround, and
+/// `tests/server/icmp/packet_codec_test.rs` asserts only that the bytes come out as intended for
+/// the platform being compiled for.
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "freebsd"
+))]
+pub fn prepare_ipv4_for_raw_send(packet: &mut [u8]) {
+    if packet.len() < 20 {
+        return;
+    }
+    // `to_ne_bytes` is a no-op on a big-endian host, which is what "host byte order" means
+    // there; only little-endian needs the swap.
+    let total_length = u16::from_be_bytes([packet[2], packet[3]]);
+    packet[2..4].copy_from_slice(&total_length.to_ne_bytes());
+    let flags_and_fragment_offset = u16::from_be_bytes([packet[6], packet[7]]);
+    packet[6..8].copy_from_slice(&flags_and_fragment_offset.to_ne_bytes());
+    packet[10] = 0;
+    packet[11] = 0;
+}
+
+/// Linux and everything else: the header already is what the kernel wants.
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "freebsd"
+)))]
+pub fn prepare_ipv4_for_raw_send(_packet: &mut [u8]) {}
 
 /// Convert ICMP type to human-readable string
 fn icmp_type_to_string(icmp_type: pnet::packet::icmp::IcmpType) -> &'static str {

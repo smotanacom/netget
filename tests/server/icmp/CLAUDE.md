@@ -19,6 +19,33 @@ now `#[ignore]`d with a reason (cargo prints *ignored*, which nobody mistakes fo
 running it explicitly with `--ignored` on a host that still lacks the privilege **fails loudly**
 rather than skipping: you asked for the privileged test.
 
+## What runs unprivileged, and is therefore the real coverage
+
+`packet_codec_test.rs` is the file to read first. It needs no socket, no interface and no
+privilege, because `IcmpServer::build_echo_reply` / `build_destination_unreachable` /
+`build_time_exceeded` are pure functions and `IcmpProtocol::execute_action` is a pure
+`Value -> ActionResult` mapping. It asserts:
+
+| Test | What it pins |
+|---|---|
+| `echo_reply_matches_the_rfc_792_layout` | every field of the reply at its RFC 791/792 offset, both checksums *verified* by ones' complement sum rather than compared to a constant |
+| `echo_reply_with_no_payload_is_still_a_whole_message` | a zero-length ping is legal and comes out 28 bytes |
+| `destination_unreachable_matches_the_rfc_792_layout` | type 3, the code asked for, the four mandatory zero bytes, the datagram quoted verbatim |
+| `a_longer_original_datagram_is_quoted_at_28_bytes` | the RFC 792 truncation |
+| `a_shorter_original_datagram_does_not_panic` | a three-byte quotation; `[..28]` here would kill the receive task |
+| `time_exceeded_matches_the_rfc_792_layout`, `time_exceeded_defaults_to_ttl_exceeded_in_transit` | type 11 and the documented default code |
+| `raw_send_fixup_matches_the_platform`, `raw_send_fixup_ignores_a_runt` | what `prepare_ipv4_for_raw_send` does for the platform being compiled for |
+| `every_advertised_example_is_accepted_by_its_own_executor` | the shape the model copies |
+| `the_echo_reply_example_produces_the_packet_it_describes` | `payload_hex` is decoded, not sent as text |
+| `ignore_icmp_puts_nothing_on_the_wire` | `NoAction`, not an error |
+| `malformed_actions_are_refused_rather_than_panicking` | thirteen hostile shapes: non-hex, odd-length hex, out-of-range identifier, a stringified number, an IPv6 address, a payload larger than a datagram |
+
+Assert against offsets, not golden blobs: a failure then names the field that moved.
+
+**What it cannot prove**: that any of these bytes reach a wire. Everything past `send_to` needs
+root, and no test in this repo has run there. Do not let a green `packet_codec_test` be read as
+"ICMP works".
+
 ## Startup-failure coverage that does run unprivileged
 
 `tests/capture_startup_reports_failure_test.rs::icmp_spawn_outcome_matches_raw_socket_privilege`
@@ -94,10 +121,12 @@ async fn test_icmp_echo_real_socket() {
 - **LLM Action**: `send_echo_reply`
 - **Verification**: Reply has matching identifier, sequence, payload
 
-### Scenario 2: Timestamp Request → Timestamp Reply
+### Scenario 2: Timestamp Request → nothing
 - **Input**: ICMP Timestamp Request (type 13)
-- **LLM Action**: `send_timestamp_reply`
-- **Verification**: Reply includes originate/receive/transmit timestamps
+- **LLM Action**: none exists. `send_timestamp_reply` is commented out in the source because
+  pnet 0.35 has no timestamp packet types, so a type 13 arrives as a generic
+  `icmp_other_message` and there is no action that can answer it. This scenario used to be
+  listed as if it were implemented.
 
 ### Scenario 3: Ignore Packet
 - **Input**: ICMP Echo Request
@@ -111,20 +140,29 @@ async fn test_icmp_echo_real_socket() {
 
 ## LLM Call Budget
 
-Target: < 5 calls per test suite
-- Echo request/reply: 1 call
-- Timestamp request/reply: 1 call
-- Ignore test: 1 call
-- Destination unreachable: 1 call
-- Time exceeded: 1 call
-
-Total: 5 LLM calls (within budget)
+The unprivileged tests make **zero** LLM calls: they are pure-function and pure-executor tests.
+The `#[ignore]`d `test_icmp_echo_server` budgets 3 (one startup instruction, two echo
+requests), which is what its `expect_calls(1)` rules describe.
 
 ## Runtime
 
 Expected: < 30 seconds for full suite (with mocks)
 - Mock tests: instant (no real network I/O)
 - Real socket tests: ~5-10 seconds (with --ignored flag)
+
+## Two bugs this suite carried, both of which made it pass while proving nothing
+
+1. **The mock answered with `dest_ip`.** No ICMP action has that parameter; every reply was
+   refused with "Missing 'destination_ip' parameter", and the test still returned `Ok(())`
+   because a missing reply was optional (below). Check the field names against the protocol,
+   not against the neighbouring suite.
+2. **Its own sender had the bug it exists to catch.** `build_icmp_echo_request` produces a
+   whole IPv4 packet and the socket did not set `IP_HDRINCL`, so the kernel prepended a header
+   and netget received IP-in-IP — which is where the server's "IP-in-IP encapsulation on
+   loopback" workaround came from. It has nothing to do with loopback.
+
+Both are fixed, and the test now **fails** when no echo reply arrives rather than printing a
+warning and returning `Ok(())`.
 
 ## Known Issues
 
