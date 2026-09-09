@@ -44,7 +44,7 @@ async fn test_doh_answers_servfail_when_llm_fails() -> E2EResult<()> {
         // which is what drives `call_llm` to `Err` and exercises the failure path.
     });
 
-    let mut server = start_netget_server(config).await?;
+    let server = start_netget_server(config).await?;
     server
         .wait_for_log("DoH server listening on", 20)
         .await
