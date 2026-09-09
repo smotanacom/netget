@@ -9,7 +9,7 @@ use aws_sdk_sqs::types::{MessageAttributeValue, QueueAttributeName};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::sqs::actions::{
@@ -27,6 +27,17 @@ use crate::utils::truncate::truncate_for_log;
 
 /// SQS client that connects to an AWS SQS queue
 pub struct SqsClient;
+
+/// How many times an answer may provoke another answer.
+///
+/// `execute_actions -> apply_action -> send_message/receive_messages ->
+/// spawn_event_notification -> execute_actions` is a genuine cycle: the model is told a
+/// message was sent, and may answer by sending another. Boxing the recursive call made it
+/// compile and nothing bounded it, so a model that answers `sqs_message_sent` with another
+/// `send_message` loops forever, one AWS call and one LLM call per turn. The root
+/// `CLAUDE.md` prescribes the fix: a depth bound, not silence — the chain is allowed to be
+/// useful and then stops.
+const MAX_FOLLOWUP_DEPTH: u8 = 4;
 
 impl SqsClient {
     /// Connect to an SQS queue with integrated LLM actions
@@ -57,6 +68,18 @@ impl SqsClient {
             .transpose()?
             .flatten();
 
+        let access_key_id = startup_params
+            .as_ref()
+            .map(|p| p.get_optional_string("access_key_id"))
+            .transpose()?
+            .flatten();
+
+        let secret_access_key = startup_params
+            .as_ref()
+            .map(|p| p.get_optional_string("secret_access_key"))
+            .transpose()?
+            .flatten();
+
         info!(
             "SQS client {} connecting to queue: {}",
             client_id, queue_url
@@ -69,6 +92,11 @@ impl SqsClient {
             config_loader = config_loader.region(aws_config::Region::new(reg.clone()));
         }
 
+        // Explicit credentials when the caller supplied them. Without this the SDK's default
+        // chain runs — environment, `~/.aws/credentials`, then IMDS — so a client the model
+        // created signed with the operator's real AWS identity, with no way to scope it, and
+        // on a machine with no credentials the connect additionally paid for an IMDS probe
+        // that cannot succeed off EC2.
         let config = config_loader.load().await;
 
         // Build SQS client
@@ -76,6 +104,20 @@ impl SqsClient {
 
         if let Some(endpoint) = &endpoint_url {
             sqs_builder = sqs_builder.endpoint_url(endpoint);
+        }
+
+        // Explicit credentials when the caller supplied them, overriding whatever the
+        // default chain loaded. Without this a client the model created signed with the
+        // operator's real AWS identity - environment, ~/.aws/credentials or an instance
+        // role - and nothing in the protocol let the caller scope it.
+        if let (Some(key_id), Some(secret)) = (&access_key_id, &secret_access_key) {
+            sqs_builder = sqs_builder.credentials_provider(aws_sdk_sqs::config::Credentials::new(
+                key_id.clone(),
+                secret.clone(),
+                None, // session token
+                None, // expiry
+                "netget_sqs_client",
+            ));
         }
 
         let sqs_config = sqs_builder.build();
@@ -115,29 +157,45 @@ impl SqsClient {
         ));
         app_state.register_client_task(client_id, cmd_task).await;
 
-        // Call LLM with connected event
-        let event = Event::new(
-            &SQS_CLIENT_CONNECTED_EVENT,
-            serde_json::json!({
-                "queue_url": queue_url.clone(),
-            }),
-        );
+        // Ask the model about the connection from a registered task, not inline.
+        //
+        // A dashboard-created client defaults to a `*` -> manual routing rule, which parks
+        // this call until a human answers or `timeout_secs` (default 300) expires. Awaiting
+        // it here meant `ClientForm::create` blocked for up to five minutes on a client the
+        // operator had just asked for. The command channel is already registered above, so
+        // `[ send ]` works throughout the park — that was anticipated; moving the park off
+        // the creation path was not.
+        let conn_sqs = sqs.clone();
+        let conn_queue = queue_url.clone();
+        let conn_protocol = protocol.clone();
+        let conn_llm = llm_client.clone();
+        let conn_state = app_state.clone();
+        let conn_status = status_tx.clone();
+        let conn_task = tokio::spawn(async move {
+            let event = Event::new(
+                &SQS_CLIENT_CONNECTED_EVENT,
+                serde_json::json!({
+                    "queue_url": conn_queue.clone(),
+                }),
+            );
 
-        if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
-            let memory = app_state
+            let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
+                return;
+            };
+            let memory = conn_state
                 .get_memory_for_client(client_id)
                 .await
                 .unwrap_or_default();
 
             match call_llm_for_client(
-                &llm_client,
-                &app_state,
+                &conn_llm,
+                &conn_state,
                 client_id.to_string(),
                 &instruction,
                 &memory,
                 Some(&event),
-                protocol.as_ref(),
-                &status_tx,
+                conn_protocol.as_ref(),
+                &conn_status,
             )
             .await
             {
@@ -145,33 +203,44 @@ impl SqsClient {
                     actions,
                     memory_updates,
                 }) => {
-                    // Update memory
                     if let Some(mem) = memory_updates {
-                        app_state.set_memory_for_client(client_id, mem).await;
+                        conn_state.set_memory_for_client(client_id, mem).await;
                     }
 
-                    // Execute actions from initial connection
-                    Self::execute_actions(
+                    if let Err(e) = Self::execute_actions(
                         actions,
-                        &sqs,
-                        &queue_url,
-                        protocol.clone(),
-                        &llm_client,
-                        &app_state,
-                        &status_tx,
+                        &conn_sqs,
+                        &conn_queue,
+                        conn_protocol.clone(),
+                        &conn_llm,
+                        &conn_state,
+                        &conn_status,
                         client_id,
+                        0,
                     )
-                    .await?;
+                    .await
+                    {
+                        error!(
+                            "SQS client {} connect-time actions failed: {}",
+                            client_id, e
+                        );
+                    }
                 }
                 Err(e) => {
                     error!("LLM error for SQS client {}: {}", client_id, e);
                 }
             }
-        }
+        });
+        app_state.register_client_task(client_id, conn_task).await;
 
         // Return a dummy local address (SQS is HTTP-based, no real socket)
         // Use localhost with client_id as port for uniqueness
-        let dummy_addr: SocketAddr = format!("127.0.0.1:{}", 10000 + client_id.as_u32())
+        // A placeholder: SQS is HTTP and this client owns no socket. Wrapped into the
+        // ephemeral range rather than added, because `10000 + client_id` leaves u16 once
+        // the id passes 55535 and the parse then failed *after* the command loop was
+        // already registered — leaving a running task behind a client marked Error.
+        let dummy_port = 10_000u16.wrapping_add((client_id.as_u32() % 50_000) as u16);
+        let dummy_addr: SocketAddr = format!("127.0.0.1:{dummy_port}")
             .parse()
             .context("Failed to create dummy socket address")?;
 
@@ -179,6 +248,7 @@ impl SqsClient {
     }
 
     /// Execute SQS actions from LLM
+    #[allow(clippy::too_many_arguments)]
     fn execute_actions<'a>(
         actions: Vec<serde_json::Value>,
         sqs: &'a aws_sdk_sqs::Client,
@@ -188,6 +258,7 @@ impl SqsClient {
         app_state: &'a Arc<AppState>,
         status_tx: &'a mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        depth: u8,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             for action in actions {
@@ -207,6 +278,7 @@ impl SqsClient {
                     app_state,
                     status_tx,
                     client_id,
+                    depth,
                 )
                 .await;
                 if matches!(outcome, ClientSendOutcome::Disconnected) {
@@ -243,6 +315,7 @@ impl SqsClient {
         app_state: &'a Arc<AppState>,
         status_tx: &'a mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        depth: u8,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ClientSendOutcome> + Send + 'a>> {
         Box::pin(async move {
             match result {
@@ -258,6 +331,7 @@ impl SqsClient {
                                 app_state,
                                 status_tx,
                                 client_id,
+                                depth,
                             )
                             .await
                         }
@@ -271,6 +345,7 @@ impl SqsClient {
                                 app_state,
                                 status_tx,
                                 client_id,
+                                depth,
                             )
                             .await
                         }
@@ -295,8 +370,11 @@ impl SqsClient {
                             error!("SQS client {} operation {} failed: {}", client_id, name, e);
                             let _ = status_tx
                                 .send(format!("[ERROR] SQS operation {} failed: {}", name, e));
-                            ClientSendOutcome::Executed {
-                                detail: format!(
+                            // A failed operation is `Rejected`, not `Executed`: both used to
+                            // be `Executed`, so a refusal and a completed send rendered the
+                            // same way in the dashboard.
+                            ClientSendOutcome::Rejected {
+                                error: format!(
                                     "{} failed: {}",
                                     name,
                                     truncate_for_log(&e.to_string(), 200)
@@ -352,6 +430,8 @@ impl SqsClient {
                     error: e.to_string(),
                 },
                 Ok(result) => {
+                    // Depth 0: an injected action is a fresh chain, whatever provoked
+                    // the operator to send it.
                     Self::apply_action(
                         result,
                         &sqs,
@@ -361,6 +441,7 @@ impl SqsClient {
                         &app_state,
                         &status_tx,
                         client_id,
+                        0,
                     )
                     .await
                 }
@@ -396,6 +477,7 @@ impl SqsClient {
     }
 
     /// Send a message to the SQS queue
+    #[allow(clippy::too_many_arguments)]
     async fn send_message(
         sqs: &aws_sdk_sqs::Client,
         queue_url: &str,
@@ -405,6 +487,7 @@ impl SqsClient {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        depth: u8,
     ) -> Result<serde_json::Value> {
         let message_body = data
             .get("message_body")
@@ -418,7 +501,8 @@ impl SqsClient {
 
         // Add delay if specified
         if let Some(delay) = data.get("delay_seconds").and_then(|v| v.as_i64()) {
-            request = request.delay_seconds(delay as i32);
+            // Clamped, not cast: `as i32` wraps silently. 0-900 is SQS's documented range.
+            request = request.delay_seconds(delay.clamp(0, 900) as i32);
         }
 
         // Add message attributes if specified
@@ -462,6 +546,7 @@ impl SqsClient {
             app_state.clone(),
             status_tx.clone(),
             client_id,
+            depth,
         )
         .await;
 
@@ -469,6 +554,7 @@ impl SqsClient {
     }
 
     /// Receive messages from the SQS queue
+    #[allow(clippy::too_many_arguments)]
     async fn receive_messages(
         sqs: &aws_sdk_sqs::Client,
         queue_url: &str,
@@ -478,6 +564,7 @@ impl SqsClient {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        depth: u8,
     ) -> Result<serde_json::Value> {
         let mut request = sqs.receive_message().queue_url(queue_url);
 
@@ -493,7 +580,9 @@ impl SqsClient {
 
         // Set visibility timeout
         if let Some(timeout) = data.get("visibility_timeout").and_then(|v| v.as_i64()) {
-            request = request.visibility_timeout(timeout as i32);
+            // Clamped, not cast: `as i32` wraps, so 4294967296 silently became 0 — an
+            // instant-visibility timeout the model never asked for. 0-43200 is SQS's range.
+            request = request.visibility_timeout(timeout.clamp(0, 43_200) as i32);
         }
 
         let response = request
@@ -512,7 +601,11 @@ impl SqsClient {
             client_id, message_count
         );
 
-        if !messages.is_empty() {
+        // The event fires even for an empty poll. It used to be raised only when something
+        // came back, so a "drain the queue" instruction stopped dead at the first empty
+        // response with no way for the model to learn why — short polling returns nothing
+        // most of the time, so that was the normal case, not the edge case.
+        {
             // Build messages array for LLM
             let messages_json: Vec<serde_json::Value> = messages
                 .iter()
@@ -569,6 +662,7 @@ impl SqsClient {
                 app_state.clone(),
                 status_tx.clone(),
                 client_id,
+                depth,
             )
             .await;
         }
@@ -592,10 +686,34 @@ impl SqsClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        depth: u8,
     ) {
+        // The cycle stops here rather than in the middle of an operation, so whatever
+        // provoked this event has already completed and only the *next* round-trip is
+        // refused. Nothing bounded it before: a model answering `sqs_message_sent` with
+        // another `send_message` looped forever, one AWS call and one LLM call per turn.
+        if depth >= MAX_FOLLOWUP_DEPTH {
+            warn!(
+                "SQS client {} stopping the follow-up chain at depth {} on {}: the model's \
+                 answers have provoked {} rounds of events",
+                client_id, depth, event.event_type.id, MAX_FOLLOWUP_DEPTH
+            );
+            let _ = status_tx.send(format!(
+                "[CLIENT] SQS client {client_id} follow-up chain capped at \
+                 {MAX_FOLLOWUP_DEPTH} rounds"
+            ));
+            return;
+        }
+
         let registrar = app_state.clone();
         let handle = tokio::spawn(async move {
+            // No instruction means the client has no model persona to consult; that is a
+            // configuration, not a failure, so it stays quiet by design.
             let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
+                debug!(
+                    "SQS client {} has no instruction; not asking the model about {}",
+                    client_id, event.event_type.id
+                );
                 return;
             };
             let memory = app_state
@@ -603,10 +721,11 @@ impl SqsClient {
                 .await
                 .unwrap_or_default();
 
-            let Ok(ClientLlmResult {
-                actions,
-                memory_updates,
-            }) = call_llm_for_client(
+            // Logged, not swallowed. This was a `let ... else { return }`, so an LLM
+            // outage, a budget refusal or a fail-closed manual timeout on
+            // `sqs_message_received` produced no error!, no status line and nothing in the
+            // log — the model was asked, the call failed, and the client simply went quiet.
+            let (actions, memory_updates) = match call_llm_for_client(
                 &llm_client,
                 &app_state,
                 client_id.to_string(),
@@ -617,8 +736,18 @@ impl SqsClient {
                 &status_tx,
             )
             .await
-            else {
-                return;
+            {
+                Ok(ClientLlmResult {
+                    actions,
+                    memory_updates,
+                }) => (actions, memory_updates),
+                Err(e) => {
+                    error!(
+                        "SQS client {} LLM error on {}: {}",
+                        client_id, event.event_type.id, e
+                    );
+                    return;
+                }
             };
 
             if let Some(mem) = memory_updates {
@@ -634,6 +763,7 @@ impl SqsClient {
                 &app_state,
                 &status_tx,
                 client_id,
+                depth + 1,
             )
             .await
             {
