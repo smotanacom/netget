@@ -140,12 +140,19 @@ impl Socks5Client {
         );
 
         if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
+            // Copy the memory out under its own guard. Passing
+            // `&client_data.lock().await.memory` straight into the call would keep the guard
+            // alive for the whole `match` -- temporaries in a match scrutinee live until the
+            // match ends -- and the `Ok` arm below locks the same mutex again to store the
+            // model's memory update. `tokio::sync::Mutex` is not reentrant, so that is a
+            // permanent deadlock, reached only when the model happens to return memory.
+            let memory = { client_data.lock().await.memory.clone() };
             match call_llm_for_client(
                 &llm_client,
                 &app_state,
                 client_id.to_string(),
                 &instruction,
-                &client_data.lock().await.memory,
+                &memory,
                 Some(&connected_event),
                 protocol.as_ref(),
                 &status_tx,
@@ -278,12 +285,15 @@ impl Socks5Client {
                                         }),
                                     );
 
+                                    // Same reasoning as the connected-event call above: the
+                                    // guard must not survive into the match arms.
+                                    let memory = { client_data.lock().await.memory.clone() };
                                     match call_llm_for_client(
                                         &llm_client,
                                         &app_state,
                                         client_id.to_string(),
                                         &instruction,
-                                        &client_data.lock().await.memory,
+                                        &memory,
                                         Some(&event),
                                         protocol.as_ref(),
                                         &status_tx,

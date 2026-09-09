@@ -405,12 +405,21 @@ impl HttpProxyClient {
                                     }),
                                 );
 
+                                // Copy the memory out under its own guard first. Passing
+                                // `&client_data_clone.lock().await.memory` into the call keeps
+                                // that guard alive for the whole `match` -- a temporary in a
+                                // match scrutinee lives until the match ends -- and the `Ok`
+                                // arm locks the same mutex again to store the model's memory
+                                // update. `tokio::sync::Mutex` is not reentrant, so the tunnel
+                                // task deadlocks the moment the model returns memory.
+                                let memory =
+                                    { client_data_clone.lock().await.memory.clone() };
                                 match call_llm_for_client(
                                     &llm_client,
                                     &app_state_clone,
                                     client_id.to_string(),
                                     &instruction,
-                                    &client_data_clone.lock().await.memory,
+                                    &memory,
                                     Some(&event),
                                     protocol.as_ref(),
                                     &status_tx_clone,
@@ -537,12 +546,16 @@ impl HttpProxyClient {
                                         }),
                                     );
 
+                                    // Same reasoning as the tunnel-established call above:
+                                    // the guard must not survive into the match arms.
+                                    let memory =
+                                        { client_data_clone.lock().await.memory.clone() };
                                     match call_llm_for_client(
                                         &llm_client,
                                         &app_state_clone,
                                         client_id.to_string(),
                                         &instruction,
-                                        &client_data_clone.lock().await.memory,
+                                        &memory,
                                         Some(&event),
                                         protocol.as_ref(),
                                         &status_tx_clone,
