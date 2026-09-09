@@ -397,6 +397,17 @@ unknown verb is reported rather than silently ignored.
 **`Sent { bytes_sent }` is never reported**: `couch_rs` owns the HTTP connection, so a byte
 count would be invented.
 
+**The mutex is released before the LLM call, not after.** Every arm of
+`execute_couchdb_action` now does `client.lock().await.clone()` — `couch_rs::Client` is a
+cheap `Clone` over a reqwest client, which is how `Database::new` gets its own — rather than
+holding the `MutexGuard` for the arm's body. The guard used to be held across
+`send_response_event`, which on the `Dispatch::Inline` path (the connect path) makes an LLM
+call: a dashboard-created client defaults to a `*` -> manual rule, so that call parks for up
+to the 300s intercept timeout with the CouchDB handle locked, and every injected `[ send ]`
+blocks on `client.lock()` for the whole park. Registering the command channel early bought
+nothing while the handle itself was the thing held. It also serialised operations reqwest
+would happily run concurrently.
+
 ---
 
 ## The deferred paths execute the model's answer too (August 2026)

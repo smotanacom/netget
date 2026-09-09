@@ -408,6 +408,17 @@ async fn run_followups(
 /// `run_followups` -> `execute_couchdb_action`, and async fns in a cycle cannot have their
 /// opaque return types inferred (E0391). Naming the type here breaks it at the definition;
 /// boxing at a call site does not, because the coercion still needs the callee's opaque type.
+///
+/// **Every arm copies the handle out of the mutex and releases it immediately**
+/// (`client.lock().await.clone()`), rather than holding the guard for the arm's body.
+/// `couch_rs::Client` is a cheap `Clone` over a reqwest client — `Database::new` clones one
+/// internally — so the copy costs nothing, and the guard was previously held across
+/// `send_response_event`, which on the `Dispatch::Inline` path **makes an LLM call**. A
+/// dashboard-created client defaults to a `*` -> manual routing rule, so that call can park
+/// for the full 300s intercept timeout with the CouchDB handle locked, and every injected
+/// `[ send ]` command blocks on `client.lock()` for the whole park — defeating the one thing
+/// the command channel exists to guarantee. It also serialised operations that reqwest is
+/// perfectly happy to run concurrently.
 #[allow(clippy::too_many_arguments)]
 fn execute_couchdb_action<'a>(
     action: &'a serde_json::Value,
@@ -435,8 +446,8 @@ fn execute_couchdb_action<'a>(
 
                 console_info!(status_tx, "Creating database: {}", db_name);
 
-                let client_guard = client.lock().await;
-                let actions = match client_guard.make_db(db_name).await {
+                let couch = client.lock().await.clone();
+                let actions = match couch.make_db(db_name).await {
                     Ok(_) => {
                         console_info!(status_tx, "Database {} created successfully", db_name);
                         send_response_event(
@@ -482,8 +493,8 @@ fn execute_couchdb_action<'a>(
 
                 console_info!(status_tx, "Deleting database: {}", db_name);
 
-                let client_guard = client.lock().await;
-                match client_guard.destroy_db(db_name).await {
+                let couch = client.lock().await.clone();
+                match couch.destroy_db(db_name).await {
                     Ok(_) => {
                         console_info!(status_tx, "Database {} deleted successfully", db_name);
                         return Ok(send_response_event(
@@ -523,8 +534,8 @@ fn execute_couchdb_action<'a>(
             "list_databases" => {
                 console_info!(status_tx, "Listing all databases");
 
-                let client_guard = client.lock().await;
-                match client_guard.list_dbs().await {
+                let couch = client.lock().await.clone();
+                match couch.list_dbs().await {
                     Ok(dbs) => {
                         console_info!(status_tx, "Found {} databases", dbs.len());
                         return Ok(send_response_event(
@@ -575,7 +586,7 @@ fn execute_couchdb_action<'a>(
 
                 console_info!(status_tx, "Creating document in {}: {:?}", db_name, doc_id);
 
-                let client_guard = client.lock().await;
+                let couch = client.lock().await.clone();
 
                 // Use raw HTTP API via req()
                 let (path, method) = if let Some(id) = doc_id {
@@ -586,7 +597,7 @@ fn execute_couchdb_action<'a>(
                     (format!("/{}", db_name), reqwest::Method::POST)
                 };
 
-                let response = match client_guard
+                let response = match couch
                     .req(method.clone(), &path, None)
                     .json(document)
                     .send()
@@ -710,8 +721,8 @@ fn execute_couchdb_action<'a>(
 
                 console_info!(status_tx, "Getting document {}/{}", db_name, doc_id);
 
-                let client_guard = client.lock().await;
-                let db = match client_guard.db(db_name).await {
+                let couch = client.lock().await.clone();
+                let db = match couch.db(db_name).await {
                     Ok(db) => db,
                     Err(e) => {
                         console_error!(status_tx, "Failed to get database {}: {}", db_name, e);
@@ -803,13 +814,13 @@ fn execute_couchdb_action<'a>(
                     rev
                 );
 
-                let client_guard = client.lock().await;
+                let couch = client.lock().await.clone();
 
                 // Use raw HTTP API via req()
                 // PUT /{db}/{docid} with document including _rev
                 let path = format!("/{}/{}", db_name, doc_id);
 
-                let response = match client_guard
+                let response = match couch
                     .req(reqwest::Method::PUT, &path, None)
                     .json(&doc)
                     .send()
@@ -969,7 +980,7 @@ fn execute_couchdb_action<'a>(
                     rev
                 );
 
-                let client_guard = client.lock().await;
+                let couch = client.lock().await.clone();
 
                 // Use raw HTTP API via req()
                 // DELETE /{db}/{docid}?rev={rev}
@@ -977,7 +988,7 @@ fn execute_couchdb_action<'a>(
                 let mut params = std::collections::HashMap::new();
                 params.insert("rev".to_string(), rev.to_string());
 
-                let response = match client_guard
+                let response = match couch
                     .req(reqwest::Method::DELETE, &path, Some(&params))
                     .send()
                     .await
@@ -1130,7 +1141,7 @@ fn execute_couchdb_action<'a>(
                     db_name
                 );
 
-                let client_guard = client.lock().await;
+                let couch = client.lock().await.clone();
 
                 // Use raw HTTP API via req()
                 // POST /{db}/_bulk_docs with {"docs": [...]}
@@ -1139,7 +1150,7 @@ fn execute_couchdb_action<'a>(
                     "docs": docs
                 });
 
-                let response = match client_guard
+                let response = match couch
                     .req(reqwest::Method::POST, &path, None)
                     .json(&body)
                     .send()
@@ -1258,8 +1269,8 @@ fn execute_couchdb_action<'a>(
 
                 console_info!(status_tx, "Listing documents in {}", db_name);
 
-                let client_guard = client.lock().await;
-                let db = match client_guard.db(db_name).await {
+                let couch = client.lock().await.clone();
+                let db = match couch.db(db_name).await {
                     Ok(db) => db,
                     Err(e) => {
                         console_error!(status_tx, "Failed to get database {}: {}", db_name, e);
