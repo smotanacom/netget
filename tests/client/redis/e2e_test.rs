@@ -78,11 +78,11 @@ mod redis_client_tests {
                 .and()
                 // Mock 3: Redis response received.
                 //
-                // This answered `wait_for_more`, which the Redis client has no executor for
-                // — `RedisClientProtocol::execute_action` knows only `execute_redis_command`
-                // and `disconnect`. `set_memory` is the honest way to say "note the reply
-                // and send nothing further": it is a common action the executor handles
-                // itself, so it actually runs.
+                // `set_memory` is the honest way to say "note the reply and send nothing
+                // further": it is a common action the executor handles itself, so it
+                // actually runs. (This comment used to say `wait_for_more` had no executor
+                // arm in this client; it has had one for a long time —
+                // `src/client/redis/actions.rs`. Either would work here.)
                 .on_event("redis_response_received")
                 .respond_with_actions(serde_json::json!([
                     {

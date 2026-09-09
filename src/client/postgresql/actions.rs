@@ -163,18 +163,16 @@ impl Protocol for PostgresqlClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "PostgreSQL"
     }
+    /// The **statics**, not fresh `EventType::new(..)` copies.
+    ///
+    /// This used to build a second, different `EventType` for each id: no parameters, and a
+    /// `{"type": "placeholder"}` example. Those are what the registry and the model-facing
+    /// docs surface, while the emitted events carry the statics above — two sources of truth
+    /// for the same event id, and they had already drifted.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "postgresql_connected",
-                "Triggered when PostgreSQL client connects to server",
-                json!({"type": "placeholder", "event_id": "postgresql_connected"}),
-            ),
-            EventType::new(
-                "postgresql_query_result",
-                "Triggered when PostgreSQL client receives query results",
-                json!({"type": "placeholder", "event_id": "postgresql_query_result"}),
-            ),
+            POSTGRESQL_CLIENT_CONNECTED_EVENT.clone(),
+            POSTGRESQL_CLIENT_QUERY_RESULT_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {

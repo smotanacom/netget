@@ -83,8 +83,11 @@ impl Protocol for MysqlProtocol {
             .state(DevelopmentState::Beta)
             .implementation("opensrv-mysql v0.7 protocol library")
             .llm_control("Query responses (result sets, OK packets, ERR packets)")
-            .e2e_testing("mysql_async client crate")
-            .notes("No authentication, no TLS; all row values are sent as text")
+            .e2e_testing("mysql_async client crate, text and binary (prepared) protocols")
+            .notes(
+                "No authentication, no TLS. Prepared statements work and report their `?` \
+                 count, but parameter values are not substituted - the model sees the `?`",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
@@ -319,13 +322,18 @@ pub fn mysql_query_response_action() -> ActionDefinition {
                               Recognised types: INT, INTEGER, BIGINT, SMALLINT, TINYINT, FLOAT, DOUBLE, \
                               DECIMAL, DATE, TIME, DATETIME, TIMESTAMP, BLOB, BINARY, TEXT, VARCHAR \
                               (anything else is treated as VARCHAR). The type sets the column metadata \
-                              only - every value is transmitted in MySQL's text protocol".to_string(),
+                              and how each value is encoded: send a number for the numeric types, \
+                              'YYYY-MM-DD' for DATE, 'HH:MM:SS' for TIME, 'YYYY-MM-DD HH:MM:SS' for \
+                              DATETIME/TIMESTAMP. A value that does not fit its column's type is sent \
+                              as NULL".to_string(),
                 required: true,
             },
             Parameter {
                 name: "rows".to_string(),
                 type_hint: "array".to_string(),
-                description: "Array of rows. Each row is an array of values matching the column order".to_string(),
+                description: "Array of rows. Each row is an array of values matching the column \
+                              order. JSON null is a SQL NULL. Rows shorter than the column list \
+                              are padded with NULLs; extra values are dropped".to_string(),
                 required: true,
             },
         ],
@@ -429,126 +437,28 @@ pub fn close_this_connection_action() -> ActionDefinition {
 
 // ============================================================================
 // MySQL Action Constants
+//
+// The same four definitions the `Protocol` impl advertises, as statics the event type can
+// clone. They delegate to the functions above rather than repeating them: the two copies were
+// byte-identical duplicates of ~120 lines, and a description edited in one and not the other
+// would have shown the model one text and the executor another.
 // ============================================================================
 
 /// MySQL query response action constant
-pub static MYSQL_QUERY_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock::new(|| {
-    ActionDefinition {
-        name: "mysql_query_response".to_string(),
-        description: "Send a result set in response to a SELECT query".to_string(),
-        parameters: vec![
-            Parameter {
-                name: "columns".to_string(),
-                type_hint: "array".to_string(),
-                description: "Array of column definitions. Each column needs 'name' and 'type'. \
-                              Recognised types: INT, INTEGER, BIGINT, SMALLINT, TINYINT, FLOAT, DOUBLE, \
-                              DECIMAL, DATE, TIME, DATETIME, TIMESTAMP, BLOB, BINARY, TEXT, VARCHAR \
-                              (anything else is treated as VARCHAR). The type sets the column metadata \
-                              only - every value is transmitted in MySQL's text protocol".to_string(),
-                required: true,
-            },
-            Parameter {
-                name: "rows".to_string(),
-                type_hint: "array".to_string(),
-                description: "Array of rows. Each row is an array of values matching the column order".to_string(),
-                required: true,
-            },
-        ],
-        example: json!({
-            "type": "mysql_query_response",
-            "columns": [{"name": "id", "type": "INT"}, {"name": "name", "type": "VARCHAR"}],
-            "rows": [[1, "Alice"], [2, "Bob"]]
-        }),
-        log_template: Some(
-            LogTemplate::new()
-                .with_info("-> MySQL {columns_len} cols, {rows_len} rows")
-                .with_debug("MySQL mysql_query_response: {columns_len} columns, {rows_len} rows"),
-        ),
-    }
-});
+pub static MYSQL_QUERY_RESPONSE_ACTION: LazyLock<ActionDefinition> =
+    LazyLock::new(mysql_query_response_action);
 
 /// MySQL error response action constant
 pub static MYSQL_ERROR_RESPONSE_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| ActionDefinition {
-        name: "mysql_error_response".to_string(),
-        description: "Send an error response to the client".to_string(),
-        parameters: vec![
-            Parameter {
-                name: "error_code".to_string(),
-                type_hint: "number".to_string(),
-                description:
-                    "MySQL error number. Sent verbatim when it is one of the recognised codes: \
-                     1044, 1045, 1046, 1049, 1050, 1051, 1052, 1054, 1062, 1064, 1065, 1136, \
-                     1146, 1149, 1216, 1217, 1364, 1451, 1452, 1690. Any other value is reported \
-                     to the client as 1105 (unknown error) with your message unchanged"
-                        .to_string(),
-                required: true,
-            },
-            Parameter {
-                name: "message".to_string(),
-                type_hint: "string".to_string(),
-                description: "Error message to display to the client".to_string(),
-                required: true,
-            },
-        ],
-        example: json!({
-            "type": "mysql_error_response",
-            "error_code": 1146,
-            "message": "Table 'database.table_name' doesn't exist"
-        }),
-        log_template: Some(
-            LogTemplate::new()
-                .with_info("-> MySQL ERR {error_code}: {message}")
-                .with_debug("MySQL mysql_error_response: code={error_code}, message={message}"),
-        ),
-    });
+    LazyLock::new(mysql_error_response_action);
 
 /// MySQL OK response action constant
-pub static MYSQL_OK_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock::new(|| {
-    ActionDefinition {
-        name: "mysql_ok_response".to_string(),
-        description: "Send an OK response for INSERT, UPDATE, DELETE, or other non-SELECT queries"
-            .to_string(),
-        parameters: vec![
-            Parameter {
-                name: "affected_rows".to_string(),
-                type_hint: "number".to_string(),
-                description: "Number of rows affected by the query".to_string(),
-                required: false,
-            },
-            Parameter {
-                name: "last_insert_id".to_string(),
-                type_hint: "number".to_string(),
-                description: "Last insert ID for INSERT queries with auto_increment".to_string(),
-                required: false,
-            },
-        ],
-        example: json!({
-            "type": "mysql_ok_response",
-            "affected_rows": 1,
-            "last_insert_id": 42
-        }),
-        log_template: Some(
-            LogTemplate::new()
-                .with_info("-> MySQL OK, {affected_rows} rows affected")
-                .with_debug("MySQL mysql_ok_response: affected_rows={affected_rows}, last_insert_id={last_insert_id}"),
-        ),
-    }
-});
+pub static MYSQL_OK_RESPONSE_ACTION: LazyLock<ActionDefinition> =
+    LazyLock::new(mysql_ok_response_action);
 
 /// MySQL close connection action constant
 pub static MYSQL_CLOSE_CONNECTION_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| ActionDefinition {
-        name: "close_this_connection".to_string(),
-        description: "Close the current MySQL connection".to_string(),
-        parameters: vec![],
-        example: json!({"type": "close_this_connection"}),
-        log_template: Some(
-            LogTemplate::new()
-                .with_info("MySQL connection closed")
-                .with_debug("MySQL close_this_connection"),
-        ),
-    });
+    LazyLock::new(close_this_connection_action);
 
 // ============================================================================
 // MySQL Event Type Constants

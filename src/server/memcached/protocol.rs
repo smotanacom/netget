@@ -93,7 +93,20 @@ pub enum Parsed {
     Incomplete,
     /// The command line was well-framed but malformed. `consumed` bytes should still be
     /// dropped so the connection can continue.
+    ///
+    /// For a storage command this **includes its data block**: rejecting the header while
+    /// leaving `<bytes>` octets of attacker-chosen payload in the stream means those octets
+    /// are then parsed as commands. See `parse_storage`.
     Invalid { message: String, consumed: usize },
+    /// The command line was malformed in a way that makes resynchronising impossible: the
+    /// caller must reply and then **close the connection**.
+    ///
+    /// This is only reachable from a storage command whose `<bytes>` count is missing,
+    /// unparseable, or larger than `MAX_VALUE_LEN`. Every other malformed command is
+    /// self-delimiting (one CRLF-terminated line), so the parser can skip it and carry on;
+    /// a storage command whose length is unknown or unbufferable has no such boundary, and
+    /// guessing one would put the peer's payload back on the command path.
+    Fatal { message: String },
 }
 
 /// Try to take one command from the front of `buffer`.
@@ -279,86 +292,110 @@ fn has_noreply(parts: &[&str]) -> bool {
     parts.last().map(|s| *s == "noreply").unwrap_or(false)
 }
 
+/// `<command> <key> <flags> <exptime> <bytes> [<cas unique>] [noreply]\r\n<data>\r\n`
+///
+/// **`<bytes>` is parsed before anything else, and every rejection below it consumes the whole
+/// frame.** A storage command is not self-delimiting: its data block is `<bytes>` octets that
+/// may contain anything, CRLF included. Rejecting the header and consuming only the header
+/// leaves that payload at the front of the buffer, where the next `parse_command` reads it as
+/// commands — so
+///
+/// ```text
+/// set k bad 0 7\r\nversion\r\n
+/// ```
+///
+/// answered `CLIENT_ERROR` for the header and then *executed* `version`. Anything the peer can
+/// put in a value it could put on the command path. Upstream memcached avoids this by entering
+/// `conn_swallow` for exactly `<bytes> + 2` octets, which is what consuming `frame_len` does
+/// here.
+///
+/// Where `<bytes>` itself is unusable there is no boundary to skip to, and the only safe exit
+/// is `Fatal` — reply and close. Guessing a boundary is the bug above.
 fn parse_storage(cmd: &str, parts: &[&str], buffer: &[u8], header_len: usize) -> Parsed {
-    // `<command> <key> <flags> <exptime> <bytes> [<cas unique>] [noreply]`
     let is_cas = cmd == "cas";
     let min_parts = if is_cas { 6 } else { 5 };
-    if parts.len() < min_parts {
-        return Parsed::Invalid {
+
+    let Some(bytes_field) = parts.get(4) else {
+        return Parsed::Fatal {
             message: format!("bad data chunk: {} needs {} arguments", cmd, min_parts - 1),
-            consumed: header_len,
         };
+    };
+    let bytes = match bytes_field.parse::<usize>() {
+        Ok(v) => v,
+        Err(_) => {
+            return Parsed::Fatal {
+                message: "bad command line format: bytes must be a non-negative integer"
+                    .to_string(),
+            }
+        }
+    };
+    if bytes > MAX_VALUE_LEN {
+        // Skipping this would mean buffering an arbitrary number of octets purely to throw
+        // them away, which is the allocation the cap exists to prevent.
+        return Parsed::Fatal {
+            message: format!("object too large for cache ({} bytes)", bytes),
+        };
+    }
+
+    // From here the frame's extent is known. Wait for all of it first, so that any rejection
+    // below drops the data block along with the header rather than leaving it to be parsed.
+    // The count is authoritative — the payload may itself contain CRLF.
+    let frame_len = header_len + bytes + 2;
+    if buffer.len() < frame_len {
+        return Parsed::Incomplete;
+    }
+    let reject = |message: String| Parsed::Invalid {
+        message,
+        consumed: frame_len,
+    };
+
+    // Only reachable for `cas` with five parts: fewer than five was caught above, because
+    // `parts.get(4)` is where `<bytes>` lives.
+    if parts.len() < min_parts {
+        return reject(format!(
+            "bad data chunk: {} needs {} arguments",
+            cmd,
+            min_parts - 1
+        ));
     }
 
     let key = parts[1].to_string();
     if key.len() > MAX_KEY_LEN {
-        return Parsed::Invalid {
-            message: format!("key is {} bytes, maximum is {}", key.len(), MAX_KEY_LEN),
-            consumed: header_len,
-        };
+        return reject(format!(
+            "key is {} bytes, maximum is {}",
+            key.len(),
+            MAX_KEY_LEN
+        ));
     }
 
     let flags = match parts[2].parse::<u32>() {
         Ok(v) => v,
         Err(_) => {
-            return Parsed::Invalid {
-                message: "bad command line format: flags must be a 32-bit unsigned integer"
-                    .to_string(),
-                consumed: header_len,
-            }
+            return reject(
+                "bad command line format: flags must be a 32-bit unsigned integer".to_string(),
+            )
         }
     };
     let exptime = match parts[3].parse::<i64>() {
         Ok(v) => v,
-        Err(_) => {
-            return Parsed::Invalid {
-                message: "bad command line format: exptime must be an integer".to_string(),
-                consumed: header_len,
-            }
-        }
+        Err(_) => return reject("bad command line format: exptime must be an integer".to_string()),
     };
-    let bytes = match parts[4].parse::<usize>() {
-        Ok(v) => v,
-        Err(_) => {
-            return Parsed::Invalid {
-                message: "bad command line format: bytes must be a non-negative integer"
-                    .to_string(),
-                consumed: header_len,
-            }
-        }
-    };
-    if bytes > MAX_VALUE_LEN {
-        return Parsed::Invalid {
-            message: format!("object too large for cache ({} bytes)", bytes),
-            consumed: header_len,
-        };
-    }
     let cas_unique = if is_cas {
         match parts[5].parse::<u64>() {
             Ok(v) => Some(v),
             Err(_) => {
-                return Parsed::Invalid {
-                    message: "bad command line format: cas unique must be a 64-bit integer"
-                        .to_string(),
-                    consumed: header_len,
-                }
+                return reject(
+                    "bad command line format: cas unique must be a 64-bit integer".to_string(),
+                )
             }
         }
     } else {
         None
     };
 
-    // The count is authoritative — the payload may itself contain CRLF.
-    let frame_len = header_len + bytes + 2;
-    if buffer.len() < frame_len {
-        return Parsed::Incomplete;
-    }
     let data = buffer[header_len..header_len + bytes].to_vec();
     if &buffer[header_len + bytes..frame_len] != b"\r\n" {
-        return Parsed::Invalid {
-            message: "bad data chunk".to_string(),
-            consumed: frame_len,
-        };
+        return reject("bad data chunk".to_string());
     }
 
     let command = match cmd {

@@ -403,8 +403,7 @@ impl PostgresqlClient {
                     .map(|row| {
                         let mut obj = serde_json::Map::new();
                         for (idx, col) in row.columns().iter().enumerate() {
-                            let value: Option<String> = row.get(idx);
-                            obj.insert(col.name().to_string(), serde_json::json!(value));
+                            obj.insert(col.name().to_string(), pg_cell_to_json(row, idx));
                         }
                         serde_json::Value::Object(obj)
                     })
@@ -481,10 +480,10 @@ impl PostgresqlClient {
         // `apply_action` runs a query and raises no event, so a follow-up cannot trigger
         // another result event and drive the model in circles, and the async type stays
         // non-recursive as tokio::spawn's Send bound requires.
-        if let Ok(ClientLlmResult {
-            actions,
-            memory_updates,
-        }) = call_llm_for_client(
+        // `match`, not `if let Ok(..)`: an LLM error here was silently dropped, unlike the
+        // connected-event path which logs it. A client that goes quiet because its model
+        // failed should say so.
+        let result = match call_llm_for_client(
             llm_client,
             app_state,
             client_id.to_string(),
@@ -495,6 +494,20 @@ impl PostgresqlClient {
             status_tx,
         )
         .await
+        {
+            Ok(result) => Some(result),
+            Err(e) => {
+                error!(
+                    "LLM error for PostgreSQL client {} on a query result: {}",
+                    client_id, e
+                );
+                None
+            }
+        };
+        if let Some(ClientLlmResult {
+            actions,
+            memory_updates,
+        }) = result
         {
             if let Some(mem) = memory_updates {
                 app_state.set_memory_for_client(client_id, mem).await;
@@ -538,14 +551,67 @@ impl PostgresqlClient {
         }
     }
 
+    /// Mark the client disconnected **and** stop offering to send on it.
+    ///
+    /// Dropping the command handle closes the channel, which ends `command_loop`; without it
+    /// an LLM-requested `disconnect` left the client drawn as `Disconnected` while the loop
+    /// still ran and the dashboard still offered `[ send ]`. Only the *injected* disconnect
+    /// path ended the loop, because it breaks out of it directly.
+    ///
+    /// `tokio_postgres::Client` closes when the last handle drops, and it is held behind an
+    /// `Arc<Mutex<..>>` shared with `command_loop`, so ending that loop is what releases it.
     async fn mark_disconnected(
         client_id: ClientId,
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) {
+        app_state.remove_client_handle(client_id).await;
         app_state
             .update_client_status(client_id, ClientStatus::Disconnected)
             .await;
+        let _ = status_tx.send(format!(
+            "[CLIENT] PostgreSQL client {} disconnected",
+            client_id
+        ));
         let _ = status_tx.send("__UPDATE_UI__".to_string());
     }
+}
+
+/// Read one cell as JSON without ever panicking.
+///
+/// This used to be `let value: Option<String> = row.get(idx)`. `tokio_postgres::Row::get`
+/// **panics** when the column's type has no `FromSql` impl for the requested Rust type, and
+/// `Option<String>` only accepts the text-ish types — so a single `int4`, `bool` or `float8`
+/// column panicked the whole query.
+///
+/// That panic happened inside a `tokio::spawn`, which swallows it: nothing was logged, the
+/// client stayed `Connected`, no `postgresql_query_result` event was raised, and the model
+/// simply never heard back. It is the exact failure shape the root CLAUDE.md records for
+/// `block_on` in usb-msc and SMB — the task dies quietly and the peer waits forever.
+///
+/// `try_get` is the non-panicking form. Types are tried in declared order and the final
+/// fallback is JSON null, so an unknown OID costs one null cell rather than the query.
+fn pg_cell_to_json(row: &tokio_postgres::Row, idx: usize) -> serde_json::Value {
+    use tokio_postgres::types::Type;
+
+    macro_rules! try_as {
+        ($t:ty) => {
+            if let Ok(v) = row.try_get::<_, Option<$t>>(idx) {
+                return serde_json::json!(v);
+            }
+        };
+    }
+
+    match *row.columns()[idx].type_() {
+        Type::BOOL => try_as!(bool),
+        Type::INT2 => try_as!(i16),
+        Type::INT4 => try_as!(i32),
+        Type::INT8 => try_as!(i64),
+        Type::FLOAT4 => try_as!(f32),
+        Type::FLOAT8 => try_as!(f64),
+        _ => {}
+    }
+    // Text and everything text-shaped, then give up rather than panic.
+    try_as!(String);
+    serde_json::Value::Null
 }

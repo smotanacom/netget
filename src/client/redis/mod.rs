@@ -98,12 +98,20 @@ impl RedisClient {
                 }),
             );
 
+            // `initial_memory` is written before `connect()` runs
+            // (`src/cli/client_startup.rs`), so it is available here; passing an empty string
+            // discarded whatever the operator or the model had set up.
+            let memory = app_state
+                .get_memory_for_client(client_id)
+                .await
+                .unwrap_or_default();
+
             match call_llm_for_client(
                 &llm_client,
                 &app_state,
                 client_id.to_string(),
                 &instruction,
-                &String::new(), // No memory yet for initial connection
+                &memory,
                 Some(&event),
                 protocol.as_ref(),
                 &status_tx,
@@ -111,6 +119,13 @@ impl RedisClient {
             .await
             {
                 Ok(result) => {
+                    // A `set_memory` on the connect turn used to be dropped on the floor -
+                    // `result.memory_updates` was never read - so the model could not carry
+                    // anything from its first turn into the next one. mysql and postgresql
+                    // both do this correctly.
+                    if let Some(mem) = result.memory_updates {
+                        app_state.set_memory_for_client(client_id, mem).await;
+                    }
                     for action in result.actions {
                         match protocol.execute_action(action) {
                             Ok(action_result) => {
@@ -215,6 +230,15 @@ impl RedisClient {
                                     }
 
                                     // Execute actions
+                                    //
+                                    // `disconnect_requested` rather than a bare `break`: the
+                                    // break here left only the `for action in actions` loop,
+                                    // so the read loop carried straight on and the socket
+                                    // stayed open. Nor did it shut the write half, drop the
+                                    // command handle or set `Disconnected` - all of which the
+                                    // connect-time path above does. The model could ask this
+                                    // client to disconnect and nothing at all happened.
+                                    let mut disconnect_requested = false;
                                     for action in actions {
                                         match protocol.execute_action(action) {
                                             Ok(action_result) => {
@@ -230,6 +254,7 @@ impl RedisClient {
                                                             "Redis client {} disconnecting",
                                                             client_id
                                                         );
+                                                        disconnect_requested = true;
                                                         break;
                                                     }
                                                     Ok(Applied::Sent(_)) => {}
@@ -259,6 +284,27 @@ impl RedisClient {
                                                 ));
                                             }
                                         }
+                                    }
+
+                                    if disconnect_requested {
+                                        // The same teardown the connect-time path runs:
+                                        // half-close so the server sees EOF, drop the command
+                                        // handle so the dashboard stops offering [ send ] on
+                                        // a client whose loop is gone, and record the status.
+                                        let _ = write_half_arc.lock().await.shutdown().await;
+                                        app_state.remove_client_handle(client_id).await;
+                                        app_state
+                                            .update_client_status(
+                                                client_id,
+                                                ClientStatus::Disconnected,
+                                            )
+                                            .await;
+                                        let _ = status_tx.send(format!(
+                                            "[CLIENT] Redis client {} disconnected",
+                                            client_id
+                                        ));
+                                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                                        break;
                                     }
                                 }
                                 Err(e) => {

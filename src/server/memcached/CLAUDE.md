@@ -72,6 +72,12 @@ carries `.with_actions(...)`:
 | `memcached_flush_all` | `flush_all` | `OK` |
 | `memcached_unknown_command` | any other verb | `send_memcached_error` |
 
+`close_memcached_connection` is attached to **every** event as well. It is in
+`get_sync_actions()`, but a server's tool list is built from `event.event_type.actions` and
+the `get_sync_actions()` fallback only fires when the event declares none — so while it was
+listed on no event, the model could never close a connection however it was prompted, and the
+executor arm was reachable only through dashboard injection.
+
 Values carry an explicit `value_encoding` of `"utf8"` (default) or `"hex"`, in both
 directions, and the executor really decodes hex (`decode_value`). This follows the
 `send_tcp_data` fix in `d70bb5b5`: `"48656c6c6f"` is simultaneously valid text and valid hex,
@@ -86,8 +92,34 @@ When the model returns nothing usable, or the LLM call fails, `mod.rs` writes
 a cache hit or a `STORED`, because inventing a successful store is the caching equivalent of
 the OAuth2 fail-open.
 
-Malformed commands get `CLIENT_ERROR <reason>` and the connection continues, matching
-upstream behaviour.
+Malformed commands get `CLIENT_ERROR <reason>`. Whether the connection continues depends on
+whether the command is **self-delimiting**, and getting that wrong was a real defect:
+
+- A retrieval or control line is one CRLF-terminated line, so the parser skips it
+  (`Parsed::Invalid`) and the connection carries on.
+- A **storage** command is `<header>\r\n<bytes octets>\r\n`. Rejecting the header while
+  consuming only the header left `<bytes>` octets of attacker-chosen payload at the front of
+  the buffer, where the next `parse_command` read them **as commands**:
+
+  ```text
+  set k notanumber 0 9\r\nversion\r\n\r\n
+  ```
+
+  answered `CLIENT_ERROR` for the header and then executed `version`. Anything a peer can put
+  in a value it could put on the command path. `parse_storage` now parses `<bytes>` first and
+  every rejection below it consumes the whole frame — which is what upstream's `conn_swallow`
+  state does.
+- Where `<bytes>` is missing, unparseable, or larger than `MAX_VALUE_LEN`, there is no
+  boundary to skip to. That is `Parsed::Fatal`: reply and **close**. Guessing a boundary is
+  the bug above; buffering an over-cap block purely to discard it is the allocation the cap
+  exists to prevent. Logged `decision=connection_closed_unframable`.
+
+`decision=` tags carry what the wire cannot. The text protocol defines exactly one
+server-failure reply, so a refusal, an outage and a model that answered with nothing usable
+are indistinguishable to the client; the log tags them `fail_closed_no_action`,
+`fail_closed_llm_overloaded` and `fail_closed_llm_error`. The overload/unavailable split that
+`redis` maps onto `-LOADING` vs `-ERR` has nowhere to go here — inventing a second reply would
+be a protocol extension no client understands — so it lives only in the log.
 
 ## Concurrency
 
@@ -109,9 +141,10 @@ injects the generic `{"type":"close_connection"}`; `execute_action` has an expli
 (not advertised to the model) that returns `CloseConnection` so the write side half-closes and
 the client reads EOF. The handle is removed on every exit path (EOF, read/write error, client
 `quit`, model-requested close, oversize buffer) through the single cleanup in
-`handle_connection`. Injected writes go through the generic peer task, which does **not** touch
-`update_connection_stats` — the `↓ ↑` counters are driven only by the server's own read/write
-path. Test: `tests/server/memcached/peer_inject_test.rs` (zero LLM calls).
+`handle_connection`. Injected writes **are** counted: `src/server/peer_support.rs` calls `update_connection_stats`
+on `ClientSendOutcome::Sent`. (This file previously claimed the opposite, and
+`tests/server/redis/peer_inject_test.rs` asserts the counters move for exactly this path.)
+Test: `tests/server/memcached/peer_inject_test.rs` (zero LLM calls).
 
 ## Ports and privilege
 

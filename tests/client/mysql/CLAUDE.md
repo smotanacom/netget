@@ -70,7 +70,13 @@ This approach ensures:
 **Expected Behavior:**
 
 - Client connects to specific database
-- Startup params correctly parsed (username, password, database)
+- **NOT covered: startup params.** `test_mysql_client_with_database` puts `username` and
+  `database` at the *top level* of the `open_client` action, but `CommonAction::OpenClient`
+  reads them only from a nested `startup_params` object, so they are dropped before they reach
+  the client. The connected-event rule is `expect_at_least(0)`, so nothing fails. This file
+  used to claim they were "correctly parsed"; they are not exercised at all. Note the client's
+  own parsing of them was separately broken (`get_string` where `get_optional_string` was
+  meant, so any *subset* of the three failed to connect) and no test saw that either.
 - Protocol name matches
 
 **Runtime:** ~1-2 seconds

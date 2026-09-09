@@ -121,11 +121,23 @@ impl RedisServer {
                             server_id: server.server_id,
                         };
 
-                        tokio::spawn(async move {
+                        let conn_handle = tokio::spawn(async move {
                             if let Err(e) = handler.handle_connection(stream).await {
                                 error!("Redis connection error: {:?}", e);
                             }
                         });
+
+                        // Register the per-connection task too, not just the accept loop:
+                        // aborting the accept loop releases the port but leaves every
+                        // in-flight session running, so `stop_server` did not actually stop
+                        // the server. `register_server_task` prunes finished handles on each
+                        // call, so this cannot grow without bound.
+                        if let Some(server_id) = server.server_id {
+                            server
+                                .app_state
+                                .register_server_task(server_id, conn_handle)
+                                .await;
+                        }
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("Redis accept error: {}", e));
@@ -288,7 +300,12 @@ impl RedisHandler {
                         // Extract command from frame. FileOnly: the redis_command
                         // event template surfaces the command to the TUI.
                         let command_str = frame_to_command_string(&frame);
-                        log.debug(format!("Redis command: {}", command_str));
+                        // Truncated for the log and the status channel only - the event below
+                        // still carries the whole command, because that is what the model has
+                        // to answer. A single 64 MB bulk string would otherwise be copied
+                        // verbatim into the *unbounded* status channel on every frame.
+                        let command_for_log = crate::utils::truncate_for_log(&command_str, 512);
+                        log.debug(format!("Redis command: {}", command_for_log));
 
                         // Create command event
                         let event = Event::new(
@@ -357,9 +374,14 @@ impl RedisHandler {
                                 if response.is_empty() && !close_after_write {
                                     // Redis is strictly request/response: a command with no
                                     // reply hangs the client until its own timeout.
+                                    // `decision=` tags mirror `src/server/radius/`: on the
+                                    // wire a refusal, an outage and a model that answered
+                                    // with nothing usable all look like "-ERR something", so
+                                    // only the log can tell them apart.
                                     warn!(
-                                        "Redis: no response action for command '{}', replying with an error",
-                                        command_str
+                                        "Redis connection {} decision=fail_closed_no_action command='{}': \
+                                         no response action produced, replying with an error",
+                                        self.connection_id, command_for_log
                                     );
                                     response.extend_from_slice(&encode_error(
                                         "ERR no response produced for this command",
@@ -377,9 +399,14 @@ impl RedisHandler {
                                 // several retry it automatically. Anything else is `-ERR`.
                                 let overloaded = crate::llm::is_overload_error(&e);
                                 let message = redis_error_message(&e, overloaded);
+                                let decision = if overloaded {
+                                    "fail_closed_llm_overloaded"
+                                } else {
+                                    "fail_closed_llm_error"
+                                };
                                 log.warn(format!(
-                                    "LLM error for Redis command '{}' on connection {} (overload={}); replying -{}: {}",
-                                    command_str, self.connection_id, overloaded, message, e
+                                    "Redis connection {} decision={} command='{}' replying -{}: {}",
+                                    self.connection_id, decision, command_for_log, message, e
                                 ));
                                 response.extend_from_slice(&encode_error(&message));
                             }

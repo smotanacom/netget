@@ -5,8 +5,12 @@ by hand in `actions.rs` (`encode_*`, the single source of truth — each reply v
 executor returns the encoded bytes as `ActionResult::Output`). The LLM owns every
 reply — there is no key space, no storage, and no command dispatch table in Rust.
 
-**State**: Experimental — LLM-authored, not human-reviewed. Verified against
-`redis-cli` for the array/bulk/integer/nil encodings.
+**State**: Beta — driven by `redis-rs`, a real third-party client, in
+`tests/server/redis/e2e_test.rs`; six tests covering every RESP2 reply type,
+none `#[ignore]`d and none skipping when something is missing. Not Stable:
+Stable additionally wants spec compliance and scripting support reviewed, which
+has not been done. (This file used to say Experimental while `actions.rs` said
+Beta — the code was right.)
 **Port**: 6379 by default. **Privilege**: `None` (6379 > 1024).
 **Stack**: `ETH>IP>TCP>Redis`. **Spec**: RESP2.
 
@@ -48,12 +52,45 @@ indistinguishable from two arguments.
 Verified with `redis-cli --no-raw`: `["k1", 42, true, null, {"a":1}]` returns
 `"k1"`, `(integer) 42`, `"1"`, `(nil)`, `"{\"a\":1}"`.
 
+### CR and LF in a model-supplied payload
+
+A RESP **simple** string (`+…`) and **simple error** (`-…`) are CRLF-terminated
+with no length prefix, so a newline anywhere in the payload ends the frame early
+and everything after it is parsed as the *next* reply. The connection is then
+desynchronised permanently: every later command reads the previous one's
+leftovers, and the client has no way to notice.
+
+`redis_simple_string`'s `value` and `redis_error`'s `message` come from model
+output, so `encode_simple_string` and `encode_error` map each CR and LF to a
+space — which is exactly what Redis itself does
+(`addReplyErrorFormat` runs `sdsmapchars(s, "\r\n", "  ", 2)`). The text
+survives; only its ability to end the frame does not. A WARN names the action.
+
+This mattered most for `redis_error`: a model asked to explain a refusal writes
+multi-line prose without thinking about framing. `mod.rs` had documented the
+hazard on its **own** LLM-failure path and avoided it by sending a fixed
+category, but the model-facing verbs had no guard at all.
+
+Bulk strings, arrays and integers are unaffected — a bulk string is
+length-prefixed, so it can carry any bytes, newlines included.
+
 ### Failure behavior
 
 - **No response action** → `-ERR no response produced for this command`. (Redis
   is strictly request/response; staying silent would hang the client until its
   own timeout.)
-- **LLM call fails** → `-ERR LLM error: …`.
+- **LLM call fails** → `-LOADING <category>` when
+  `crate::llm::is_overload_error` says the backend was merely saturated,
+  otherwise `-ERR <category>`. Clients already treat `LOADING` as "not ready
+  yet, retry" and several retry it automatically, so an outage does not get
+  recorded as a permanent fault. **The text is a
+  `crate::utils::WireFailure` category, never the error itself** — see
+  `redis_error_message`. Logged `decision=fail_closed_llm_overloaded` /
+  `decision=fail_closed_llm_error`.
+- **Model chose `redis_error`** → its own message, logged
+  `decision=model_reject`. On the wire a refusal and an outage are both just
+  `-…`, so as in `src/server/radius/` only the log distinguishes them; the
+  no-response case above is `decision=fail_closed_no_action`.
 - **Action result that is `Custom` rather than `Output`** → logged at WARN and
   skipped (no Redis action returns `Custom` any more; the arm exists so a
   regression is loud); if nothing else was produced the no-response error above
@@ -70,9 +107,14 @@ Verified with `redis-cli --no-raw`: `["k1", 42, true, null, {"a":1}]` returns
   `ServerStatus::Error` rather than a phantom `Running`, and registers the
   accept-loop `JoinHandle` via `AppState::register_server_task()` so
   `stop_server` releases the socket.
-- One task per connection. `handle_connection` wraps `run` so the connection is
-  always marked `Closed` in `AppState` on exit; `update_connection_stats` is
-  called for bytes/packets in both directions.
+- One task per connection, **registered with `register_server_task` as well**.
+  Registering only the accept loop released the port on `stop_server` while
+  leaving every in-flight session running — the socket vanished from `netstat`
+  and the peer was still being served.
+  `tests/server/redis/resp_framing_test.rs` pins this.
+  `handle_connection` wraps `run` so the connection is always marked `Closed` in
+  `AppState` on exit; `update_connection_stats` is called for bytes/packets in
+  both directions.
 - Read into a `Vec`, `decode()` frames off the front, drain what was consumed.
   Multiple pipelined frames in one read are processed in order, each with its own
   LLM call.
@@ -126,12 +168,23 @@ injecting into a strictly request/response protocol, not a NetGet bug.
 
 ## Testing
 
-`tests/server/redis/e2e_test.rs` (declared in `tests/server/mod.rs`). Mocked by
-default:
+Four files, declared in `tests/server/redis/mod.rs`:
+
+- `e2e_test.rs` — six `redis-rs` tests, one per RESP2 reply type. This is what
+  the Beta rating rests on.
+- `resp_framing_test.rs` — CR/LF in a model-supplied simple string or error
+  cannot split the frame, and `stop_server` ends an in-flight connection rather
+  than just the listener. Zero LLM calls.
+- `llm_failure_test.rs` — the RESP error a client sees when the backend fails.
+- `peer_inject_test.rs` — dashboard injection through `send_to_peer`.
+
+`--test` names a **target**, so `--test server::redis::e2e_test` makes cargo list
+its targets and exit having run nothing — it does not fail, so it silently looks
+like a pass. Filter after `--` instead:
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features redis \
-    --test server::redis::e2e_test -- --test-threads=100
+    --test server -- server::redis --test-threads=100
 ```
 
 Real-client checks used during review, via `--mcp-http` with a static handler so

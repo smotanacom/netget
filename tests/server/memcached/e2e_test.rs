@@ -164,15 +164,73 @@ fn rejects_oversized_keys_and_malformed_storage_headers() {
         parse_command(format!("get {}\r\n", long_key).as_bytes()),
         Parsed::Invalid { .. }
     ));
+    assert!(matches!(parse_command(b"get\r\n"), Parsed::Invalid { .. }));
+
+    // A retrieval command is one CRLF-terminated line, so `Invalid` can skip it and the
+    // connection carries on. A *storage* command is not self-delimiting, which is what the
+    // next two tests are about.
     assert!(matches!(
         parse_command(b"set k notanumber 0 5\r\nhello\r\n"),
         Parsed::Invalid { .. }
     ));
+}
+
+/// **The data block of a rejected storage command must be consumed with it.**
+///
+/// A storage command is `<header>\r\n<bytes octets>\r\n`. Rejecting the header and consuming
+/// only the header leaves those octets at the front of the buffer, where the next
+/// `parse_command` reads them as commands — so a peer chooses what runs. Upstream memcached
+/// avoids this by swallowing exactly `<bytes> + 2` octets.
+///
+/// `flags` is `notanumber` here, so the header is rejected; the payload is a perfectly valid
+/// `version\r\n` command line, which is what would have been executed.
+#[test]
+fn a_rejected_storage_header_consumes_its_data_block_rather_than_leaving_it_as_commands() {
+    const FRAME: &[u8] = b"set k notanumber 0 9\r\nversion\r\n\r\n";
+
+    let Parsed::Invalid { consumed, .. } = parse_command(FRAME) else {
+        panic!("expected the malformed header to be rejected");
+    };
+    assert_eq!(
+        consumed,
+        FRAME.len(),
+        "the rejection must consume the header AND its {}-octet data block AND the trailing \
+         CRLF; consuming only the header leaves `version\\r\\n` to be parsed as a command",
+        9
+    );
+
+    // Nothing is left over, so nothing smuggled through.
+    assert!(matches!(
+        parse_command(&FRAME[consumed..]),
+        Parsed::Incomplete
+    ));
+}
+
+/// Where `<bytes>` itself is unusable there is no boundary to skip to, so the only safe exit
+/// is to reply and close. Guessing a boundary is the smuggling bug above.
+#[test]
+fn a_storage_command_whose_length_is_unusable_is_fatal_rather_than_guessed() {
+    // No `<bytes>` field at all.
     assert!(matches!(
         parse_command(b"set k 0 0\r\n"),
+        Parsed::Fatal { .. }
+    ));
+    // `<bytes>` present but not a number.
+    assert!(matches!(
+        parse_command(b"set k 0 0 notanumber\r\nhello\r\n"),
+        Parsed::Fatal { .. }
+    ));
+    // Larger than the cap: skipping it would mean buffering an arbitrary number of octets
+    // purely to throw them away, which is the allocation the cap exists to prevent.
+    assert!(matches!(
+        parse_command(format!("set k 0 0 {}\r\n", protocol::MAX_VALUE_LEN + 1).as_bytes()),
+        Parsed::Fatal { .. }
+    ));
+    // `cas` needs six fields, but five is enough to know the length, so it stays skippable.
+    assert!(matches!(
+        parse_command(b"cas k 0 0 5\r\nhello\r\n"),
         Parsed::Invalid { .. }
     ));
-    assert!(matches!(parse_command(b"get\r\n"), Parsed::Invalid { .. }));
 }
 
 /// The reply framing, byte for byte. `<bytes>` must be the payload's real length: a count

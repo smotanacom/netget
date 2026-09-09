@@ -8,7 +8,7 @@ use mysql_async::{prelude::*, Conn, OptsBuilder, Row};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::mysql::actions::{
@@ -40,6 +40,14 @@ enum Applied {
 }
 
 /// MySQL client that connects to a MySQL server
+/// How many action -> query -> result -> action turns one client will take before stopping.
+///
+/// The chain is genuinely self-referential, so it needs a bound rather than silence: a model
+/// that answers every result with another query would otherwise run forever. Four is enough
+/// for the flows this client is for (connect, query, react to the rows, one more query) and
+/// small enough that a runaway costs four LLM calls rather than an unbounded number.
+const MAX_FOLLOWUP_DEPTH: usize = 4;
+
 pub struct MysqlClient;
 
 impl MysqlClient {
@@ -52,21 +60,34 @@ impl MysqlClient {
         client_id: ClientId,
         startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
-        // Parse startup parameters
+        // `get_optional_string`, not `get_string`. All three parameters are declared
+        // `required: false`, but `get_string` **errors when the key is absent** ("Required
+        // string parameter '{}' is missing or not a string"), and `.transpose()?` propagates
+        // that. So the `unwrap_or_else` defaults only ever applied when `startup_params` was
+        // `None` *entirely*: pass any subset and connecting failed.
+        //
+        // The dashboard makes that the normal case, not a corner one - `ServerForm`/
+        // `ClientForm` omit blank fields and return `None` only when nothing at all was
+        // filled in - so filling in just `database` on the MySQL create form failed with
+        // "Required string parameter 'username' is missing". The PostgreSQL client already
+        // used the optional accessor.
         let username = startup_params
             .as_ref()
-            .map(|p| p.get_string("username"))
+            .map(|p| p.get_optional_string("username"))
             .transpose()?
+            .flatten()
             .unwrap_or_else(|| "root".to_string());
         let password = startup_params
             .as_ref()
-            .map(|p| p.get_string("password"))
+            .map(|p| p.get_optional_string("password"))
             .transpose()?
-            .unwrap_or_else(|| "".to_string());
+            .flatten()
+            .unwrap_or_default();
         let database: Option<String> = startup_params
             .as_ref()
-            .map(|p| p.get_string("database"))
-            .transpose()?;
+            .map(|p| p.get_optional_string("database"))
+            .transpose()?
+            .flatten();
 
         // Parse remote_addr to get host and port
         let (host, port) = if let Some((h, p)) = remote_addr.split_once(':') {
@@ -195,6 +216,7 @@ impl MysqlClient {
                                 &app_state_clone,
                                 &llm_client,
                                 &status_tx_clone,
+                                0,
                             )
                             .await
                             {
@@ -302,9 +324,11 @@ impl MysqlClient {
                     client_id,
                     rows,
                     &protocol,
+                    &conn,
                     &app_state,
                     &llm_client,
                     &status_tx,
+                    0,
                 )
                 .await;
             }
@@ -317,39 +341,51 @@ impl MysqlClient {
     }
 
     /// Execute an action from the LLM
-    async fn execute_llm_action(
+    /// Execute one action from the model and, if it was a query, feed the rows back.
+    ///
+    /// Returns an explicitly boxed `+ Send` future rather than being an `async fn`. That is
+    /// not style: this and `report_query_result` call each other, and with two `async fn`s the
+    /// compiler has to prove `Send` for each in terms of the other and gives up
+    /// ("future cannot be sent between threads safely ... cannot satisfy `impl Future: Send`").
+    /// Naming the type here breaks the cycle, and `+ Send` is required anyway because this is
+    /// awaited inside a `tokio::spawn`.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_llm_action<'a>(
         client_id: ClientId,
         action: serde_json::Value,
-        protocol: &Arc<MysqlClientProtocol>,
-        conn: &Arc<Mutex<Conn>>,
-        app_state: &Arc<AppState>,
-        llm_client: &OllamaClient,
-        status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<()> {
-        match Self::apply_action(
-            protocol.execute_action(action)?,
-            conn,
-            client_id,
-            app_state,
-            status_tx,
-        )
-        .await?
-        {
-            Applied::Query { rows, .. } => {
-                Self::report_query_result(
-                    client_id, rows, protocol, app_state, llm_client, status_tx,
-                )
-                .await;
+        protocol: &'a Arc<MysqlClientProtocol>,
+        conn: &'a Arc<Mutex<Conn>>,
+        app_state: &'a Arc<AppState>,
+        llm_client: &'a OllamaClient,
+        status_tx: &'a mpsc::UnboundedSender<String>,
+        depth: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            match Self::apply_action(
+                protocol.execute_action(action)?,
+                conn,
+                client_id,
+                app_state,
+                status_tx,
+            )
+            .await?
+            {
+                Applied::Query { rows, .. } => {
+                    Self::report_query_result(
+                        client_id, rows, protocol, conn, app_state, llm_client, status_tx, depth,
+                    )
+                    .await;
+                }
+                Applied::Disconnect => {
+                    info!("MySQL client {} disconnecting", client_id);
+                    Self::mark_disconnected(client_id, app_state, status_tx).await;
+                }
+                Applied::Nothing(what) => {
+                    trace!("MySQL client {} action had no effect: {}", client_id, what);
+                }
             }
-            Applied::Disconnect => {
-                info!("MySQL client {} disconnecting", client_id);
-                Self::mark_disconnected(client_id, app_state, status_tx).await;
-            }
-            Applied::Nothing(what) => {
-                trace!("MySQL client {} action had no effect: {}", client_id, what);
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Put one executed action on the connection. Shared by the connected-event LLM path and
@@ -423,13 +459,32 @@ impl MysqlClient {
     }
 
     /// Raise `mysql_result_received` with a query's rows and run whatever the model answers.
+    ///
+    /// The answer is **executed**, not merely decoded. It used to be decoded and dropped: the
+    /// loop called `protocol.execute_action(..)`, which is pure - it returns a
+    /// `ClientActionResult::Custom { name: "mysql_query", .. }` and nothing put it on the
+    /// connection - and then matched everything but `Disconnect` into a `trace!`. So a model
+    /// answering `mysql_result_received` with `execute_query` (which this client advertises in
+    /// both its async and sync sets) issued no query and sent no bytes, on the LLM path and on
+    /// the dashboard's `[ send ]` path alike. A comment above it explained that "more complex
+    /// flows can be handled by the LLM in the instruction", which is the
+    /// explaining-why-the-answer-is-not-needed idiom the root CLAUDE.md names as this exact
+    /// bug.
+    ///
+    /// Closing the loop makes it self-referential - `execute_llm_action` runs a query, which
+    /// reports its result here, which may run another. `execute_llm_action` therefore returns
+    /// an explicitly boxed `+ Send` future (see its own comment) and the chain is bounded by
+    /// `MAX_FOLLOWUP_DEPTH`.
+    #[allow(clippy::too_many_arguments)]
     async fn report_query_result(
         client_id: ClientId,
         json_rows: Vec<serde_json::Value>,
         protocol: &Arc<MysqlClientProtocol>,
+        conn: &Arc<Mutex<Conn>>,
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
+        depth: usize,
     ) {
         let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
             return;
@@ -439,6 +494,11 @@ impl MysqlClient {
             &MYSQL_CLIENT_RESULT_RECEIVED_EVENT,
             serde_json::json!({
                 "result": json_rows,
+                // Both names: `affected_rows` is what MYSQL_CLIENT_RESULT_RECEIVED_EVENT
+                // declares and therefore what the model is told to expect, while `row_count`
+                // is what this site has always sent. Emitting only the undeclared one meant
+                // the model was promised a field that never arrived.
+                "affected_rows": json_rows.len(),
                 "row_count": json_rows.len(),
             }),
         );
@@ -469,24 +529,38 @@ impl MysqlClient {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
 
-                // Execute new actions (simple non-recursive execution).
-                // For MySQL, queries are typically one-shot responses; more complex flows
-                // can be handled by the LLM in the instruction.
+                if actions.is_empty() {
+                    return;
+                }
+                if depth >= MAX_FOLLOWUP_DEPTH {
+                    warn!(
+                        "MySQL client {} reached the follow-up depth bound ({}); dropping {} \
+                         action(s) rather than looping. A model answering every result with \
+                         another query would otherwise never stop.",
+                        client_id,
+                        MAX_FOLLOWUP_DEPTH,
+                        actions.len()
+                    );
+                    return;
+                }
+
                 for new_action in actions {
-                    match protocol.execute_action(new_action) {
-                        Ok(ClientActionResult::Disconnect) => {
-                            info!(
-                                "MySQL client {} disconnecting after query result",
-                                client_id
-                            );
-                            Self::mark_disconnected(client_id, app_state, status_tx).await;
-                        }
-                        _ => {
-                            trace!(
-                                "MySQL client {} received additional action after query",
-                                client_id
-                            );
-                        }
+                    if let Err(e) = Self::execute_llm_action(
+                        client_id,
+                        new_action,
+                        protocol,
+                        conn,
+                        app_state,
+                        llm_client,
+                        status_tx,
+                        depth + 1,
+                    )
+                    .await
+                    {
+                        error!(
+                            "MySQL client {} failed to execute a follow-up action: {}",
+                            client_id, e
+                        );
                     }
                 }
             }
@@ -496,11 +570,22 @@ impl MysqlClient {
         }
     }
 
+    /// Mark the client disconnected **and** stop offering to send on it.
+    ///
+    /// Dropping the command handle closes the channel, which ends `command_loop`; without it
+    /// an LLM-requested `disconnect` left the client drawn as `Disconnected` while the loop
+    /// still ran and the dashboard still offered `[ send ]`. Only the *injected* disconnect
+    /// path ended the loop, because it breaks out of it directly.
+    ///
+    /// `mysql_async`'s `Conn` is closed by dropping it, and it is held behind an
+    /// `Arc<Mutex<..>>` shared with `command_loop`, so ending that loop is what releases the
+    /// last handle and with it the TCP session.
     async fn mark_disconnected(
         client_id: ClientId,
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) {
+        app_state.remove_client_handle(client_id).await;
         app_state
             .update_client_status(client_id, ClientStatus::Disconnected)
             .await;

@@ -8,6 +8,109 @@ mod postgresql_client_tests {
     use crate::helpers::*;
     use std::time::Duration;
 
+    /// The only running LLM-path coverage this client has.
+    ///
+    /// The other three tests in this file are `#[ignore]`d for want of mocks, so before this
+    /// existed the PostgreSQL client's entire model-driven path — connect, query, react to the
+    /// rows — was exercised by nothing. Only the zero-LLM command-channel test ran.
+    ///
+    /// What it pins is the **shape of the follow-up chain**, which is deliberately two turns
+    /// deep and no more: `postgresql_connected` asks for a query, the rows come back as
+    /// `postgresql_query_result`, and the model's answer to *that* is executed — but
+    /// `apply_action` raises no event, so the chain terminates there by construction rather
+    /// than by a depth counter. So the server must see **two** queries while the client sees
+    /// **one** result event. One query would mean the follow-up was discarded (the defect
+    /// found in the MySQL client); three result events would mean the chain had become
+    /// unbounded.
+    ///
+    /// LLM calls: server 1 startup + 2 queries; client 1 startup + 1 connect + 1 result = 6.
+    #[tokio::test]
+    async fn a_query_result_drives_exactly_one_more_query() -> E2EResult<()> {
+        let server_config = NetGetConfig::new(
+            "Listen on port {AVAILABLE_PORT} via PostgreSQL. Answer SELECT queries.",
+        )
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Listen on port")
+                .and_instruction_containing("PostgreSQL")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_server",
+                        "port": 0,
+                        "base_stack": "PostgreSQL",
+                        "instruction": "Answer SELECT queries"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                // ONE rule branching on the event, not two rules on the same event: rules are
+                // first-match-wins, so a second rule for the follow-up would report zero calls
+                // while the first answered everything.
+                .on_event("postgresql_query")
+                .respond_with_actions_from_event(|e| {
+                    let query = e["query"].as_str().unwrap_or("").to_uppercase();
+                    let value = if query.contains("SECOND") { 2 } else { 1 };
+                    serde_json::json!([
+                        {
+                            "type": "postgresql_query_response",
+                            "columns": [{"name": "n", "type": "int4"}],
+                            "rows": [[value]]
+                        }
+                    ])
+                })
+                // The assertion: the follow-up query reached the wire.
+                .expect_calls(2)
+                .and()
+        });
+
+        let mut server = start_netget_server(server_config).await?;
+        server.wait_for_any(&["listening", "Running"], 30).await;
+
+        let client_config = NetGetConfig::new(format!(
+            "Connect to 127.0.0.1:{} via PostgreSQL. Query, then query again.",
+            server.port
+        ))
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Connect to")
+                .and_instruction_containing("PostgreSQL")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_client",
+                        "remote_addr": format!("127.0.0.1:{}", server.port),
+                        "protocol": "PostgreSQL",
+                        "instruction": "Query, then query again"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("postgresql_connected")
+                .respond_with_actions(serde_json::json!([
+                    { "type": "execute_query", "query": "SELECT 1 AS first" }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("postgresql_query_result")
+                .respond_with_actions(serde_json::json!([
+                    { "type": "execute_query", "query": "SELECT 2 AS second" }
+                ]))
+                // Exactly once. The follow-up runs but raises no event, so a second occurrence
+                // would mean the chain no longer terminates.
+                .expect_calls(1)
+                .and()
+        });
+
+        let mut client = start_netget_client(client_config).await?;
+        client.wait_for_any(&["connected"], 30).await;
+
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
+        server.verify_mocks().await?;
+        client.verify_mocks().await?;
+
+        server.stop().await?;
+        client.stop().await?;
+        Ok(())
+    }
+
     /// Test PostgreSQL client connection and query execution
     /// LLM calls: 2 (server startup, client connection)
     #[tokio::test]
