@@ -89,10 +89,29 @@ pub fn register_consumer(
     queue: &str,
     tx: mpsc::UnboundedSender<Vec<u8>>,
     frame_max: u32,
-) {
+) -> bool {
     if let Ok(mut map) = AMQP_CONSUMERS.lock() {
+        // A consumer tag is chosen by the client and is unique only *within* a connection.
+        // This directory is keyed per server, so a plain insert let connection B claim a tag
+        // connection A was already using and overwrite A's socket handle - every subsequent
+        // amqp_basic_deliver for that tag then went to B. The tags are not secret either:
+        // `list_consumers` hands every connection's tags to the model on each publish event.
+        //
+        // Refusing the second registration is the safe direction. The AMQP-correct answer is
+        // a channel error, and `on_basic_consume` turns this `false` into one.
+        let key = (server_id.as_u32(), consumer_tag.to_string());
+        if let Some(existing) = map.get(&key) {
+            if existing.connection_id != connection_id.as_u32() {
+                warn!(
+                    "AMQP consumer tag '{}' is already held by connection {}; refusing to \
+                     hand it to connection {}",
+                    consumer_tag, existing.connection_id, connection_id
+                );
+                return false;
+            }
+        }
         map.insert(
-            (server_id.as_u32(), consumer_tag.to_string()),
+            key,
             ConsumerHandle {
                 connection_id: connection_id.as_u32(),
                 channel,
@@ -102,13 +121,56 @@ pub fn register_consumer(
                 next_delivery_tag: Arc::new(AtomicU64::new(1)),
             },
         );
+        return true;
     }
+    false
 }
 
-pub fn unregister_consumer(server_id: ServerId, consumer_tag: &str) {
+/// Whether `consumer_tag` is registered on this server by a *different* connection.
+///
+/// Consumer tags are client-chosen and unique only within a connection, but the directory is
+/// keyed per server, so the two clash. `on_basic_consume` asks this before doing anything
+/// else, and refuses with a channel error rather than letting the second registration
+/// overwrite the first connection's socket handle.
+pub fn consumer_tag_taken_by_other(
+    server_id: ServerId,
+    connection_id: ConnectionId,
+    consumer_tag: &str,
+) -> bool {
+    let Ok(map) = AMQP_CONSUMERS.lock() else {
+        return false;
+    };
+    map.get(&(server_id.as_u32(), consumer_tag.to_string()))
+        .is_some_and(|handle| handle.connection_id != connection_id.as_u32())
+}
+
+/// Remove a consumer, but only if `connection_id` is the one that registered it.
+///
+/// The connection check is the point. `Basic.Cancel` carries a client-chosen tag, and
+/// without it connection B could cancel connection A's consumer by naming A's tag - after
+/// which A silently stopped receiving deliveries, with no `Basic.Cancel` to tell it why.
+/// `unregister_consumers_for_connection` and `_for_channel` always checked; this did not.
+pub fn unregister_consumer(
+    server_id: ServerId,
+    connection_id: ConnectionId,
+    consumer_tag: &str,
+) -> bool {
     if let Ok(mut map) = AMQP_CONSUMERS.lock() {
-        map.remove(&(server_id.as_u32(), consumer_tag.to_string()));
+        let key = (server_id.as_u32(), consumer_tag.to_string());
+        if let Some(handle) = map.get(&key) {
+            if handle.connection_id != connection_id.as_u32() {
+                warn!(
+                    "AMQP connection {} tried to cancel consumer '{}', which belongs to \
+                     connection {}; ignoring",
+                    connection_id, consumer_tag, handle.connection_id
+                );
+                return false;
+            }
+            map.remove(&key);
+            return true;
+        }
     }
+    false
 }
 
 pub fn unregister_consumers_for_connection(server_id: ServerId, connection_id: ConnectionId) {
@@ -442,7 +504,7 @@ impl AmqpProtocol {
             ));
         };
 
-        register_consumer(
+        if !register_consumer(
             server_id,
             connection_id,
             &consumer_tag,
@@ -450,7 +512,14 @@ impl AmqpProtocol {
             &queue,
             tx,
             self.frame_max.load(Ordering::SeqCst),
-        );
+        ) {
+            // Another connection holds the tag. Sending Consume-Ok anyway would tell this
+            // client it has a consumer that will never receive anything.
+            return Err(anyhow::anyhow!(
+                "consumer tag '{}' is already held by another connection on this server",
+                consumer_tag
+            ));
+        }
 
         let mut args = Encoder::new();
         args.short_string(&consumer_tag);
@@ -563,7 +632,13 @@ impl AmqpProtocol {
                     "AMQP consumer '{}' disconnected while a delivery was being written",
                     consumer_tag
                 );
-                unregister_consumer(ServerId::new(server_id), consumer_tag);
+                // The handle we are holding *is* the owner, so cancel it as that owner
+                // rather than going through the tag alone.
+                unregister_consumer(
+                    ServerId::new(server_id),
+                    ConnectionId::new(handle.connection_id),
+                    consumer_tag,
+                );
                 return Err(anyhow::anyhow!(
                     "Consumer '{}' disconnected before the delivery could be written",
                     consumer_tag

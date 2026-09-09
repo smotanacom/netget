@@ -6,10 +6,16 @@
 //! them. `lapin` stays for `src/client/amqp` and for the E2E tests, which drive this server
 //! with a real client.
 //!
-//! Everything here is bounds-checked. [`Decoder`] never indexes without `get`, every length
-//! read off the wire is validated against the bytes remaining, and every offset arithmetic
-//! uses `checked_add`, so no frame — however malformed — can panic a connection task.
+//! Everything here is bounds-checked **and depth-bounded**. [`Decoder`] never indexes without
+//! `get`, every length read off the wire is validated against the bytes remaining, every
+//! offset arithmetic uses `checked_add`, and field-table nesting is capped, so no frame —
+//! however malformed — can panic a connection task or overflow the stack.
 //! Encoding truncates over-long short strings at a UTF-8 char boundary rather than slicing.
+//!
+//! The depth half of that sentence was missing, and so was the bound. Field tables are
+//! recursive, five bytes bought a level, and a stack overflow is a `SIGSEGV` against a guard
+//! page rather than a panic — so it killed the whole process rather than one connection, and
+//! `tokio::spawn` could not contain it. See `MAX_FIELD_TABLE_DEPTH`.
 
 use crate::utils::truncate::truncate_str;
 use anyhow::{anyhow, Result};
@@ -77,6 +83,8 @@ pub const BASIC_NACK: u16 = 120;
 pub const REPLY_NOT_IMPLEMENTED: u16 = 540;
 /// AMQP reply code for a refused connection.
 pub const REPLY_ACCESS_REFUSED: u16 = 403;
+/// AMQP reply code for a resource another connection holds exclusively.
+pub const REPLY_RESOURCE_LOCKED: u16 = 405;
 
 /// Human name for a class/method pair, for logs and close reasons.
 pub fn method_name(class_id: u16, method_id: u16) -> String {
@@ -121,6 +129,19 @@ pub fn method_name(class_id: u16, method_id: u16) -> String {
 /// Every accessor returns `Err` rather than panicking when the declared length of a field
 /// exceeds the bytes remaining, which is the whole attack surface of a length-prefixed
 /// binary protocol.
+/// How deeply an AMQP field table may nest before the frame is refused.
+///
+/// Field tables are recursive: a value may itself be a table (`F`) or an array (`A`) of
+/// values. Nothing in AMQP 0-9-1 bounds that, and nothing here did either — see
+/// `field_value_at` for why an unbounded version was a pre-authentication kill of the entire
+/// process.
+///
+/// Real tables are one or two deep. `client-properties` is a flat map with a nested
+/// `capabilities` table inside it, which is depth 2, and `amq-protocol` — what lapin emits —
+/// produces nothing deeper. 32 is generous by an order of magnitude and still bottoms the
+/// recursion out in a few hundred bytes of stack.
+const MAX_FIELD_TABLE_DEPTH: usize = 32;
+
 pub struct Decoder<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -221,12 +242,22 @@ impl<'a> Decoder<'a> {
     /// value of a type this decoder does not recognise costs only the rest of that table:
     /// the entries decoded so far are returned and the outer payload stays in sync.
     pub fn field_table(&mut self) -> Result<Value> {
+        self.field_table_at(0)
+    }
+
+    fn field_table_at(&mut self, depth: usize) -> Result<Value> {
+        if depth >= MAX_FIELD_TABLE_DEPTH {
+            return Err(anyhow!(
+                "AMQP field table nested deeper than {} levels",
+                MAX_FIELD_TABLE_DEPTH
+            ));
+        }
         let body = self.long_bytes()?;
         let mut inner = Decoder::new(body);
         let mut map = Map::new();
         while inner.remaining() > 0 {
             let Ok(key) = inner.short_string() else { break };
-            match inner.field_value() {
+            match inner.field_value_at(depth + 1) {
                 Ok(value) => {
                     map.insert(key, value);
                 }
@@ -239,7 +270,27 @@ impl<'a> Decoder<'a> {
     /// One typed field-table value. Type ids follow RabbitMQ's dialect, which is what
     /// `amq-protocol` (and therefore `lapin`) emits: `s` is a signed 16-bit integer, not
     /// a short string, and both `l` and `L` are signed 64-bit.
-    fn field_value(&mut self) -> Result<Value> {
+    ///
+    /// `depth` is not decoration. A field value may be a nested table (`F`) or a nested array
+    /// (`A`), so this is mutually recursive with itself and with `field_table_at`, and one
+    /// more level costs the peer **five bytes** on the wire (`A` plus a four-byte length). At
+    /// the default `frame_max` of 128 KiB that is ~26 000 levels in a single frame, and at the
+    /// permitted maximum of 1 MiB about 210 000 — far past what a 2 MiB tokio worker stack
+    /// survives. The overflow is a `SIGSEGV` against a guard page, not a panic, so
+    /// `tokio::spawn` cannot contain it and the whole NetGet process dies, taking every other
+    /// server and client in it.
+    ///
+    /// It was reachable **before authentication**, in two writes: the protocol header, then
+    /// one `Connection.Start-Ok` whose `client-properties` table `mod.rs` decodes in
+    /// `Phase::AwaitStartOk`, before any credential is examined and before any model decision
+    /// is asked for.
+    fn field_value_at(&mut self, depth: usize) -> Result<Value> {
+        if depth >= MAX_FIELD_TABLE_DEPTH {
+            return Err(anyhow!(
+                "AMQP field table nested deeper than {} levels",
+                MAX_FIELD_TABLE_DEPTH
+            ));
+        }
         let tag = self.u8()?;
         let value = match tag {
             b't' => Value::Bool(self.u8()? != 0),
@@ -263,7 +314,7 @@ impl<'a> Decoder<'a> {
                 let mut inner = Decoder::new(body);
                 let mut items = Vec::new();
                 while inner.remaining() > 0 {
-                    match inner.field_value() {
+                    match inner.field_value_at(depth + 1) {
                         Ok(v) => items.push(v),
                         Err(_) => break,
                     }
@@ -271,7 +322,7 @@ impl<'a> Decoder<'a> {
                 Value::Array(items)
             }
             b'T' => Value::from(self.u64()?),
-            b'F' => self.field_table()?,
+            b'F' => self.field_table_at(depth + 1)?,
             b'x' => {
                 let bytes = self.long_bytes()?;
                 Value::String(String::from_utf8_lossy(bytes).into_owned())

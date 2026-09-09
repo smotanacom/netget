@@ -21,6 +21,15 @@ exists. It is exactly the right library here.
 | `test_amqp_connection_refused_by_handler` | the handler's own reply code or text not reaching the client | 2 |
 | `test_amqp_unimplemented_method_closes_the_channel` | an unimplemented method being ignored instead of answered (the client would hang) | 2 |
 
+`codec_test.rs` (zero LLM calls, no socket) covers the field-table decoder directly, because
+the e2e test cannot reach it: a real client sends a two-deep `client_properties` and nothing
+else. Its four tests are about **depth**, not bounds — the parser was fully bounds-checked and
+still had an unbounded recursion, which is a `SIGSEGV` rather than a panic and so killed the
+whole process rather than one connection. Reachable in two writes, before authentication.
+`a_deeply_nested_field_array_is_refused_rather_than_recursed_into` failing to *complete* is
+itself the regression; verified by removing the bound, which aborts the test binary with
+`stack overflow, aborting` and SIGABRT.
+
 `peer_inject_test.rs` (zero LLM calls, in-process `AppState`) covers the dashboard's
 injection path: a raw socket sends the protocol header, `send_to_peer` injects
 `amqp_connection_close` (asserted frame-by-frame on the socket; reported `Executed`
@@ -91,5 +100,10 @@ Runs in about a second once compiled; no Ollama needed.
 - Non-UTF-8 bodies and the `body_is_text: false` path.
 - `amqp_basic_return`, `amqp_channel_close` as a queue refusal, `amqp_deliver_to_consumer`
   and `list_amqp_consumers`.
-- Heartbeat timeout (would need a test that idles for two intervals).
-- Field tables with exotic types in `client_properties` or message headers.
+- Heartbeat timeout and the `IDLE_READ_TIMEOUT_SECS` fallback (both would need a test that
+  idles for the interval).
+- Field tables with exotic types in `client_properties` or message headers. Nesting *depth* is
+  covered by `codec_test.rs`; the type ids are not.
+- The cross-connection consumer-tag guard: a second connection asking for a tag the first holds
+  must get a 405 `RESOURCE_LOCKED` channel error, and `Basic.Cancel` must not reach another
+  connection's consumer. Both are implemented and neither is asserted.

@@ -5,9 +5,20 @@ decoded by hand in `codec.rs`; the LLM (or a script / static handler) decides wh
 connection is accepted, what a queue declaration reports, whether a consumer is
 registered, and **every message a consumer receives**.
 
-**State**: Experimental — LLM-authored, not human-reviewed. Verified end to end against
-`lapin`, a real AMQP client: handshake, channel open, queue declare, consume, publish, and
-a delivery whose body is asserted (`tests/server/amqp/e2e_test.rs`).
+**State**: **Beta**, which is what `actions.rs` declares. This line used to say
+"Experimental — LLM-authored, not human-reviewed", contradicting the code with no way to tell
+which was current; the evidence supports Beta and the code was right.
+
+The evidence: `test_amqp_publish_is_delivered_to_consumer` drives `lapin`, a genuinely
+independent client — it parses the wire with the generated `amq-protocol` parsers, and this
+broker is hand-written, so it is not the circular case `websocket`/`webrtc_signaling` are. The
+test is not `#[ignore]`d and cannot silently skip. It covers handshake, channel open, queue
+declare, consume, publish, and a delivery whose body is asserted out of lapin's own consumer
+stream (`tests/server/amqp/e2e_test.rs`).
+
+Not Stable: `lapin` is not an unconditional dev-dependency (`amqp = ["dep:lapin"]`), so the
+blocking CI job — six protocols, none of them this one — never runs it. The evidence exists and
+is real, but it rests on a locally-run test.
 **Port**: 5672 by default. **Privilege**: `None` (5672 > 1024).
 **Stack**: `ETH>IP>TCP>AMQP`. **Spec**: AMQP 0-9-1 (the RabbitMQ dialect).
 
@@ -42,7 +53,7 @@ rather than being silently ignored, so a client gets an error instead of a hang.
 | Channels | `Channel.Open`/`Open-Ok` |
 | Topology | `Exchange.Declare`, `Queue.Declare`/`Declare-Ok`, `Queue.Bind`/`Bind-Ok` |
 | Messaging | `Basic.Qos`/`Qos-Ok`, `Basic.Consume`/`Consume-Ok`, `Basic.Cancel`/`Cancel-Ok`, `Basic.Publish` + content header + body frames, `Basic.Deliver` + content, `Basic.Return` + content, `Basic.Ack`/`Nack`/`Reject` (logged only) |
-| Keepalive | heartbeat frames sent at half the negotiated interval; a peer silent for two intervals is disconnected |
+| Keepalive | heartbeat frames sent at half the negotiated interval; a peer silent for two intervals is disconnected, or for `IDLE_READ_TIMEOUT_SECS` where it negotiated heartbeating off. Answered in Rust before any dispatch, so a heartbeat can never cost a model call or park in a manual handler |
 
 Also implemented: the field-table codec (RabbitMQ type ids, so `s` is a signed 16-bit
 integer and `l`/`L` are both signed 64-bit), the Basic property list with its 16-bit flag
@@ -120,8 +131,9 @@ round trip is lossy for those.
 | `amqp_deliver_to_consumer` | `server_id` plus the `amqp_basic_deliver` parameters |
 | `list_amqp_consumers` | `server_id` |
 
-Every declared parameter is read by `execute_action`; there are no dead parameters and no
-undeclared executor branches.
+Every declared parameter is read by `execute_action`, and there are no dead parameters. There
+is one undeclared executor branch, `close_connection`, which the "Custom-result note" below
+explains; the sentence here used to claim there were none.
 
 ## Routing: the model does it, not the broker
 
@@ -188,16 +200,69 @@ length of every field is validated against the bytes remaining before any slice 
 so no frame, however malformed, can panic a connection task. There is no `unwrap()` on
 parsed bytes anywhere in this module.
 
+**That paragraph was true and still not enough, which is the lesson worth keeping.** It argued
+entirely about *bounds* and said nothing about *depth*, and field tables are recursive: a value
+may be a nested table (`F`) or a nested array (`A`). Each level cost a peer five bytes on the
+wire, so the default 128 KiB `frame_max` bought ~26 000 levels in one frame and the permitted
+1 MiB maximum bought ~210 000 — far past a 2 MiB tokio worker stack. The result is not a panic
+a connection task absorbs: a Rust stack overflow is a `SIGSEGV` against a guard page, so
+`tokio::spawn` could not contain it and the whole NetGet process aborted with every other
+server and client in it. It was reachable in **two writes, before authentication** — the
+protocol header, then one `Connection.Start-Ok` whose `client-properties` table is decoded in
+`Phase::AwaitStartOk`, before any credential is examined and before any model decision is
+asked for. A safety argument that reads as complete and covers only one axis is worse than
+none.
+
 - Frame payloads are rejected before allocation if larger than the negotiated `frame_max`
   (default 128 KiB, hard maximum 1 MiB).
 - Content bodies are capped at 8 MiB, checked against the content header's 64-bit
-  `body-size` before the buffer is reserved.
+  `body-size` — and only `BODY_RESERVE_CHUNK` of that is reserved up front. Reserving the full
+  declared size bounded *one channel* while a connection may open 256 of them: ~256 small
+  frames carrying no body bytes at all bought an immediate 2 GiB allocation, held until the
+  connection dropped. `Vec` grows as the body frames actually arrive, so a real publisher pays
+  at most one extra reallocation and an attacker pays for every byte it claims.
 - A connection may hold at most 256 channels open.
 - Field tables are consumed by their declared byte length before their entries are parsed,
   so a value of an unknown type costs only the rest of that table — the outer payload
   stays in sync and the entries decoded so far are still reported.
+- Field-table **nesting** is capped at `MAX_FIELD_TABLE_DEPTH` (32). Real tables are one or two
+  deep; `client-properties` with its nested `capabilities` is depth 2, and `amq-protocol`
+  produces nothing deeper. An over-deep value is dropped and what was decoded so far is
+  returned, keeping the lenient behaviour above.
 - Short strings are truncated at a UTF-8 char boundary when encoding, never sliced by byte
   index.
+
+### Timeouts
+
+There is always a read deadline. `Session::heartbeat` is zero until the client's `Tune-Ok`, and
+AMQP lets a client answer `Tune-Ok` with zero to switch heartbeating off entirely, so reading
+"no heartbeat, no deadline" literally left the **whole handshake** untimed and handed an
+uncooperative peer a permanently untimed session — a peer that connected and said nothing held
+four tasks and an `AppState` row for as long as it liked. The protocol-header read is bounded by
+`HANDSHAKE_TIMEOUT_SECS` (30) and every later read by two heartbeat intervals, or
+`IDLE_READ_TIMEOUT_SECS` (600) where the peer declined to heartbeat.
+
+### Consumer tags are per connection; the directory is per server
+
+`AMQP_CONSUMERS` is keyed `(server_id, consumer_tag)`, but a consumer tag is chosen by the
+client and is unique only *within* a connection. Two things follow, and both were bugs:
+
+- `Basic.Consume` with a tag another connection already holds is refused with a channel error
+  (405 `RESOURCE_LOCKED`), before any model call. Letting it through overwrote the first
+  connection's socket handle, so every later `amqp_basic_deliver` for that tag went to the
+  wrong client — and the tags are not secret, `list_consumers` hands every connection's tags to
+  the model on each publish event.
+- `Basic.Cancel` only cancels a consumer this connection registered. Without the check one
+  client could cancel another's consumer by naming its tag, after which that client silently
+  stopped receiving deliveries with no `Basic.Cancel` to explain it.
+
+### Failure semantics
+
+An LLM failure logs `decision=fail_closed_llm_error class=overloaded|unavailable` and a handler
+that ran and decided nothing logs `decision=fail_closed_no_answer`, as `src/server/radius/`
+does. The distinction has to live in the log because the wire cannot carry it: a
+`Connection.Close 403` looks the same whether the model refused or the backend was down.
+Nothing derived from an internal error reaches the wire.
 
 ## Startup parameters
 
