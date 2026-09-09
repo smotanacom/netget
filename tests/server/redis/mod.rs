@@ -4,3 +4,5 @@ mod e2e_test;
 mod llm_failure_test;
 #[cfg(all(test, feature = "redis"))]
 mod peer_inject_test;
+#[cfg(all(test, feature = "redis"))]
+mod resp_framing_test;

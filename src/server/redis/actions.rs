@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::{Arc, LazyLock};
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Redis protocol action handler
 pub struct RedisProtocol {
@@ -303,7 +303,15 @@ impl RedisProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'message' field")?;
 
-        debug!("Redis error response: {}", message);
+        // An error the handler *chose* to send, not one netget synthesised because it could
+        // not answer. On the wire both are just `-…`, so the log carries the distinction, as
+        // `src/server/radius/` does: `decision=model_reject` here,
+        // `decision=fail_closed_*` in `mod.rs`.
+        debug!(
+            "Redis connection {} decision=model_reject: {}",
+            self.connection_id,
+            crate::utils::truncate_for_log(message, 512)
+        );
         let _ = self
             .status_tx
             .send(format!("[DEBUG] Redis ✗ Error: {}", message));
@@ -328,9 +336,35 @@ impl RedisProtocol {
 // replies the loop synthesises itself (frame-cap error, LLM-failure error,
 // no-response error).
 
+/// Strip CR and LF from a RESP *simple* payload, mapping each to a space.
+///
+/// A RESP simple string (`+…`) and simple error (`-…`) are CRLF-terminated with **no length
+/// prefix**, so a newline anywhere in the payload ends the frame early and everything after it
+/// is parsed as the *next* reply. The connection is then desynchronised for good: every
+/// subsequent command reads the wrong answer, and the client has no way to notice.
+///
+/// The value comes from model output (`redis_simple_string`'s `value`, `redis_error`'s
+/// `message`), so it is exactly as trustworthy as any other generated text. `mod.rs` documents
+/// this hazard on the LLM-failure path and avoids it by sending a fixed category; the
+/// model-facing verbs had no such guard.
+///
+/// Mapping to a space rather than rejecting the reply is what Redis itself does —
+/// `addReplyErrorFormat` runs `sdsmapchars(s, "\r\n", "  ", 2)` before framing.
+fn sanitize_simple_payload(s: &str, action: &str) -> String {
+    if !s.contains(['\r', '\n']) {
+        return s.to_string();
+    }
+    warn!(
+        "Redis: {} payload contained CR/LF, which would have ended the RESP frame early and \
+         desynchronised the connection; mapping each to a space (as Redis does)",
+        action
+    );
+    s.replace(['\r', '\n'], " ")
+}
+
 /// Encode a simple string response ("+OK\r\n")
 pub fn encode_simple_string(s: &str) -> Vec<u8> {
-    format!("+{}\r\n", s).into_bytes()
+    format!("+{}\r\n", sanitize_simple_payload(s, "simple string")).into_bytes()
 }
 
 /// Encode a bulk string response ("$5\r\nhello\r\n")
@@ -353,7 +387,7 @@ pub fn encode_integer(i: i64) -> Vec<u8> {
 
 /// Encode an error response ("-ERR message\r\n")
 pub fn encode_error(msg: &str) -> Vec<u8> {
-    format!("-{}\r\n", msg).into_bytes()
+    format!("-{}\r\n", sanitize_simple_payload(msg, "error")).into_bytes()
 }
 
 /// Encode an array response.

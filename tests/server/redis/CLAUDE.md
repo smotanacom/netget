@@ -1,253 +1,106 @@
 # Redis Protocol E2E Tests
 
-## Test Overview
-
-Tests Redis server implementation using real `redis` (redis-rs) client library. Validates all RESP2 data types: simple
-strings, bulk strings, integers, arrays, null values, and errors.
-
-## Test Strategy
-
-**Comprehensive Coverage**: Multiple test functions covering each RESP2 type. Each test is small and focused on a single
-response type. This provides excellent protocol coverage while keeping tests maintainable.
-
-**Why separate tests?** Redis has 6 distinct response types, each with different encoding. Testing each separately
-ensures complete protocol correctness.
-
-## LLM Call Budget
-
-### Test: `test_redis_ping`
-
-- **1 server startup** (scripting disabled, action-based only)
-- **1 PING command** → LLM call for simple string response
-- **Total: 2 LLM calls**
-
-### Test: `test_redis_get_set`
-
-- **1 server startup**
-- **1 SET command** → LLM call
-- **1 GET command** → LLM call
-- **Total: 3 LLM calls**
-
-### Test: `test_redis_integer_response`
-
-- **1 server startup**
-- **1 INCR command** → LLM call for integer response
-- **Total: 2 LLM calls**
-
-### Test: `test_redis_array_response`
-
-- **1 server startup**
-- **1 KEYS command** → LLM call for array response
-- **Total: 2 LLM calls**
-
-### Test: `test_redis_null_response`
-
-- **1 server startup**
-- **1 GET nonexistent command** → LLM call for null response
-- **Total: 2 LLM calls**
-
-### Test: `test_redis_error_response`
-
-- **1 server startup**
-- **1 INVALID command** → LLM call for error response
-- **Total: 2 LLM calls**
-
-**Total for Redis test suite: 13 LLM calls** (slightly over 10, could be optimized by consolidating)
-
-### Test: `peer_inject_test::injected_redis_reply_verbs_reach_the_socket_and_close_sends_eof`
-
-- **0 LLM calls** — the server answers through a `*` static handler and the mock backend URL
-  is unreachable, so any accidental model call fails the test.
-- Covers dashboard injection (`AppState::send_to_peer`): a real PING/PONG round-trip proves
-  counters move; an injected `redis_simple_string` reports `Sent { bytes_sent: 11 }` and the
-  literal `+injected\r\n` arrives at the connected socket (the RESP encoding lives once in
-  `src/server/redis/actions.rs::execute_action`, shared with the read loop); injected bytes
-  are counted in `bytes_sent`/`packets_sent`; `close_connection` half-closes (client reads
-  EOF) and the peer handle is released.
-
-## Scripting Usage
-
-**Scripting Disabled**: All tests use `ServerConfig::new()` which disables scripting by default. Redis tests rely on
-action-based responses to validate all RESP2 data types.
-
-**Why no scripting?** Testing protocol correctness requires validating each response type (simple string, bulk string,
-integer, array, null, error). Scripting would make tests less flexible and harder to debug.
-
-**Future Optimization**: Tests could be consolidated into 2-3 larger tests with scripting enabled to reduce LLM calls
-to <10.
-
-## Client Library
-
-**redis** (redis-rs) v0.25:
-
-- Full-featured async Redis client using tokio
-- Supports multiplexed connections (parallel commands)
-- Handles RESP2 protocol parsing and encoding
-- Provides typed result extraction (String, i64, Vec<String>, etc.)
-- Used for protocol correctness validation
-
-**Client Setup**:
-
-```rust
-let redis_url = format!("redis://127.0.0.1:{}", port);
-let client = redis::Client::open(redis_url.as_str())?;
-let mut con = client.get_multiplexed_async_connection().await?;
-```
-
-## Expected Runtime
-
-**Model**: qwen3-coder:30b (default)
-**Total Runtime**: ~60-80 seconds for all 6 tests
-**Breakdown**:
-
-- Each test: ~10-15 seconds (1-3 LLM calls)
-- Fast: PING, integer, null tests (2 calls each)
-- Slower: GET/SET test (3 calls)
-- Variability: LLM response time
-
-**Optimization**: Tests are already fast individually; parallelization not needed.
-
-## Failure Rate
-
-**Historical**: ~2% failure rate (very stable)
-**Causes**:
-
-1. **Connection timeout**: Rare, only on very slow LLM models
-2. **Type mismatch**: LLM returns wrong action type (e.g., `redis_bulk_string` instead of `redis_simple_string`)
-3. **Empty response**: LLM forgets to include action (client hangs)
-
-**Mitigation**:
-
-- Explicit prompts for each command type
-- Timeout: 10s default (adequate for most models)
-- Tests are deterministic and rarely flaky
-
-**Redis is the most stable database protocol** due to simple RESP2 format and clear command/response patterns.
-
-## Test Cases
-
-### 1. PING (`test_redis_ping`)
-
-**Validates**: Simple string response (+PONG\r\n)
-
-- Connects to Redis server
-- Executes PING command
-- Verifies response is "PONG"
-- **Expected LLM Response**: `redis_simple_string` with value='PONG'
-- **RESP2**: `+PONG\r\n`
-
-### 2. GET/SET (`test_redis_get_set`)
-
-**Validates**: Bulk string responses
-
-- Executes SET mykey myvalue
-- Verifies SET returns "OK"
-- Executes GET mykey
-- Verifies GET returns "test_value"
-- **Expected LLM Responses**:
-    - SET: `redis_simple_string` value='OK'
-    - GET: `redis_bulk_string` value='test_value'
-- **RESP2**: `+OK\r\n` and `$10\r\ntest_value\r\n`
-
-### 3. Integer Response (`test_redis_integer_response`)
-
-**Validates**: Integer responses (:42\r\n)
-
-- Executes INCR counter
-- Verifies response is integer 42
-- **Expected LLM Response**: `redis_integer` value=42
-- **RESP2**: `:42\r\n`
-
-### 4. Array Response (`test_redis_array_response`)
-
-**Validates**: Array responses with multiple elements
-
-- Executes KEYS *
-- Verifies response is array of strings
-- Checks array is non-empty
-- **Expected LLM Response**: `redis_array` values=['key1','key2','key3']
-- **RESP2**: `*3\r\n$4\r\nkey1\r\n$4\r\nkey2\r\n$4\r\nkey3\r\n`
-
-### 5. Null Response (`test_redis_null_response`)
-
-**Validates**: Null bulk string ($-1\r\n)
-
-- Executes GET nonexistent
-- Verifies response is None
-- **Expected LLM Response**: `redis_null`
-- **RESP2**: `$-1\r\n`
-
-### 6. Error Response (`test_redis_error_response`)
-
-**Validates**: Error responses (-ERR\r\n)
-
-- Executes INVALID command
-- Expects error response
-- Verifies error contains "ERR" or "unknown"
-- **Expected LLM Response**: `redis_error` message='ERR unknown command'
-- **RESP2**: `-ERR unknown command\r\n`
-
-## Known Issues
-
-### CLIENT Commands
-
-**Issue**: redis-rs client sends `CLIENT SETNAME` during connection setup
-**Symptom**: LLM may not recognize CLIENT command
-**Workaround**: Prompt instructs LLM to respond with `redis_simple_string value='OK'` for PING/CLIENT commands
-**Status**: Works correctly in practice
-
-### Connection Timeout
-
-**Issue**: LLM takes >10s to respond, client times out
-**Symptom**: "Connection timeout" error
-**Workaround**: Increase timeout to 30s for slow models (rare)
-**Not Flaky**: Consistent on slow hardware/models
-
-### No Response Fallback
-
-**Issue**: If LLM returns no action, client hangs indefinitely
-**Symptom**: Test timeout after 60s
-**Workaround**: Explicit prompts ensure LLM always returns an action
-**Status**: Very rare in practice
-
-## Test Execution
+Four files, all declared in `tests/server/redis/mod.rs`.
+
+| File | Tests | What it proves | LLM calls |
+|---|---|---|---|
+| `e2e_test.rs` | 6 | Every RESP2 reply type, through `redis-rs` | 13 |
+| `resp_framing_test.rs` | 3 | Model output cannot split a frame; `stop_server` stops sessions | 0 |
+| `llm_failure_test.rs` | 1 | The RESP error a client sees when the backend fails | 1 |
+| `peer_inject_test.rs` | 1 | Dashboard injection reaches the socket | 0 |
+
+## Running
+
+`--test` names a **target**, not a module path. `--test server::redis::e2e_test`
+makes cargo list its targets and exit having run nothing — and it exits 0, so it
+looks like a pass. Filter after `--`:
 
 ```bash
-# Build release binary first (REQUIRED)
-./cargo-isolated.sh build --release --all-features
-
-# Run all Redis tests
-./cargo-isolated.sh test --features redis --test server::redis::test
-
-# Run specific test
-./cargo-isolated.sh test --features redis --test server::redis::test test_redis_ping
-
-# Run with output
-./cargo-isolated.sh test --features redis --test server::redis::test -- --nocapture
+./cargo-isolated.sh test --no-default-features --features redis \
+    --test server -- server::redis --test-threads=100
 ```
 
-## Test Output Example
+## What the Beta rating rests on
 
-```
-=== E2E Test: Redis PING ===
-Server started on port 54321
-Connecting to Redis server...
-✓ Redis connected
-Executing PING...
-✓ Received: PONG
-✓ Redis PING test passed
-```
+`e2e_test.rs` drives **redis-rs** (`redis` 0.27, a dev-dependency), an
+independent implementation of RESP2 — not the `redis-protocol` crate the server
+parses with, so the evidence is not circular. Six tests, module
+`redis_server_tests`:
 
-## Future Improvements
+| Test | Reply type |
+|---|---|
+| `test_redis_ping_with_mocks` | simple string `+PONG\r\n` |
+| `test_redis_get_set_with_mocks` | simple string + bulk string |
+| `test_redis_integer_response_with_mocks` | `:42\r\n` |
+| `test_redis_array_response_with_mocks` | `*3\r\n…` |
+| `test_redis_null_response_with_mocks` | `$-1\r\n` |
+| `test_redis_error_response_with_mocks` | `-ERR …\r\n` |
 
-1. **Consolidation**: Merge tests into 2-3 comprehensive tests with scripting to reduce LLM calls to <10
-    - Test 1: Basic commands (PING, GET, SET) - 1 server, 1-2 LLM calls with scripting
-    - Test 2: Data types (integer, array, null) - 1 server, 1-2 LLM calls
-    - Test 3: Error handling - 1 server, 1 LLM call
-    - **Target: 6-8 total LLM calls** (down from 13)
-2. **Complex Commands**: Test MGET, MSET, APPEND, STRLEN
-3. **Lists**: Test LPUSH, LPOP, LRANGE
-4. **Sets**: Test SADD, SMEMBERS, SINTER
-5. **Sorted Sets**: Test ZADD, ZRANGE, ZSCORE
-6. **Hashes**: Test HSET, HGET, HGETALL
-7. **Binary Safety**: Test values with \r\n, null bytes
+None is `#[ignore]`d and none skips when something is missing — redis-rs is
+compiled in, so there is no binary to be absent. `llm_failure_test.rs` also reads
+its assertion back through redis-rs.
+
+## LLM call budget
+
+`e2e_test.rs`: 6 servers × 1 startup + 7 command calls = **13**. That is over the
+~10 guideline, and the honest reason is that each test covers a distinct RESP2
+encoding and consolidating them would make a failure harder to localise. The
+other three files cost **1** between them.
+
+`resp_framing_test.rs` and `peer_inject_test.rs` build their servers directly
+through `ServerForm` with a `*` static handler and point at an unreachable
+backend, so an accidental model call fails the test rather than passing quietly.
+
+Both pass **`instruction: Some(String::new())`**, which is load-bearing:
+`ServerForm::create` substitutes a default instruction whenever `instruction` is
+`None`, and any non-empty instruction makes `operator_wants_dynamic` true — so a
+server built with `..Default::default()` consults the model whatever the test's
+comments claim.
+
+## Binary safety — the case worth knowing
+
+`resp_framing_test.rs` exists because RESP has two kinds of string and only one
+of them is safe for generated text:
+
+- A **bulk** string is length-prefixed, so it can carry any bytes.
+- A **simple** string (`+…`) and a **simple error** (`-…`) are CRLF-terminated
+  with no length. A newline inside the payload ends the frame early, and
+  everything after it is parsed as the next reply.
+
+`redis_simple_string`'s `value` and `redis_error`'s `message` are model output.
+Before this was guarded, one newline in a model's error prose desynchronised the
+connection permanently — every later command read the previous one's leftovers,
+and the client could not tell. The server now maps CR and LF to spaces, as Redis
+itself does.
+
+The decisive assertion is not that the first reply is well-formed; it is that the
+**second** command gets its own reply rather than the tail of the first.
+
+## Scripting
+
+The `e2e_test.rs` suite uses `ServerConfig::new()`, which disables scripting, so
+each reply comes from an action and the action-to-wire encoding is what is under
+test. A script handler would prove the script ran, not that the encoding is
+right.
+
+## Known limitations of the suite
+
+- **`redis-cli` is not driven anywhere.** redis-rs is a genuine third-party
+  implementation and is what the rating rests on; a skip-when-missing gate around
+  a binary would not be evidence anyway.
+- **RESP3 is not tested** because the server does not implement it (no `HELLO 3`).
+- **Inline commands** (`PING\r\n` typed into `nc`) are not tested; only RESP
+  arrays decode, and both redis-cli and redis-rs always send arrays.
+- **Pipelining** — the read loop processes several frames from one read in order,
+  each with its own LLM call, but no test sends two commands in one write.
+- **AUTH / SELECT / MULTI / pub-sub** reach the model as ordinary commands with no
+  special handling, and nothing asserts on them.
+
+## Fixed, recorded so the notes are not re-added
+
+- *"No Response Fallback: if the LLM returns no action, client hangs
+  indefinitely."* It does not: the server replies
+  `-ERR no response produced for this command` and logs
+  `decision=fail_closed_no_action`.
+- *"redis v0.25"* — the dev-dependency is 0.27.
+- Test names here omitted the `_with_mocks` suffix every one of them carries.
