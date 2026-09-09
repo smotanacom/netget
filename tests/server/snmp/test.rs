@@ -83,14 +83,19 @@ async fn test_snmp_basic_get() -> E2EResult<()> {
             })
     ).await?;
     println!("Server started on port {}", server.port);
-    // Wait for SNMP server to fully initialize
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    // Wait for SNMP server to fully initialize
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // No sleep: `spawn_with_llm_actions` binds the UDP socket and only then logs
+    // "SNMP agent ... listening on", which is what `start_netget_server` waits for. The
+    // socket is therefore already accepting datagrams by the time this line runs.
     // VALIDATION: Use command-line snmpget tool (more reliable than Rust snmp crate)
     println!("Querying sysDescr OID with snmpget...");
     let output = tokio::process::Command::new("snmpget")
         .args(&[
+            // -On prints OIDs numerically and -Oe prints enums as bare numbers, so the
+            // assertions below do not depend on which MIB files happen to be installed:
+            // without these, ifOperStatus renders as "INTEGER: up(1)" on one machine and
+            // "INTEGER: 1" on another, and sysDescr as "SNMPv2-MIB::sysDescr.0".
+            "-On",
+            "-Oe",
             "-v",
             "2c",
             "-c",
@@ -112,12 +117,15 @@ async fn test_snmp_basic_get() -> E2EResult<()> {
     let response_str = String::from_utf8_lossy(&output.stdout);
     println!("SNMP response: {}", response_str);
 
-    // Verify response contains the expected value
+    // net-snmp prints the decoded type and value, so asserting on its rendering checks the
+    // whole path: our hand-rolled BER encoder produced an OCTET STRING that a real manager
+    // decoded back to exactly the bytes the model supplied. The previous assertion ended in
+    // `|| !response_str.is_empty()`, which a successful snmpget can never fail - it asserted
+    // that snmpget had run, not that the agent answered correctly.
     assert!(
-        response_str.contains("NetGet")
-            || response_str.contains("Server")
-            || !response_str.is_empty(),
-        "Response should contain 'NetGet' or 'Server' or at least some value, got: {}",
+        response_str.contains("STRING: NetGet SNMP Server v1.0")
+            || response_str.contains("STRING: \"NetGet SNMP Server v1.0\""),
+        "sysDescr should decode as the exact string the model returned, got: {}",
         response_str
     );
     println!("✓ SNMP GET succeeded");
@@ -126,6 +134,12 @@ async fn test_snmp_basic_get() -> E2EResult<()> {
     println!("Querying sysName OID with snmpget...");
     let output2 = tokio::process::Command::new("snmpget")
         .args(&[
+            // -On prints OIDs numerically and -Oe prints enums as bare numbers, so the
+            // assertions below do not depend on which MIB files happen to be installed:
+            // without these, ifOperStatus renders as "INTEGER: up(1)" on one machine and
+            // "INTEGER: 1" on another, and sysDescr as "SNMPv2-MIB::sysDescr.0".
+            "-On",
+            "-Oe",
             "-v",
             "2c",
             "-c",
@@ -150,6 +164,12 @@ async fn test_snmp_basic_get() -> E2EResult<()> {
 
     let response_str2 = String::from_utf8_lossy(&output2.stdout);
     println!("sysName response: {}", response_str2);
+    assert!(
+        response_str2.contains("STRING: netget.local")
+            || response_str2.contains("STRING: \"netget.local\""),
+        "sysName should decode as the exact string the model returned, got: {}",
+        response_str2
+    );
     println!("✓ sysName query succeeded");
 
     // Verify mock expectations were met
@@ -214,13 +234,18 @@ async fn test_snmp_get_next() -> E2EResult<()> {
             })
     ).await?;
     println!("Server started on port {}", server.port);
-    // Wait for SNMP server to fully initialize
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // No sleep: the socket is bound before `start_netget_server` returns - see above.
 
     // VALIDATION: Use snmpgetnext command-line tool (more reliable than Rust snmp crate)
     println!("Querying with snmpgetnext...");
     let output = tokio::process::Command::new("snmpgetnext")
         .args(&[
+            // -On prints OIDs numerically and -Oe prints enums as bare numbers, so the
+            // assertions below do not depend on which MIB files happen to be installed:
+            // without these, ifOperStatus renders as "INTEGER: up(1)" on one machine and
+            // "INTEGER: 1" on another, and sysDescr as "SNMPv2-MIB::sysDescr.0".
+            "-On",
+            "-Oe",
             "-v",
             "2c",
             "-c",
@@ -245,6 +270,20 @@ async fn test_snmp_get_next() -> E2EResult<()> {
 
     let response_str = String::from_utf8_lossy(&output.stdout);
     println!("GETNEXT response: {}", response_str);
+    // GETNEXT must come back naming the OID that *follows* the one asked for, carrying the
+    // model's value. Asserting only that snmpgetnext exited 0 would pass on any answer at all,
+    // including one for the queried OID itself - the exact confusion this test exists to catch.
+    assert!(
+        response_str.contains("1.3.6.1.2.1.1.1.0") || response_str.contains(".1.3.6.1.2.1.1.1.0"),
+        "GETNEXT should answer for the next OID 1.3.6.1.2.1.1.1.0, got: {}",
+        response_str
+    );
+    assert!(
+        response_str.contains("STRING: NetGet SNMP")
+            || response_str.contains("STRING: \"NetGet SNMP\""),
+        "GETNEXT should carry the model's value, got: {}",
+        response_str
+    );
     println!("✓ SNMP GETNEXT verified");
 
     // Verify mock expectations were met
@@ -337,21 +376,27 @@ async fn test_snmp_interface_stats() -> E2EResult<()> {
             })
     ).await?;
     println!("Server started on port {}", server.port);
-    // Wait for SNMP server to fully initialize
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // No sleep: the socket is bound before `start_netget_server` returns - see above.
 
     // VALIDATION: Query interface statistics using command-line snmpget (more reliable)
+    // The third element is what net-snmp must print. It pins the *type tag* as well as the
+    // value, which is the part our hand-rolled BER encoder can get wrong silently: a Gauge32
+    // written with the INTEGER tag decodes to the same number and would pass a value-only
+    // check, while a real monitoring system would treat it as a different kind of quantity.
     let oids = vec![
-        ("1.3.6.1.2.1.2.2.1.1.1", "ifIndex"),
-        ("1.3.6.1.2.1.2.2.1.2.1", "ifDescr"),
-        ("1.3.6.1.2.1.2.2.1.5.1", "ifSpeed"),
-        ("1.3.6.1.2.1.2.2.1.8.1", "ifOperStatus"),
+        ("1.3.6.1.2.1.2.2.1.1.1", "ifIndex", "INTEGER: 1"),
+        ("1.3.6.1.2.1.2.2.1.2.1", "ifDescr", "STRING: eth0"),
+        ("1.3.6.1.2.1.2.2.1.5.1", "ifSpeed", "Gauge32: 1000000000"),
+        ("1.3.6.1.2.1.2.2.1.8.1", "ifOperStatus", "INTEGER: 1"),
     ];
 
-    for (oid, name) in oids {
+    for (oid, name, expected) in oids {
         println!("Querying {} ...", name);
         let output = tokio::process::Command::new("snmpget")
             .args(&[
+                // See the note on -On/-Oe above: pin the rendering, not the local MIB set.
+                "-On",
+                "-Oe",
                 "-v",
                 "2c",
                 "-c",
@@ -376,6 +421,14 @@ async fn test_snmp_interface_stats() -> E2EResult<()> {
 
         let response_str = String::from_utf8_lossy(&output.stdout);
         println!("  {}: {}", name, response_str.trim());
+        assert!(
+            response_str.contains(expected)
+                || response_str.contains(&expected.replace(": ", ": \"").to_string()),
+            "{} should decode as `{}`, got: {}",
+            name,
+            expected,
+            response_str
+        );
         println!("  ✓ {} retrieved", name);
     }
 
@@ -461,20 +514,28 @@ async fn test_snmp_custom_mib() -> E2EResult<()> {
             })
     ).await?;
     println!("Server started on port {}", server.port);
-    // Wait for SNMP server to fully initialize
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // No sleep: the socket is bound before `start_netget_server` returns - see above.
 
     // VALIDATION: Query custom enterprise OIDs using command-line snmpget (more reliable)
+    // As above: the expected rendering pins the type tag too - `counter` must reach the manager
+    // as Counter32, not as a plain INTEGER carrying the same 42.
     let custom_oids = vec![
-        ("1.3.6.1.4.1.99999.1.1.0", "Application Name"),
-        ("1.3.6.1.4.1.99999.1.2.0", "Counter"),
-        ("1.3.6.1.4.1.99999.1.3.0", "Status"),
+        (
+            "1.3.6.1.4.1.99999.1.1.0",
+            "Application Name",
+            "STRING: Custom Application v1.0",
+        ),
+        ("1.3.6.1.4.1.99999.1.2.0", "Counter", "Counter32: 42"),
+        ("1.3.6.1.4.1.99999.1.3.0", "Status", "STRING: active"),
     ];
 
-    for (oid, name) in custom_oids {
+    for (oid, name, expected) in custom_oids {
         println!("Querying custom OID {} ...", name);
         let output = tokio::process::Command::new("snmpget")
             .args(&[
+                // See the note on -On/-Oe above: pin the rendering, not the local MIB set.
+                "-On",
+                "-Oe",
                 "-v",
                 "2c",
                 "-c",
@@ -499,6 +560,14 @@ async fn test_snmp_custom_mib() -> E2EResult<()> {
 
         let response_str = String::from_utf8_lossy(&output.stdout);
         println!("  {}: {}", name, response_str.trim());
+        assert!(
+            response_str.contains(expected)
+                || response_str.contains(&expected.replace(": ", ": \"").to_string()),
+            "{} should decode as `{}`, got: {}",
+            name,
+            expected,
+            response_str
+        );
         println!("  ✓ Custom OID retrieved");
     }
 

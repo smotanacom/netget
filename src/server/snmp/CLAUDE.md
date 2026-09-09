@@ -10,8 +10,19 @@ transport for request/response protocol.
 **RFC**: RFC 1157 (SNMPv1), RFC 3416 (SNMPv2c), RFC 3584 (SNMPv2 Coexistence)
 **Port**: 161 (agent), 162 (trap receiver)
 **Privilege**: declares `PrivilegeRequirement::PrivilegedPort(161)`; any port above 1023 needs none.
-**Test coverage**: `tests/server/snmp/test.rs` (the file is `test.rs`, not `e2e_test.rs`), driving the
-agent with the `snmp` crate's client.
+**Test coverage**: `tests/server/snmp/test.rs` (the file is `test.rs`, not `e2e_test.rs`) drives the
+agent with **Net-SNMP's own `snmpget` and `snmpgetnext`** — not the `snmp` Rust crate, which nothing
+in the suite uses. Every call passes `-On -Oe`, so the assertions pin the decoded **type tag** as
+well as the value (`Gauge32: 1000000000`, `Counter32: 42`, `INTEGER: 1`) and do not vary with the
+MIB files installed on the machine. `tests/server/snmp/ber_depth_test.rs` covers the BER screen.
+
+**What the Beta rating rests on, exactly**: Net-SNMP is the reference implementation and an
+independent one, the tests are not `#[ignore]`d, and they **hard-fail** when the binaries are
+missing (`Command::new("snmpget").output().await?` returns `NotFound`) rather than printing SKIP
+and passing. The cost of that is real: Net-SNMP must exist wherever the suite runs. Note also that
+**no CI job runs these tests** — the blocking `test` job compiles `tcp,http,dns,udp,redis,mcp-stdio`
+and `registry-audit` is `continue-on-error` and does not run the e2e suites. A green PR says
+nothing about SNMP.
 
 ## Library Choices
 
@@ -57,7 +68,14 @@ SNMP uses UDP (stateless):
 
 - "Connection" = recent peer address that sent a request
 - Recorded with `ProtocolConnectionInfo::empty()` — no SNMP-specific payload is attached
-- Used for UI display only (not a protocol requirement), and never reaped
+- Used for UI display only (not a protocol requirement)
+- **A fresh entry is added per datagram**, never removed by this protocol, so `.connectionless()`
+  is not merely permissible here but load-bearing: `AppState::cleanup_old_connections` is the only
+  thing that reaps them, and it runs only where that flag is set. Without it the map grows for the
+  life of the server. The flag is safe because SNMP genuinely has no connection concept — a
+  request carries its own request-id and community and nothing in the next datagram has to be
+  understood in the light of the last one, which is the actual test (TFTP was harmed by declaring
+  it while carrying transfers)
 
 ### 2. LLM Control Point
 
@@ -173,7 +191,37 @@ SNMP has built-in error responses:
 - The reply carries that status with empty variable bindings
 - Omitting `error_status` yields genErr (5), the previous fixed behaviour
 
-### 7. Dual Logging
+### 7. Input Screening — the BER decoder is not safe to point at the network
+
+`rasn` 0.18 decodes a *constructed* OCTET STRING by calling `ber::de::parser::parse_encoded_value`
+on each of its segments, and a segment may itself be constructed — the function calls itself, with
+no depth counter anywhere on the path. Both `v1::Message` and `v2c::Message` carry `community` as
+an OCTET STRING, so the nesting a datagram *declares* is the recursion depth we get.
+
+`24 80` — constructed OCTET STRING, indefinite length — costs two bytes and buys one level, and the
+end-of-contents markers can be left off entirely: the decoder descends while input remains and only
+notices the missing EOC on the way back up. A 64 KB UDP datagram therefore reaches ~32000 frames.
+Measured: 30000 levels aborts with `fatal runtime error: stack overflow`, signal 6.
+
+A Rust stack overflow is a guard-page SIGSEGV/SIGABRT, **not** a panic. `tokio::spawn` cannot
+isolate it and `catch_unwind` cannot see it, so this was an unauthenticated remote kill switch for
+every other server the NetGet process was running.
+
+`check_ber_structure` (in `mod.rs`, `pub` so the client uses the same one) therefore walks the TLV
+structure **iteratively** — an explicit stack, no recursion of its own — before rasn sees anything:
+
+- nesting capped at `MAX_BER_DEPTH` = 16; a real SNMP message is 4 deep
+  (Message > PDU > VarBindList > VarBind)
+- a definite length is bounded against the **whole datagram**, not against the bytes that happen to
+  remain after it — the same mistake read from the other side
+- truncated tags, truncated lengths, a length-of-length past 8 octets, and an indefinite length on
+  a primitive are all rejected
+
+The client's response path has the identical exposure and calls the identical screen: the bytes
+come from wherever the operator pointed it, and over UDP an off-path attacker can beat the real
+agent to the reply.
+
+### 8. Dual Logging
 
 All operations use **dual logging**:
 
@@ -182,6 +230,23 @@ All operations use **dual logging**:
 - **INFO**: LLM messages and high-level events
 - **ERROR**: Parse failures, encoding errors, LLM errors
 - All logs go to both `netget.log` (via tracing) and TUI Status panel (via status_tx)
+
+**`decision=` tags**, in the shape `src/server/radius/` established. SNMP's wire format cannot carry
+the difference between "the model refused this OID" and "NetGet could not reach the model" — both
+are a non-zero error-status — so the distinction has to live in the log:
+
+| tag | what happened | what the peer gets |
+|---|---|---|
+| `decision=model_answer` | the model returned variable bindings | Response, error-status 0 |
+| `decision=model_reject` | the model called `send_snmp_error` | Response, its chosen error-status |
+| `decision=model_silent` | `ignore_request`, or no action at all | nothing |
+| `decision=fail_closed_llm_error` | the LLM call failed | Response, genErr(5) |
+| `decision=fail_closed_llm_overload` | the LLM call failed and `is_overload_error` matched | Response, genErr(5) |
+| `decision=dropped_malformed_request` | the datagram failed the BER screen or rasn | nothing |
+
+`model_silent` matters most: on the wire it is indistinguishable from the agent being down, so
+without the log line a deliberate silence and a crashed server look identical. It used to be logged
+nowhere at all.
 
 ## LLM Integration
 

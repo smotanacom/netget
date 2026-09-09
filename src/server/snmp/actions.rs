@@ -56,8 +56,8 @@ impl Protocol for SnmpProtocol {
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(161))
             .implementation("rasn-snmp v0.18 for parsing + manual BER encoding")
             .llm_control("OID responses (sysDescr, ifTable, custom MIBs)")
-            .e2e_testing("snmp crate client (tests/server/snmp/test.rs)")
-            .notes("SNMPv1/v2c only. request-id and community are echoed from the request automatically. send_trap is defined but never leaves the process")
+            .e2e_testing("Net-SNMP's own snmpget/snmpgetnext (tests/server/snmp/test.rs), run with -On -Oe so the assertions pin the decoded type tag and value rather than the local MIB set. Not ignored, and it hard-fails rather than skipping when the binaries are absent. Not the `snmp` Rust crate, whatever the older notes said")
+            .notes("SNMPv1/v2c only. request-id and community are echoed from the request automatically. send_trap is defined but never leaves the process. Incoming BER is depth- and length-screened before rasn decodes it: rasn 0.18 recurses without a bound on constructed OCTET STRINGs, and a 60 KB datagram was enough to stack-overflow the whole process")
             .build()
     }
     fn description(&self) -> &'static str {

@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 // SNMP protocol support
 use rasn::{ber, types::Integer};
@@ -258,7 +258,19 @@ impl SnmpServer {
                         let parsed = match Self::parse_snmp_message(&data) {
                             Ok(p) => p,
                             Err(e) => {
-                                error!("Failed to parse SNMP message: {}", e);
+                                // Silent on the wire — there is no request-id to answer, and a
+                                // Response PDU without one is not addressable to anything. The
+                                // operator still has to be able to see it, so it goes to the
+                                // status stream as well as the log.
+                                warn!(
+                                    "SNMP dropping unparseable datagram from {} \
+                                     (decision=dropped_malformed_request): {}",
+                                    peer_addr, e
+                                );
+                                let _ = status_tx.send(format!(
+                                    "[WARN] SNMP dropped a malformed {} byte datagram from {}: {}",
+                                    n, peer_addr, e
+                                ));
                                 continue;
                             }
                         };
@@ -327,6 +339,28 @@ impl SnmpServer {
                                         execution_result.protocol_results.len()
                                     ));
 
+                                    // A model that answers with nothing — `ignore_request`, or
+                                    // simply no action at all — is a real decision, and the
+                                    // only place it can be recorded is the log: on the wire it
+                                    // is indistinguishable from the agent being down. Tag it so
+                                    // it can be told apart from a backend failure, the way
+                                    // `radius` does.
+                                    if !execution_result
+                                        .protocol_results
+                                        .iter()
+                                        .any(|r| !r.get_all_output().is_empty())
+                                    {
+                                        info!(
+                                            "SNMP answering nothing to request {} from {} \
+                                             (decision=model_silent)",
+                                            request_id, peer_addr
+                                        );
+                                        let _ = status_clone.send(format!(
+                                            "SNMP: no reply to {} (model chose silence)",
+                                            peer_addr
+                                        ));
+                                    }
+
                                     // Handle protocol results (send SNMP response)
                                     for protocol_result in execution_result.protocol_results {
                                         if let Some(output_data) =
@@ -334,6 +368,31 @@ impl SnmpServer {
                                         {
                                             // Parse JSON response and convert to SNMP BER format
                                             let json_str = String::from_utf8_lossy(output_data);
+
+                                            // An error-status reply is the model refusing this
+                                            // OID; a value reply is the model answering. Both
+                                            // are legitimate and neither is a failure, but a
+                                            // log that cannot tell them apart — or tell either
+                                            // from the fail-closed genErr below — is useless
+                                            // when something goes wrong.
+                                            let model_rejected = serde_json::from_str::<
+                                                serde_json::Value,
+                                            >(
+                                                json_str.trim()
+                                            )
+                                            .ok()
+                                            .and_then(|v| v.get("error").and_then(|e| e.as_bool()))
+                                            .unwrap_or(false);
+                                            info!(
+                                                "SNMP answering request {} from {} (decision={})",
+                                                request_id,
+                                                peer_addr,
+                                                if model_rejected {
+                                                    "model_reject"
+                                                } else {
+                                                    "model_answer"
+                                                }
+                                            );
                                             match Self::build_snmp_response(
                                                 &json_str,
                                                 version,
@@ -413,14 +472,25 @@ impl SnmpServer {
                                     // (resourceUnavailable(13) is defined for SET), so the
                                     // overload distinction lives in the log rather than on
                                     // the wire.
+                                    //
+                                    // The wire therefore carries one code for both cases; the
+                                    // `decision=` tag is what separates a backend outage from
+                                    // the model's own `send_snmp_error`, which logs
+                                    // `decision=model_reject` above and reaches the wire
+                                    // through an entirely different path.
                                     let overloaded = crate::llm::is_overload_error(&e);
+                                    let decision = if overloaded {
+                                        "fail_closed_llm_overload"
+                                    } else {
+                                        "fail_closed_llm_error"
+                                    };
                                     error!(
-                                        "SNMP LLM call failed for request {} from {} (overload={}): {}",
-                                        request_id, peer_addr, overloaded, e
+                                        "SNMP LLM call failed for request {} from {} (decision={}): {}",
+                                        request_id, peer_addr, decision, e
                                     );
                                     let _ = status_clone.send(format!(
-                                        "[ERROR] SNMP replying genErr to {} for request {} (overload={}): {}",
-                                        peer_addr, request_id, overloaded, e
+                                        "[ERROR] SNMP replying genErr to {} for request {} (decision={}): {}",
+                                        peer_addr, request_id, decision, e
                                     ));
                                     match Self::build_response_message(
                                         version,

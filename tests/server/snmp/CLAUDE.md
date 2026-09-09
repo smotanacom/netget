@@ -7,11 +7,34 @@ queries with proper OID values and data types. Tests both basic system OIDs and 
 
 ## Test Strategy
 
-- **Isolated test servers**: Each test spawns separate NetGet instance with specific OID instructions
-- **Command-line snmpget tool**: Uses Net-SNMP's `snmpget` command for reliable testing
-- **Rust snmp crate**: Uses `snmp` crate for GETNEXT and programmatic testing
-- **Focus on OID values**: Tests verify correct OID and value returned, not just protocol compliance
-- **Multiple data types**: Tests string, integer, counter, gauge, timeticks types
+- **Isolated test servers**: Each test spawns a separate NetGet instance with specific OID
+  instructions
+- **Net-SNMP command-line tools only**: `snmpget` and `snmpgetnext`. **The `snmp` Rust crate is
+  not used by any test in this directory**, despite what earlier revisions of this file and of
+  `metadata().e2e_testing` said. The crate is a dependency of the SNMP *client* protocol, not of
+  these tests
+- **Every invocation passes `-On -Oe`**: numeric OIDs and numeric enums. Without them the
+  rendering depends on which MIB files are installed — `ifOperStatus` prints `INTEGER: up(1)` on a
+  machine with IF-MIB and `INTEGER: 1` on one without, and `sysDescr` prints
+  `SNMPv2-MIB::sysDescr.0` rather than the numeric OID. Both variants were observed here
+- **Assertions pin the type tag, not just the value**: `Gauge32: 1000000000`, `Counter32: 42`,
+  `STRING: eth0`. A Gauge32 emitted with the INTEGER tag decodes to the same number and would pass
+  a value-only check, while a real monitoring system would treat it as a different kind of
+  quantity — and the BER encoder here is hand-rolled, so that is exactly the mistake worth
+  catching
+- **No fixed sleeps**: `spawn_with_llm_actions` binds the UDP socket before logging
+  "SNMP agent … listening on", which is what `start_netget_server` waits for, so the socket is
+  already accepting datagrams when the test resumes. The five 500 ms sleeps this suite carried
+  (two of them duplicated back to back in `test_snmp_basic_get`) waited for something that had
+  already happened
+
+### `ber_depth_test.rs`
+
+Four unit tests over `SnmpServer::parse_snmp_message`, no server and no mock model. They cover the
+input screen described in `src/server/snmp/CLAUDE.md` §7: a 30000-level indefinite-length nesting
+(which aborted the whole test binary with `stack overflow` before the screen existed), the
+definite-length route to the same recursion, a length reaching past the end of the datagram, and a
+real net-snmp `GetRequest` that must still parse.
 
 ## LLM Call Budget
 
@@ -53,22 +76,16 @@ high-traffic SNMP monitoring scenarios.
     - Handles all SNMP versions and PDU types
     - Used for basic GET tests
 
-- **snmp crate v0.3** (Rust SNMP client library)
-    - Programmatic SNMP queries
-    - Used for GETNEXT and multi-OID tests
-    - Provides `SyncSession` for blocking requests
+**Why the command-line tools?**
 
-**Why command-line tool?**:
+1. Net-SNMP is the reference implementation, and an *independent* one — which is what the Beta
+   rating requires. A Rust crate that happened to share a codec with the server would be circular
+   evidence
+2. Easy to debug: the same command can be run by hand
+3. The exact tool used in production SNMP monitoring
 
-1. More reliable than Rust libraries (mature, well-tested)
-2. Easy to debug (can run same command manually)
-3. Exact same tool used in production SNMP monitoring
-
-**Why snmp crate?**:
-
-1. Programmatic control for complex tests (GETNEXT, table walking)
-2. Rust integration (no subprocess overhead)
-3. Type-safe API for variable bindings
+**`snmpgetnext` is what tests GETNEXT** — the `snmp` crate's `SyncSession` appears nowhere in this
+directory.
 
 ## Expected Runtime
 
@@ -169,19 +186,23 @@ high-traffic SNMP monitoring scenarios.
 
 ## Known Issues
 
-### 1. snmpget Tool Dependency
+### 1. Net-SNMP is a hard requirement, not an optional one
 
 **Symptom**: Test fails with "snmpget command not found"
 
-**Cause**: Net-SNMP not installed on test system
+**Cause**: Net-SNMP not installed on the test system
 
-**Workaround**: Install Net-SNMP:
+**Fix**: install it —
 
-- macOS: `brew install net-snmp`
+- macOS: ships with the system (`/usr/bin/snmpget`); otherwise `brew install net-snmp`
 - Ubuntu: `apt-get install snmp`
 - Fedora: `dnf install net-snmp-utils`
 
-**Status**: Test uses fallback error handling - skips test if tool not available
+**Status**: the test **fails**; it does not skip. This file previously claimed "skips test if tool
+not available", which was never true of the code — `Command::new("snmpget").output().await?`
+propagates `NotFound` — and would have been the wrong design anyway. A skip-when-missing gate is a
+silent pass, and SNMP's Beta rating rests entirely on these tests, so a runner without Net-SNMP
+must say so loudly rather than report green.
 
 ### 2. LLM Data Type Confusion
 
@@ -189,9 +210,10 @@ high-traffic SNMP monitoring scenarios.
 
 **Cause**: LLM returns wrong "type" in JSON (e.g., "integer" instead of "string")
 
-**Frequency**: ~5% of tests
+**Frequency**: ~5% of tests, when driven by a real model rather than the mock
 
-**Workaround**: Tests use lenient validation - accept any response format
+**Note**: the tests are **no longer lenient**. They assert the exact `TYPE: value` net-snmp
+decoded, so a model that returns the wrong type now fails the test instead of being tolerated.
 
 ### 3. OID Notation Confusion
 
@@ -219,9 +241,11 @@ high-traffic SNMP monitoring scenarios.
 - Expected: 1.3.6.1.2.1.1.1.0 (next OID)
 - LLM Returns: 1.3.6.1.2.1.1 (same OID) or 1.3.6.1.2.1.2.0 (wrong next)
 
-**Frequency**: ~10% of GETNEXT tests
+**Frequency**: ~10% of GETNEXT tests, when driven by a real model
 
-**Workaround**: Test just checks for any response (doesn't validate next OID correctness)
+**Note**: `test_snmp_get_next` now asserts that the answer names `1.3.6.1.2.1.1.1.0` — the OID
+*after* the one queried — and carries the model's value. It previously printed the response and
+checked nothing, so returning the queried OID itself would have passed.
 
 ## Performance Notes
 
@@ -274,6 +298,10 @@ If scripting were enabled:
 
 ### Test Coverage Gaps
 
+0. **Nothing runs these tests in CI.** The blocking `test` job compiles
+   `tcp,http,dns,udp,redis,mcp-stdio`; `registry-audit` is `continue-on-error` and does not run
+   e2e suites. SNMP's Beta rating is therefore only ever re-checked by someone running the suite
+   locally.
 1. **SET requests**: No tests for SetRequest (write operations)
 2. **GETBULK**: No tests for GetBulkRequest (SNMPv2c bulk retrieval)
 3. **Traps**: No tests for SNMP traps (proactive notifications)
