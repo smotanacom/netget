@@ -21,6 +21,35 @@ XML-RPC client implementation for calling remote procedure calls over HTTP using
 - `dxr_client`: More modern (Dec 2024), but repository archived and moved to Codeberg
 - `xml-rpc`: Less mature alternative
 
+### ⚠️ Do not point this client at an untrusted XML-RPC server
+
+`xmlrpc` 0.15's `Parser::parse_value` → `parse_value_inner` → `parse_value` recurses **with no
+depth counter**, and nothing caps the response body it is fed. `<value><array><data>` is about
+twenty bytes per nesting level, so a malicious or compromised server can return a few megabytes
+that drive the parser tens of thousands of frames deep. A Rust stack overflow is a `SIGSEGV`
+against the guard page, not a panic: `spawn_blocking` cannot contain it and **the whole NetGet
+process dies**. It is pre-authentication as far as this client is concerned — the reply to the
+very first call is enough.
+
+**This cannot be fixed from inside NetGet.** `Request::call_url` owns both the HTTP fetch and
+the parse, and the only other entry point — `Request::call` with a custom `Transport` — takes a
+`reqwest` **0.11** `RequestBuilder`, a different major version from the 0.12 this crate depends
+on (the same version wall that forces `timeout_secs` to be applied around the whole call). A
+real fix means replacing the crate or its parser.
+
+It is recorded rather than half-fixed, the way `nfsserve`'s pre-auth DoS is in the root
+CLAUDE.md.
+
+**What *is* bounded** is NetGet's own half: `xmlrpc_value_to_json` and `json_to_xmlrpc_value`
+are both recursive and both now carry `MAX_VALUE_DEPTH` (64). The first walks a value that came
+off the network, so without a counter it was a second, independent way for a deep reply to kill
+the process — it just needed the crate's parser to survive first. Anything deeper than 64 is
+reported to the model as `<nesting deeper than 64 levels was not decoded>` rather than walked.
+
+**Entity expansion is *not* a way in.** `xmlrpc` parses through `xml-rs`, which does not process
+DTD internal subsets and rejects any entity outside the five predefined ones, so billion-laughs
+and XXE are unreachable. The recursion is the whole of the exposure.
+
 ## Architecture
 
 ### Connection Model
@@ -161,22 +190,32 @@ XML-RPC supports structured faults:
 </methodResponse>
 ```
 
-LLM receives fault as:
+The LLM receives the fault as:
 
 ```json
 {
   "method_name": "foo",
   "fault": {
-    "code": 4,
-    "message": "Too many parameters."
+    "error": "Too many parameters."
   }
 }
 ```
 
+**One `error` string, not a `code`/`message` pair** — this file claimed the latter, and no
+code ever produced it. `xmlrpc::Fault` is rendered with `Display` into a single string, so the
+numeric `faultCode` is only present inside that text if the crate chose to include it. A
+handler branching on `event['fault']['code']` gets `None` every time.
+
 ## Limitations
 
+0. **No protection against a hostile server's reply** — see the warning at the top. This is the
+   one that matters.
 1. **Synchronous HTTP**: Each method call blocks a thread from the tokio blocking pool
 2. **No streaming**: Cannot handle long-running methods with progress updates
+3. **No e2e test.** `tests/client/xmlrpc/` holds only `command_channel_test.rs`; there is no
+   `e2e_test.rs` and the directory is the only one in this family without one. The injected-
+   action path is covered; the LLM-driven `xmlrpc_connected` → call → `xmlrpc_response_received`
+   chain is not covered by anything.
 3. **Type limitations**:
     - Null handling varies (converted to empty string for compatibility)
     - Binary data must use Base64 encoding

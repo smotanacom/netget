@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::client::jsonrpc::actions::JSONRPC_CLIENT_RESPONSE_RECEIVED_EVENT;
 use crate::client::llm_budget::call_llm_for_client;
@@ -47,10 +47,83 @@ enum Notification {
     Batch((u16, Option<serde_json::Value>)),
 }
 
+/// How many times a `jsonrpc_response_received` answer may itself provoke another request.
+///
+/// The chain `request -> response event -> the model's next request` is genuinely
+/// self-referential, and an `async fn` that awaits itself has an infinitely-sized future
+/// (E0391). The answer is a depth bound, not silence: the follow-up path used to dispatch
+/// through the `perform_*` cores, which raise no event, so the chain was exactly one step
+/// deep — a `get` issued in reply to a `put` confirmation ran and its result went nowhere.
+/// That is the `elasticsearch`/`http2` defect the root CLAUDE.md names.
+const MAX_FOLLOWUP_DEPTH: usize = 6;
+
 /// JSON-RPC 2.0 client that makes RPC calls to remote servers
 pub struct JsonRpcClient;
 
 impl JsonRpcClient {
+    /// The HTTP client for one host, built once and kept.
+    ///
+    /// This client used to build a fresh `reqwest::Client` **on every single request** — and
+    /// additionally built one at connect and dropped it immediately (`let _http_client = …`),
+    /// which did nothing but pay the cost. Three things that cost:
+    ///
+    /// - `Client::builder().build()` sets up the rustls stack and loads the platform root
+    ///   store; on macOS that reads the system keychain through Security.framework,
+    ///   synchronously and serialised across processes. On the async runtime it parks a tokio
+    ///   worker, so it runs on `spawn_blocking` here.
+    /// - Keeping it means later requests reuse the connection pool instead of paying for a
+    ///   fresh TLS stack and handshake each time. "Each request creates new HTTP connection"
+    ///   was listed as a limitation of this client; it was a consequence of this.
+    /// - **The literal-IP resolver bypass.** `reqwest` hands the URL host to its DNS resolver
+    ///   unconditionally and `hyper-util`'s `GaiResolver` does not special-case a dotted quad,
+    ///   so `http://127.0.0.1:8080` performs a real `getaddrinfo` — on macOS through libinfo
+    ///   to mDNSResponder, one system-wide daemon, measured blocking for 8.25 seconds under
+    ///   ~100 concurrent processes. A NetGet JSON-RPC client is pointed at a literal IP more
+    ///   often than not.
+    ///
+    /// That last point is why the cache is keyed by host rather than being one process-wide
+    /// client: `ClientBuilder::resolve` is a per-host override. Copied from
+    /// `src/client/http/mod.rs`, which carries the full reasoning.
+    async fn http_client(base_url: &str) -> Result<reqwest::Client> {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+
+        static CLIENTS: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+        let clients = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+
+        let host = crate::llm::ollama_client::host_of(base_url).to_string();
+        if let Some(client) = clients.lock().ok().and_then(|map| map.get(&host).cloned()) {
+            return Ok(client);
+        }
+
+        let build_host = host.clone();
+        let built = tokio::task::spawn_blocking(move || {
+            let mut builder = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .use_rustls_tls();
+            // Only when the host *is* an address. A hostname is left alone: resolving it is
+            // the resolver's job, and /etc/hosts or split-horizon DNS may legitimately point
+            // it somewhere unexpected.
+            if let Ok(ip) = build_host.parse::<std::net::IpAddr>() {
+                // The port is irrelevant — hyper overwrites it from the URL — so one override
+                // serves every port this client is later pointed at.
+                builder = builder.resolve(&build_host, std::net::SocketAddr::new(ip, 0));
+            }
+            builder
+                .build()
+                .context("Failed to build HTTP client for JSON-RPC")
+        })
+        .await
+        .context("JSON-RPC HTTP client build task panicked")??;
+
+        // A concurrent builder may have won the race; either client is equally valid, so keep
+        // whichever landed first rather than replacing it and orphaning its pool.
+        match clients.lock() {
+            Ok(mut map) => Ok(map.entry(host).or_insert(built).clone()),
+            Err(_) => Ok(built),
+        }
+    }
+
     /// Connect to a JSON-RPC server with integrated LLM actions
     pub async fn connect_with_llm_actions(
         remote_addr: String,
@@ -79,11 +152,10 @@ impl JsonRpcClient {
             client_id, remote_addr
         );
 
-        // Build reqwest client
-        let _http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .context("Failed to build HTTP client for JSON-RPC")?;
+        // The HTTP client is built lazily and cached per host by `Self::http_client`, on the
+        // blocking pool. A client was built here and dropped on the next line
+        // (`let _http_client = …`), paying the whole rustls/keychain cost for nothing, while
+        // every request built another one of its own.
 
         // `default_headers` is declared as "headers included in all requests" - the one
         // place this protocol's own docs point at for API keys and bearer tokens - and
@@ -200,6 +272,7 @@ impl JsonRpcClient {
                                 &app_state_clone,
                                 &llm_client_clone,
                                 &status_tx_clone,
+                                0,
                             )
                             .await
                             {
@@ -238,95 +311,110 @@ impl JsonRpcClient {
     /// wire: the LLM path keeps raising it inline, while an injected command awaits the
     /// HTTP round-trip and hands the event to its own task, so a manual routing rule
     /// parking on `jsonrpc_response_received` cannot wedge the command loop.
-    async fn apply_action(
+    ///
+    /// `depth` is how many response events already led here; see [`MAX_FOLLOWUP_DEPTH`].
+    ///
+    /// Returns a boxed future rather than being a plain `async fn`. The chain
+    /// `apply_action -> deliver_response -> notify_response -> run_follow_ups ->
+    /// apply_action` is a real cycle, and an `async fn` that awaits itself has an
+    /// infinitely-sized future (E0391); erasing the type at one edge makes it finite, and
+    /// `+ Send` has to be named explicitly because the deferred arm awaits it inside a
+    /// `tokio::spawn`.
+    fn apply_action<'a>(
         result: ClientActionResult,
         dispatch: Dispatch,
         client_id: ClientId,
-        app_state: &Arc<AppState>,
-        llm_client: &OllamaClient,
-        status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<Applied> {
-        match result {
-            ClientActionResult::Custom { name, data } if name == "jsonrpc_request" => {
-                let method = data
-                    .get("method")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let params = data.get("params").cloned();
-                let id = data.get("id").cloned();
+        app_state: &'a Arc<AppState>,
+        llm_client: &'a OllamaClient,
+        status_tx: &'a mpsc::UnboundedSender<String>,
+        depth: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Applied>> + Send + 'a>> {
+        Box::pin(async move {
+            match result {
+                ClientActionResult::Custom { name, data } if name == "jsonrpc_request" => {
+                    let method = data
+                        .get("method")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let params = data.get("params").cloned();
+                    let id = data.get("id").cloned();
 
-                let exchange =
-                    Self::perform_request(client_id, &method, params, id, app_state).await?;
-                let detail = format!(
-                    "jsonrpc_request '{}' sent; HTTP {} ({})",
-                    method,
-                    exchange.0,
-                    if exchange.1.is_some() {
-                        "JSON-RPC response received"
-                    } else {
-                        "body was not valid JSON"
-                    }
-                );
-                Self::deliver_response(
-                    Notification::Single(exchange),
-                    dispatch,
-                    client_id,
-                    app_state,
-                    llm_client,
-                    status_tx,
-                )
-                .await;
-                Ok(Applied::Ran(detail))
-            }
-            ClientActionResult::Custom { name, data } if name == "jsonrpc_batch" => {
-                let requests = data
-                    .get("requests")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                let count = requests.len();
-
-                let exchange = Self::perform_batch_request(client_id, requests, app_state).await?;
-                let detail = format!(
-                    "jsonrpc_batch of {} request(s) sent; HTTP {} ({})",
-                    count,
-                    exchange.0,
-                    if exchange.1.is_some() {
-                        "batch response received"
-                    } else {
-                        "body was not valid JSON"
-                    }
-                );
-                Self::deliver_response(
-                    Notification::Batch(exchange),
-                    dispatch,
-                    client_id,
-                    app_state,
-                    llm_client,
-                    status_tx,
-                )
-                .await;
-                Ok(Applied::Ran(detail))
-            }
-            ClientActionResult::Disconnect => {
-                info!("JSON-RPC client {} disconnecting", client_id);
-                app_state
-                    .update_client_status(client_id, ClientStatus::Disconnected)
+                    let exchange =
+                        Self::perform_request(client_id, &method, params, id, app_state).await?;
+                    let detail = format!(
+                        "jsonrpc_request '{}' sent; HTTP {} ({})",
+                        method,
+                        exchange.0,
+                        if exchange.1.is_some() {
+                            "JSON-RPC response received"
+                        } else {
+                            "body was not valid JSON"
+                        }
+                    );
+                    Self::deliver_response(
+                        Notification::Single(exchange),
+                        dispatch,
+                        client_id,
+                        app_state,
+                        llm_client,
+                        status_tx,
+                        depth,
+                    )
                     .await;
-                let _ = status_tx.send("__UPDATE_UI__".to_string());
-                Ok(Applied::Disconnect)
+                    Ok(Applied::Ran(detail))
+                }
+                ClientActionResult::Custom { name, data } if name == "jsonrpc_batch" => {
+                    let requests = data
+                        .get("requests")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let count = requests.len();
+
+                    let exchange =
+                        Self::perform_batch_request(client_id, requests, app_state).await?;
+                    let detail = format!(
+                        "jsonrpc_batch of {} request(s) sent; HTTP {} ({})",
+                        count,
+                        exchange.0,
+                        if exchange.1.is_some() {
+                            "batch response received"
+                        } else {
+                            "body was not valid JSON"
+                        }
+                    );
+                    Self::deliver_response(
+                        Notification::Batch(exchange),
+                        dispatch,
+                        client_id,
+                        app_state,
+                        llm_client,
+                        status_tx,
+                        depth,
+                    )
+                    .await;
+                    Ok(Applied::Ran(detail))
+                }
+                ClientActionResult::Disconnect => {
+                    info!("JSON-RPC client {} disconnecting", client_id);
+                    app_state
+                        .update_client_status(client_id, ClientStatus::Disconnected)
+                        .await;
+                    let _ = status_tx.send("__UPDATE_UI__".to_string());
+                    Ok(Applied::Disconnect)
+                }
+                ClientActionResult::Custom { name, .. } => Err(anyhow::anyhow!(
+                    "JSON-RPC client cannot execute custom result '{}'",
+                    name
+                )),
+                // WaitForMore / NoAction / SendData / nested Multiple: nothing to put on the
+                // wire for a request/response protocol.
+                _ => Ok(Applied::Ran(
+                    "no request made (action produced no JSON-RPC call)".to_string(),
+                )),
             }
-            ClientActionResult::Custom { name, .. } => Err(anyhow::anyhow!(
-                "JSON-RPC client cannot execute custom result '{}'",
-                name
-            )),
-            // WaitForMore / NoAction / SendData / nested Multiple: nothing to put on the
-            // wire for a request/response protocol.
-            _ => Ok(Applied::Ran(
-                "no request made (action produced no JSON-RPC call)".to_string(),
-            )),
-        }
+        })
     }
 
     /// Raise the response event, inline or from a registered task.
@@ -337,16 +425,19 @@ impl JsonRpcClient {
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
+        depth: usize,
     ) {
         match dispatch {
             Dispatch::Inline => match notification {
                 Notification::Single(exchange) => {
-                    Self::notify_response(client_id, exchange, app_state, llm_client, status_tx)
-                        .await
+                    Self::notify_response(
+                        client_id, exchange, app_state, llm_client, status_tx, depth,
+                    )
+                    .await
                 }
                 Notification::Batch(exchange) => {
                     Self::notify_batch_response(
-                        client_id, exchange, app_state, llm_client, status_tx,
+                        client_id, exchange, app_state, llm_client, status_tx, depth,
                     )
                     .await
                 }
@@ -358,11 +449,14 @@ impl JsonRpcClient {
                 let handle = tokio::spawn(async move {
                     match notification {
                         Notification::Single(exchange) => {
-                            Self::notify_response(client_id, exchange, &state, &llm, &tx).await
+                            Self::notify_response(client_id, exchange, &state, &llm, &tx, depth)
+                                .await
                         }
                         Notification::Batch(exchange) => {
-                            Self::notify_batch_response(client_id, exchange, &state, &llm, &tx)
-                                .await
+                            Self::notify_batch_response(
+                                client_id, exchange, &state, &llm, &tx, depth,
+                            )
+                            .await
                         }
                     }
                 });
@@ -399,6 +493,7 @@ impl JsonRpcClient {
                     &app_state,
                     &llm_client,
                     &status_tx,
+                    0,
                 )
                 .await
                 .map(|applied| match applied {
@@ -458,7 +553,7 @@ impl JsonRpcClient {
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         let exchange = Self::perform_request(client_id, &method, params, id, &app_state).await?;
-        Self::notify_response(client_id, exchange, &app_state, &llm_client, &status_tx).await;
+        Self::notify_response(client_id, exchange, &app_state, &llm_client, &status_tx, 0).await;
         Ok(())
     }
 
@@ -529,10 +624,8 @@ impl JsonRpcClient {
             request["id"] = request_id.clone();
         }
 
-        // Build HTTP request
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
+        // Built once per host and kept; see `Self::http_client`.
+        let http_client = Self::http_client(&endpoint).await?;
 
         let mut http_request = http_client.post(&endpoint);
         for (key, value) in &headers {
@@ -562,66 +655,89 @@ impl JsonRpcClient {
         }
     }
 
-    /// Raise `jsonrpc_response_received` for a completed exchange.
     /// Run the actions the model returned for a response event.
     ///
-    /// They were discarded (`actions: _`) at both notify sites, so answering
-    /// jsonrpc_response_received did nothing -- the whole point of raising it. Dispatch
-    /// goes through the `perform_*` cores, which raise no event: that bounds the loop and
-    /// avoids a notify -> perform -> notify chain rustc cannot prove `Send`.
+    /// They were discarded outright (`actions: _`) at both notify sites, so answering
+    /// `jsonrpc_response_received` did nothing — the whole point of raising it. The first
+    /// repair dispatched through the `perform_*` cores, which raise no event: that bounded
+    /// the loop, but it made the chain exactly **one** step deep, so a request the model
+    /// issued in reply to a response got its own reply thrown away. That is the
+    /// `elasticsearch`/`http2` shape the root CLAUDE.md names, and the prescribed answer is a
+    /// depth bound rather than silence.
+    ///
+    /// So follow-ups now go through the ordinary [`Self::apply_action`] path — they raise
+    /// their own response event and can be chained — capped at [`MAX_FOLLOWUP_DEPTH`]. The
+    /// bound is checked here rather than before raising the event, so the model always learns
+    /// what a request answered; only its next request is refused, and it is refused loudly.
     async fn run_follow_ups(
         client_id: ClientId,
         actions: Vec<serde_json::Value>,
         app_state: &Arc<AppState>,
+        llm_client: &OllamaClient,
+        status_tx: &mpsc::UnboundedSender<String>,
+        depth: usize,
     ) {
-        use crate::llm::actions::client_trait::{Client, ClientActionResult};
+        use crate::llm::actions::client_trait::Client;
+
+        if actions.is_empty() {
+            return;
+        }
+        if depth >= MAX_FOLLOWUP_DEPTH {
+            warn!(
+                "JSON-RPC client {} reached the follow-up depth bound ({}); {} action(s) from \
+                 this response were not run",
+                client_id,
+                MAX_FOLLOWUP_DEPTH,
+                actions.len()
+            );
+            let _ = status_tx.send(format!(
+                "[WARN] Client {} stopped chaining JSON-RPC requests at depth {}",
+                client_id, MAX_FOLLOWUP_DEPTH
+            ));
+            return;
+        }
+
         let protocol = crate::client::jsonrpc::actions::JsonRpcClientProtocol::new();
         for action in actions {
-            let Ok(ClientActionResult::Custom { name, data }) =
-                protocol.execute_action(action.clone())
-            else {
-                continue;
-            };
-            let outcome = match name.as_str() {
-                "jsonrpc_request" => Self::perform_request(
-                    client_id,
-                    data["method"].as_str().unwrap_or_default(),
-                    data.get("params").cloned(),
-                    data.get("id").cloned(),
-                    app_state,
-                )
-                .await
-                .map(|_| ()),
-                "jsonrpc_batch" => Self::perform_batch_request(
-                    client_id,
-                    data["requests"].as_array().cloned().unwrap_or_default(),
-                    app_state,
-                )
-                .await
-                .map(|_| ()),
-                other => {
-                    info!(
-                        "JSON-RPC client {} follow-up '{}' has no non-notifying path; skipped",
-                        client_id, other
+            let result = match protocol.execute_action(action) {
+                Ok(result) => result,
+                Err(e) => {
+                    error!(
+                        "JSON-RPC client {} rejected follow-up action: {}",
+                        client_id, e
                     );
-                    Ok(())
+                    continue;
                 }
             };
-            if let Err(e) = outcome {
-                error!(
+            match Self::apply_action(
+                result,
+                Dispatch::Inline,
+                client_id,
+                app_state,
+                llm_client,
+                status_tx,
+                depth + 1,
+            )
+            .await
+            {
+                Ok(Applied::Ran(detail)) => info!("JSON-RPC client {}: {}", client_id, detail),
+                Ok(Applied::Disconnect) => break,
+                Err(e) => error!(
                     "JSON-RPC client {} follow-up action failed: {}",
                     client_id, e
-                );
+                ),
             }
         }
     }
 
+    /// Raise `jsonrpc_response_received` for a completed exchange.
     async fn notify_response(
         client_id: ClientId,
         exchange: (u16, Option<serde_json::Value>),
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
+        depth: usize,
     ) {
         let Some(response_json) = exchange.1 else {
             return;
@@ -658,7 +774,8 @@ impl JsonRpcClient {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
-                Self::run_follow_ups(client_id, actions, &app_state).await;
+                Self::run_follow_ups(client_id, actions, app_state, llm_client, status_tx, depth)
+                    .await;
             }
             Err(e) => {
                 error!("LLM error for JSON-RPC client {}: {}", client_id, e);
@@ -675,7 +792,8 @@ impl JsonRpcClient {
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         let exchange = Self::perform_batch_request(client_id, requests, &app_state).await?;
-        Self::notify_batch_response(client_id, exchange, &app_state, &llm_client, &status_tx).await;
+        Self::notify_batch_response(client_id, exchange, &app_state, &llm_client, &status_tx, 0)
+            .await;
         Ok(())
     }
 
@@ -715,10 +833,8 @@ impl JsonRpcClient {
             batch.push(request);
         }
 
-        // Build HTTP request
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
+        // Built once per host and kept; see `Self::http_client`.
+        let http_client = Self::http_client(&endpoint).await?;
 
         let mut http_request = http_client.post(&endpoint);
         for (key, value) in &headers {
@@ -755,6 +871,7 @@ impl JsonRpcClient {
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
+        depth: usize,
     ) {
         let Some(response_json) = exchange.1 else {
             return;
@@ -797,7 +914,8 @@ impl JsonRpcClient {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
-                Self::run_follow_ups(client_id, actions, &app_state).await;
+                Self::run_follow_ups(client_id, actions, app_state, llm_client, status_tx, depth)
+                    .await;
             }
             Err(e) => {
                 error!("LLM error for JSON-RPC client {}: {}", client_id, e);

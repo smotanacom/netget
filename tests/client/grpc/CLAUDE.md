@@ -71,14 +71,20 @@ Schema provided as base64 FileDescriptorSet (no protoc dependency).
 ✅ Connection error handling
 ✅ End-to-end server ↔ client communication
 
+✅ Repeated and map request fields, and a wrong-typed scalar being refused
+  (`command_channel_test.rs`)
+
 ### Not Covered (Future Tests)
 
 ❌ Streaming RPCs (not implemented)
 ❌ gRPC metadata (headers)
 ❌ TLS connections
 ❌ Multiple services in one schema
-❌ Complex protobuf types (nested messages, repeated fields, maps)
-❌ Error status codes from server
+❌ Nested messages and enums in requests
+❌ Error status codes from server — and in particular a server that puts `grpc-status` in
+  HTTP/2 **trailers**, which every real gRPC server does and NetGet's own gRPC server does
+  not. The trailer path in `call_grpc_unary` is therefore unexercised by any test here; it
+  needs a non-NetGet peer
 
 ## Known Issues
 

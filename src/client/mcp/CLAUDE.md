@@ -43,9 +43,19 @@ only place the pair is used, and it is the only thing the server learns about wh
 a server that logs or gates on `clientInfo.name` sees exactly what the operator set.
 
 2. **Server → initialize response** (with serverInfo, capabilities)
-3. **Client → initialized notification** (confirms connection)
+3. **Client → `notifications/initialized`** (confirms connection)
 
-Only after phase 3 can client make resource/tool/prompt requests.
+Only after phase 3 can the client make resource/tool/prompt requests.
+
+**The method name is `notifications/initialized`, not `initialized`.** MCP namespaces every
+notification under `notifications/`, and this client sent the bare name — so phase 3 was an
+unrecognised notification to every server it ever spoke to, **including NetGet's own MCP
+server**, whose router matches `notifications/initialized` and drops anything else into a
+`debug!("Unknown MCP notification")`. Nothing failed visibly because a notification has no
+reply: the client logged that it had sent one, got its 204, and declared the handshake
+complete. It survived because all three MCP client e2e tests were `#[ignore]`d.
+`tests/client/mcp/e2e_test.rs::test_mcp_client_initialize` now asserts on the **server's** log
+line, which is the only place the difference is visible.
 
 ### Connection Model
 
@@ -153,6 +163,15 @@ The LLM can chain multiple operations naturally:
 - **JSON-RPC Errors**: Parsed and returned as errors
 - **HTTP Errors**: Non-2xx status codes returned as errors
 - **Network Errors**: Timeouts (30s) and connection failures
+- **No panics on missing client state.** `execute_mcp_action` read `base_url` and `request_id`
+  with `.expect(...)` *inside* the `with_client_mut` closure, so a client whose protocol fields
+  had not been set — or had been reset — panicked while the `AppState` write guard was held.
+  The panic landed inside the spawned command loop or notify task, which swallows it, so the
+  symptom was a client that silently stopped answering: no error, no log line, and `[ send ]`
+  timing out on a request that was never made. Both are `Option` + `context(...)` now.
+- **`prompts/get` omits `arguments` when absent** rather than sending `"arguments": null`. MCP
+  declares it optional, and a server validating it against its declared object type rejects an
+  explicit null; `Some(json!({… "arguments": None}))` serialised to exactly that.
 
 ## Example Prompts and LLM Flow
 
@@ -200,7 +219,7 @@ List available tools, then call the 'calculate' tool with expression "2+2".
 ```json
 {
   "jsonrpc": "2.0",
-  "method": "initialized",
+  "method": "notifications/initialized",
   "params": {}
 }
 ```

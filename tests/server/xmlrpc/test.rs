@@ -544,3 +544,121 @@ async fn test_xmlrpc_non_post_request() -> E2EResult<()> {
     println!("=== Test passed ===\n");
     Ok(())
 }
+
+/// Two refusals the parser and the fault executor used to get wrong, in one server.
+///
+/// * **Deep `<array>` nesting is refused.** The depth guard was on `<value>` alone, so
+///   `<array><array><array>…` — 7 bytes a level, and well-formed — pushed a container per
+///   level with no check at all. A body at the 4 MiB cap bought about 600 000 of them. The
+///   parser is iterative, so this was allocation rather than a stack overflow, but it is
+///   allocation a peer chooses and nothing needs.
+/// * **A quoted `fault_code` is not silently "internal error".** The executor did
+///   `.and_then(|v| v.as_i64()).unwrap_or(-32603)`, so `"fault_code": "-32601"` — the quoted
+///   form models routinely produce, and the form every other numeric field here already
+///   accepts through `as_integer` — became `-32603` on the wire: the model said "no such
+///   method" and the caller was told netget had broken.
+///
+/// LLM call budget: 1 (server startup). The nesting refusal never reaches a model.
+#[tokio::test]
+async fn test_xmlrpc_refuses_deep_nesting_and_honours_a_quoted_fault_code() -> E2EResult<()> {
+    let prompt = "listen on port {AVAILABLE_PORT} via xmlrpc stack. Implement method 'greet'.";
+
+    let config = NetGetConfig::new(prompt).with_mock(|mock| {
+        mock.on_instruction_containing("listen on port")
+            .and_instruction_containing("xmlrpc")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "XML-RPC",
+                    "instruction": "Implement greet"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+            .on_event("xmlrpc_method_call")
+            .and_event_data_contains("method_name", "greet")
+            // The model quotes the number, as models do. It must reach the wire as -32601.
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "xmlrpc_fault_response",
+                    "fault_code": "-32601",
+                    "fault_string": "Method not found"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let server = helpers::start_netget_server(config).await?;
+    let url = format!("http://127.0.0.1:{}/", server.port);
+    let client = reqwest::Client::new();
+
+    // --- deep nesting is refused, before any model call -----------------------------------
+    //
+    // 300 levels: well past MAX_VALUE_DEPTH (64) and small enough that the request itself is
+    // trivial, which is the point — the cost is all on the receiving side.
+    let depth = 300;
+    let mut nested = String::from(
+        "<?xml version=\"1.0\"?><methodCall><methodName>deep</methodName><params><param>",
+    );
+    for _ in 0..depth {
+        nested.push_str("<array><data>");
+    }
+    for _ in 0..depth {
+        nested.push_str("</data></array>");
+    }
+    nested.push_str("</param></params></methodCall>");
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(25),
+        client
+            .post(&url)
+            .header("Content-Type", "text/xml")
+            .body(nested)
+            .send(),
+    )
+    .await
+    .map_err(|_| "XML-RPC neither answered nor failed within 25s on a deeply nested request")??;
+
+    assert_eq!(response.status(), 200);
+    let body = response.text().await?;
+    println!("deep-nesting response:\n{body}");
+    assert!(
+        body.contains("<fault>") && body.contains("-32700"),
+        "deep nesting must be a parse-error fault, not accepted: {body}"
+    );
+
+    // --- a quoted fault_code reaches the wire as the number it names ----------------------
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(25),
+        client
+            .post(&url)
+            .header("Content-Type", "text/xml")
+            .body(build_method_call("greet", &[("string", "world")]))
+            .send(),
+    )
+    .await
+    .map_err(|_| "XML-RPC did not answer the greet call within 25s")??;
+
+    assert_eq!(response.status(), 200);
+    let body = response.text().await?;
+    println!("quoted fault_code response:\n{body}");
+    assert!(
+        body.contains("<fault>"),
+        "the handler chose a fault; the caller must get one: {body}"
+    );
+    assert!(
+        body.contains("-32601"),
+        "a quoted fault_code must reach the wire as the number it names, not -32603: {body}"
+    );
+    assert!(
+        !body.contains("-32603"),
+        "-32603 means the quoted code was silently discarded: {body}"
+    );
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    Ok(())
+}

@@ -1,177 +1,331 @@
-//! E2E tests for MCP client
+//! E2E tests for the MCP client, driven against NetGet's own MCP server.
 //!
-//! These tests verify MCP client functionality by spawning the actual NetGet binary
-//! and testing client behavior as a black-box.
+//! **These were all three `#[ignore]`d**, on the grounds that they configured no
+//! `.with_mock()` and so needed `--use-ollama`. That left the MCP client with no running e2e
+//! coverage at all — only `command_channel_test.rs`, which points the client's LLM at an
+//! unreachable URL and never exercises the handshake or an operation. An `#[ignore]`d test is
+//! not evidence (root CLAUDE.md, rubric point 6), and the gap it left is exactly where the
+//! `initialized` / `notifications/initialized` defect lived: phase 3 of the MCP handshake was
+//! an unrecognised notification to every server this client ever spoke to, including ours.
+//!
+//! They are mocked now and run by default. Each mocks both ends, so the assertions are about
+//! the exchange rather than about a substring in the output.
+//!
+//! Total LLM call budget across the file: 15 (5 server + 4 client + 3 + 3, see each test).
 
 #[cfg(all(test, feature = "mcp"))]
 mod mcp_client_tests {
     use crate::helpers::*;
-    use std::time::Duration;
 
-    /// Test MCP client connecting to server and initializing
-    /// LLM calls: 2 (server startup, client connection)
+    /// The `serverInfo` the client's `connect()` requires — it errors with "Missing serverInfo
+    /// in initialize response" without it, so a mock that omits it fails the handshake rather
+    /// than the assertion under test.
+    fn initialize_result() -> serde_json::Value {
+        serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+            "serverInfo": {"name": "netget-test-mcp", "version": "9.9.9"}
+        })
+    }
+
+    /// The three-phase handshake completes and the client reaches Connected.
+    ///
+    /// LLM calls: 2 server (startup, `mcp_initialize`), 2 client (startup, `mcp_client_connected`).
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
     async fn test_mcp_client_initialize() -> E2EResult<()> {
-        // Start an MCP server listening on an available port
         let server_config = NetGetConfig::new(
             "Listen on port {AVAILABLE_PORT} via MCP. \
              Provide a tool called 'calculate' that evaluates math expressions.",
-        );
+        )
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Listen on port")
+                .and_instruction_containing("MCP")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_server",
+                        "port": 0,
+                        "base_stack": "MCP",
+                        "instruction": "MCP server offering a calculate tool"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mcp_initialize")
+                .respond_with_actions(serde_json::json!([
+                    {"type": "mcp_initialize_response", "response": initialize_result()}
+                ]))
+                .expect_calls(1)
+                .and()
+        });
 
         let mut server = start_netget_server(server_config).await?;
 
-        // Give server time to start
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Now start an MCP client that connects and initializes
         let client_config = NetGetConfig::new(format!(
-            "Connect to http://127.0.0.1:{} via MCP. \
-             After connecting, list available tools.",
+            "Connect to http://127.0.0.1:{} via MCP. After connecting, wait.",
             server.port
-        ));
+        ))
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Connect to")
+                .and_instruction_containing("MCP")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_client",
+                        "remote_addr": format!("127.0.0.1:{}", server.port),
+                        "protocol": "MCP",
+                        "instruction": "Stay connected"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                // The connected event carries what the server said about itself; asserting on
+                // it is what proves the handshake really completed rather than that a string
+                // appeared in the log.
+                .on_event("mcp_client_connected")
+                .and_event_data_contains("server_name", "netget-test-mcp")
+                .respond_with_actions(
+                    serde_json::json!([{"type": "show_message", "message": "done"}]),
+                )
+                .expect_calls(1)
+                .and()
+        });
 
         let mut client = start_netget_client(client_config).await?;
 
-        // Give client time to connect and perform actions
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        // Verify client output shows MCP connection
-        client.wait_for_any(&["MCP", "initialized"], 30).await;
+        // Phase 3 of the handshake actually reached the server's router.
+        //
+        // This is the assertion the whole file exists for. The client sent method
+        // `initialized`; MCP namespaces every notification under `notifications/`, so our own
+        // server — which matches `notifications/initialized` and drops anything else into a
+        // `debug!("Unknown MCP notification")` — never logged "MCP client initialized". Nothing
+        // failed visibly, because a notification has no reply: the client logged that it had
+        // sent one, got its 204, and declared the handshake complete. Only the server's own
+        // log can tell the difference, which is why it is checked here and not on the client.
+        server.wait_for_any(&["MCP client initialized"], 30).await;
         assert!(
-            client.output_contains("MCP").await || client.output_contains("initialized").await,
-            "Client should show MCP protocol or initialization message. Output: {:?}",
-            client.get_output().await
+            server.output_contains("MCP client initialized").await,
+            "the server must have recognised notifications/initialized; if this fails the \
+             client is sending the bare `initialized` again. Server output: {:?}",
+            server.get_output().await
         );
 
-        println!("✅ MCP client connected and initialized successfully");
-
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
         server.wait_for_mocks(30).await;
-        server.verify_mocks().await?;
-        server.stop().await?;
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
         client.wait_for_mocks(30).await;
+        server.verify_mocks().await?;
         client.verify_mocks().await?;
-        client.stop().await?;
 
+        server.stop().await?;
+        client.stop().await?;
         Ok(())
     }
 
-    /// Test MCP client calling a tool on the server
-    /// LLM calls: 3 (server startup, client connection, tool call)
+    /// `tools/list` then `tools/call`, chained off the response event.
+    ///
+    /// LLM calls: 4 server (startup, initialize, tools/list, tools/call), 4 client (startup,
+    /// connected, two response events through the same branching rule).
+    ///
+    /// The terminating answer is `show_message`, not `wait_for_more`: `wait_for_more` is not
+    /// an MCP client action, so the executor rejects it, the LLM repair loop re-asks, and the
+    /// response event fires a second time — which shows up as `expected 2, got 3`.
+    /// `tests/helpers/mock_action_names.rs` catches the statically-declared form of this
+    /// mistake but cannot see inside a `respond_with_actions_from_event` closure.
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
     async fn test_mcp_client_call_tool() -> E2EResult<()> {
-        // Start an MCP server with a calculator tool
         let server_config = NetGetConfig::new(
             "Listen on port {AVAILABLE_PORT} via MCP. \
-             Provide a tool called 'calculate' that evaluates the expression parameter. \
-             When the tool is called, return the result as text.",
-        );
+             Provide a tool called 'calculate' that evaluates the expression parameter.",
+        )
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Listen on port")
+                .and_instruction_containing("MCP")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_server",
+                        "port": 0,
+                        "base_stack": "MCP",
+                        "instruction": "MCP server offering a calculate tool"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mcp_initialize")
+                .respond_with_actions(serde_json::json!([
+                    {"type": "mcp_initialize_response", "response": initialize_result()}
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mcp_tools_list")
+                .respond_with_actions(serde_json::json!([
+                    {"type": "mcp_tools_list_response", "response": {"tools": [
+                        {"name": "calculate", "description": "Evaluate arithmetic",
+                         "inputSchema": {"type": "object",
+                                         "properties": {"expression": {"type": "string"}}}}
+                    ]}}
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mcp_tools_call")
+                .and_event_data_contains("name", "calculate")
+                .respond_with_actions(serde_json::json!([
+                    {"type": "mcp_tools_call_response", "response": {
+                        "content": [{"type": "text", "text": "4"}], "isError": false}}
+                ]))
+                .expect_calls(1)
+                .and()
+        });
 
         let mut server = start_netget_server(server_config).await?;
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Client that connects and calls the calculate tool
         let client_config = NetGetConfig::new(format!(
-            "Connect to http://127.0.0.1:{} via MCP. \
-             List available tools, then call the 'calculate' tool with expression '2+2'.",
+            "Connect to http://127.0.0.1:{} via MCP. List tools, then call 'calculate'.",
             server.port
-        ));
+        ))
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Connect to")
+                .and_instruction_containing("MCP")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_client",
+                        "remote_addr": format!("127.0.0.1:{}", server.port),
+                        "protocol": "MCP",
+                        "instruction": "List tools, then call calculate"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mcp_client_connected")
+                .respond_with_actions(serde_json::json!([{"type": "list_tools"}]))
+                .expect_calls(1)
+                .and()
+                // ONE rule for both responses, branching on the event. Two rules on the same
+                // event with no way to tell them apart is first-match-wins, and the second
+                // would report zero calls.
+                .on_event("mcp_response_received")
+                .respond_with_actions_from_event(|e| {
+                    if e["method"].as_str() == Some("mcp_list_tools") {
+                        serde_json::json!([{
+                            "type": "call_tool",
+                            "name": "calculate",
+                            "arguments": {"expression": "2+2"}
+                        }])
+                    } else {
+                        serde_json::json!([{"type": "show_message", "message": "done"}])
+                    }
+                })
+                .expect_calls(2)
+                .and()
+        });
 
         let mut client = start_netget_client(client_config).await?;
 
-        // Give client time to make requests
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        // Verify the client shows MCP activity
-        let output = client.get_output().await;
-        assert!(
-            output.iter().any(|l| l.contains("MCP"))
-                || output.iter().any(|l| l.contains("tool"))
-                || output.iter().any(|l| l.contains("calculate")),
-            "Client should show MCP tool activity. Output: {:?}",
-            output
-        );
-
-        println!("✅ MCP client called tool successfully");
-
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
         server.wait_for_mocks(30).await;
-        server.verify_mocks().await?;
-        server.stop().await?;
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
         client.wait_for_mocks(30).await;
+        // The server having served both tools/list and tools/call is the load-bearing part:
+        // the second exists only because the client acted on the first one's response.
+        server.verify_mocks().await?;
         client.verify_mocks().await?;
-        client.stop().await?;
 
+        server.stop().await?;
+        client.stop().await?;
         Ok(())
     }
 
-    /// Test MCP client reading a resource from server
-    /// LLM calls: 3 (server startup, client connection, resource read)
+    /// `resources/list` then `resources/read`.
+    ///
+    /// LLM calls: 4 server (startup, initialize, resources/list, resources/read), 3 client.
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
     async fn test_mcp_client_read_resource() -> E2EResult<()> {
-        // Start an MCP server with a resource
         let server_config = NetGetConfig::new(
             "Listen on port {AVAILABLE_PORT} via MCP. \
-             Provide a resource at URI 'file:///README.md' with content 'Test resource content'.",
-        );
+             Provide a resource at URI 'file:///README.md'.",
+        )
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Listen on port")
+                .and_instruction_containing("MCP")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_server",
+                        "port": 0,
+                        "base_stack": "MCP",
+                        "instruction": "MCP server offering one resource"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mcp_initialize")
+                .respond_with_actions(serde_json::json!([
+                    {"type": "mcp_initialize_response", "response": initialize_result()}
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mcp_resources_list")
+                .respond_with_actions(serde_json::json!([
+                    {"type": "mcp_resources_list_response", "response": {"resources": [
+                        {"uri": "file:///README.md", "name": "README",
+                         "mimeType": "text/markdown"}
+                    ]}}
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mcp_resources_read")
+                .and_event_data_contains("uri", "file:///README.md")
+                .respond_with_actions(serde_json::json!([
+                    {"type": "mcp_resources_read_response", "response": {"contents": [
+                        {"uri": "file:///README.md", "mimeType": "text/markdown",
+                         "text": "Test resource content"}
+                    ]}}
+                ]))
+                .expect_calls(1)
+                .and()
+        });
 
         let mut server = start_netget_server(server_config).await?;
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Client that connects and reads the resource
         let client_config = NetGetConfig::new(format!(
-            "Connect to http://127.0.0.1:{} via MCP. \
-             List available resources, then read the resource at 'file:///README.md'.",
+            "Connect to http://127.0.0.1:{} via MCP. List resources, then read README.",
             server.port
-        ));
+        ))
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Connect to")
+                .and_instruction_containing("MCP")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_client",
+                        "remote_addr": format!("127.0.0.1:{}", server.port),
+                        "protocol": "MCP",
+                        "instruction": "List resources, then read README"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("mcp_client_connected")
+                .respond_with_actions(serde_json::json!([{"type": "list_resources"}]))
+                .expect_calls(1)
+                .and()
+                .on_event("mcp_response_received")
+                .respond_with_actions_from_event(|e| {
+                    if e["method"].as_str() == Some("mcp_list_resources") {
+                        serde_json::json!([
+                            {"type": "read_resource", "uri": "file:///README.md"}
+                        ])
+                    } else {
+                        serde_json::json!([{"type": "show_message", "message": "done"}])
+                    }
+                })
+                .expect_calls(2)
+                .and()
+        });
 
         let mut client = start_netget_client(client_config).await?;
 
-        // Give client time to make requests
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        // Verify the client is MCP protocol
         assert_eq!(client.protocol, "MCP", "Client should be MCP protocol");
 
-        println!("✅ MCP client read resource successfully");
-
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
         server.wait_for_mocks(30).await;
-        server.verify_mocks().await?;
-        server.stop().await?;
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
         client.wait_for_mocks(30).await;
+        server.verify_mocks().await?;
         client.verify_mocks().await?;
-        client.stop().await?;
 
+        server.stop().await?;
+        client.stop().await?;
         Ok(())
     }
 }

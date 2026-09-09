@@ -63,6 +63,27 @@ one (`<int>abc</int>`) is a fault rather than a silent string.
 Nesting is capped at `MAX_VALUE_DEPTH` (64) and the request body at
 `MAX_REQUEST_BODY_BYTES` (4 MiB) — neither had a limit.
 
+The nesting cap is applied on **`<value>`, `<array>` and `<struct>` alike**. It used to be on
+`<value>` only, and `<array>` / `<struct>` pushed a container with no check at all — a
+well-formed `<array><array><array>…` is 7 bytes a level, so a body at the 4 MiB cap pushed
+about 600 000 frames. The parser is iterative, so this was allocation rather than a stack
+overflow, but it is allocation a peer chooses and nothing needs.
+
+### XML safety: entity expansion and recursion
+
+- **Entity expansion (billion laughs) and XXE are not reachable.** `quick-xml` does not process
+  DTDs at all: an internal subset is skipped and any entity outside the five predefined ones
+  makes `unescape()` return `EscapeError::UnrecognizedSymbol`, which this parser propagates as
+  a `-32700` fault. There is no external-entity resolver to point anywhere.
+- **The parser is iterative, so nesting cannot overflow the stack.** `parse_method_call` is one
+  `read_event_into` loop over explicit `Vec` stacks; the depth cap bounds heap growth, not
+  stack depth.
+- **`xmlrpc_value_to_json` (in `actions.rs`) *is* recursive** over the parsed value, but the
+  depth cap above is what bounds it, so it can only be reached 64 frames deep.
+
+Note the **client** side is a different story and is *not* safe: `src/client/xmlrpc/` uses the
+`xmlrpc` crate, whose parser recurses without a bound. See `src/client/xmlrpc/CLAUDE.md`.
+
 ## Actions
 
 All sync; there are no async actions (XML-RPC is strictly request/response).
@@ -83,6 +104,12 @@ Executor behaviour that changed:
 
 - `value_type: "int"` with a value outside i32 is now an error naming `i8`, instead of
   silently wrapping (5000000000 used to go out as 705032704). Same for `fault_code`.
+- **`fault_code` accepts the quoted form and no longer defaults silently.** It was
+  `.and_then(|v| v.as_i64()).unwrap_or(-32603)`, so `"fault_code": "-32601"` — the quoted form
+  models routinely produce, and the form every other numeric field here already accepts through
+  `as_integer` — reached the wire as `-32603`: the model said "no such method" and the caller
+  was told netget had broken. A present-but-unparseable value is now an error; only an absent
+  one defaults to `-32603`, which is the honest reading of "the handler did not say".
 - non-finite `double` is rejected instead of emitting `NaN`/`inf`, which is not a valid
   `<double>`.
 - `methods` and `signatures` entries of the wrong shape are now errors. They used to be

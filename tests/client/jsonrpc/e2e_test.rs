@@ -130,6 +130,113 @@ mod jsonrpc_client_tests {
         Ok(())
     }
 
+    /// A request the model issues *in answer to a response* gets its own response event.
+    ///
+    /// The chain `request -> jsonrpc_response_received -> the model's next request` is
+    /// self-referential, and this client has had it wrong twice. First the follow-up actions
+    /// were discarded outright (`actions: _` at both notify sites), so answering the response
+    /// event did nothing at all. Then they were dispatched through the `perform_*` cores,
+    /// which raise no event — bounded, but exactly **one** step deep, so the second request's
+    /// own reply went nowhere and the model went deaf after it. That is the
+    /// `elasticsearch`/`http2` shape the root CLAUDE.md names; the prescribed answer is a
+    /// depth bound (`MAX_FOLLOWUP_DEPTH`), not silence.
+    ///
+    /// This pins depth 2: `step_one` on connect, `step_two` in answer to its response, and a
+    /// third model call for `step_two`'s response. One rule handles both responses and
+    /// branches on the event, because two rules on the same event with no way to tell them
+    /// apart is first-match-wins and the second would never fire.
+    ///
+    /// LLM calls: 3 on the server (startup + two methods), 3 on the client.
+    #[tokio::test]
+    async fn test_jsonrpc_client_chains_a_second_request_from_a_response() -> E2EResult<()> {
+        let server_config = NetGetConfig::new(
+            "Listen on port {AVAILABLE_PORT} via JSON-RPC. \
+             Implement step_one and step_two.",
+        )
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Listen on port")
+                .and_instruction_containing("JSON-RPC")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_server",
+                        "port": 0,
+                        "base_stack": "HTTP",
+                        "protocol": "JSON-RPC",
+                        "instruction": "JSON-RPC server with step_one and step_two"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                // One rule, branching on the method: two rules on the same event with no way
+                // to tell them apart would let the first answer both.
+                .on_event("jsonrpc_method_call")
+                .respond_with_actions_from_event(|e| {
+                    let method = e["method"].as_str().unwrap_or_default();
+                    serde_json::json!([{
+                        "type": "jsonrpc_success",
+                        "result": format!("{method}-done")
+                    }])
+                })
+                .expect_calls(2)
+                .and()
+        });
+
+        let mut server = start_netget_server(server_config).await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let client_config = NetGetConfig::new(format!(
+            "Connect to http://127.0.0.1:{} via JSON-RPC. Call step_one, then step_two.",
+            server.port
+        ))
+        .with_mock(|mock| {
+            mock.on_instruction_containing("Connect to")
+                .and_instruction_containing("JSON-RPC")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_client",
+                        "remote_addr": format!("127.0.0.1:{}", server.port),
+                        "protocol": "JSON-RPC",
+                        "instruction": "Call step_one, then step_two"
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("jsonrpc_connected")
+                .respond_with_actions(serde_json::json!([
+                    {"type": "send_jsonrpc_request", "method": "step_one", "id": 1}
+                ]))
+                .expect_calls(1)
+                .and()
+                // The second call is what the bug suppressed: without it this rule fires once
+                // and `expect_calls(2)` fails.
+                .on_event("jsonrpc_response_received")
+                .respond_with_actions_from_event(|e| {
+                    if e["result"].as_str() == Some("step_one-done") {
+                        serde_json::json!([
+                            {"type": "send_jsonrpc_request", "method": "step_two", "id": 2}
+                        ])
+                    } else {
+                        serde_json::json!([{"type": "wait_for_more"}])
+                    }
+                })
+                .expect_calls(2)
+                .and()
+        });
+
+        let mut client = start_netget_client(client_config).await?;
+
+        server.wait_for_mocks(30).await;
+        client.wait_for_mocks(30).await;
+        // The server having answered two distinct methods is the load-bearing assertion: the
+        // second one exists only because the client acted on the first one's response.
+        server.verify_mocks().await?;
+        client.verify_mocks().await?;
+
+        server.stop().await?;
+        client.stop().await?;
+        Ok(())
+    }
+
     /// Test JSON-RPC client can handle LLM-controlled method calls
     /// LLM calls: 2 (server startup, client connection and request)
     #[tokio::test]

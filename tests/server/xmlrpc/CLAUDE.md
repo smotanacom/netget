@@ -132,9 +132,34 @@ Tests use **action-based mode** to ensure LLM interprets XML-RPC semantics.
 - Sends GET request
 - Receives fault response (XML-RPC requires POST)
 
+### 8. Deep nesting and a quoted fault code
+(`test_xmlrpc_refuses_deep_nesting_and_honours_a_quoted_fault_code`) — **1 LLM call**
+
+Two refusals in one server, both of which used to be wrong and neither of which failed loudly:
+
+- 300 levels of `<array><data>` → `-32700`. The depth guard was on `<value>` alone, so
+  `<array>` and `<struct>` pushed a container with no check; at 7 bytes a level a body at the
+  4 MiB cap bought ~600 000 frames. The parser is iterative, so this is allocation rather than
+  a stack overflow — but it is allocation a peer chooses.
+- `"fault_code": "-32601"` (the quoted form models routinely produce) must reach the wire as
+  `-32601`. The executor did `.and_then(|v| v.as_i64()).unwrap_or(-32603)`, so the model said
+  "no such method" and the caller was told netget had broken. The test asserts `-32603` is
+  *absent*, which is what makes it catch the regression rather than just the presence of a
+  fault.
+
+### 9. `llm_failure_test.rs` — fail-closed with a category
+
+Covered in that file's own header: an LLM failure must produce a `<fault>` carrying a
+`WireFailure` category and nothing derived from the error.
+
 ## Known Issues
 
-**None** - Tests are stable. XML-RPC is simpler than other RPC protocols.
+**None on the server side** — these tests are stable.
+
+The **client** is a different matter, and its exposure is not testable from here: `xmlrpc`
+0.15's parser recurses without a depth bound, so a hostile XML-RPC *server* can stack-overflow
+(and so kill) the NetGet process that points a client at it. See `src/client/xmlrpc/CLAUDE.md`.
+A test for it would have to deliberately crash the process, which is why there isn't one.
 
 ## Test Execution
 

@@ -96,9 +96,28 @@ through JSON. The client uses tonic for gRPC transport and prost-reflect for dyn
 
 **JSON Conversion**:
 
-- JSON → Protobuf: `json_to_dynamic_message()`, `json_to_proto_value()`
+- JSON → Protobuf: `json_to_dynamic_message()`, `json_to_field_value()`, `json_to_proto_value()`
 - Protobuf → JSON: `dynamic_message_to_json()`, `proto_value_to_json()`
 - Handles all protobuf types: int32/64, string, bool, bytes (base64), enum, message, repeated, map
+
+**Cardinality is checked before the element type, and a bad value is refused.** Both were
+wrong, and both failed silently:
+
+- `json_to_proto_value` switched on `field.kind()`, which for a `repeated string` is
+  `Kind::String`. `{"names": ["a","b"]}` therefore produced `Value::String("")`, and
+  `DynamicMessage::set_field` **panics** on a cardinality mismatch — inside the client's
+  spawned task, which swallows the panic, so `[ send ]` simply timed out. Repeated and map
+  fields could not be sent at all. `json_to_field_value` now tests `is_map()` (a map field is
+  also "repeated", of its synthetic entry message, so `is_list()` would take the wrong branch)
+  then `is_list()` before falling through to the scalar path — the same shape
+  `src/server/grpc/mod.rs` uses on its response path.
+- Every scalar branch ended in `unwrap_or(0)` / `unwrap_or("")` / `unwrap_or_default()`, so a
+  request the model got wrong was not refused: it went out carrying a **different value**.
+  `{"a": "five"}` became `a = 0`, an out-of-range int was truncated with `as`, an unknown enum
+  name became variant `0`, and invalid base64 became empty bytes. Every one of those is now an
+  error naming the field, and integers are range-checked with `try_from`.
+
+A field name the message does not declare is logged at WARN rather than dropped in silence.
 
 ### Connection Management
 
@@ -114,6 +133,24 @@ through JSON. The client uses tonic for gRPC transport and prost-reflect for dyn
 - Success: Response converted to JSON, sent to LLM
 - Error: Status code and message sent to LLM via `grpc_error` event
 - LLM can decide how to handle errors (retry, log, etc.)
+
+**`grpc-status` is read from the HTTP/2 trailers as well as the initial headers.** Reading only
+the headers is why this client mishandled every real gRPC server: grpc-go and tonic put the
+status in trailers on a normal unary call — headers carry it only in the "trailers-only" shape
+— so a genuine `5 NOT_FOUND` arrived as "absent", which the client treated as success, and the
+caller then got a meaningless "Response too short" from the empty body beside it. NetGet's own
+gRPC server puts the status in the headers, which is why testing against ourselves never showed
+it (and is a known gap on the server side: see `src/server/grpc/CLAUDE.md`, "No trailers").
+
+### The connection is claimed only once the request is built
+
+`make_grpc_call` set the state machine to `Processing` first and reset it to `Idle` only after
+the network call returned. Four `?`s sat in between — unknown method, a request the schema
+refuses, an unbuildable HTTP request — and each returned early leaving the state `Processing`
+**forever**: every later call answered "the client is already processing a call" and the client
+was permanently wedged by one malformed request, with nothing in the log to say why. Everything
+fallible now happens before the claim, and the claim itself is a single check-and-set under one
+guard rather than two separate lock acquisitions.
 
 ## State Management
 

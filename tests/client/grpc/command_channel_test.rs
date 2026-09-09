@@ -200,6 +200,150 @@ async fn injected_grpc_call_reaches_our_own_server() {
     );
 }
 
+/// Repeated and map fields, a request the schema refuses, and the client still usable after.
+///
+/// Three defects, all reachable from one model-produced `call_grpc_method` and none of which
+/// failed loudly:
+///
+/// * `json_to_proto_value` switched on `field.kind()`, which for `repeated string` is
+///   `Kind::String`, so `{"names": ["a","b"]}` produced `Value::String("")` — and
+///   `DynamicMessage::set_field` **panics** on a cardinality mismatch. The panic landed inside
+///   the client's spawned command task, which swallows it; `[ send ]` just timed out.
+/// * every scalar conversion ended in `unwrap_or(0)` / `unwrap_or("")`, so `{"n": "seven"}`
+///   went on the wire as `n = 0` and the server answered a question nobody asked.
+/// * `make_grpc_call` set the state machine to `Processing` before the fallible schema
+///   lookup and conversion, and reset it to `Idle` only after the network call — so any of
+///   those early returns wedged the client permanently at "already processing a call".
+///
+/// The last assertion is the one that catches the third: a *successful* call after a refused
+/// one proves the connection was released.
+#[tokio::test]
+async fn injected_call_carries_repeated_and_map_fields_and_refuses_a_wrong_type() {
+    if which_protoc().is_none() {
+        eprintln!("skipping: protoc is not on PATH and the NetGet gRPC server requires it");
+        return;
+    }
+
+    const TAGGER_PROTO: &str = "syntax = \"proto3\"; package tagger; \
+         service Tagger { rpc Tag(TagRequest) returns (TagResponse); } \
+         message TagRequest { repeated string names = 1; map<string, int32> counts = 2; \
+         int32 n = 3; } \
+         message TagResponse { int32 total = 1; }";
+
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+
+    let server_id = ServerForm {
+        protocol: "grpc".to_string(),
+        port: Some(0),
+        startup_params: Some(serde_json::json!({ "proto_schema": TAGGER_PROTO })),
+        event_handlers: Some(vec![serde_json::json!({
+            "event_pattern": "*",
+            "handler": {
+                "type": "static",
+                "actions": [ { "type": "grpc_unary_response", "message": { "total": 2 } } ]
+            }
+        })]),
+        ..Default::default()
+    }
+    .create(&state, tx.clone())
+    .await
+    .expect("create grpc server");
+    let port = wait_for_port(&state, server_id).await;
+
+    let client_id = ClientForm {
+        protocol: "grpc".to_string(),
+        remote_addr: Some(format!("127.0.0.1:{port}")),
+        instruction: Some("test client".to_string()),
+        startup_params: Some(serde_json::json!({ "proto_schema": TAGGER_PROTO })),
+        ..Default::default()
+    }
+    .create(
+        &state,
+        netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string()),
+        tx.clone(),
+    )
+    .await
+    .expect("create grpc client");
+    wait_for_client_handle(&state, client_id).await;
+
+    // A repeated field and a map field in one request. Distinctive values so the server-side
+    // assertion below cannot match anything else in the log.
+    let outcome = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({
+                "type": "call_grpc_method",
+                "service": "tagger.Tagger",
+                "method": "Tag",
+                "request": {
+                    "names": ["zebravox", "quillfen"],
+                    "counts": { "zebravox": 3 },
+                    "n": 7
+                }
+            }),
+            Duration::from_secs(20),
+        )
+        .await
+        .expect("send_to_client call_grpc_method with repeated and map fields");
+    assert!(
+        matches!(outcome, ClientSendOutcome::Sent { .. }),
+        "expected Sent, got {outcome:?}"
+    );
+
+    // The values really crossed the wire and were decoded by the server, rather than being
+    // dropped or flattened to a default.
+    wait_for_log_containing(
+        &state,
+        AccessLogOwner::Server(server_id.as_u32()),
+        "zebravox",
+    )
+    .await;
+    wait_for_log_containing(
+        &state,
+        AccessLogOwner::Server(server_id.as_u32()),
+        "quillfen",
+    )
+    .await;
+
+    // A wrong-typed scalar is refused rather than silently sent as 0.
+    let refused = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({
+                "type": "call_grpc_method",
+                "service": "tagger.Tagger",
+                "method": "Tag",
+                "request": { "n": "seven" }
+            }),
+            Duration::from_secs(20),
+        )
+        .await;
+    assert!(
+        refused.is_err(),
+        "a string in an int32 field must be refused, not sent as 0; got {refused:?}"
+    );
+
+    // ...and the refusal did not wedge the state machine: the next call still goes out.
+    let outcome = state
+        .send_to_client(
+            client_id,
+            serde_json::json!({
+                "type": "call_grpc_method",
+                "service": "tagger.Tagger",
+                "method": "Tag",
+                "request": { "n": 1 }
+            }),
+            Duration::from_secs(20),
+        )
+        .await
+        .expect("send_to_client after a refused conversion");
+    assert!(
+        matches!(outcome, ClientSendOutcome::Sent { .. }),
+        "the client should still be usable after a refused request; got {outcome:?}"
+    );
+}
+
 fn which_protoc() -> Option<std::path::PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
