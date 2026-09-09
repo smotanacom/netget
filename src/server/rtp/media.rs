@@ -172,9 +172,27 @@ pub fn synthesize(codec: AudioCodec, content: &AudioContent, duration_ms: u64) -
             .collect(),
         AudioContent::Dtmf { digits } => synthesize_dtmf(digits),
     };
+    // DTMF length comes from the digit count (200 ms each), not from `duration_ms`, so the cap
+    // above does not constrain it. Without this a `digits` string a handler or a script can
+    // make arbitrarily long allocates without bound — 30 s is 150 digits, and the same 30 s
+    // ceiling should mean the same thing however the content was described.
+    let max_samples = (G711_CLOCK_HZ as u64 * MAX_DURATION_MS / 1000) as usize;
+    if pcm.len() > max_samples {
+        bail!(
+            "dtmf digits synthesize to {} ms, past the {} ms cap ({} digits at {} ms each is the \
+             most one action may stream)",
+            pcm.len() * 1000 / G711_CLOCK_HZ as usize,
+            MAX_DURATION_MS,
+            max_samples / ((G711_CLOCK_HZ as usize * DTMF_DIGIT_MS) / 1000),
+            DTMF_DIGIT_MS
+        );
+    }
 
     Ok(pcm.into_iter().map(|s| codec.encode_sample(s)).collect())
 }
+
+/// Wall-clock length of one DTMF digit: 150 ms of tone plus a 50 ms gap.
+pub const DTMF_DIGIT_MS: usize = 200;
 
 /// DTMF: each digit is the sum of a low and a high frequency, 150 ms on + 50 ms off.
 fn synthesize_dtmf(digits: &str) -> Vec<i16> {

@@ -5,26 +5,164 @@
 //! stream should carry (a tone, DTMF, silence) and this server synthesizes G.711 and frames it
 //! into correct RTP packets sent back to the peer. See `media.rs` for the VNC-style text-to-media
 //! engine, shared with the `rtsp` control server.
+//!
+//! # RTP is high-rate, so the model is behind a budget
+//!
+//! A single G.711 stream is 50 packets per second, and the model does not belong on that path:
+//! one LLM call per inbound datagram would exhaust the budget in seconds, and every consultation
+//! that does happen can authorize up to 30 seconds of outbound media — so an attacker spoofing
+//! a source address gets an amplifier as well. Two gates stand in front of `call_llm`, in the
+//! shape `src/server/tuntap/` established:
+//!
+//! ```text
+//!   datagram ─▶ GATE 1  a deterministic handler answers  ── yes ──▶ no model call, always runs
+//!              │        (script / static / manual rule)
+//!              └─▶ GATE 2  a rolling per-minute budget   ── over ──▶ dropped,
+//!                          (`llm_max_per_minute`, 30)                decision=fail_closed_rate_limited
+//! ```
+//!
+//! Gate 1 is why the budget is safe to set low: script and static handlers are the intended way
+//! to run RTP at rate and are never charged. Gate 2 is a *ceiling*, not a smoothing filter — a
+//! sliding window rather than a leaky bucket, so "never more than N in any minute" is literally
+//! true. Setting `llm_max_per_minute` to 0 forbids model consultation outright, which is the
+//! right configuration for a server driven entirely by handlers.
 
 pub mod actions;
 pub mod media;
 
 use crate::server::connection::ConnectionId;
 use anyhow::Result;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tracing::error;
+use tracing::{error, trace};
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::ollama_client::OllamaClient;
 use crate::logging::emit::Log;
-use crate::protocol::Event;
+use crate::protocol::{Event, StartupParams};
+use crate::scripting::EventHandlerType;
 use crate::server::RtpProtocol;
 use crate::state::app_state::AppState;
 use actions::{RTCP_RECEIVED_EVENT, RTP_RECEIVED_EVENT};
 use media::{AudioCodec, RtpPacketizer};
+
+/// Default ceiling on model consultations per rolling minute.
+///
+/// Deliberately far below a real stream's 50 packets per second: the model is for deciding what
+/// a stream carries, not for being asked about every frame of it.
+pub const DEFAULT_LLM_MAX_PER_MINUTE: u32 = 30;
+
+/// A rolling one-minute ceiling on model consultations.
+///
+/// A sliding window rather than a token bucket, for the same reason `tuntap::EscalationBudget`
+/// is: the guarantee the parameter promises is the literal one — never more than N in any
+/// minute. A leaky bucket refilling continuously permits exactly the short bursts this exists
+/// to prevent.
+#[derive(Debug)]
+pub struct RtpLlmBudget {
+    max_per_minute: u32,
+    window: Duration,
+    hits: VecDeque<Instant>,
+    /// Consultations refused since the last time a refusal was reported to the operator. The
+    /// status channel is unbounded and RTP is high-rate, so one line per dropped packet would
+    /// itself be the denial of service; the count is folded into the next report instead.
+    suppressed: u64,
+}
+
+impl RtpLlmBudget {
+    pub fn new(max_per_minute: u32) -> Self {
+        Self {
+            max_per_minute,
+            window: Duration::from_secs(60),
+            hits: VecDeque::new(),
+            suppressed: 0,
+        }
+    }
+
+    pub fn max_per_minute(&self) -> u32 {
+        self.max_per_minute
+    }
+
+    /// Take one consultation if the window has room. Returns false when it does not.
+    pub fn try_take(&mut self) -> bool {
+        self.try_take_at(Instant::now())
+    }
+
+    /// [`Self::try_take`] against a caller-supplied clock, so the window is testable without
+    /// sleeping for a minute.
+    pub fn try_take_at(&mut self, now: Instant) -> bool {
+        if self.max_per_minute == 0 {
+            return false;
+        }
+        while let Some(front) = self.hits.front() {
+            if now.duration_since(*front) >= self.window {
+                self.hits.pop_front();
+            } else {
+                break;
+            }
+        }
+        if self.hits.len() as u32 >= self.max_per_minute {
+            return false;
+        }
+        self.hits.push_back(now);
+        true
+    }
+
+    /// Record a refusal and say whether it should be reported loudly.
+    ///
+    /// The first refusal after a period of admissions is reported with however many were
+    /// suppressed before it; the rest go to the file log only.
+    pub fn note_refusal(&mut self) -> Option<u64> {
+        self.suppressed += 1;
+        if self.suppressed == 1 {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    /// Clear the suppression counter, returning how many refusals went unreported.
+    pub fn take_suppressed(&mut self) -> u64 {
+        std::mem::take(&mut self.suppressed)
+    }
+}
+
+/// Startup configuration read from declared parameters.
+#[derive(Debug, Clone)]
+pub struct RtpConfig {
+    /// Ceiling on model consultations per rolling minute. Zero forbids them entirely.
+    pub llm_max_per_minute: u32,
+}
+
+impl Default for RtpConfig {
+    fn default() -> Self {
+        Self {
+            llm_max_per_minute: DEFAULT_LLM_MAX_PER_MINUTE,
+        }
+    }
+}
+
+impl RtpConfig {
+    /// Read the declared startup parameters. Propagates the parameter error with `?` rather
+    /// than unwrapping it, so a bad value names itself instead of killing the spawn task.
+    pub fn from_params(params: &Option<StartupParams>) -> Result<Self> {
+        let mut cfg = Self::default();
+        let Some(params) = params else {
+            return Ok(cfg);
+        };
+        if let Some(v) = params.get_optional_u64("llm_max_per_minute")? {
+            if v > u32::MAX as u64 {
+                anyhow::bail!("llm_max_per_minute {v} is out of range");
+            }
+            cfg.llm_max_per_minute = v as u32;
+        }
+        Ok(cfg)
+    }
+}
 
 /// RTP server that generates/answers media streams under LLM control.
 pub struct RtpServer;
@@ -38,13 +176,18 @@ impl RtpServer {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         server_id: crate::state::ServerId,
+        cfg: RtpConfig,
     ) -> Result<SocketAddr> {
         let socket = Arc::new(UdpSocket::bind(listen_addr).await?);
         let local_addr = socket.local_addr()?;
-        Log::new(Some(&status_tx)).info(format!("RTP server listening on {}", local_addr));
+        Log::new(Some(&status_tx)).info(format!(
+            "RTP server listening on {} (llm_max_per_minute={})",
+            local_addr, cfg.llm_max_per_minute
+        ));
 
         let protocol = Arc::new(RtpProtocol::new());
         let task_registrar = app_state.clone();
+        let budget = Arc::new(Mutex::new(RtpLlmBudget::new(cfg.llm_max_per_minute)));
 
         let accept_handle = tokio::spawn(async move {
             let mut buffer = vec![0u8; 65535];
@@ -52,37 +195,25 @@ impl RtpServer {
                 match socket.recv_from(&mut buffer).await {
                     Ok((n, peer_addr)) => {
                         let data = buffer[..n].to_vec();
+                        // One connection entry per *peer*, not per datagram. Adding one for
+                        // every packet made a 50 pps stream push 50 rows and 50
+                        // `__UPDATE_UI__` messages a second onto the unbounded status channel,
+                        // and left `send_rtp_audio`'s remote-address lookup picking the first
+                        // of a hundred identical entries.
                         let connection_id =
-                            ConnectionId::new(app_state.get_next_unified_id().await);
-
-                        use crate::state::server::{
-                            ConnectionState as ServerConnectionState, ConnectionStatus,
-                            ProtocolConnectionInfo,
-                        };
-                        let now = std::time::Instant::now();
-                        let conn_state = ServerConnectionState {
-                            id: connection_id,
-                            remote_addr: peer_addr,
-                            local_addr,
-                            bytes_sent: 0,
-                            bytes_received: n as u64,
-                            packets_sent: 0,
-                            packets_received: 1,
-                            last_activity: now,
-                            status: ConnectionStatus::Active,
-                            status_changed_at: now,
-                            protocol_info: ProtocolConnectionInfo::empty(),
-                        };
-                        app_state
-                            .add_connection_to_server(server_id, conn_state)
-                            .await;
-                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                            Self::track_peer(&app_state, server_id, peer_addr, local_addr, n).await;
+                        if connection_id.is_none() {
+                            trace!("RTP datagram for a server that is no longer registered");
+                            continue;
+                        }
+                        let connection_id = connection_id.expect("checked is_none above");
 
                         let llm_clone = llm_client.clone();
                         let state_clone = app_state.clone();
                         let status_clone = status_tx.clone();
                         let socket_clone = socket.clone();
                         let protocol_clone = protocol.clone();
+                        let budget_clone = budget.clone();
 
                         tokio::spawn(async move {
                             Self::handle_datagram(
@@ -96,6 +227,7 @@ impl RtpServer {
                                 &status_clone,
                                 &socket_clone,
                                 protocol_clone.as_ref(),
+                                &budget_clone,
                             )
                             .await;
                         });
@@ -113,6 +245,91 @@ impl RtpServer {
         Ok(local_addr)
     }
 
+    /// Attribute an inbound datagram to a connection entry for `peer_addr`, creating one only
+    /// if this peer has no live entry.
+    ///
+    /// Returns `None` when the server is gone from state, which is the one case where there is
+    /// nothing to attribute the packet to. RTP declares `.connectionless()`, so the 10-second
+    /// idle sweep reclaims entries for peers that have stopped sending; a peer that resumes
+    /// simply gets a fresh one.
+    async fn track_peer(
+        state: &AppState,
+        server_id: crate::state::ServerId,
+        peer_addr: SocketAddr,
+        local_addr: SocketAddr,
+        bytes: usize,
+    ) -> Option<ConnectionId> {
+        let existing = state
+            .with_server_mut(server_id, |s| {
+                s.connections
+                    .values_mut()
+                    .find(|c| c.remote_addr == peer_addr)
+                    .map(|c| {
+                        c.bytes_received += bytes as u64;
+                        c.packets_received += 1;
+                        c.last_activity = std::time::Instant::now();
+                        c.id
+                    })
+            })
+            .await;
+
+        match existing {
+            // Server not registered any more.
+            None => None,
+            // Registered, and this peer already has an entry that has just been updated.
+            Some(Some(id)) => Some(id),
+            // Registered, first datagram from this peer: add an entry and repaint once.
+            Some(None) => {
+                use crate::state::server::{
+                    ConnectionState as ServerConnectionState, ConnectionStatus,
+                    ProtocolConnectionInfo,
+                };
+                let id = ConnectionId::new(state.get_next_unified_id().await);
+                let now = std::time::Instant::now();
+                state
+                    .add_connection_to_server(
+                        server_id,
+                        ServerConnectionState {
+                            id,
+                            remote_addr: peer_addr,
+                            local_addr,
+                            bytes_sent: 0,
+                            bytes_received: bytes as u64,
+                            packets_sent: 0,
+                            packets_received: 1,
+                            last_activity: now,
+                            status: ConnectionStatus::Active,
+                            status_changed_at: now,
+                            protocol_info: ProtocolConnectionInfo::empty(),
+                        },
+                    )
+                    .await;
+                Some(id)
+            }
+        }
+    }
+
+    /// True if a deterministic rule (script, static or manual) will answer this event.
+    ///
+    /// Such a rule costs no model call, so it must not be charged to the budget — script and
+    /// static handlers are the intended way to run RTP at rate. Same shape as
+    /// `tuntap::a_rule_answers`.
+    async fn a_rule_answers(
+        state: &AppState,
+        server_id: crate::state::ServerId,
+        event_type_id: &str,
+    ) -> bool {
+        match state.get_event_handler_config(server_id).await {
+            Some(config) => matches!(
+                config.find_handler(event_type_id),
+                Some(EventHandlerType::Script { .. })
+                    | Some(EventHandlerType::Static { .. })
+                    | Some(EventHandlerType::Manual { .. })
+            ),
+            None => false,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn handle_datagram(
         data: &[u8],
@@ -125,6 +342,7 @@ impl RtpServer {
         status_tx: &mpsc::UnboundedSender<String>,
         socket: &UdpSocket,
         protocol: &RtpProtocol,
+        budget: &Mutex<RtpLlmBudget>,
     ) {
         let is_rtcp = media::is_rtcp(data);
         let base = serde_json::json!({
@@ -175,6 +393,52 @@ impl RtpServer {
         };
 
         let event_id = event.event_type.id.clone();
+
+        // Gate 1: a deterministic rule answers, and costs no model call — never charged.
+        // Gate 2: everything else is charged to the rolling per-minute budget. Without this,
+        // a 50 pps stream is 50 LLM calls a second, and each consultation can authorize up to
+        // 30 seconds of outbound media, so a spoofed source address turns the server into an
+        // amplifier. Over budget the datagram is dropped and nothing goes on the wire, which is
+        // the same silence every other RTP failure produces — hence the `decision=` tag.
+        if !Self::a_rule_answers(state, server_id, &event_id).await {
+            let refused = {
+                let mut b = budget.lock().expect("RTP budget mutex poisoned");
+                if b.try_take() {
+                    None
+                } else {
+                    let report_now = b.note_refusal().is_some();
+                    Some((b.max_per_minute(), report_now))
+                }
+            };
+            if let Some((max, report_now)) = refused {
+                let line = format!(
+                    "RTP {} from {} decision=fail_closed_rate_limited; no media sent (already \
+                     used the {} model consultation(s) this minute allows — raise \
+                     llm_max_per_minute, or answer this event with a script/static handler, \
+                     which is never charged)",
+                    event_id, peer_addr, max
+                );
+                if report_now {
+                    Log::new(Some(status_tx)).warn(line);
+                } else {
+                    trace!("{line}");
+                }
+                return;
+            }
+            // Admitted: report anything that was dropped while the window was full, so the
+            // count is not lost just because the flood stopped.
+            let suppressed = {
+                let mut b = budget.lock().expect("RTP budget mutex poisoned");
+                b.take_suppressed()
+            };
+            if suppressed > 1 {
+                Log::new(Some(status_tx)).warn(format!(
+                    "RTP dropped {} further datagram(s) over the model budget before this one",
+                    suppressed - 1
+                ));
+            }
+        }
+
         match call_llm(llm, state, server_id, Some(connection_id), &event, protocol).await {
             Ok(result) => {
                 if result.raw_actions.is_empty() {
