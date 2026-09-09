@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
 #[cfg(feature = "mongodb")]
 use mongodb::{
@@ -42,6 +42,20 @@ enum Applied {
     /// The action executed but touched the database in no way.
     Nothing(&'static str),
 }
+
+/// How many action → result → action hops one operation may set off.
+///
+/// The chain is genuinely self-referential: an action produces a result, the result is an
+/// event, and the model's answer to that event is more actions. The previous code cut it by
+/// running follow-ups through `apply_action` directly, so a follow-up raised no event at all
+/// — the chain was exactly one step deep and a `find` the model issued in reply to an insert
+/// confirmation ran with its documents going nowhere. That is the recorded elasticsearch
+/// defect, in a MongoDB shirt, with a comment explaining why it was fine.
+///
+/// A depth bound is the honest version of the same protection: every operation reports, and
+/// the chain still terminates. Past the bound an action is still executed — refusing it would
+/// discard work the model asked for — but its result is not reported, so nothing recurses.
+const MAX_FOLLOWUP_DEPTH: u8 = 4;
 
 /// MongoDB client that connects to a MongoDB server
 pub struct MongodbClient;
@@ -210,7 +224,7 @@ impl MongodbClient {
 
                         // Execute actions
                         for action in actions {
-                            if let Err(e) = Self::execute_llm_action(
+                            match Self::execute_llm_action(
                                 client_id,
                                 action,
                                 &protocol_clone,
@@ -218,10 +232,13 @@ impl MongodbClient {
                                 &app_state_clone,
                                 &llm_client,
                                 &status_tx_clone,
+                                0,
                             )
                             .await
                             {
-                                error!("Error executing MongoDB action: {}", e);
+                                Ok(true) => {}
+                                Ok(false) => break,
+                                Err(e) => error!("Error executing MongoDB action: {}", e),
                             }
                         }
                     }
@@ -336,6 +353,7 @@ impl MongodbClient {
                     &app_state,
                     &llm_client,
                     &status_tx,
+                    0,
                 )
                 .await
                 {
@@ -350,8 +368,15 @@ impl MongodbClient {
         let _ = status_tx.send("__UPDATE_UI__".to_string());
     }
 
-    /// Execute an action from the LLM
+    /// Execute one action from the LLM and report what it did.
+    ///
+    /// Returns `false` once the session has ended, so a caller iterating a batch stops rather
+    /// than running the rest against a disconnected client.
+    ///
+    /// `depth` is how many follow-up hops led here; 0 for the connected event and for an
+    /// injected command. See [`MAX_FOLLOWUP_DEPTH`].
     #[cfg(feature = "mongodb")]
+    #[allow(clippy::too_many_arguments)]
     async fn execute_llm_action(
         client_id: ClientId,
         action: serde_json::Value,
@@ -360,20 +385,35 @@ impl MongodbClient {
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<()> {
+        depth: u8,
+    ) -> Result<bool> {
         match Self::apply_action(client_id, protocol.execute_action(action)?, db, status_tx).await?
         {
-            Applied::Ran { event, .. } => {
-                Self::raise_result_event(
-                    client_id, event, protocol, db, app_state, llm_client, status_tx,
-                )
-                .await?;
+            Applied::Ran { event, detail } => {
+                if depth >= MAX_FOLLOWUP_DEPTH {
+                    warn!(
+                        "MongoDB client {} stopped a follow-up chain at depth {}: '{}' ran but \
+                         its result is not being reported, so the model will not answer it",
+                        client_id, depth, detail
+                    );
+                    let _ = status_tx.send(format!(
+                        "[WARN] MongoDB client {} hit the follow-up depth limit ({}); the last \
+                         operation ran but its result was not reported",
+                        client_id, MAX_FOLLOWUP_DEPTH
+                    ));
+                } else {
+                    Self::raise_result_event(
+                        client_id, event, protocol, db, app_state, llm_client, status_tx, depth,
+                    )
+                    .await?;
+                }
             }
             Applied::Disconnect => {
                 info!("MongoDB client {} disconnecting", client_id);
                 app_state
                     .update_client_status(client_id, ClientStatus::Disconnected)
                     .await;
+                return Ok(false);
             }
             Applied::Nothing(what) => {
                 trace!(
@@ -384,7 +424,7 @@ impl MongodbClient {
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 
     /// Run one executed action against the database. Shared by the LLM path and injected
@@ -607,8 +647,9 @@ impl MongodbClient {
         Err(anyhow::anyhow!("MongoDB client feature not enabled"))
     }
 
-    /// Send a prepared result event to the LLM.
+    /// Send a prepared result event to the LLM and run whatever it answers with.
     #[cfg(feature = "mongodb")]
+    #[allow(clippy::too_many_arguments)]
     async fn raise_result_event(
         client_id: ClientId,
         event: Event,
@@ -617,6 +658,7 @@ impl MongodbClient {
         app_state: &Arc<AppState>,
         llm_client: &OllamaClient,
         status_tx: &mpsc::UnboundedSender<String>,
+        depth: u8,
     ) -> Result<()> {
         let memory = app_state
             .get_memory_for_client(client_id)
@@ -648,41 +690,31 @@ impl MongodbClient {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
 
-                // Execute the follow-up actions.
+                // Execute the follow-up actions, and report their results too.
                 //
-                // These used to be logged and dropped ("we'd need to pass db_arc here"),
-                // so a model answering mongodb_result_received was silently ignored --
-                // the whole point of raising the event.
-                //
-                // They run through `apply_action` rather than `execute_llm_action`, so a
-                // follow-up does NOT raise another result event. That bound is deliberate:
-                // chaining would let one operation drive an unbounded LLM loop, and the
-                // model can always ask for more work on the next event it does see.
+                // These were once logged and dropped outright ("we'd need to pass db_arc
+                // here"), then run through `apply_action` — which executes but raises no
+                // event, so the chain stopped dead after one hop and a query the model
+                // issued in reply to a write confirmation returned its documents to nobody.
+                // They now go back through `execute_llm_action`, which reports, bounded by
+                // `MAX_FOLLOWUP_DEPTH`. The recursion is boxed because an `async fn` that
+                // awaits itself has an infinitely-sized future.
                 for action in actions {
-                    let outcome = match protocol.execute_action(action.clone()) {
-                        Ok(result) => Self::apply_action(client_id, result, db, status_tx).await,
-                        Err(e) => Err(e),
-                    };
-                    match outcome {
-                        Ok(Applied::Ran { .. }) => {
-                            trace!(
-                                "MongoDB client {} ran follow-up action: {:?}",
-                                client_id,
-                                action
-                            );
-                        }
-                        Ok(Applied::Nothing(detail)) => {
-                            trace!(
-                                "MongoDB client {} follow-up produced no operation: {}",
-                                client_id,
-                                detail
-                            );
-                        }
-                        Ok(Applied::Disconnect) => {
-                            info!(
-                                "MongoDB client {} follow-up requested disconnect",
-                                client_id
-                            );
+                    match Box::pin(Self::execute_llm_action(
+                        client_id,
+                        action.clone(),
+                        protocol,
+                        db,
+                        app_state,
+                        llm_client,
+                        status_tx,
+                        depth + 1,
+                    ))
+                    .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            info!("MongoDB client {} follow-up ended the session", client_id);
                             break;
                         }
                         Err(e) => {

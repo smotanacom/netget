@@ -30,6 +30,12 @@ const MAX_MESSAGE_SIZE: i32 = 48 * 1024 * 1024;
 /// MongoDB wire protocol opcode for OP_MSG (MongoDB 3.6+).
 const OP_MSG: i32 = 2013;
 
+/// How long the rest of a message may take to arrive once its 16-byte header has.
+///
+/// [`MAX_MESSAGE_SIZE`] bounds one buffer; this bounds how long a peer may hold it. Without
+/// it, sixteen bytes claiming a 48 MB body pin 48 MB per connection indefinitely.
+const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// MongoDB server implementation
 pub struct MongodbServer {
     llm_client: OllamaClient,
@@ -60,7 +66,6 @@ impl MongodbServer {
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
-        _send_first: bool,
         server_id: crate::state::ServerId,
     ) -> Result<SocketAddr> {
         let listener = TcpListener::bind(listen_addr).await?;
@@ -209,6 +214,50 @@ impl MongodbHandler {
         result
     }
 
+    /// Write a reply and count it.
+    ///
+    /// Every response goes through here so the rail's `↑` counter and `last_activity` cannot
+    /// drift from what actually left the socket — MongoDB is connection-oriented, so nothing
+    /// else refreshes them.
+    async fn write_response<W>(&self, writer: &mut W, bytes: &[u8]) -> Result<()>
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        writer.write_all(bytes).await?;
+        self.record_sent(bytes.len() as u64).await;
+        Ok(())
+    }
+
+    async fn record_received(&self, bytes: u64) {
+        if let Some(server_id) = self.server_id {
+            self.app_state
+                .update_connection_stats(
+                    server_id,
+                    self.connection_id,
+                    Some(bytes),
+                    None,
+                    Some(1),
+                    None,
+                )
+                .await;
+        }
+    }
+
+    async fn record_sent(&self, bytes: u64) {
+        if let Some(server_id) = self.server_id {
+            self.app_state
+                .update_connection_stats(
+                    server_id,
+                    self.connection_id,
+                    None,
+                    Some(bytes),
+                    None,
+                    Some(1),
+                )
+                .await;
+        }
+    }
+
     async fn run(self, mut stream: TcpStream) -> Result<()> {
         debug!(
             "MongoDB handler starting for connection {}",
@@ -270,10 +319,35 @@ impl MongodbHandler {
                     break;
                 }
 
-                // Read the rest of the message body
+                // Read the rest of the message body.
+                //
+                // The length check above bounds one message at 48 MB, but nothing bounded how
+                // long the peer could take to deliver it. A client that sends a 48 MB header
+                // and then stops holds that whole buffer for the life of the process, and a
+                // hundred such connections is 4.8 GB with sixteen bytes sent each. The rest of
+                // a message whose header has already arrived is in flight by definition, so a
+                // deadline here refuses a stalled peer without truncating a legitimate one.
                 let body_length = (message_length - 16) as usize;
                 let mut body = vec![0u8; body_length];
-                reader.read_exact(&mut body).await?;
+                match tokio::time::timeout(BODY_READ_TIMEOUT, reader.read_exact(&mut body)).await {
+                    Ok(r) => {
+                        r?;
+                    }
+                    Err(_) => {
+                        error!(
+                            "MongoDB: {} did not finish a {}-byte message within {:?}, closing",
+                            self.remote_addr, message_length, BODY_READ_TIMEOUT
+                        );
+                        let _ = self.status_tx.send(format!(
+                            "[ERROR] MongoDB: incomplete message body from {} after {:?}, \
+                             closing connection",
+                            self.remote_addr, BODY_READ_TIMEOUT
+                        ));
+                        disconnect_reason = "incomplete_message_body";
+                        break;
+                    }
+                }
+                self.record_received(message_length as u64).await;
 
                 // Parse command based on opCode. Only OP_MSG is implemented; anything else would
                 // leave the client waiting forever for a reply it can parse, so close instead.
@@ -336,7 +410,7 @@ impl MongodbHandler {
                         request_id,
                         hello_response(self.connection_id.as_u32()),
                     )?;
-                    writer.write_all(&response_bytes).await?;
+                    self.write_response(&mut writer, &response_bytes).await?;
                     continue;
                 }
 
@@ -403,7 +477,7 @@ impl MongodbHandler {
                         ));
                         let doc = mongodb_error_doc(code, message);
                         let response_bytes = self.encode_op_msg_response(request_id, doc)?;
-                        writer.write_all(&response_bytes).await?;
+                        self.write_response(&mut writer, &response_bytes).await?;
                         continue;
                     }
                 };
@@ -456,7 +530,7 @@ impl MongodbHandler {
                                 };
                                 let response_bytes =
                                     self.encode_op_msg_response(request_id, response_doc)?;
-                                writer.write_all(&response_bytes).await?;
+                                self.write_response(&mut writer, &response_bytes).await?;
                                 responded = true;
                             } else {
                                 warn!(
@@ -495,7 +569,7 @@ impl MongodbHandler {
                         ),
                     );
                     let response_bytes = self.encode_op_msg_response(request_id, doc)?;
-                    writer.write_all(&response_bytes).await?;
+                    self.write_response(&mut writer, &response_bytes).await?;
                 }
 
                 if close_requested {

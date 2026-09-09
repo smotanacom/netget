@@ -107,7 +107,8 @@ pub static MONGODB_DISCONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         name: "reason".to_string(),
         type_hint: "string".to_string(),
         description: "Why the connection ended: client_disconnect, close_this_connection, \
-                      invalid_message_length, unsupported_opcode or malformed_op_msg"
+                      invalid_message_length, incomplete_message_body, unsupported_opcode or \
+                      malformed_op_msg"
             .to_string(),
         required: false,
     }])
@@ -122,15 +123,13 @@ pub static MONGODB_DISCONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 // Implement Protocol trait (common functionality)
 impl Protocol for MongodbProtocol {
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
-        vec![crate::llm::actions::ParameterDefinition {
-            name: "send_first".to_string(),
-            type_hint: "boolean".to_string(),
-            description:
-                "Whether the server should send the first message after connection (not needed)"
-                    .to_string(),
-            required: false,
-            example: serde_json::json!(false),
-        }]
+        // Deliberately empty. `send_first` was declared here and parsed in `spawn()`, but it
+        // reached `MongodbServer::spawn_with_llm_actions` as `_send_first` and was discarded —
+        // and could never have been honoured anyway, because MongoDB is client-first: a driver
+        // sends `hello` and treats unsolicited server bytes as a protocol error. Undeclaring it
+        // makes `server_startup` log an explicit "does not support send_first" instead of
+        // silently accepting a knob that does nothing. Same exit as `nntp` and `elasticsearch`.
+        vec![]
     }
 
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -182,9 +181,10 @@ impl Protocol for MongodbProtocol {
             .e2e_testing("mongodb official client crate")
             .notes(
                 "No authentication, no compression, no storage. Only OP_MSG (2013) is \
-                 implemented - a legacy OP_QUERY handshake is rejected. The driver's `hello` \
-                 handshake is answered by the LLM like any other command, so an instruction \
-                 that does not cover it will fail to connect",
+                 implemented - a legacy OP_QUERY handshake is rejected. `hello`/`isMaster` \
+                 are answered in Rust with a fixed wire-version range and never reach the \
+                 handler; every other command does, including ping, buildInfo and \
+                 endSessions",
             )
             .build()
     }
@@ -267,20 +267,12 @@ impl Server for MongodbProtocol {
     > {
         Box::pin(async move {
             use crate::server::mongodb::MongodbServer;
-            let send_first = ctx
-                .startup_params
-                .as_ref()
-                .map(|p| p.get_optional_bool("send_first"))
-                .transpose()?
-                .flatten()
-                .unwrap_or(false);
 
             MongodbServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
                 ctx.llm_client,
                 ctx.state,
                 ctx.status_tx,
-                send_first,
                 ctx.server_id,
             )
             .await
@@ -329,17 +321,7 @@ impl MongodbProtocol {
     }
 
     fn execute_insert_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        // Declared `required: true`, so it is an error to omit it — not a licence to invent
-        // one. Defaulting to 1 reported a successful insert of a document that nothing said
-        // was inserted, so a malformed answer reached the driver as an acknowledged write.
-        let inserted_count = action
-            .get("inserted_count")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "mongodb_insert_response requires `inserted_count` (a non-negative integer);                      it is how many documents were actually stored and cannot be assumed"
-                )
-            })?;
+        let inserted_count = required_count(&action, "insert_response", "inserted_count")?;
 
         debug!("MongoDB insert_response: {} documents", inserted_count);
         let _ = self.status_tx.send(format!(
@@ -357,14 +339,8 @@ impl MongodbProtocol {
     }
 
     fn execute_update_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let matched_count = action
-            .get("matched_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let modified_count = action
-            .get("modified_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let matched_count = required_count(&action, "update_response", "matched_count")?;
+        let modified_count = required_count(&action, "update_response", "modified_count")?;
 
         debug!(
             "MongoDB update_response: matched={}, modified={}",
@@ -386,10 +362,7 @@ impl MongodbProtocol {
     }
 
     fn execute_delete_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let deleted_count = action
-            .get("deleted_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let deleted_count = required_count(&action, "delete_response", "deleted_count")?;
 
         debug!("MongoDB delete_response: {} documents", deleted_count);
         let _ = self.status_tx.send(format!(
@@ -407,11 +380,30 @@ impl MongodbProtocol {
     }
 
     fn execute_error_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let code = action.get("code").and_then(|v| v.as_u64()).unwrap_or(0) as i32;
+        // Both fields are declared `required: true`. Code 0 is MongoDB's `OK`, so the old
+        // default produced `{ok: 0, code: 0}` — a failure that names success as its cause,
+        // which no driver maps to anything. "Unknown error" was no better: the model is the
+        // only thing that knows why it is refusing.
+        let code = action
+            .get("code")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "error_response requires `code` (a MongoDB error code, e.g. 26 for \
+                     NamespaceNotFound); there is no sensible default and 0 means OK"
+                )
+            })?
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
         let message = action
             .get("message")
             .and_then(|v| v.as_str())
-            .unwrap_or("Unknown error")
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "error_response requires a non-empty `message`; it is the errmsg the \
+                     driver raises and only the handler knows what went wrong"
+                )
+            })?
             .to_string();
 
         debug!("MongoDB error_response: code={}, message={}", code, message);
@@ -428,6 +420,25 @@ impl MongodbProtocol {
             }),
         })
     }
+}
+
+/// Read a count that the action declares `required: true`.
+///
+/// Every one of these is an assertion about what happened to the data: `inserted_count`,
+/// `matched_count`, `modified_count`, `deleted_count`. Defaulting a missing one to 0 (or, as
+/// `insert_response` once did, to 1) answers the driver with a write result that nothing
+/// produced — an acknowledged insert of a document no handler said was stored, or a
+/// "matched nothing" that is a claim about a collection this server does not have. Refusing
+/// instead surfaces the malformed answer to the model for repair, and if that fails the
+/// caller's `decision=fail_closed_no_answer` path answers `{ok: 0}`, which is the only shape
+/// a driver reads as a failure rather than a result.
+fn required_count(action: &serde_json::Value, act: &str, field: &str) -> Result<u64> {
+    action.get(field).and_then(|v| v.as_u64()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{act} requires `{field}` (a non-negative integer); it states what actually \
+             happened to the data and cannot be assumed"
+        )
+    })
 }
 
 // Action definitions

@@ -1,6 +1,20 @@
 //! MongoDB client E2E tests with mock LLM
+//!
+//! The peer every one of these talks to is NetGet's **own** MongoDB server, driven by the
+//! same mock model. That server lives behind a *separate* feature (`mongodb-server`), so the
+//! gate below names both. Built with `--features mongodb` alone all four used to compile and
+//! then fail at the first step with `Protocol 'MongoDB' exists but is not compiled into this
+//! build` — a hard failure that looked like a client defect and was a missing cfg.
+//!
+//! Note what that peer means for the client's maturity: the official driver is the thing
+//! under test here, not the thing corroborating it, so these are not evidence against a
+//! third-party server.
+//!
+//! Run with:
+//!   ./cargo-isolated.sh test --no-default-features --features mongodb,mongodb-server \
+//!       --test client -- mongodb --test-threads=100
 
-#![cfg(feature = "mongodb")]
+#![cfg(all(feature = "mongodb", feature = "mongodb-server"))]
 
 use crate::helpers::*;
 use tokio::time::{sleep, Duration};

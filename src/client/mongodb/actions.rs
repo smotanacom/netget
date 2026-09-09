@@ -281,7 +281,17 @@ impl Protocol for MongodbClientProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("Official mongodb v3.3 driver with async support")
             .llm_control("Full control over CRUD operations and queries")
-            .e2e_testing("Real MongoDB server")
+            // Not a real MongoDB server, which is what this said. The e2e tests point the
+            // driver at NetGet's *own* MongoDB server (feature `mongodb-server`), so the
+            // official driver is the thing under test rather than the independent peer
+            // corroborating it. No test has ever run this client against mongod.
+            .e2e_testing("NetGet's own MongoDB server; never against a real mongod")
+            .notes(
+                "Follow-up chains are bounded by MAX_FOLLOWUP_DEPTH (4): every operation's \
+                 result is reported to the model, and past the bound an action still runs but \
+                 its result is not reported. One operation at a time - no aggregation \
+                 pipeline, GridFS, change streams or transactions.",
+            )
             .build()
     }
 
