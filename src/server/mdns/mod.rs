@@ -61,10 +61,26 @@ impl MdnsServer {
         // mDNS itself does not bind a listening socket, so the server's own
         // port is only meaningful as the default port to advertise for the
         // service being announced.
-        let default_port = match listen_addr.port() {
+        //
+        // The `port` startup parameter wins over it, on every path. It used to be read only
+        // inside the two `startup_params` registration branches, so a caller that supplied
+        // `port` *and* an instruction - no `service_type`, no `services`, so the model does
+        // the registering - had the value silently dropped and got `DEFAULT_ADVERTISED_PORT`
+        // in the SRV record. The parameter's own description promises it is "the port clients
+        // will connect to", which was then untrue in exactly the case where a human wrote a
+        // sentence rather than a service definition.
+        let param_port = startup_params
+            .as_ref()
+            .map(|p| p.get_optional_u64("port"))
+            .transpose()?
+            .flatten()
+            .and_then(|p| u16::try_from(p).ok())
+            .filter(|p| *p != 0);
+
+        let default_port = param_port.unwrap_or(match listen_addr.port() {
             0 => DEFAULT_ADVERTISED_PORT,
             p => p,
-        };
+        });
 
         info!("mDNS server (action-based) starting");
         Log::new(Some(&status_tx)).info("mDNS server starting");
@@ -164,6 +180,29 @@ impl MdnsServer {
 
         // Only call LLM if we didn't use startup_params
         if !used_startup_params {
+            // `service_name` and `properties` describe a service; without `service_type` or
+            // `services` there is nothing to attach them to, so they are dropped. Say so
+            // rather than registering something surprising - a caller that got this far
+            // supplied half a service definition and would otherwise see the model invent
+            // the other half from the instruction.
+            if let Some(ref params) = startup_params {
+                let mut orphaned: Vec<&str> = Vec::new();
+                if params.get_optional_string("service_name")?.is_some() {
+                    orphaned.push("service_name");
+                }
+                if params.get_optional_object("properties")?.is_some() {
+                    orphaned.push("properties");
+                }
+                if !orphaned.is_empty() {
+                    console_error!(
+                        status_tx,
+                        "mDNS ignoring startup parameter(s) {}: they describe a service, and \
+                         neither 'service_type' nor 'services' was given to attach them to",
+                        orphaned.join(", ")
+                    );
+                }
+            }
+
             // Create mDNS server startup event
             let event = Event::new(&MDNS_SERVER_STARTUP_EVENT, serde_json::json!({}));
 
@@ -199,7 +238,8 @@ impl MdnsServer {
                 //
                 // So: announce nothing, and be loud about it on both channels.
                 error!(
-                    "mDNS service-registration handler failed; the responder is running but                      will advertise nothing: {}",
+                    "mDNS service-registration handler failed; the responder is running \
+                     but will advertise nothing: {}",
                     e
                 );
                 console_error!(

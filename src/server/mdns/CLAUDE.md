@@ -5,16 +5,37 @@
 mDNS/DNS-SD (Multicast DNS / DNS Service Discovery) server for zero-configuration network service advertisement.
 Implements RFC 6762 (mDNS) and RFC 6763 (DNS-SD) using the mdns-sd library.
 
-**Status**: Experimental - honestly so. The LLM's only control point is a single
-startup event; there is no query handling and no runtime reconfiguration.
+**Status**: Experimental. The LLM's only control point is a single startup event;
+there is no query handling and no runtime reconfiguration. `metadata()` said `Beta`
+until September 2026 while this file said Experimental - the code was the wrong half,
+and it is now Experimental in both places. See "What the tests prove" below.
 **Port**: announces on 224.0.0.251:5353. No listening socket of its own is
 bound, and 5353 is unprivileged, so `PrivilegeRequirement::None` is correct.
 **Tests**: `tests/server/mdns/test.rs` (note: `test.rs`, not `e2e_test.rs`),
 four mock-driven tests that browse for the advertised services.
 
+### What the tests prove
+
+Each test browses the group with an `mdns-sd` daemon and asserts **its own** instance
+resolves, by name, with its TXT properties intact. That covers the registration
+plumbing end to end: `startup_params` (or a `register_mdns_service` action) ->
+`ServiceInfo` -> the multicast group -> a browser that reads it back.
+
+It is not evidence of interop, because `mdns-sd` is also the crate this server
+registers through - one crate round-tripping through itself, the reason `websocket`
+and `webrtc_signaling` are held at Experimental and the reason `rss` had to switch to
+`feed-rs` before it could be promoted. Beta means "works against real clients"; the
+independent client here would be the platform tool (`dns-sd -L` on macOS,
+`avahi-browse -r` on Linux), and until one of those drives a test this stays
+Experimental.
+
+The tests asserted *nothing at all* before September 2026 - they computed a
+`found_service` flag and printed it - and `metadata().e2e_testing` described them as
+"asserting on ServiceResolved". Both are fixed.
+
 ## Library Choices
 
-- **mdns-sd** v0.11+ - Full mDNS/DNS-SD implementation
+- **mdns-sd** v0.15 (see `Cargo.toml`) - Full mDNS/DNS-SD implementation
     - Handles multicast group management (224.0.0.251:5353)
     - Service advertisement and discovery
     - TXT record management
@@ -101,8 +122,12 @@ lookup carries no dependency on, or traffic implication for, a third party.
   `std::future::pending()`
 - The task's `JoinHandle` is registered with `AppState::register_server_task`,
   so `stop_server` can abort it
-- Address returned to the caller: `224.0.0.251:5353` (the multicast group), not
-  a bound socket
+- Address returned to the caller: `0.0.0.0:0`, this codebase's "I listen on
+  nothing" placeholder, which `server_startup::is_bound_addr` recognises and
+  declines to advertise. It used to return `224.0.0.251:5353`, which the TUI and
+  `server_status` then displayed as if it were a listening endpoint. It is not one:
+  joining a group is not binding it, and nobody owns it. The group is reported on
+  the status stream instead, as information
 
 ## State Management
 
