@@ -1,7 +1,9 @@
 # WebDAV Protocol Implementation
 
-**Status**: `DevelopmentState::Experimental` — one human review pass, verified against a real
-WebDAV client library (`reqwest_dav`), not just against status codes.
+**Status**: `DevelopmentState::Beta` — exercised against `reqwest_dav`, a real and independent
+WebDAV client, in a test that is neither `#[ignore]`d nor gated on an external binary. Not
+Stable: the property model is fixed (no PROPPATCH dead-property storage), locks are accepted
+and never enforced, and spec compliance has not been reviewed.
 
 WebDAV (RFC 4918) over HTTP/1.1. `hyper` v1.0 carries the requests; this module answers the
 DAV methods itself and generates the `DAV:multistatus` XML. **There is no filesystem** — the
@@ -24,11 +26,9 @@ server instruction was read by nobody. Both are gone. Two replacements were poss
 2. **Answer the verbs directly.** Chosen. One model round-trip per request, and the model
    picks the status code itself.
 
-`dav-server` is therefore no longer used by this protocol. It is still listed as an optional
-dependency of the `webdav` feature in `Cargo.toml` (`webdav = ["dav-server", "dep:reqwest_dav"]`)
-and now compiles for nothing — dropping it is a `Cargo.toml` change and was left to whoever
-owns that file. `reqwest_dav` is still needed: the WebDAV *client* protocol uses it, and so do
-these tests.
+`dav-server` is therefore no longer used by this protocol, and has been removed from
+`Cargo.toml` — the feature is now `webdav = ["dep:reqwest_dav"]`. `reqwest_dav` is still
+needed: the WebDAV *client* protocol uses it, and so do these tests.
 
 ## What the model sees and controls
 
@@ -112,10 +112,19 @@ static handlers cost no LLM call, and static handlers can reach the event with
   `bytes_*`/`packets_*`/`last_activity` are maintained per request on every exit path,
   including the ones that never reach the model. One "packet" is one HTTP message and the byte
   counts are message bodies only — hyper has parsed the request line and headers away by then.
-  `last_activity` is not cosmetic: `ServerInstance::cleanup_old_connections` evicts anything
-  idle for 10s, and WebDAV clients hold keep-alive connections open between bursts.
+  `last_activity` no longer risks eviction: `AppState::cleanup_old_connections` runs the 10s
+  idle sweep only where `ProtocolMetadataV2::connectionless` is set, and WebDAV does not
+  declare it — correctly, since clients hold keep-alive connections open between bursts.
 
 ## Limitations
+
+- **Request bodies are capped at 8 MiB** (`MAX_REQUEST_BODY`). Over that the peer gets `413`
+  with no model call — there is no content decision to make about a body the server declined
+  to read. The cap is checked against the declared `Content-Length` before a byte is read, and
+  enforced on the stream itself (`http_body_util::Limited`) for the chunked case. Before it
+  existed the body was `.collect()`ed unbounded and then interpolated whole into the model's
+  prompt, and WebDAV has no authentication step, so one unauthenticated request decided how
+  much memory the process allocated.
 
 - **No storage, by design.** A `PUT` is remembered only if the model chooses to remember it
   (server memory, or a script handler that keeps its own state). A `GET` after a `PUT` returns

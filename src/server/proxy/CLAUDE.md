@@ -8,6 +8,34 @@ LLM-controlled filtering.
 
 **Compliance**: HTTP/1.1 (RFC 7230-7235), CONNECT method (RFC 7231 Section 4.3.6)
 
+## Security: this is an unrestricted open relay (read this first)
+
+The destination of every request and every `CONNECT` is chosen by the **peer** —
+from the request-target or the `Host` header — and there is no allow-list,
+deny-list or network restriction of any kind in this protocol. Loopback,
+link-local (including `169.254.169.254`, the cloud instance-metadata endpoint) and
+every RFC 1918 range are reachable. Anyone who can reach this port can reach
+whatever this host can:
+
+- **SSRF pivot** into the operator's private network.
+- **Open relay** someone else's traffic can be laundered through, attributed to
+  this machine.
+
+That may be exactly what you want from a honeypot. It is written down here because
+nothing in the code refuses it.
+
+**The filter configuration does not change this.** `request_filters`,
+`response_filters` and `https_connection_filters` decide what the model is *asked*
+about; they restrict nothing on their own. At `FilterMode::None`, or at
+`MatchOnly` with filters that miss, the request is forwarded with no decision taken
+by anyone. Plain-HTTP *responses* are always forwarded without consultation, and
+only the first exchange of a keep-alive HTTPS connection is inspected.
+
+Bounds that do exist: the request head is capped at 64 KiB with a 30s deadline
+(408 on expiry), an upstream response is buffered to at most 8 MiB, and CONNECT
+tunnels run through `copy_bidirectional` so a half-close propagates. The number of
+concurrent connections is unbounded.
+
 ## Security: the MITM CA (read this first)
 
 **Where the CA key comes from.** In `certificate_mode: "generate"` a fresh CA key
@@ -57,7 +85,9 @@ server.
 
 ## Library Choices
 
-- **`http-mitm-proxy`** (conceptual) - Protocol framework for MITM operations
+- **`http-mitm-proxy`** — a real enabled optional dependency of the `proxy` feature
+  in `Cargo.toml` that **no file under `src/server/proxy/` references**. It is dead
+  weight; removing it is a `Cargo.toml` change.
 - **`rcgen`** v0.14 - On-the-fly certificate generation for MITM TLS interception
 - **`rustls`** v0.23 + **`tokio-rustls`** v0.26 - TLS stack for MITM (both server and client)
 - **`webpki-roots`** v0.26 - Root certificates for validating upstream TLS connections
@@ -73,16 +103,24 @@ constraints.
 
 ### Three Operating Modes
 
-1. **MITM Mode with Certificate Generation** (default)
-    - Generates self-signed CA certificate at startup
-    - Intercepts HTTPS by performing TLS handshake with client using generated cert
-    - Decrypts, inspects, and forwards traffic
-    - Status: Certificate generation implemented, full TLS MITM pending
+1. **MITM Mode with Certificate Generation** (`certificate_mode: "generate"`)
+    - Generates a self-signed CA certificate at startup
+    - Intercepts HTTPS by performing the TLS handshake with the client using a leaf
+      minted from that CA
+    - Decrypts, inspects and forwards traffic — this is implemented, in `tls_mitm.rs`
+    - The CA private key never leaves memory. `ca_export_path` writes the public
+      certificate only, and a client that trusts that file has its TLS broken for
+      every host, so treat it accordingly.
 
-2. **MITM Mode with Loaded Certificate**
-    - Loads existing CA certificate from file (cert_path, key_path)
-    - Uses production CA for enterprise deployments
-    - Allows transparent HTTPS inspection with trusted certificates
+2. **MITM Mode with Loaded Certificate** (`certificate_mode: "load_from_file"`)
+    - **Not implemented, and rejected at startup** with an error naming the
+      unimplemented mode. `cert_path` and `key_path` are declared as startup
+      parameters only so that rejection is the error the caller sees rather than
+      "unknown parameter".
+    - Using a real CA needs its subject, which needs rcgen's `x509-parser` feature.
+      The previous implementation read the key, ignored the certificate file and
+      minted a *different* CA from the operator's private key — interception
+      silently failed while appearing configured.
 
 3. **Pass-Through Mode** (certificate_mode = "none")
     - No certificate, no decryption
@@ -96,23 +134,29 @@ constraints.
 
 ```rust
 pub struct ProxyFilterConfig {
-    certificate_mode: CertificateMode,    // Generate, LoadFromFile, or None
-    request_filter_mode: FilterMode,      // AllRequests, Selective, None
-    response_filter_mode: FilterMode,     // AllResponses, Selective, None
-    https_connection_filter_mode: FilterMode, // AllConnections, Selective, None
-    request_patterns: Vec<String>,        // Regex patterns for selective filtering
-    response_patterns: Vec<String>,
-    https_host_patterns: Vec<String>,
+    pub certificate_mode: CertificateMode,               // Generate, LoadFromFile, or None
+    pub request_filters: Vec<RequestFilter>,             // host/path/method/header/body regexes
+    pub response_filters: Vec<ResponseFilter>,
+    pub https_connection_filters: Vec<HttpsConnectionFilter>,
+    pub request_filter_mode: FilterMode,
+    pub response_filter_mode: FilterMode,
+    pub https_connection_filter_mode: FilterMode,
 }
 ```
 
-**FilterMode**:
+**FilterMode** (`filter.rs`, `#[serde(rename_all = "lowercase")]`, so the startup
+parameters spell these `"all"` / `"match_only"` / `"none"`):
 
-- `AllRequests` - LLM consults on every request
-- `Selective` - LLM consults only when patterns match
-- `None` - Pass through without LLM (fast path)
+- `All` (the default) — LLM consults on everything
+- `MatchOnly` — LLM consults only when a filter matches; with an empty filter list
+  this intercepts nothing
+- `None` — pass through without the LLM (fast path)
 
-This prevents performance bottlenecks when LLM involvement is unnecessary.
+**These select what the model is ASKED about. They restrict nothing.** At `None`,
+or at `MatchOnly` with filters that miss, the request goes to whatever destination
+the peer named, with no decision taken by anyone. See the security note that opens
+`metadata().notes`: this proxy is an unrestricted open relay, loopback and
+link-local included.
 
 ### Request/Response Lifecycle
 
@@ -140,7 +184,7 @@ This prevents performance bottlenecks when LLM involvement is unnecessary.
 
 - **DEBUG level**: `[ACCESS] {client_ip} {method} {url} -> {status} {bytes} in {duration}`
 - Common Log Format compatible for integration with log analyzers
-- Pass-through HTTPS: `[ACCESS] {client_ip} CONNECT {host}:{port} -> TUNNEL {bytes}`
+- Pass-through HTTPS: `[ACCESS] {client_ip} CONNECT {host}:{port} -> TUNNEL {bytes} bytes ({up} up, {down} down) in {duration}`
 
 ## LLM Integration
 
@@ -154,16 +198,16 @@ This prevents performance bottlenecks when LLM involvement is unnecessary.
 {
   "actions": [
     {
-      "type": "pass_http_request",
+      "type": "handle_request_pass",
       "message": "Allowing request to example.com"
     },
     {
-      "type": "block_http_request",
+      "type": "handle_request_block",
       "status": 403,
       "body": "Access denied by policy"
     },
     {
-      "type": "modify_http_request",
+      "type": "handle_request_modify",
       "headers": {"X-Proxy": "NetGet"},
       "remove_headers": ["User-Agent"],
       "new_path": "/api/v2",
@@ -183,11 +227,11 @@ This prevents performance bottlenecks when LLM involvement is unnecessary.
 {
   "actions": [
     {
-      "type": "allow_https_connect",
+      "type": "handle_https_connection_allow",
       "message": "Allowing connection to example.com:443"
     },
     {
-      "type": "block_https_connect",
+      "type": "handle_https_connection_block",
       "reason": "Domain blocked by policy"
     }
   ]
@@ -210,15 +254,12 @@ This prevents performance bottlenecks when LLM involvement is unnecessary.
 
 ## Connection and State Management
 
-**Per-Connection State** (`ProtocolConnectionInfo::Proxy`):
-
-```rust
-Proxy {
-    recent_requests: Vec<(String, u16, Duration)>, // (url, status, duration)
-}
-```
-
-Tracks recent proxy activity for monitoring and debugging.
+**Per-Connection State**: none. `ProtocolConnectionInfo` is a generic
+`serde_json::Value` wrapper (`src/state/server.rs`), not an enum, and the proxy
+registers `ProtocolConnectionInfo::empty()` — there is no `Proxy` variant and no
+`recent_requests` field anywhere in the tree. Per-connection activity is visible
+in the `[ACCESS]` log lines and in the rail's byte counters, which the CONNECT
+tunnels feed through `update_connection_stats`.
 
 **Connection Lifecycle**:
 
@@ -295,7 +336,8 @@ let cert = params.self_signed(&key_pair)?;
 ### Certificate Cache Design
 
 - **Thread-safe**: `Arc<RwLock<HashMap<String, CachedCert>>>`
-- **TTL**: 24 hours (configurable via `cert_ttl_secs`)
+- **TTL**: 24 hours, hardcoded. `cert_ttl_secs` is a private field set in
+  `CertificateCache::new`; there is no setter and no startup parameter for it.
 - **Normalization**: Domains lowercased and trimmed
 - **SAN generation**: Automatically adds wildcard (`*.example.com`) and www (`www.example.com`)
 - **Automatic cleanup**: Background task runs hourly to remove expired certificates
@@ -334,9 +376,8 @@ advertised (`configure_certificate`, `configure_request_filters`,
 `ActionResult::Output` emitted during a request event was mis-parsed as a
 `RequestAction`. They have been removed.
 
-**Testing note**: `cert_cache.rs` still contains a `#[cfg(test)] mod tests`, which
-violates the project rule that all tests live under `tests/`. It should be
-migrated to `tests/server/proxy/`.
+**Testing note**: `cert_cache.rs` has no `#[cfg(test)] mod tests`; the
+test-location policy is satisfied here.
 
 ## Limitations
 
@@ -365,7 +406,7 @@ migrated to `tests/server/proxy/`.
 ### Protocol Compliance Gaps
 
 - Requests are rewritten from absolute-form (`GET http://host/path`) to
-  origin-form (`GET /path`) before being forwarded, as RFC 9112 3.2.1 requires,
+  origin-form (`GET /path`) before being forwarded, as RFC 9112 3.2.2 requires,
   and the hop-by-hop `Proxy-Connection` header is dropped. Forwarding the
   absolute-form target verbatim made ordinary origin servers answer 404.
 - Missing: Range requests (partial content)

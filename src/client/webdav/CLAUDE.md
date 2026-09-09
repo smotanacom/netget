@@ -28,16 +28,25 @@ provides LLM-controlled access to remote file systems via WebDAV protocol.
 
 WebDAV is **connectionless** like HTTP - each operation is a separate HTTP request:
 
-1. **Client Initialization**: Creates reqwest client, stores base URL
+1. **Client Initialization**: resolves `default_headers` and `auth`, stores the base URL. It
+   builds **no** HTTP client — see below.
 2. **On-Demand Requests**: LLM triggers WebDAV methods via actions
 3. **Response Processing**: LLM receives XML responses and decides next action
+
+`perform_request` asks `http_client_for(base_url)`, which keeps one `reqwest::Client` per base
+URL behind a `OnceLock` map and builds it on `spawn_blocking` the first time, through
+`client_for_endpoint_with_timeout`. Building a reqwest client is a *blocking* operation (rustls
+setup plus the platform root store, which on macOS is a synchronous keychain read), so the
+earlier arrangement — one built per request on the runtime, plus a second built at connect and
+dropped unused — parked a tokio worker on every call and skipped the literal-IP DNS bypass.
 
 ### State Management
 
 State stored in `AppState::protocol_data`:
 
 - `base_url`: Base URL for all WebDAV requests
-- `http_client`: Reqwest client instance marker
+- `http_client`: a literal `"initialized"` marker string. No client is stored here; the
+  real ones live in the process-wide `HTTP_CLIENTS` map keyed by base URL.
 - `startup_headers`: the `default_headers` startup parameter, plus the `authorization`
   header resolved from `auth`. Applied to every request **underneath** the per-request
   headers (Depth, Destination, Overwrite, Content-Type), merged on the lowercased name
@@ -55,9 +64,12 @@ State stored in `AppState::protocol_data`:
 | **DELETE**    | Delete resource                    | No                           |
 | **PUT**       | Upload file                        | Yes (file content)           |
 | **GET**       | Download file                      | No                           |
-| **PROPPATCH** | Modify properties                  | XML (properties to update)   |
-| **LOCK**      | Lock resource                      | XML (lock info)              |
-| **UNLOCK**    | Unlock resource                    | No                           |
+
+`perform_request` can additionally *construct* PROPPATCH, LOCK and UNLOCK, but **no action
+reaches them**: `execute_action` dispatches exactly `propfind`, `mkcol`, `copy`, `move`,
+`delete`, `put`, `get`, `disconnect` and `wait_for_more`, and no `ActionDefinition` advertises
+the other three. The model cannot ask for them and neither can an injected command, so those
+three arms are dead code. They were listed here as supported methods.
 
 ## LLM Integration
 
@@ -114,7 +126,8 @@ WebDAV uses special HTTP headers:
     - `infinity`: All descendants
 - **Destination**: Target path for COPY/MOVE
 - **Overwrite**: T (true) or F (false) for COPY/MOVE
-- **Lock-Token**: Token for LOCK/UNLOCK operations
+- **Lock-Token**: not sent. Nothing in `src/client/webdav/` sets this header; it is listed
+  here only because LOCK/UNLOCK were once expected to be reachable.
 
 ## Implementation Details
 
@@ -149,7 +162,8 @@ supported — nothing challenges/responds, so a Digest-only server will keep ans
 ## Limitations
 
 1. **No XML Parsing**: We return raw XML to LLM, relying on LLM's XML understanding
-2. **No Lock Management**: LOCK/UNLOCK implemented but no lock token tracking
+2. **No locking at all**: LOCK and UNLOCK are not exposed as actions, so there is nothing
+   to track. `perform_request` can build the methods; nothing can ask it to.
 3. **No Versioning**: WebDAV versioning extensions (DeltaV) not supported
 4. **No Access Control**: ACL methods not implemented
 5. **No Quota Support**: QUOTA extension not implemented
@@ -224,12 +238,17 @@ LLM generates:
 
 ## Testing Strategy
 
-E2E tests will use a local WebDAV server (e.g., `wsgidav` Python package):
+What exists today, in `tests/client/webdav/`:
 
-1. Start WebDAV server on `127.0.0.1:8080`
-2. Connect WebDAV client with instruction
-3. LLM performs operations (PROPFIND, PUT, MKCOL, etc.)
-4. Verify results via assertions
+- `e2e_test.rs` — `test_webdav_client_propfind` and `test_webdav_client_llm_controlled`. Both
+  point the client at **NetGet's own WebDAV server**, so the peer is this repository's code:
+  circular evidence, and the assertions are weak (one checks the client's output contains
+  "WebDAV" or "connected" or "PROPFIND"; the other only that `client.protocol == "WebDAV"`).
+  Pointing these at a third-party server — `wsgidav` was the plan and was never done — is what
+  would make them evidence.
+- `command_channel_test.rs` — the substantive one. A raw loopback HTTP stub asserts the exact
+  `PROPFIND /dashboard-marker/` an injected action puts on the wire, and that an unknown action
+  is `Rejected` and `disconnect` drops the handle. Zero LLM calls.
 
 Target: **< 10 LLM calls** per test suite.
 

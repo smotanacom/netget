@@ -375,9 +375,9 @@ fn build_webdav_response(
 /// Semantics match the other hyper-based servers: one "packet" is one HTTP message, and the
 /// byte counts are message bodies only — hyper has parsed the request line and headers away
 /// before this sees them. `last_activity` matters beyond bookkeeping:
-/// `ServerInstance::cleanup_old_connections` evicts connections idle for 10s, so a keep-alive
-/// WebDAV session (clients pipeline PROPFIND/GET aggressively) would otherwise vanish from the
-/// state map while still serving.
+/// `AppState::cleanup_old_connections` runs the 10s idle sweep only for servers that declare
+/// `ProtocolMetadataV2::connectionless`, which WebDAV does not — correctly, since clients hold
+/// keep-alive sessions open between bursts and pipeline PROPFIND/GET aggressively.
 async fn handle_webdav_request(
     req: Request<Incoming>,
     connection_id: ConnectionId,
