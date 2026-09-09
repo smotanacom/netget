@@ -64,13 +64,13 @@ The SIP client uses the standard client LLM integration pattern:
 
 ### SIP Request Generation
 
-The client builds RFC 3261 compliant SIP requests:
+The client builds SIP requests by hand. They are well-formed and a real server accepts them, but "RFC 3261 compliant" would overstate it — there is no transaction layer, no retransmission and no digest auth (see Limitations):
 
 **Request Structure**:
 
 ```
 Method URI SIP/2.0
-Via: SIP/2.0/UDP client-ip:port;branch=z9hG4bK-netget-<random>
+Via: SIP/2.0/UDP client-ip:port;rport;branch=z9hG4bK-netget-<random>
 From: <sip:user@domain>;tag=<from-tag>
 To: <sip:target@domain>[;tag=<to-tag>]
 Call-ID: <random>@netget-client
@@ -84,7 +84,15 @@ Content-Length: <length>
 
 **Critical Headers**:
 
-- **Via**: Routing information with branch parameter (RFC 3261 magic cookie `z9hG4bK`)
+- **Via**: Routing information with branch parameter (RFC 3261 magic cookie `z9hG4bK`).
+  **This is the socket's own address**, read after `connect()` so it is the outbound interface
+  the kernel picked rather than the `0.0.0.0` it was bound to. It used to be the literal
+  `127.0.0.1:5060`, which is where an RFC 3261 server sends its response — so every reply from a
+  real server went to port 5060 on the server's own loopback and this client never saw it. It
+  worked only against NetGet's own SIP server, which answers the datagram's source address
+  instead. `;rport` (RFC 3581) additionally asks the server to reply to the source address and
+  port it observed, which is what makes this work from behind NAT. `Contact` defaults from the
+  same address, for the same reason.
 - **From**: Caller identity with unique tag (generated once per dialog)
 - **To**: Callee identity (tag added after first response)
 - **Call-ID**: Unique dialog identifier (generated per client session)
@@ -150,7 +158,12 @@ struct ClientData {
 3. Receive 200 OK → Extract To tag, LLM decides next action
 4. LLM decides to INVITE → Send INVITE with CSeq=2, To tag from REGISTER
 5. Receive 180 Ringing → Skipped by client (provisional response), wait for final
-6. Receive 200 OK → Client automatically sends ACK (RFC 3261 compliance)
+6. Receive 200 OK → Client automatically sends ACK (RFC 3261 compliance). **If no local
+   dialog exists** — an unsolicited `200`/`CSeq: n INVITE` from a peer this client never
+   INVITEd — there is nothing to acknowledge, so it is logged and nothing is sent. Both fields
+   used to be read with `.unwrap()`, so that datagram panicked the read loop; the panic was
+   swallowed by `tokio::spawn` and the client stayed "Connected" and permanently deaf.
+   `tests/client/sip/hostile_response_test.rs` covers this and the `extract_uri` panic below
 7. LLM decides to BYE → Send BYE with CSeq=3
 8. Receive 200 OK → Call terminated
 
@@ -315,6 +328,12 @@ arrives at a peer socket and that its length matches the reported `bytes_sent`).
     - No route set (Record-Route) handling
     - No early dialog vs. confirmed dialog distinction
     - Queued responses processed sequentially
+
+**Header parsing is hostile-input-safe as of this pass.** `extract_uri` searched the whole
+header value for `<` and, independently, for `>`, then sliced between them — so a display name
+containing a `>` before the URI (`"ev>il" <sip:victim@host>`) produced a slice whose start was
+past its end, which panics immediately on a `&str`. It now searches for `>` *after* the `<`.
+Reached from the automatic-ACK path, i.e. from any peer that can send a `200`/`INVITE`.
 
 ### Protocol Compliance Gaps
 
