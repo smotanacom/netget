@@ -51,6 +51,39 @@ const CASSANDRA_ERROR_SERVER_ERROR: u32 = 0x0000;
 /// coordinator node is overloaded". Drivers treat it as retryable.
 const CASSANDRA_ERROR_OVERLOADED: u32 = 0x1001;
 
+/// Native-protocol ERROR code 0x000A, "Protocol error: some client message triggered a
+/// protocol violation". What a real coordinator answers to a frame it cannot parse.
+const CASSANDRA_ERROR_PROTOCOL: u32 = 0x000A;
+
+/// Native-protocol ERROR code 0x2500, "Unprepared".
+///
+/// The only error whose body carries a payload beyond the message: `[short bytes]` naming the
+/// statement id the coordinator does not know. Drivers exist to handle it — scylla re-PREPAREs
+/// and retries — so answering it turns an unknown id from a dead session into a hiccup.
+const CASSANDRA_ERROR_UNPREPARED: u32 = 0x2500;
+
+/// Name the `[short]` consistency level a client asked for (native protocol v4, §3).
+///
+/// Reported verbatim to the handler. Anything outside the defined set is `UNKNOWN` rather
+/// than a plausible-looking guess — the handler can refuse what it does not recognise, but
+/// only if it is told the truth.
+fn consistency_name(code: u16) -> &'static str {
+    match code {
+        0x0000 => "ANY",
+        0x0001 => "ONE",
+        0x0002 => "TWO",
+        0x0003 => "THREE",
+        0x0004 => "QUORUM",
+        0x0005 => "ALL",
+        0x0006 => "LOCAL_QUORUM",
+        0x0007 => "EACH_QUORUM",
+        0x0008 => "SERIAL",
+        0x0009 => "LOCAL_SERIAL",
+        0x000A => "LOCAL_ONE",
+        _ => "UNKNOWN",
+    }
+}
+
 /// Cassandra server implementation
 pub struct CassandraServer {
     llm_client: OllamaClient,
@@ -93,7 +126,6 @@ impl CassandraServer {
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
-        _send_first: bool,
         server_id: crate::state::ServerId,
     ) -> Result<SocketAddr> {
         let listener = TcpListener::bind(listen_addr).await?;
@@ -271,9 +303,37 @@ impl CassandraServer {
                         }
                     }
                     Err(e) => {
-                        Log::new(Some(&status_tx))
-                            .error(format!("Cassandra frame handling error: {}", e));
-                        // Send error frame and close connection
+                        // The comment here said "send error frame and close connection" and
+                        // then closed without sending anything. A driver blocked on the reply
+                        // to that stream id saw the socket vanish and reported a *transport*
+                        // fault, so a truncated EXECUTE or a frame `Envelope::from_buffer`
+                        // rejected killed the whole session with no diagnosis on either end.
+                        //
+                        // The stream id is at bytes 2..4 of the header and does not depend on
+                        // the body parsing, so the reply reaches the right request even when
+                        // nothing else about the frame could be understood. The peer gets the
+                        // category only — a fixed string, never `e`, which carries anyhow
+                        // context and library messages.
+                        Log::new(Some(&status_tx)).error(format!(
+                            "Cassandra connection {} decision=fail_closed_protocol_error: {}",
+                            connection_id, e
+                        ));
+                        let stream_id = i16::from_be_bytes([frame_bytes[2], frame_bytes[3]]);
+                        if let Err(send_err) = self
+                            .send_error(
+                                stream_id,
+                                CASSANDRA_ERROR_PROTOCOL,
+                                "netget: malformed CQL frame",
+                                &mut stream,
+                                &status_tx,
+                            )
+                            .await
+                        {
+                            debug!(
+                                "Cassandra could not report the protocol error to {}: {}",
+                                addr, send_err
+                            );
+                        }
                         closing = true;
                         break;
                     }
@@ -596,7 +656,7 @@ impl CassandraServer {
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<bool> {
         // Parse query from frame body
-        let query_str = self.parse_query(&frame)?;
+        let (query_str, consistency) = self.parse_query(&frame)?;
 
         Log::new(Some(status_tx)).debug(format!(
             "Cassandra ← Query from connection {}: {}",
@@ -610,7 +670,7 @@ impl CassandraServer {
             event_type: &CASSANDRA_QUERY_EVENT,
             data: json!({
                 "query": query_str,
-                "consistency": "ONE"
+                "consistency": consistency
             }),
         };
 
@@ -704,14 +764,17 @@ impl CassandraServer {
         Ok(true)
     }
 
-    /// Parse query string from QUERY frame
-    fn parse_query(&self, frame: &Envelope) -> Result<String> {
-        // Frame body contains:
-        // - query (long string)
-        // - query parameters
-
-        // For Phase 1, we do simple parsing
-        // The body starts with a [long string] for the query
+    /// Parse the query string and requested consistency level from a QUERY frame.
+    ///
+    /// Body layout (native protocol v4): `[long string] query`, then `<query_parameters>`,
+    /// which begins `[short] consistency [byte] flags …`.
+    ///
+    /// The consistency level used to be reported to the handler as the literal `"ONE"` for
+    /// every query, whatever the client asked for — a fabricated event field, and the one
+    /// piece of a CQL request a handler might reasonably branch on ("refuse writes at ALL",
+    /// "answer LOCAL_QUORUM from this replica set"). Two bytes off the wire say what the
+    /// client actually requested.
+    fn parse_query(&self, frame: &Envelope) -> Result<(String, &'static str)> {
         let body = &frame.body;
         if body.len() < 4 {
             return Err(anyhow::anyhow!("Query frame too short"));
@@ -720,14 +783,23 @@ impl CassandraServer {
         // Read long string length (4 bytes, big-endian)
         let query_len = u32::from_be_bytes([body[0], body[1], body[2], body[3]]) as usize;
 
-        if body.len() < 4 + query_len {
+        // `4 + query_len` on a 32-bit target could wrap; compare the addends instead.
+        if body.len().saturating_sub(4) < query_len {
             return Err(anyhow::anyhow!("Query frame truncated"));
         }
 
         let query_bytes = &body[4..4 + query_len];
         let query_str = String::from_utf8_lossy(query_bytes).to_string();
 
-        Ok(query_str)
+        // A QUERY frame always carries query_parameters, but a truncated one must not panic.
+        // An absent or unrecognised level is reported as null rather than guessed at: the
+        // handler is better served by "the client did not say" than by an invented ONE.
+        let consistency = body
+            .get(4 + query_len..6 + query_len)
+            .map(|b| consistency_name(u16::from_be_bytes([b[0], b[1]])))
+            .unwrap_or("UNKNOWN");
+
+        Ok((query_str, consistency))
     }
 
     /// Send READY response
@@ -1003,8 +1075,10 @@ impl CassandraServer {
     ) -> Result<bool> {
         debug!("Handling PREPARE from connection {}", connection_id);
 
-        // Parse query from frame
-        let query = self.parse_query(&frame)?;
+        // Parse query from frame. A PREPARE body is a bare `[long string]` with no
+        // query_parameters, so the consistency `parse_query` also returns is always UNKNOWN
+        // here and is discarded: the level is chosen at EXECUTE, not at PREPARE.
+        let (query, _consistency) = self.parse_query(&frame)?;
         trace!("PREPARE query: {}", query);
 
         // Generate statement ID from query hash
@@ -1164,14 +1238,34 @@ impl CassandraServer {
         debug!("Handling EXECUTE from connection {}", connection_id);
 
         // Parse statement ID and parameters from frame
-        let (statement_id, params) = self.parse_execute(&frame)?;
+        let (statement_id, params, consistency) = self.parse_execute(&frame)?;
 
-        // Look up prepared statement
-        let (query, expected_param_count) = conn_state
+        // Look up prepared statement.
+        //
+        // This used to be `?`, so an id we do not hold propagated out of `handle_frame` and
+        // the connection was dropped with nothing written. It is reachable in ordinary use:
+        // ids are a hash of the query text and are held *per connection*, so a driver
+        // executing on a pooled connection that never saw the PREPARE lands here, as does one
+        // reconnecting after a restart. CQL has an error for exactly this — UNPREPARED (0x2500)
+        // carrying the unknown id — and drivers act on it: scylla re-PREPAREs and retries, so
+        // the statement then succeeds instead of the session dying.
+        let Some((query, expected_param_count)) = conn_state
             .prepared_statements
             .get(&statement_id)
-            .ok_or_else(|| anyhow::anyhow!("Unknown prepared statement ID"))?
-            .clone();
+            .map(|(q, n)| (q.clone(), *n))
+        else {
+            Log::new(Some(status_tx)).warn(format!(
+                "Cassandra connection {} decision=unprepared stage=EXECUTE: statement id {} is \
+                 not prepared on this connection; answering ERROR 0x{:04X} so the driver \
+                 re-prepares",
+                connection_id,
+                hex::encode(&statement_id),
+                CASSANDRA_ERROR_UNPREPARED
+            ));
+            self.send_unprepared_error(frame.stream_id, &statement_id, stream, status_tx)
+                .await?;
+            return Ok(true);
+        };
 
         trace!("EXECUTE statement: {} with {} params", query, params.len());
 
@@ -1197,6 +1291,7 @@ impl CassandraServer {
                 "query": query,
                 "statement_id": hex::encode(&statement_id),
                 "parameters": params,
+                "consistency": consistency,
             }),
         };
 
@@ -1291,7 +1386,10 @@ impl CassandraServer {
     }
 
     /// Parse statement ID and parameters from EXECUTE frame
-    fn parse_execute(&self, frame: &Envelope) -> Result<(Vec<u8>, Vec<serde_json::Value>)> {
+    fn parse_execute(
+        &self,
+        frame: &Envelope,
+    ) -> Result<(Vec<u8>, Vec<serde_json::Value>, &'static str)> {
         let body = &frame.body;
         if body.len() < 2 {
             return Err(anyhow::anyhow!("EXECUTE frame too short"));
@@ -1306,11 +1404,13 @@ impl CassandraServer {
         let statement_id = body[2..2 + id_len].to_vec();
         let mut offset = 2 + id_len;
 
-        // Parse query parameters (Phase 2: basic types only)
-        // Skip consistency level (2 bytes)
+        // Consistency level (2 bytes). These bytes were read and thrown away under a comment
+        // saying "skip", so the handler was told nothing about what durability the client
+        // asked for — the same gap `parse_query` had, where the answer was hardcoded to ONE.
         if body.len() < offset + 2 {
             return Err(anyhow::anyhow!("EXECUTE frame truncated (consistency)"));
         }
+        let consistency = consistency_name(u16::from_be_bytes([body[offset], body[offset + 1]]));
         offset += 2;
 
         // Skip flags (1 byte)
@@ -1363,7 +1463,7 @@ impl CassandraServer {
             }
         }
 
-        Ok((statement_id, params))
+        Ok((statement_id, params, consistency))
     }
 
     /// Send RESULT (Prepared) response
@@ -1596,6 +1696,54 @@ impl CassandraServer {
         ));
         self.send_error(stream_id, error_code, message, stream, status_tx)
             .await
+    }
+
+    /// Send ERROR 0x2500 UNPREPARED, whose body carries the id the driver must re-prepare.
+    ///
+    /// UNPREPARED is the one native-protocol error with a payload after the message:
+    /// `[int code][string message][short bytes id]`. Omitting the id is not a smaller version
+    /// of the same answer — a driver reads the trailing bytes unconditionally and treats a
+    /// missing id as a framing fault, so it must be written.
+    async fn send_unprepared_error(
+        &self,
+        stream_id: i16,
+        statement_id: &[u8],
+        stream: &mut TcpStream,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) -> Result<()> {
+        let message = "netget: statement not prepared on this connection";
+        let mut body = Vec::new();
+        body.extend_from_slice(&CASSANDRA_ERROR_UNPREPARED.to_be_bytes());
+        body.extend_from_slice(&(message.len() as u16).to_be_bytes());
+        body.extend_from_slice(message.as_bytes());
+        // [short bytes]: a 2-byte length then the id. Ids come from `send_prepared`, which
+        // writes a 16-byte hash, so the cast cannot truncate in practice; clamp anyway rather
+        // than emit a length that disagrees with what follows it.
+        let id_len = u16::try_from(statement_id.len()).unwrap_or(u16::MAX) as usize;
+        body.extend_from_slice(&(id_len as u16).to_be_bytes());
+        body.extend_from_slice(&statement_id[..id_len]);
+
+        let response = Envelope {
+            version: Version::V4,
+            direction: Direction::Response,
+            flags: Flags::empty(),
+            stream_id,
+            opcode: Opcode::Error,
+            body,
+            tracing_id: None,
+            warnings: vec![],
+        };
+
+        let bytes = response.encode_with(Compression::None)?;
+        stream.write_all(&bytes).await?;
+
+        Log::new(Some(status_tx)).trace(format!(
+            "Cassandra → ERROR 0x{:04X} UNPREPARED id={}",
+            CASSANDRA_ERROR_UNPREPARED,
+            hex::encode(statement_id)
+        ));
+
+        Ok(())
     }
 
     /// Send ERROR response

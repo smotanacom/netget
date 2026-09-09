@@ -4,6 +4,11 @@
 
 CouchDB-compatible server implementing the CouchDB HTTP/JSON REST API. The server handles database management, document CRUD, views (MapReduce), changes feed, replication, and basic authentication with full LLM control over responses. This is a "virtual" document database where the LLM maintains data and query results through conversation context.
 
+**State**: `Experimental`, and it stays there. The only e2e evidence is `reqwest`, a generic
+HTTP client, which proves an HTTP server answers — not that the CouchDB API on top of it is
+right. `metadata()` claimed `couch_rs`; that is what the CouchDB *client* protocol uses and no
+test has ever pointed it at this server. Promoting this means driving it with a real CouchDB
+client or replicator.
 **Port**: 5984 (default CouchDB port)
 **Protocol**: HTTP/1.1 with JSON payloads
 **API Version**: CouchDB 3.5.1 compatible
@@ -61,6 +66,23 @@ CouchDB-compatible server implementing the CouchDB HTTP/JSON REST API. The serve
   - `Server: CouchDB/3.5.1 (NetGet LLM)`
   - `ETag: "{revision}"` for documents
   - `WWW-Authenticate: Basic realm="CouchDB"` for auth challenges
+
+### Request body limit
+
+The body is bounded at `MAX_REQUEST_BODY_BYTES` (8 MiB) with `http_body_util::Limited`, and a
+larger one is refused with **413** `{"error": "too_large"}` *before* any LLM call. `Incoming`
+has no default limit, so this used to buffer whatever an unauthenticated peer chose to send —
+one `POST /db/_bulk_docs` was enough to exhaust the process — and the body is then embedded
+whole in an LLM prompt, so there is no legitimate large one either.
+
+The old `Err` arm fell through with an **empty** body, which is worse than the limit being
+absent: the handler was shown a request with no body and answered it as though the client had
+sent none, so a truncated bulk update read as an empty one.
+
+The constant is defined locally rather than shared, because `server::http_common` is gated on
+`any(feature = "http", "http2", "oauth2", …)` and `couchdb` is not in that list — the same exit
+`xmlrpc` takes. Adding `couchdb` and `elasticsearch` to that gate in `src/server/mod.rs` would
+let both share `http_common::MAX_REQUEST_BODY_BYTES`.
 
 ### Stateless Operation
 
@@ -221,11 +243,21 @@ Simplified replication support:
   `"created": true` on a PUT/POST that stored a document so the reply is 201 Created, as
   real CouchDB answers; reads and deletes stay 200
 - `send_all_dbs`: List of all databases
-- `send_all_docs`: List of all documents in database
+- `send_all_docs`: List of all documents in database. `total_rows` is **required** and
+  enforced — a defaulted 0 beside a non-empty `rows` array is a response no client can
+  reconcile, and both replicators and Fauxton read it
 - `send_bulk_docs_response`: Bulk operation results
-- `send_view_response`: View query results (MapReduce)
-- `send_changes_response`: Changes feed response
-- `send_replication_response`: Replication protocol response
+- `send_view_response`: View query results (MapReduce). `total_rows` **required**, as above
+- `send_changes_response`: Changes feed response. `last_seq` is **required** and enforced: it
+  is the checkpoint a replicator stores and resumes from, so the old default of `"0"` told the
+  peer it had seen nothing immediately after handing it changes — which makes it restart from
+  the beginning of the database on every pass, forever
+- `send_replication_response`: Replication protocol response. `session_id` and
+  `source_last_seq` are **required**. Every parameter used to be optional with a default
+  supplied, so a bare `{"type": "send_replication_response"}` produced `{"ok": true}` — the
+  most affirmative body the replication protocol has — with the literal session id `"abc123"`
+  and `source_last_seq: "0"`, for a replication nothing performed. That is the OAuth2
+  fail-open shape, and the peer stores `source_last_seq` as a checkpoint
 - `send_auth_required`: 401 Unauthorized challenge
 
 **Event Types**:
@@ -327,7 +359,8 @@ For any request without valid auth (when auth enabled), use send_auth_required w
 - Connection state stored in `ServerInstance.connections` HashMap
 - No protocol-specific connection state is recorded
 - Tracks: remote_addr, local_addr. `bytes_sent`/`bytes_received` are initialised to 0 and
-  never updated
+  never updated — `update_connection_stats` is not called, so the rail's `↓ ↑` counters stay
+  at zero for a live connection
 - Status: Active → Closed when the connection ends
 
 ### Concurrency

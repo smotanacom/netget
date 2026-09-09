@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::client::cassandra::actions::{
     CASSANDRA_CLIENT_CONNECTED_EVENT, CASSANDRA_CLIENT_RESULT_RECEIVED_EVENT,
@@ -38,6 +38,38 @@ enum Applied {
     Disconnect,
     /// The action executed but touched the session in no way.
     Nothing(&'static str),
+}
+
+/// How many query → result → query hops one action may set off.
+///
+/// `report_result` asks the model what to do with a result set, and the answer may be another
+/// query, whose result is reported in turn. The recursion was boxed but **not bounded**: a
+/// model that answers every result with another query looped for as long as the LLM budget
+/// lasted, hammering the server with no way to stop short of the client being removed. Boxing
+/// only makes the type finite; the cap is what makes the chain finite.
+const MAX_FOLLOWUP_DEPTH: u8 = 6;
+
+/// Map a CQL consistency-level name onto the driver's enum.
+///
+/// Names are the ones the native protocol and every driver use. Anything else returns `None`
+/// so the caller can refuse: silently running at the session default would serve a weaker
+/// guarantee than the model asked for.
+fn parse_consistency(name: &str) -> Option<scylla::frame::types::Consistency> {
+    use scylla::frame::types::Consistency;
+    match name.trim().to_ascii_uppercase().as_str() {
+        "ANY" => Some(Consistency::Any),
+        "ONE" => Some(Consistency::One),
+        "TWO" => Some(Consistency::Two),
+        "THREE" => Some(Consistency::Three),
+        "QUORUM" => Some(Consistency::Quorum),
+        "ALL" => Some(Consistency::All),
+        "LOCAL_QUORUM" => Some(Consistency::LocalQuorum),
+        "EACH_QUORUM" => Some(Consistency::EachQuorum),
+        "SERIAL" => Some(Consistency::Serial),
+        "LOCAL_SERIAL" => Some(Consistency::LocalSerial),
+        "LOCAL_ONE" => Some(Consistency::LocalOne),
+        _ => None,
+    }
 }
 
 /// Cassandra client that connects to a Cassandra/ScyllaDB server
@@ -182,6 +214,7 @@ impl CassandraClient {
                         llm_client.clone(),
                         app_state.clone(),
                         status_tx.clone(),
+                        0,
                     )
                     .await;
                 }
@@ -293,6 +326,7 @@ impl CassandraClient {
                     &llm_client,
                     &app_state,
                     &status_tx,
+                    0,
                 )
                 .await;
             }
@@ -302,7 +336,11 @@ impl CassandraClient {
         let _ = status_tx.send("__UPDATE_UI__".to_string());
     }
 
-    /// Execute a list of actions returned by the LLM
+    /// Execute a list of actions returned by the LLM.
+    ///
+    /// `depth` is how many follow-up hops led here; 0 for the connected event and for an
+    /// injected command. See [`MAX_FOLLOWUP_DEPTH`].
+    #[allow(clippy::too_many_arguments)]
     async fn execute_actions(
         actions: Vec<serde_json::Value>,
         protocol: Arc<CassandraClientProtocol>,
@@ -311,6 +349,7 @@ impl CassandraClient {
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
+        depth: u8,
     ) {
         for action in actions {
             let result = match protocol.execute_action(action) {
@@ -323,19 +362,36 @@ impl CassandraClient {
 
             match Self::apply_action(result, &session, client_id).await {
                 Ok(Applied::Query {
-                    rows, row_count, ..
+                    rows,
+                    row_count,
+                    query,
                 }) => {
-                    Self::report_result(
-                        rows,
-                        row_count,
-                        &protocol,
-                        &session,
-                        client_id,
-                        &llm_client,
-                        &app_state,
-                        &status_tx,
-                    )
-                    .await;
+                    if depth >= MAX_FOLLOWUP_DEPTH {
+                        warn!(
+                            "Cassandra client {} stopped a follow-up chain at depth {}: '{}' \
+                             returned {} row(s) but the result is not being reported, so the \
+                             model will not answer it",
+                            client_id, depth, query, row_count
+                        );
+                        let _ = status_tx.send(format!(
+                            "[WARN] Cassandra client {} hit the follow-up depth limit ({}); the \
+                             last query ran but its rows were not reported",
+                            client_id, MAX_FOLLOWUP_DEPTH
+                        ));
+                    } else {
+                        Self::report_result(
+                            rows,
+                            row_count,
+                            &protocol,
+                            &session,
+                            client_id,
+                            &llm_client,
+                            &app_state,
+                            &status_tx,
+                            depth,
+                        )
+                        .await;
+                    }
                 }
                 Ok(Applied::Disconnect) => {
                     info!("Cassandra client {} disconnecting", client_id);
@@ -371,19 +427,38 @@ impl CassandraClient {
                     .context("Missing 'query' in cql_query action data")?
                     .to_string();
 
-                // Consistency is parsed for the log only: scylla 1.3 does not expose a
-                // convenient per-statement consistency override on `query_unpaged`.
-                let consistency_str = data
-                    .get("consistency")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("ONE");
+                // `consistency` is advertised to the model as a parameter of
+                // `execute_cql_query`, so it has to reach the wire. It used to be read, logged
+                // and dropped under a comment claiming scylla exposes no per-statement
+                // override; `scylla::statement::unprepared::Statement::set_consistency` is
+                // exactly that, and `query_unpaged` takes `impl Into<Statement>`. A model
+                // asking for QUORUM was silently served at the session default, which for
+                // scylla is LOCAL_QUORUM — a different durability guarantee than the one
+                // requested, reported in the log as though it had been honoured.
+                let mut statement =
+                    scylla::statement::unprepared::Statement::new(query_str.clone());
+                let requested = data.get("consistency").and_then(|v| v.as_str());
+                if let Some(name) = requested {
+                    // An unrecognised level is refused rather than quietly downgraded: running
+                    // at a weaker consistency than asked for is the failure this fixes.
+                    let level = parse_consistency(name).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "unknown consistency level '{name}'; use one of ANY, ONE, TWO, \
+                             THREE, QUORUM, ALL, LOCAL_QUORUM, EACH_QUORUM, SERIAL, \
+                             LOCAL_SERIAL, LOCAL_ONE"
+                        )
+                    })?;
+                    statement.set_consistency(level);
+                }
                 debug!(
                     "Cassandra client {} executing query (consistency {}): {}",
-                    client_id, consistency_str, query_str
+                    client_id,
+                    requested.unwrap_or("session default"),
+                    query_str
                 );
 
                 let query_result = session
-                    .query_unpaged(query_str.as_str(), &[])
+                    .query_unpaged(statement, &[])
                     .await
                     .context("CQL query failed")?;
 
@@ -461,6 +536,7 @@ impl CassandraClient {
 
     /// Raise `cassandra_result_received` and run whatever the model answers.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     async fn report_result(
         rows_data: Vec<serde_json::Value>,
         row_count: usize,
@@ -470,6 +546,7 @@ impl CassandraClient {
         llm_client: &OllamaClient,
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
+        depth: u8,
     ) {
         let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
             return;
@@ -509,7 +586,9 @@ impl CassandraClient {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
 
-                // Execute next actions (boxed to avoid infinite type recursion)
+                // Execute next actions. Boxed because an `async fn` that awaits itself has
+                // an infinitely-sized future; bounded by `MAX_FOLLOWUP_DEPTH` because boxing
+                // alone leaves the *chain* unbounded, which is the part that mattered.
                 Box::pin(Self::execute_actions(
                     next_actions,
                     protocol.clone(),
@@ -518,6 +597,7 @@ impl CassandraClient {
                     llm_client.clone(),
                     app_state.clone(),
                     status_tx.clone(),
+                    depth + 1,
                 ))
                 .await;
             }

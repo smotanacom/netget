@@ -448,14 +448,19 @@ fn send_replication_response_action() -> ActionDefinition {
             Parameter {
                 name: "session_id".to_string(),
                 type_hint: "string".to_string(),
-                description: "Replication session ID".to_string(),
-                required: false,
+                description: "Replication session ID. Required: this response asserts the \
+                              replication ran, and a placeholder session id makes that \
+                              assertion on the handler's behalf"
+                    .to_string(),
+                required: true,
             },
             Parameter {
                 name: "source_last_seq".to_string(),
                 type_hint: "string".to_string(),
-                description: "Source database last sequence".to_string(),
-                required: false,
+                description: "Sequence the source has been replicated up to. Required: the \
+                              peer stores it as a checkpoint and resumes from it"
+                    .to_string(),
+                required: true,
             },
         ],
         example: serde_json::json!({
@@ -513,6 +518,35 @@ fn parse_status_code(action: &Value) -> Result<u16> {
     }
 
     Ok(raw as u16)
+}
+
+/// Read a count the action declares `required: true`.
+///
+/// `total_rows` is not decoration: a replicator and the Fauxton UI both use it to know how
+/// much of a database they have seen, so a defaulted 0 next to a non-empty `rows` array is a
+/// response that contradicts itself. Only the handler knows the real figure.
+fn required_count(action: &Value, act: &str, field: &str) -> Result<u64> {
+    action.get(field).and_then(|v| v.as_u64()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{act} requires `{field}` (a non-negative integer). It is a statement about the \
+             database that cannot be defaulted: 0 alongside a non-empty result set is a \
+             response no client can reconcile."
+        )
+    })
+}
+
+/// Read a non-empty string the action declares `required: true`.
+fn required_str<'a>(action: &'a Value, act: &str, field: &str) -> Result<&'a str> {
+    action
+        .get(field)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{act} requires a non-empty `{field}`. It is checkpoint state a peer stores \
+                 and resumes from, so a placeholder is worse than a refusal."
+            )
+        })
 }
 
 /// Serialize a response body. Serializing a `serde_json::Value` cannot fail, so the
@@ -597,8 +631,17 @@ impl Protocol for CouchDbProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("hyper v1.5 HTTP server with CouchDB REST API")
             .llm_control("Database CRUD, document CRUD, views, changes, replication")
-            .e2e_testing("couch_rs client library")
-            .notes("Virtual data (no persistence), LLM-controlled revisions and views")
+            // `couch_rs` is what the CouchDB *client* protocol uses; no test has ever pointed
+            // it at this server. `tests/server/couchdb/e2e_test.rs` drives `reqwest`, which
+            // proves an HTTP server answers — not that the CouchDB API on top of it is right.
+            // That is why this stays Experimental: the ratings that require "works against
+            // real clients" mean a client that implements *this* protocol.
+            .e2e_testing("reqwest (a generic HTTP client); no CouchDB client has been used")
+            .notes(
+                "Virtual data (no persistence), LLM-controlled revisions and views. Request \
+                 bodies are bounded at http_common::MAX_REQUEST_BODY_BYTES and a larger one \
+                 is refused with 413. No attachment content action and no Mango queries",
+            )
             .build()
     }
 
@@ -941,14 +984,10 @@ impl Server for CouchDbProtocol {
                 })
             }
             "send_all_docs" => {
-                let total_rows = action
-                    .get("total_rows")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-
                 let rows = action
                     .get("rows")
                     .ok_or_else(|| anyhow::anyhow!("Missing rows"))?;
+                let total_rows = required_count(&action, "send_all_docs", "total_rows")?;
 
                 let response = json!({
                     "total_rows": total_rows,
@@ -978,16 +1017,12 @@ impl Server for CouchDbProtocol {
                 })
             }
             "send_view_response" => {
-                let total_rows = action
-                    .get("total_rows")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-
                 let offset = action.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
 
                 let rows = action
                     .get("rows")
                     .ok_or_else(|| anyhow::anyhow!("Missing rows"))?;
+                let total_rows = required_count(&action, "send_view_response", "total_rows")?;
 
                 let response = json!({
                     "total_rows": total_rows,
@@ -1008,10 +1043,11 @@ impl Server for CouchDbProtocol {
                     .get("results")
                     .ok_or_else(|| anyhow::anyhow!("Missing results"))?;
 
-                let last_seq = action
-                    .get("last_seq")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0");
+                // Declared `required: true`. `last_seq` is the checkpoint a replicator
+                // stores and resumes from, so defaulting it to "0" tells the peer it has
+                // seen nothing — after handing it changes. A replicator that believes that
+                // restarts from the beginning of the database on every pass, forever.
+                let last_seq = required_str(&action, "send_changes_response", "last_seq")?;
 
                 let pending = action.get("pending").and_then(|v| v.as_u64()).unwrap_or(0);
 
@@ -1030,15 +1066,18 @@ impl Server for CouchDbProtocol {
                 })
             }
             "send_replication_response" => {
+                // `{"ok": true}` is the most affirmative body CouchDB's replication protocol
+                // has: it says the replication ran and checkpointed. With every parameter
+                // optional and every default supplied, a bare `{"type":
+                // "send_replication_response"}` produced it — complete with the literal
+                // session id "abc123" and `source_last_seq: "0"` — for a replication nothing
+                // performed. That is the OAuth2 fail-open shape: a model that meant to say
+                // nothing said yes. Both checkpoint fields are now required, because only
+                // the handler can know them.
                 let history = action.get("history").cloned().unwrap_or_else(|| json!([]));
-                let session_id = action
-                    .get("session_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("abc123");
-                let source_last_seq = action
-                    .get("source_last_seq")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0");
+                let session_id = required_str(&action, "send_replication_response", "session_id")?;
+                let source_last_seq =
+                    required_str(&action, "send_replication_response", "source_last_seq")?;
 
                 let response = json!({
                     "ok": true,

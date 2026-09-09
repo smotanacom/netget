@@ -76,7 +76,16 @@ impl Protocol for CassandraClientProtocol {
                     Parameter {
                         name: "consistency".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Consistency level (ONE, QUORUM, ALL, etc.)".to_string(),
+                        // This is applied to the statement, not merely logged: it used to be
+                        // read and discarded, so a request for QUORUM ran at the session
+                        // default (LOCAL_QUORUM in scylla) and the log claimed otherwise.
+                        // An unrecognised name is refused rather than downgraded.
+                        description: "Consistency level for this statement: ANY, ONE, TWO, \
+                                      THREE, QUORUM, ALL, LOCAL_QUORUM, EACH_QUORUM, SERIAL, \
+                                      LOCAL_SERIAL or LOCAL_ONE. Omit to use the session \
+                                      default; an unrecognised value is rejected rather than \
+                                      silently downgraded"
+                            .to_string(),
                         required: false,
                     },
                 ],
@@ -122,7 +131,12 @@ impl Protocol for CassandraClientProtocol {
                     Parameter {
                         name: "consistency".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Consistency level".to_string(),
+                        description: "Consistency level for this statement: ANY, ONE, TWO, \
+                                      THREE, QUORUM, ALL, LOCAL_QUORUM, EACH_QUORUM, SERIAL, \
+                                      LOCAL_SERIAL or LOCAL_ONE. Omit to use the session \
+                                      default; an unrecognised value is rejected rather than \
+                                      silently downgraded"
+                            .to_string(),
                         required: false,
                     },
                 ],

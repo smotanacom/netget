@@ -202,7 +202,21 @@ Supported consistency levels (via `consistency` parameter):
 - `EACH_QUORUM`: Quorum in each datacenter
 - `LOCAL_ONE`: One replica in local datacenter
 
-Default: `ONE` (fastest, least consistency)
+The level is applied to the statement (`Statement::set_consistency`), not merely logged. It
+used to be read, printed and dropped under a comment claiming scylla exposes no per-statement
+override — it does — so a model asking for `QUORUM` was served at the session default, which
+for scylla is `LOCAL_QUORUM`, and the log said `QUORUM`. An unrecognised name is now **refused**
+rather than downgraded: running at a weaker guarantee than the one requested is the failure the
+fix exists to prevent.
+
+Omitting the parameter uses the session default rather than forcing `ONE`.
+
+**Follow-up chains are bounded** by `MAX_FOLLOWUP_DEPTH` (6). `report_result` asks the model
+what to do with a result set and the answer may be another query, whose result is reported in
+turn; the recursion was boxed but not capped, so a model that answered every result with
+another query looped for as long as the LLM budget lasted. Boxing only makes the *type* finite.
+Past the bound the query still runs — refusing it would discard work the model asked for — but
+its rows are not reported, and the cap is logged at WARN and on the status stream.
 
 ## Limitations
 

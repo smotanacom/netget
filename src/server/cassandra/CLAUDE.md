@@ -3,7 +3,13 @@
 Cassandra native binary protocol (CQL v4). The handler answers every query; the server holds no
 tables and no rows.
 
-**State**: `Experimental` · **Port**: 9042 · **Stack**: `ETH>IP>TCP>Cassandra`
+**State**: `Beta`, and `metadata()` agrees — this line said `Experimental` while the code said
+`Beta`, so neither was checkable. The evidence is `tests/server/cassandra/e2e_test.rs`, which
+drives the real **scylla** driver in eight cases, none `#[ignore]`d and none skipping when
+something is missing. Not Stable: spec compliance and scripting support have not been reviewed.
+**Port**: 9042 · **Stack**: `ETH>IP>TCP>Cassandra`
+**Startup parameters**: none. `send_first` was declared and discarded; CQL is strictly
+client-first, so it could never have been honoured.
 
 ## Libraries
 
@@ -59,6 +65,14 @@ correlation-related needs to be in the event data or in a static handler.
 calls `.with_actions(...)`, so the model is offered a narrowed, correct list rather than the
 protocol's whole sync set.
 
+`cassandra_query` and `cassandra_execute` both carry the **consistency level the client
+actually asked for**, read from the frame's `query_parameters` — `ANY`, `ONE`, `TWO`, `THREE`,
+`QUORUM`, `ALL`, `LOCAL_QUORUM`, `EACH_QUORUM`, `SERIAL`, `LOCAL_SERIAL`, `LOCAL_ONE`, or
+`UNKNOWN` for a code outside that set. `cassandra_query` used to report the literal `"ONE"` for
+every query whatever the client sent, and `parse_execute` read the two bytes and discarded them
+under a comment saying "skip". It is the one part of a CQL request a handler might reasonably
+branch on, and it was fiction.
+
 ## Authentication
 
 A driver only sends credentials if the server answers STARTUP with AUTHENTICATE. Nothing used
@@ -108,6 +122,21 @@ decimal. A handler that declares one of these gets varchar on the wire.
 - **`close_this_connection` now closes.** It used to break only out of the inner frame loop;
   the outer loop then re-entered `read_buf` and the connection stayed open, making the action a
   no-op on every path. Frame-handling errors had the same shape.
+- **A frame we cannot parse is answered, not dropped.** The `Err` exit from `handle_frame` set
+  `closing = true` under a comment reading "send error frame and close connection" and then
+  sent nothing, so a driver blocked on that stream id saw the socket vanish and reported a
+  *transport* fault. It now answers ERROR `0x000A` PROTOCOL_ERROR first. The stream id comes
+  from header bytes 2..4 and does not depend on the body parsing, so the reply reaches the
+  right request; the message is a fixed string, never the internal error, which carries anyhow
+  context and library wording.
+- **An unknown prepared-statement id answers UNPREPARED (`0x2500`), not silence.** This was the
+  same `Err` exit and it is reachable in ordinary use: ids are a hash of the query text and are
+  held **per connection**, so a driver executing on a pooled connection that never saw the
+  PREPARE lands here, as does one reconnecting. `0x2500` is the one native-protocol error with
+  a payload after the message — `[short bytes]` naming the id — and it must be written, because
+  a driver reads those trailing bytes unconditionally. scylla re-PREPAREs and retries on it, so
+  the statement then succeeds instead of the session dying.
+  `tests/server/cassandra/protocol_error_test.rs` covers both.
 - **The accept loop breaks** on error rather than retrying immediately and spinning on a
   persistent EMFILE.
 - **SUPPORTED is never empty.** If the handler supplies no options, the server answers with
@@ -129,6 +158,8 @@ decimal. A handler that declares one of these gets varchar on the wire.
 - **No tracing.**
 - **Prepared statement ids are `DefaultHasher` over the query text.** Distinct queries can
   collide, and ids are not stable across processes.
+- **Consistency is reported, never enforced.** The handler is told what the client asked for
+  and can refuse; nothing here counts replicas, because there are none.
 - **Keyspace/table in result metadata are hardcoded** to `system`/`local` for rows and
   `netget`/`data` for prepared statements. Drivers that route by token or by keyspace will not
   behave sensibly.
@@ -139,8 +170,16 @@ decimal. A handler that declares one of these gets varchar on the wire.
 
 `tests/server/cassandra/e2e_test.rs` drives the real **scylla** driver: connect, SELECT,
 error response, multiple queries, prepared statements, parameter mismatch, and concurrent
-connections. All 8 pass. The authentication path is exercised by no test — it is reachable
-now, but has not been driven end to end by a real driver.
+connections. All 8 pass. `llm_failure_test.rs` and `protocol_error_test.rs` add three more,
+built against the v4 spec by hand rather than through the driver — a driver cannot be got to
+the point of issuing a deliberately-bogus statement id, and the assertions are about specific
+opcodes and four-byte codes. 11 in total, all passing.
+
+The authentication path is exercised by no test — it is reachable now, but has not been driven
+end to end by a real driver. **Connection stats are not updated**: `update_connection_stats` is
+never called, so the rail's `↓ ↑` counters stay at zero for a live session. Fixing it means
+threading `connection_id` into eight independent frame senders; it was left alone deliberately
+rather than half-done.
 
 ## References
 

@@ -6,10 +6,15 @@ encoding/decoding. **There is no storage** — no collections, no documents, no
 in-memory map. The LLM answers every command except the `hello`/`isMaster`
 handshake, which the server answers itself.
 
-**State**: Experimental — LLM-authored, not human-reviewed. Verified against the
-official `mongodb` driver (the full E2E suite passes) and against a raw socket
-for the malformed-header paths.
+**State**: `Beta`, and `metadata()` agrees — this line used to say `Experimental`
+while the code claimed `Beta`, so neither was checkable. The evidence is
+`tests/server/mongodb/e2e_test.rs`: five cases driven by the **official `mongodb`
+Rust driver**, not `#[ignore]`d and with no skip-when-missing gate, covering the
+handshake plus find/insert/update/delete/error. Not Stable — spec compliance and
+scripting support have not been reviewed.
 **Port**: 27017 by default. **Privilege**: `None` (27017 > 1024).
+**Startup parameters**: none. `send_first` was declared and discarded; MongoDB is
+client-first, so it could never have been honoured.
 **Stack**: `ETH>IP>TCP>MongoDB`.
 
 ## What the model sees and controls
@@ -30,7 +35,7 @@ for the malformed-header paths.
 
 | Field | Values |
 |---|---|
-| `reason` | `client_disconnect`, `close_this_connection`, `invalid_message_length`, `unsupported_opcode`, `malformed_op_msg` |
+| `reason` | `client_disconnect`, `close_this_connection`, `invalid_message_length`, `incomplete_message_body`, `unsupported_opcode`, `malformed_op_msg` |
 
 The socket is dropped before this event fires, so the LLM round-trip does not
 hold the connection open.
@@ -52,6 +57,16 @@ action.
 
 `ns` is built from the request's own `$db` and collection. It used to be
 hardcoded to `test.collection` regardless of what the client asked for.
+
+Every count parameter is declared `required: true` and the executor **enforces
+it** rather than substituting a default. Each one is an assertion about what
+happened to the data: a defaulted `inserted_count` acknowledged a write nothing
+said had occurred, and a defaulted `matched_count` of 0 says "your filter matched
+nothing", which is a claim about a collection this server does not have.
+`error_response` is the same shape — code 0 is MongoDB's `OK`, so defaulting it
+produced a failure naming success as its cause. A missing field is reported to the
+model for repair; if repair fails, the `fail_closed_no_answer` path below answers
+`{ok: 0}`.
 
 Documents are given as JSON and converted with `Bson::try_from`; use MongoDB
 extended JSON for non-JSON types (`{"_id": {"$oid": "507f1f77bcf86cd799439011"}}`).
@@ -132,6 +147,14 @@ then `flagBits=0 | sectionKind=0 | BSON document`.
 the process; `i32::MAX` allocated 2 GB per connection. Both were reachable with
 16 unauthenticated bytes.
 
+`messageLength` bounds one buffer; `BODY_READ_TIMEOUT` (30s) bounds how long the
+peer may take to deliver it. Sixteen bytes claiming a 48 MB body used to pin 48 MB
+per connection for as long as the peer cared to stay silent, so a hundred idle
+connections was 4.8 GB bought with 1.6 kB of traffic. The rest of a message whose
+header has already arrived is in flight by definition, so the deadline refuses a
+stalled peer without truncating a legitimate one; the connection ends with
+`reason: incomplete_message_body`.
+
 Anything other than opCode 2013 closes the connection rather than being skipped —
 skipping left the client waiting forever for a reply it could parse. OP_QUERY
 (2004), OP_COMPRESSED (2012) and section kind 1 are all rejected this way.
@@ -147,6 +170,11 @@ skipping left the client waiting forever for a reply it could parse. OP_QUERY
   disconnect event.
 - No per-connection state machine: the read loop is sequential, so concurrent LLM
   calls on one connection cannot happen.
+- `update_connection_stats` fires on every message read and every reply written
+  (`record_received` / `write_response`), so the rail's `↓ ↑` counters and
+  `last_activity` reflect the socket. MongoDB is connection-oriented and does
+  **not** declare `.connectionless()`, so the 10-second idle sweep leaves its
+  connections alone.
 
 ## Not implemented
 

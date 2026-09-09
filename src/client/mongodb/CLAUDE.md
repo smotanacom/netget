@@ -48,8 +48,25 @@ Execute Actions from LLM
 For each result:
     ├─ Convert BSON → JSON
     ├─ Send mongodb_result_received Event to LLM
-    └─ Execute follow-up actions
+    └─ Execute follow-up actions — which report their results too, up to
+       MAX_FOLLOWUP_DEPTH (4)
 ```
+
+**The chain used to stop after one hop.** Follow-ups ran through `apply_action`
+directly, which executes but raises no event, under a comment arguing that was a
+deliberate bound. It is the recorded `elasticsearch` client defect: a `find` the
+model issued in reply to an insert confirmation ran and returned its documents to
+nobody. The honest form of the same protection is a depth bound — every operation
+reports, the recursion is boxed (an `async fn` awaiting itself has an
+infinitely-sized future), and past depth 4 an action still executes but its result
+is not reported, so nothing recurses further. The cap is logged at WARN and on the
+status stream, never silently.
+
+**Maturity**: `Experimental`. The e2e tests point this client at NetGet's *own*
+MongoDB server, so the official driver is the subject rather than the corroborating
+peer; nothing has run it against a real `mongod`. Both test files are therefore
+gated on `all(feature = "mongodb", feature = "mongodb-server")` — `e2e_test.rs` was
+gated on `mongodb` alone and its four tests failed outright on that feature set.
 
 ### State Management
 
