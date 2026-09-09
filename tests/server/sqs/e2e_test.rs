@@ -8,12 +8,9 @@
 
 #![cfg(all(test, feature = "sqs", feature = "sqs"))]
 
+use super::super::helpers::start_netget_server;
 use aws_config::BehaviorVersion;
 use aws_sdk_sqs::Client;
-use std::time::Duration;
-use tokio::time::sleep;
-
-use super::super::helpers::start_netget_server;
 
 /// Test basic SQS queue operations: CreateQueue, SendMessage, ReceiveMessage, DeleteMessage
 ///
@@ -140,8 +137,6 @@ async fn test_sqs_basic_queue_operations() {
         "Queue URL should contain queue name"
     );
 
-    sleep(Duration::from_millis(500)).await;
-
     // Test 2: SendMessage (3 messages)
     for i in 1..=3 {
         let send_result = client
@@ -166,8 +161,6 @@ async fn test_sqs_basic_queue_operations() {
             send_output.md5_of_message_body.is_some(),
             "MD5 should be present"
         );
-
-        sleep(Duration::from_millis(300)).await;
     }
 
     // Test 3: ReceiveMessage
@@ -189,8 +182,6 @@ async fn test_sqs_basic_queue_operations() {
     assert!(!messages.is_empty(), "Should receive messages");
     assert!(messages.len() <= 3, "Should not exceed max messages");
 
-    sleep(Duration::from_millis(500)).await;
-
     // Test 4: DeleteMessage (delete first message)
     if let Some(first_message) = messages.first() {
         let receipt_handle = first_message.receipt_handle.as_ref().unwrap();
@@ -207,8 +198,6 @@ async fn test_sqs_basic_queue_operations() {
             "DeleteMessage failed: {:?}",
             delete_result.err()
         );
-
-        sleep(Duration::from_millis(500)).await;
     }
 
     // Test 5: GetQueueAttributes
@@ -233,7 +222,11 @@ async fn test_sqs_basic_queue_operations() {
 
     println!("✓ All SQS basic operations passed");
 
-    // Verify mock expectations were met
+    // Wait for the exchange the mocks describe rather than trusting the SDK calls above to
+    // have covered it. Each `send()` is awaited, so its own request is recorded before the
+    // next line — but the last response can still be in flight when the test reaches here
+    // under load, and `wait_for_mocks` returns as soon as the expectations are met.
+    server.wait_for_mocks(30).await;
     server
         .verify_mocks()
         .await
@@ -355,8 +348,6 @@ async fn test_sqs_message_visibility() {
     assert!(create_result.is_ok());
     let queue_url = create_result.unwrap().queue_url.unwrap();
 
-    sleep(Duration::from_millis(500)).await;
-
     // Send a message
     let send_result = client
         .send_message()
@@ -365,8 +356,6 @@ async fn test_sqs_message_visibility() {
         .send()
         .await;
     assert!(send_result.is_ok());
-
-    sleep(Duration::from_millis(500)).await;
 
     // Receive the message
     let receive1 = client
@@ -381,8 +370,6 @@ async fn test_sqs_message_visibility() {
 
     let receipt_handle = messages1[0].receipt_handle.as_ref().unwrap();
 
-    sleep(Duration::from_millis(500)).await;
-
     // Try to receive again immediately - in real mode with LLM, this should be empty
     // (message in-flight), but in mock mode we can't test this behavior since both
     // ReceiveMessage calls have identical parameters.
@@ -395,8 +382,6 @@ async fn test_sqs_message_visibility() {
     assert!(receive2.is_ok());
     // Skip visibility timeout assertion in mock mode - this behavior is LLM-specific
     // and can only be properly tested with real Ollama
-
-    sleep(Duration::from_millis(500)).await;
 
     // Delete the message
     let delete_result = client
@@ -413,7 +398,11 @@ async fn test_sqs_message_visibility() {
 
     println!("✓ SQS visibility timeout test passed");
 
-    // Verify mock expectations were met
+    // Wait for the exchange the mocks describe rather than trusting the SDK calls above to
+    // have covered it. Each `send()` is awaited, so its own request is recorded before the
+    // next line — but the last response can still be in flight when the test reaches here
+    // under load, and `wait_for_mocks` returns as soon as the expectations are met.
+    server.wait_for_mocks(30).await;
     server
         .verify_mocks()
         .await
@@ -498,7 +487,11 @@ async fn test_sqs_queue_not_found() {
 
     println!("✓ SQS error handling test passed");
 
-    // Verify mock expectations were met
+    // Wait for the exchange the mocks describe rather than trusting the SDK calls above to
+    // have covered it. Each `send()` is awaited, so its own request is recorded before the
+    // next line — but the last response can still be in flight when the test reaches here
+    // under load, and `wait_for_mocks` returns as soon as the expectations are met.
+    server.wait_for_mocks(30).await;
     server
         .verify_mocks()
         .await

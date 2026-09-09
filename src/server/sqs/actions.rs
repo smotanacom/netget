@@ -61,10 +61,14 @@ pub static SQS_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         },
     ])
     .with_actions(vec![send_sqs_response_action()])
+    // Only fields `sqs_request` actually carries. `{client_ip}`, `{status}` and
+    // `{duration_ms}` were in this template and in none of the event data, and a missing
+    // field renders as the empty string — so the INFO line read
+    // " SQS SendMessage http://... ->  (ms)" on every request.
     .with_log_template(
         LogTemplate::new()
-            .with_info("{client_ip} SQS {operation} {queue_url} -> {status} ({duration_ms}ms)")
-            .with_debug("SQS {operation} queue={queue_url} from {client_ip}")
+            .with_info("SQS {operation} {queue_url}")
+            .with_debug("SQS {operation} queue={queue_url}")
             .with_trace("SQS request: {json_pretty(.)}"),
     )
 });

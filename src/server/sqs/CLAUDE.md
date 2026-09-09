@@ -107,6 +107,31 @@ storage.
 - Body: JSON object with operation-specific fields
 - Error format: `{"__type": "ErrorType", "message": "error message"}`
 
+### Failure semantics — and the `decision=` tags
+
+Every request is logged with a stable `decision=` tag, as `src/server/radius/` does, so an
+operator can tell the model's answer from netget failing to reach one:
+
+- `decision=model_answer` / `decision=model_reject` — the model produced an `sqs_response`;
+  reject is a 4xx/5xx status it chose itself (DEBUG)
+- `decision=fail_closed_no_action` — the handler ran and produced no `sqs_response`. WARN,
+  answered `500 InternalFailure`. It must not be an empty `200`: for SendMessage or
+  DeleteMessage that is a successful call to any AWS SDK, so a declined send would be
+  reported as delivered
+- `decision=fail_closed_body_rejected` — the request body exceeded `MAX_REQUEST_BYTES`
+  (4 MiB) or could not be read. WARN, answered `413 InvalidParameterValue`. The request
+  never reaches the model
+- `decision=fail_closed_llm_error category=Overloaded|Unavailable` — netget could not reach
+  a decision. WARN, and the **only** place the error text is written; it goes to
+  `netget.log` and the status stream and never to the peer
+
+On an LLM failure the peer gets a category from `crate::utils::WireFailure`, never the
+error itself, and the two categories keep distinct codes: `Overloaded` → `503`
+`ServiceUnavailable` + `Retry-After: 5`, which every AWS SDK's default retry policy honours,
+and `Unavailable` → `500` `InternalFailure`, which is terminal. Both used to be a hardcoded
+`500 {"__type":"InternalFailure","message":"Internal server error"}`, so a transient backend
+saturation looked like a permanent fault and the client did not retry.
+
 ## LLM Integration
 
 ### Action-Based Responses
@@ -265,7 +290,8 @@ does not exist. Handlers come from the caller, via `open_server`'s `event_handle
   are not shown to the LLM
 - **HTTP/1.1 only** - no HTTP/2 support
 - **JSON protocol only** - legacy Query protocol not implemented
-- **No streaming** - full request/response buffering
+- **No streaming** - full request/response buffering, capped at `MAX_REQUEST_BYTES` (4 MiB)
+  in `mod.rs`; a larger body is refused with `413` and never reaches the model
 - **Standard queues only** - FIFO queues not implemented
 - **No DLQ** - Dead Letter Queues not implemented
 - **No long polling** - WaitTimeSeconds supported in design but requires async waiting
