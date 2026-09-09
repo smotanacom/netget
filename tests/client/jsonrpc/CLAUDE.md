@@ -7,11 +7,12 @@ local JSON-RPC server (also powered by NetGet) to avoid external dependencies.
 
 ## LLM Call Budget
 
-**Target:** < 10 calls
-**Actual:** ~6 calls
+**Target:** < 10 calls per file
+**Actual:** ~12 across four tests
 
-- 3 server startups (1 per test)
-- 3 client connections (1 per test)
+- 4 server startups (1 per test)
+- 4 client connections (1 per test)
+- 4 more in the chaining test (2 server methods, 2 client response events)
 
 ## Tests
 
@@ -30,6 +31,18 @@ local JSON-RPC server (also powered by NetGet) to avoid external dependencies.
     - Spawn JSON-RPC server with add/multiply methods
     - Client sends batch request with 2 calls
     - Verify batch handling
+
+4. **test_jsonrpc_client_chains_a_second_request_from_a_response** (6 LLM calls)
+    - `step_one` on connect, `step_two` in answer to its response, and a third client call
+      for `step_two`'s response — so it pins a chain of depth 2, not depth 1.
+    - This is the regression guard for `MAX_FOLLOWUP_DEPTH`. The client has got this wrong
+      twice: follow-up actions discarded outright, then dispatched through the non-notifying
+      `perform_*` cores so the chain was exactly one step deep. Verified non-vacuous by
+      setting the bound to 0, which fails it with
+      `Rule #2: expected exactly 2, got 1 - event=jsonrpc_response_received`.
+    - **One** rule handles both response events and branches on `result`. Two rules on the
+      same event with no way to tell them apart is first-match-wins, and the second would
+      report zero calls.
 
 ## Runtime
 

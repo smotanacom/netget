@@ -114,10 +114,43 @@ LLM receives the full response object and can:
 
 ### Connection Management
 
-- HTTP-based (connectionless)
-- Each request is independent
-- No persistent TCP connection
+- HTTP-based (connectionless at the JSON-RPC level); each request is independent
 - Timeout: 30 seconds per request
+- **One `reqwest::Client` per host, built once on the blocking pool and kept.** This was
+  wrong in two ways at once: a client was built at connect and dropped on the next line
+  (`let _http_client = …`), and `perform_request` / `perform_batch_request` each built a
+  fresh one **per request**. `Client::builder().build()` sets up the rustls stack and loads
+  the platform root store — on macOS that reads the keychain through Security.framework,
+  synchronously and serialised across processes — so on the async runtime it parks a tokio
+  worker. Keeping the client also means later requests reuse its connection pool, which is
+  why "each request creates a new HTTP connection" is no longer a limitation.
+- The cache is keyed by **host**, not process-wide, because `ClientBuilder::resolve` is a
+  per-host override and that override is the point: `reqwest` hands the URL host to its DNS
+  resolver unconditionally, so `http://127.0.0.1:8080` performs a real `getaddrinfo` — on
+  macOS through mDNSResponder, measured blocking for 8.25 s under ~100 concurrent processes.
+  A NetGet JSON-RPC client is pointed at a literal IP more often than not.
+  `src/client/http/mod.rs` carries the full reasoning; this is a copy of it.
+
+### Chaining: `MAX_FOLLOWUP_DEPTH`
+
+A request the model issues **in answer to a response** gets its own `jsonrpc_response_received`
+event, up to a depth of 6. The chain `request → response event → next request` is genuinely
+self-referential, so `apply_action` returns a boxed `dyn Future + Send` to cut the type cycle
+(an `async fn` awaiting itself is E0391, and `+ Send` has to be named because the deferred arm
+awaits it inside a `tokio::spawn`).
+
+This has been wrong twice. First the follow-up actions were discarded outright (`actions: _` at
+both notify sites), so answering the response event did nothing — the whole point of raising it.
+The repair then dispatched through the `perform_*` cores, which raise no event: bounded, but
+exactly **one** step deep, so the second request's own reply went nowhere and the model went
+deaf after it. That is the `elasticsearch`/`http2` shape the root CLAUDE.md names, and its
+prescribed answer is a depth bound rather than silence.
+
+The bound is checked in `run_follow_ups`, i.e. *after* the event is raised, so the model always
+learns what a request answered; only its next request is refused, and the refusal is logged at
+WARN and sent to the status stream rather than being silent.
+`tests/client/jsonrpc/e2e_test.rs::test_jsonrpc_client_chains_a_second_request_from_a_response`
+pins depth 2 and fails if the chain shortens.
 
 ### State Management
 
@@ -181,8 +214,8 @@ protocol_data: {
   Names are lowercased before merging (HTTP header names are case-insensitive) and applied
   from one map, because `reqwest::RequestBuilder::header` appends rather than replaces.
 - **Automatic request ID** - LLM must provide IDs (could auto-generate in future)
-- **Connection pooling** - Each request creates new HTTP connection
 - **Retry logic** - No automatic retries on failure
+- **Chain length** - a response-driven chain stops at `MAX_FOLLOWUP_DEPTH` (6); see above
 
 ### Specification Compliance
 
