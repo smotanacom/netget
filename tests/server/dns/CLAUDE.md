@@ -20,7 +20,9 @@ resolution. Uses hickory-client (real DNS client) for protocol correctness.
 - `test_dns_multiple_records()`: 2 LLM calls (example.com + mail.example.com queries)
 - `test_dns_txt_record()`: 1 LLM call (TXT record query)
 - `test_dns_nxdomain()`: 1 LLM call (NXDOMAIN for unknown domain)
-- **Total: 5 LLM calls** (well under 10 limit)
+- `dig_test::test_dns_answers_dig()`: 1 startup + 3 query calls, one server
+- **Total: 9 LLM calls** (under the 10 limit; `dig_test` bundles its three cases into
+  one server rather than spawning three, which is what keeps it there)
 
 **Optimization Opportunity**: Could consolidate into single comprehensive DNS server handling all record types and
 domains, reducing to 1 startup call + 5 query calls = 6 total. However, current approach provides better isolation and
@@ -181,9 +183,19 @@ Client ignores response ❌ timeout
 **Why hickory-client?**:
 
 1. Real DNS protocol validation (not just "any UDP response")
-2. Ensures NetGet generates RFC-compliant DNS packets
-3. Same library family as server-side hickory-proto
-4. Async/await compatible with Tokio
+2. Async/await compatible with Tokio
+
+Point 3 used to read "same library family as server-side hickory-proto", listed as an
+advantage. It is the opposite: hickory-client decodes with the same codec
+hickory-proto encoded with, so on its own this suite proves the wire format is
+self-consistent, not that it is correct. That is the circularity that kept `rss` at
+Experimental until `feed-rs` did its parsing.
+
+**`dig_test.rs` is the answer to it.** ISC BIND's `dig` shares no code with hickory,
+and it is stricter than the round-trip - it checks that the transaction id it chose
+comes back and that the question section matches what it asked, so a reply a real
+resolver would discard fails there and passes here. It **fails** when `dig` is absent
+rather than printing SKIP, per the `npm` precedent.
 
 ## Expected Runtime
 
@@ -211,9 +223,9 @@ Client ignores response ❌ timeout
 - **Prompt**: "listen on port {port} via dns. Respond to all A record queries for example.com with IP address
   93.184.216.34"
 - **Client**: Queries example.com A record using hickory-client
-- **Expected**: Response contains at least one A record
+- **Expected**: exactly one A record holding 93.184.216.34, RCODE NOERROR
 - **Purpose**: Tests basic IPv4 address resolution
-- **Validation**: Checks `response.answers()` is non-empty
+- **Validation**: `answer_a()` asserts one A record by value
 
 ### 2. DNS Multiple Records (`test_dns_multiple_records`)
 
@@ -238,29 +250,30 @@ Client ignores response ❌ timeout
 - **Prompt**: "listen on port {port} via dns. Only respond with A records for known.example.com (1.2.3.4). For all other
   domains, return NXDOMAIN"
 - **Client**: Queries unknown.example.com (should fail)
-- **Expected**: Either error or empty response (implementation-dependent)
+- **Expected**: RCODE 3 (NXDOMAIN), zero answer records, question echoed
 - **Purpose**: Tests error handling and NXDOMAIN response
-- **Note**: Test accepts both error and empty response as valid (NXDOMAIN can be represented either way by client
-  library)
+- **Note**: all three are asserted. See "Known Issues" for what this used to accept
 
 ## Known Issues
 
-### 1. NXDOMAIN Test Variability
+### 1. NXDOMAIN Test Variability - fixed, and it was not variability
 
-The `test_dns_nxdomain` test accepts two outcomes:
+`test_dns_nxdomain` used to match on `Ok`/`Err` and print
+"implementation-dependent behavior" in one arm and "server indicated domain not found"
+in the other, so **every** outcome passed - including NOERROR with an empty answer
+section, which tells a resolver the opposite of NXDOMAIN. Nothing here is
+implementation-dependent: the mock forces `send_dns_nxdomain`, so RCODE 3 is the only
+correct answer, and the test now asserts the RCODE, the empty answer section and the
+echoed question. `dig_test.rs` asserts `status: NXDOMAIN` off the header line for the
+same reason - an empty answer section alone does not distinguish the two.
 
-1. `Ok(response)` with empty answers or NXDOMAIN response code
-2. `Err(...)` when hickory-client interprets NXDOMAIN as error
+### 2. No Record Content Validation - fixed
 
-**Reason**: Different DNS client libraries handle NXDOMAIN differently. Some return it as error, some as successful
-response with error code. Test accommodates both.
-
-### 2. No Record Content Validation
-
-Tests check that responses exist but don't validate exact IP addresses or TXT content. This is intentional - LLM might
-format responses slightly differently (e.g., adding whitespace, capitalization).
-
-**Future Improvement**: Add assertions for exact record content once LLM responses are more consistent.
+Tests asserted `!answers.is_empty()`, which passes for an executor that ignores the
+`ip` it was handed. They now assert the address, the TXT character-string and the
+RCODE by value. The old rationale - "LLM might format responses slightly differently"
+- does not apply: these are mock-driven, the handler's output is fixed, and the values
+are compared after hickory has decoded them into typed rdata, not as text.
 
 ### 3. No AAAA, MX, CNAME Tests
 

@@ -77,7 +77,13 @@ DoT uses TCP framing (unlike standard DNS UDP):
 - Allows multiple queries per connection
 - Prevents message fragmentation issues
 - Read: `read_exact(&mut [0u8; 2])` then `read_exact(&mut vec![0u8; len])`
-- Write: `write_all(&len.to_be_bytes())` then `write_all(&dns_bytes)`
+- Write: `DotServer::send_framed`, which **checks** the length rather than casting
+  it. Every write site used `bytes.len() as u16`, which wraps silently: a
+  65540-byte message (reachable through `send_dns_response`, whose whole point is
+  that the model hands over arbitrary hex) announced a length of 4 and then wrote
+  65540 bytes, so the peer read 4 of them as a message and the rest as the next
+  length prefix - the stream desynchronised permanently and every later query on
+  that connection got garbage. Oversize is now refused and logged
 
 ### 4. Self-Signed Certificates
 
@@ -113,7 +119,11 @@ Event parameters:
 
 - `query_id` (number) - DNS transaction ID from request packet
 - `domain` (string) - Domain name being queried
-- `query_type` (string) - Record type (A, AAAA, MX, TXT, etc.)
+- `query_type` (string) - Record type (A, AAAA, MX, TXT, etc.), rendered with
+  `Display`. It was `format!("{:?}", ..)`; Debug and Display agree for the common
+  record types and not for all of them, and the model echoes this string straight
+  back into `send_dns_nxdomain`'s `query_type`, which parses it with
+  `RecordType::from_str`
 - `peer_addr` (string) - Client IP address and port
 
 ### Available Actions
@@ -177,9 +187,15 @@ a caller that asked for port 0 would be told the port was 0. The accept loop's
 
 1. **Accept**: TCP listener accepts connection on port 853
 2. **TLS Handshake**: `TlsAcceptor::accept()` performs TLS negotiation
-3. **Register**: Connection logged in INFO messages only - DoT adds no entry to
-   `ServerInstance.connections`, so DoT connections are invisible to the TUI
-   connection list and to per-connection scheduled tasks
+3. **Register**: a `ConnectionId` is allocated and a `ConnectionState` added to
+   `ServerInstance.connections` *before* the TLS handshake, so the peer appears in
+   the rail while TLS is still negotiating; `update_connection_stats` is called on
+   every message read and written, and `close_connection_on_server` runs however
+   the session ends - clean close, read error, idle timeout or a handshake that
+   never completed. None of this existed before September 2026: DoT drew an empty
+   peer list however many resolvers were talking to it, `{client_ip}` in the
+   `dot_query` template rendered empty because `call_llm` was passed `None` for the
+   connection, and the byte counters stayed at zero
 4. **Query Loop**: Read DNS queries, dispatch through `call_llm` (which runs any
    configured script/static handler first and only calls the model if none
    matches), send responses
@@ -224,6 +240,17 @@ All limitations from standard DNS protocol apply:
 - Each connection handled independently
 - No connection limits or rate limiting
 - Memory usage grows with concurrent connections
+
+Bounded in three places, though, all added September 2026:
+
+- the TLS handshake times out after 10s, so a peer cannot park a task by
+  connecting and saying nothing;
+- an established connection that sends no query for 300s is closed (RFC 7858 §3.4
+  leaves the server free to; the value is generous because resolvers legitimately
+  pin one connection);
+- each per-connection task is registered with `AppState::register_server_task`, so
+  `stop_server` aborts it. Unregistered, those tasks outlived the server that
+  accepted them and went on answering.
 
 ### 5. No EDNS0 Support
 

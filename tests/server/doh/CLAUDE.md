@@ -7,35 +7,34 @@ delivered over HTTPS with HTTP/2 transport.
 
 ## Test Strategy
 
-- **Single server setup**: One NetGet instance with Python script handles all test queries
-- **Real HTTPS client**: Uses reqwest with certificate verification disabled (accepts self-signed)
-- **Real DNS client**: Uses hickory-proto for DNS message construction/parsing
-- **Both HTTP methods**: Tests GET (base64url) and POST (binary) methods
-- **Script-driven**: Uses Python script for fast, deterministic responses
+- **Single server setup**: one NetGet instance answers all three queries in `e2e_test.rs`
+- **Real HTTPS client**: reqwest (hyper + rustls) with certificate verification disabled
+  (accepts NetGet's self-signed cert)
+- **Real DNS client**: hickory-proto for DNS message construction/parsing
+- **Both HTTP methods**: GET (base64url `?dns=`) and POST (`application/dns-message` body)
+- **Mock-driven**: dynamic mocks per query, echoing the client's transaction id out of the
+  event
+
+This section described a Python-script-driven test emitting a `dns_response` action until
+September 2026. There is no such action (the real name is `send_dns_response`, and it takes
+hex, not an `answers` array), and the test has been mock-driven for a long time. Verify
+against the file.
 
 ## LLM Call Budget
 
-- `test_doh_server()`: 1 LLM call (server startup with script generation)
-- Script handles all 3 DNS queries (0 additional LLM calls)
-- **Total: 1 LLM call** (excellent efficiency)
-
-**Why so efficient?**: Script-driven approach means LLM generates Python code once at startup, then all queries are
-handled by the script without further LLM involvement. DoH's REST API pattern is perfect for scripting.
+- `e2e_test::test_doh_server()`: 1 startup + 3 query calls = 4
+- `llm_failure_test::test_doh_answers_servfail_when_llm_fails()`: 1 startup; the query is
+  deliberately left unmatched, which is what drives `call_llm` to `Err`
+- `server_advertises_h2_alpn()`: 0 - a pure unit assertion on the TLS config
+- **Total: 5 LLM calls**
 
 ## Scripting Usage
 
-✅ **Scripting Enabled** - Python script handles all queries
+❌ **Scripting disabled** - mock-driven action responses.
 
-**Script Logic**:
-
-```python
-import json,sys
-d=json.load(sys.stdin)
-print(json.dumps({"actions":[{"type":"dns_response","query_id":d['event']['query_id'],"answers":[{"name":"example.com","type":"A","ttl":300,"data":"93.184.216.34"}]}]}))
-```
-
-**Why Python?**: Simple script returns same A record for all queries (regardless of domain). Demonstrates DoH's ability
-to handle scripted responses over HTTPS with both GET and POST methods.
+Dynamic mocks (`respond_with_actions_from_event`) are required rather than optional here, for
+the reason `tests/server/dns/CLAUDE.md` sets out at length: the transaction id is chosen at
+random by the client and must be echoed, and a static handler has no access to the event.
 
 ## Client Library
 
@@ -122,8 +121,9 @@ not the actual DNS queries.
 
 **Validation**:
 
-- Each response must have non-empty `answers()` section
-- Script returns same A record for all domains (expected behavior)
+- HTTP status 200 and `Content-Type: application/dns-message`
+- the transaction id the client chose is echoed, and so is the question
+- exactly one A record, holding the address that domain's handler chose
 - HTTP/2 connection persists between requests
 
 ## Known Issues
@@ -154,31 +154,38 @@ Test doesn't verify:
 
 **Reason**: Focus is on DoH protocol correctness, not TLS certificate infrastructure.
 
-### 3. No Error Response Tests
+### 3. Error responses - partly covered
 
-Test doesn't validate:
+`llm_failure_test.rs` covers the backend-failure case, which is the one with teeth: the reply
+must be a **SERVFAIL message inside a 200**, not a 5xx. RFC 8484 §4.2.1 makes 200 the status
+for "this transaction carried a DNS message"; a 5xx says the resolver endpoint is broken, and
+real DoH clients respond to that by marking the server down and failing over. The test asserts
+the status, the Content-Type, RCODE 2, the echoed id and question, and an empty answer section.
 
-- NXDOMAIN responses
-- HTTP 400 Bad Request for invalid queries
-- HTTP 415 Unsupported Media Type for wrong content-type
-- Server failure responses
+Still uncovered: NXDOMAIN over DoH (covered for plain DNS, and the code path is shared),
+HTTP 400 for a missing/undecodable `dns=` parameter, 413 for an oversized body, and 405 for a
+method other than GET/POST.
 
-**Future Enhancement**: Add test cases for error conditions with separate server instances.
+### 4. Answers are asserted by value, and the domains differ
 
-### 4. Script Returns Same Response for All
+`example.com` resolves to 93.184.216.34 and `test.com` to 93.184.216.35, so a reply routed to
+the wrong question is visible. Both used to return the same address and the assertion was
+`!answers.is_empty()`, which passes for an executor that ignores the `ip` it was handed.
 
-Current script returns `example.com -> 93.184.216.34` for **all** queries, regardless of domain or method. This is
-intentional for simplicity.
+### 5. Content-Type validation - now present, in both directions
 
-**Why acceptable?**: Tests DoH protocol mechanics (HTTPS transport, GET/POST methods, base64 encoding). Comprehensive
-DNS logic testing is covered by standard DNS tests.
+Both query helpers assert the response's `Content-Type: application/dns-message`, and the POST
+helper deliberately *sends* `Application/DNS-Message; charset=utf-8`. That mixed case and the
+parameter are the point: RFC 9110 §8.3 makes the media type case-insensitive and permits
+parameters, and the server compared the whole header value byte-for-byte against the canonical
+spelling, so a conformant client was rejected as "Invalid Content-Type".
 
-### 5. No Content-Type Validation
+### 6. Transaction id and question echo - now asserted
 
-Test doesn't verify that responses have `Content-Type: application/dns-message` header (though implementation does set
-it).
-
-**Future Enhancement**: Add assertion for correct content-type header.
+Both helpers used to leave the id at `DnsMessage::new()`'s default of 0 and never look at it
+again, so a server answering with the wrong id, or with no question section, was
+indistinguishable from one answering correctly - the exact defect `tests/server/dot/e2e_test.rs`
+found and fixed in its own client. They now pick a random id and assert both come back.
 
 ## Performance Notes
 

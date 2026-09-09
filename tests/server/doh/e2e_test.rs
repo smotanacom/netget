@@ -12,6 +12,50 @@ use reqwest::Client;
 use std::str::FromStr;
 use std::time::Duration;
 
+/// Assert a DoH reply correlates with the query that produced it.
+///
+/// Both helpers below used to leave the transaction id at `DnsMessage::new()`'s default of
+/// 0 and never look at it again, so a server that answered with the wrong id — or with no
+/// question section — looked identical to one that answered correctly. That is exactly the
+/// defect `tests/server/dot/e2e_test.rs` found and fixed in its own client, and DoH still
+/// had it. RFC 8484 carries an ordinary RFC 1035 message, so the same two checks apply:
+/// the id a resolver chose must come back, and the question it asked must be repeated.
+fn assert_correlates(response: &DnsMessage, query_id: u16, name: &Name) {
+    assert_eq!(
+        response.id(),
+        query_id,
+        "DoH reply carried transaction id {} but the query used {query_id}; \
+         a resolver would discard this reply",
+        response.id()
+    );
+    assert_eq!(
+        response.queries().len(),
+        1,
+        "reply must echo exactly one question"
+    );
+    assert_eq!(
+        response.queries()[0].name(),
+        name,
+        "reply must echo the queried name"
+    );
+}
+
+/// The single A record in a reply's answer section, as an address.
+///
+/// `None` when the answer section does not hold exactly one A record, which must fail the
+/// test rather than pass quietly — `!answers.is_empty()` passes for an executor that
+/// ignores the `ip` it was handed.
+fn answer_a(response: &DnsMessage) -> Option<std::net::Ipv4Addr> {
+    let answers = response.answers();
+    if answers.len() != 1 {
+        return None;
+    }
+    match answers[0].data() {
+        Some(hickory_proto::rr::RData::A(addr)) => Some(addr.0),
+        _ => None,
+    }
+}
+
 /// Helper to query DoH server using GET method (base64url encoded)
 async fn query_doh_get(
     client: &Client,
@@ -21,10 +65,14 @@ async fn query_doh_get(
 ) -> E2EResult<DnsMessage> {
     let url = format!("https://127.0.0.1:{}/dns-query", port);
 
-    // Build DNS query message
+    // Build DNS query message. A real resolver picks the id at random and drops any reply
+    // whose id does not match; the test must do the same or a server that never echoes it
+    // looks healthy here while failing against every real client.
     let name = Name::from_str(domain)?;
+    let query_id: u16 = rand::random();
     let mut query_msg = DnsMessage::new();
-    query_msg.add_query(Query::query(name, record_type));
+    query_msg.set_id(query_id);
+    query_msg.add_query(Query::query(name.clone(), record_type));
     query_msg.set_recursion_desired(true);
 
     // Serialize to wire format
@@ -38,10 +86,25 @@ async fn query_doh_get(
     // Send GET request
     let response = client.get(&url).query(&[("dns", encoded)]).send().await?;
 
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "RFC 8484 §4.2.1: a DNS message comes back as 200, whatever its RCODE"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/dns-message"),
+        "the body is a DNS message and must be labelled as one"
+    );
+
     let response_bytes = response.bytes().await?;
 
     // Parse DNS response
     let dns_response = DnsMessage::from_vec(&response_bytes)?;
+    assert_correlates(&dns_response, query_id, &name);
 
     Ok(dns_response)
 }
@@ -57,31 +120,46 @@ async fn query_doh_post(
 
     // Build DNS query message
     let name = Name::from_str(domain)?;
+    let query_id: u16 = rand::random();
     let mut query_msg = DnsMessage::new();
-    query_msg.add_query(Query::query(name, record_type));
+    query_msg.set_id(query_id);
+    query_msg.add_query(Query::query(name.clone(), record_type));
     query_msg.set_recursion_desired(true);
 
     // Serialize to wire format
     let query_bytes = query_msg.to_vec()?;
 
-    // Send POST request
+    // Send POST request. The Content-Type carries a `charset` parameter deliberately:
+    // RFC 9110 §8.3 makes the media type case-insensitive and allows parameters, and the
+    // server compared the whole header value byte-for-byte against the canonical spelling,
+    // so a conformant client was rejected for being conformant.
     let response = client
         .post(&url)
-        .header("Content-Type", "application/dns-message")
+        .header("Content-Type", "Application/DNS-Message; charset=utf-8")
         .body(query_bytes)
         .send()
         .await?;
+
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "a Content-Type differing only in case and parameters must be accepted"
+    );
 
     let response_bytes = response.bytes().await?;
 
     // Parse DNS response
     let dns_response = DnsMessage::from_vec(&response_bytes)?;
+    assert_correlates(&dns_response, query_id, &name);
 
     Ok(dns_response)
 }
 
 /// Create an HTTP client that accepts self-signed certificates (for testing)
-fn create_insecure_client(port: u16) -> E2EResult<Client> {
+///
+/// `pub(crate)` so `llm_failure_test` can reuse it rather than growing a second copy that
+/// drifts from this one — the same arrangement `dot` uses for `NoCertificateVerification`.
+pub(crate) fn create_insecure_client(port: u16) -> E2EResult<Client> {
     // Initialize rustls crypto provider (required for rustls 0.23+)
     use rustls::crypto::CryptoProvider;
     let _ = CryptoProvider::install_default(rustls::crypto::ring::default_provider());
@@ -191,8 +269,10 @@ async fn test_doh_server() -> E2EResult<()> {
                     {
                         "type": "send_dns_a_response",
                         "query_id": query_id,
+                        // Distinct from example.com's, so an answer routed to the wrong
+                        // question is visible rather than accidentally correct.
                         "domain": "test.com",
-                        "ip": "93.184.216.34",
+                        "ip": "93.184.216.35",
                         "ttl": 300
                     }
                 ])
@@ -214,7 +294,7 @@ async fn test_doh_server() -> E2EResult<()> {
             .and()
     });
 
-    let mut server = helpers::start_netget_server(server_config).await?;
+    let server = helpers::start_netget_server(server_config).await?;
 
     println!("DoH server started on port {}", server.port);
 
@@ -234,39 +314,41 @@ async fn test_doh_server() -> E2EResult<()> {
     // Create HTTP client
     let client = create_insecure_client(server.port)?;
 
-    // Test both GET and POST methods against the same server
+    // Test both GET and POST methods against the same server. `query_doh_*` additionally
+    // asserts the HTTP status, the Content-Type, and that the transaction id and question
+    // came back — none of which was checked before, so a reply no resolver would accept
+    // passed here.
+    //
+    // The `!!!T!!!` timing probes that used to sit in this block, and the `panic!("DIAG")`
+    // that replaced the `?`, were left over from the getaddrinfo investigation written up in
+    // `create_insecure_client` and `src/server/doh/CLAUDE.md`. That investigation is closed;
+    // the diagnostics turned a helpful error into "DIAG".
     println!("\n[Test 1] Querying via GET method...");
-    let tp = std::time::Instant::now();
-    let probe = tokio::net::TcpStream::connect(("127.0.0.1", server.port)).await;
-    eprintln!(
-        "!!!T!!! raw connect {:?} ok={}",
-        tp.elapsed(),
-        probe.is_ok()
+    let response1 = query_doh_get(&client, server.port, "example.com.", RecordType::A).await?;
+    assert_eq!(
+        answer_a(&response1),
+        Some("93.184.216.34".parse().unwrap()),
+        "example.com must resolve to the address its handler chose"
     );
-    drop(probe);
-    let t1 = std::time::Instant::now();
-    let response1 = match query_doh_get(&client, server.port, "example.com.", RecordType::A).await {
-        Ok(r) => {
-            eprintln!("!!!T!!! GET ok after {:?}", t1.elapsed());
-            r
-        }
-        Err(e) => {
-            eprintln!("!!!T!!! GET FAILED after {:?}: {e:?}", t1.elapsed());
-            panic!("DIAG");
-        }
-    };
-    assert!(!response1.answers().is_empty(), "Expected answer via GET");
-    println!("✓ GET response: {:?}", response1.answers()[0]);
+    println!("✓ GET response: 93.184.216.34");
 
     println!("\n[Test 2] Querying via POST method...");
     let response2 = query_doh_post(&client, server.port, "example.com.", RecordType::A).await?;
-    assert!(!response2.answers().is_empty(), "Expected answer via POST");
-    println!("✓ POST response: {:?}", response2.answers()[0]);
+    assert_eq!(
+        answer_a(&response2),
+        Some("93.184.216.34".parse().unwrap()),
+        "POST must reach the same handler as GET and get the same answer"
+    );
+    println!("✓ POST response: 93.184.216.34");
 
     println!("\n[Test 3] Another GET query - different domain...");
     let response3 = query_doh_get(&client, server.port, "test.com.", RecordType::A).await?;
-    assert!(!response3.answers().is_empty(), "Expected answer from mock");
-    println!("✓ GET response: {:?}", response3.answers()[0]);
+    assert_eq!(
+        answer_a(&response3),
+        Some("93.184.216.35".parse().unwrap()),
+        "test.com must resolve to its own address, not example.com's"
+    );
+    println!("✓ GET response: 93.184.216.35");
 
     println!("\n=== All DoH tests passed! ===");
 

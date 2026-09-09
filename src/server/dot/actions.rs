@@ -106,7 +106,7 @@ impl Protocol for DotProtocol {
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(853))
             .implementation("hickory-proto + tokio-rustls; DNS actions and action execution are delegated to the DNS protocol")
             .llm_control("Same as DNS (delegates to DNS protocol)")
-            .e2e_testing("tests/server/dot/e2e_test.rs - raw rustls client, mock-driven")
+            .e2e_testing("tests/server/dot/e2e_test.rs, not #[ignore]d: rustls - an independent TLS implementation - completes a real handshake, and the test asserts the transaction id and question are echoed and that each domain gets its own address. The RFC 7858 framing and the DNS message are hand-assembled in the test over hickory-proto as a codec, so the DNS layer's evidence is inherited from the dns protocol (which dig now validates) rather than proved here. What is NOT proved: a third-party DoT client completing a session - kdig +tls (knot-dnsutils) is the one to reach for, and is not installed on this machine.")
             .notes("Self-signed certs only, no client auth, TLS overhead")
             .build()
     }

@@ -9,6 +9,7 @@ use crate::llm::action_helper::call_llm;
 use crate::llm::ollama_client::OllamaClient;
 use crate::logging::emit::Log;
 use crate::protocol::Event;
+use crate::server::connection::ConnectionId;
 use crate::server::DotProtocol;
 use crate::state::app_state::AppState;
 use crate::state::ServerId;
@@ -21,8 +22,34 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration};
 use tokio_rustls::TlsAcceptor;
 use tracing::error;
+
+/// Bound on the TLS handshake for one accepted connection.
+///
+/// Without it, a peer that completes the TCP handshake and then sends nothing holds
+/// `acceptor.accept()` — and the task around it — open forever. That is reachable from the
+/// wire by anyone who can connect, and costs a task and a socket per attempt.
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Bound on how long an established DoT connection may sit without sending a query.
+///
+/// RFC 7858 §3.4 has the client manage an idle timeout and the server free to close an idle
+/// connection; without any bound here a connection that never sends a second query is a
+/// permanently parked task. This is deliberately generous — resolvers legitimately pin one
+/// TLS connection and reuse it — but finite.
+const IDLE_READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Pause after a failed `accept()` before trying again.
+///
+/// `accept` failing is usually transient (the peer went away between the SYN and the accept)
+/// and retrying immediately is right. It is not always transient: at the file-descriptor
+/// limit, `accept` returns `EMFILE` instantly and keeps doing so, and a bare `continue` then
+/// spins the accept loop at full speed writing a warning per iteration onto an **unbounded**
+/// status channel — turning "out of descriptors" into "out of memory". A short pause costs
+/// nothing in the transient case and bounds the pathological one.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
 /// DNS-over-TLS server
 pub struct DotServer;
@@ -87,6 +114,9 @@ impl DotServer {
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         let acceptor = TlsAcceptor::from(tls_config);
+        let local_addr = listener
+            .local_addr()
+            .context("Failed to get DoT listener local address")?;
 
         loop {
             match listener.accept().await {
@@ -94,14 +124,59 @@ impl DotServer {
                     Log::new(Some(&status_tx))
                         .debug(format!("DoT TCP connection from {}", peer_addr));
 
+                    // Register the peer in server state before the handshake, so the
+                    // dashboard rail shows the connection while TLS is still being
+                    // negotiated rather than only once a query arrives. Nothing tracked
+                    // DoT connections at all before this: a DoT server showed an empty
+                    // peer list however many resolvers were talking to it, and the
+                    // byte/packet counters the rail draws stayed at zero.
+                    let connection_id = ConnectionId::new(app_state.get_next_unified_id().await);
+                    {
+                        use crate::state::server::{
+                            ConnectionState as ServerConnectionState, ConnectionStatus,
+                            ProtocolConnectionInfo,
+                        };
+                        let now = std::time::Instant::now();
+                        app_state
+                            .add_connection_to_server(
+                                server_id,
+                                ServerConnectionState {
+                                    id: connection_id,
+                                    remote_addr: peer_addr,
+                                    local_addr,
+                                    bytes_sent: 0,
+                                    bytes_received: 0,
+                                    packets_sent: 0,
+                                    packets_received: 0,
+                                    last_activity: now,
+                                    status: ConnectionStatus::Active,
+                                    status_changed_at: now,
+                                    protocol_info: ProtocolConnectionInfo::empty(),
+                                },
+                            )
+                            .await;
+                    }
+                    let _ = status_tx.send("__UPDATE_UI__".to_string());
+
                     let acceptor = acceptor.clone();
                     let llm_client = llm_client.clone();
+                    let conn_state = app_state.clone();
                     let app_state = app_state.clone();
                     let status_tx = status_tx.clone();
 
-                    tokio::spawn(async move {
+                    // Registered, not detached. `stop_server` aborts the tasks a server
+                    // registered; an unregistered per-connection task survives it, so a
+                    // stopped DoT server went on serving every connection it had already
+                    // accepted.
+                    let handle = tokio::spawn(async move {
                         if let Err(e) = Self::handle_connection(
-                            stream, peer_addr, acceptor, llm_client, app_state, server_id,
+                            stream,
+                            peer_addr,
+                            connection_id,
+                            acceptor,
+                            llm_client,
+                            app_state,
+                            server_id,
                             status_tx,
                         )
                         .await
@@ -109,29 +184,74 @@ impl DotServer {
                             error!("DoT connection error from {}: {}", peer_addr, e);
                         }
                     });
+                    conn_state.register_server_task(server_id, handle).await;
                 }
                 Err(e) => {
                     Log::new(Some(&status_tx))
                         .warn(format!("Failed to accept DoT TCP connection: {}", e));
+                    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                 }
             }
         }
     }
 
     /// Handle a single DoT connection
+    #[allow(clippy::too_many_arguments)]
     async fn handle_connection(
         stream: TcpStream,
         peer_addr: SocketAddr,
+        connection_id: ConnectionId,
         acceptor: TlsAcceptor,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         server_id: ServerId,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
-        // Perform TLS handshake
-        let mut tls_stream = acceptor
-            .accept(stream)
+        let outcome = Self::serve_connection(
+            stream,
+            peer_addr,
+            connection_id,
+            acceptor,
+            llm_client,
+            &app_state,
+            server_id,
+            &status_tx,
+        )
+        .await;
+
+        // Mark the peer closed however the session ended — handshake failure, read
+        // error, idle timeout or a clean close — so the rail stops drawing it as live
+        // and any connection-scoped tasks are cleaned up.
+        app_state
+            .close_connection_on_server(server_id, connection_id)
+            .await;
+        let _ = status_tx.send("__UPDATE_UI__".to_string());
+        outcome
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn serve_connection(
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        connection_id: ConnectionId,
+        acceptor: TlsAcceptor,
+        llm_client: OllamaClient,
+        app_state: &Arc<AppState>,
+        server_id: ServerId,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) -> Result<()> {
+        let status_tx = status_tx.clone();
+        let app_state = app_state.clone();
+        // Perform TLS handshake, bounded. An unbounded `accept` is a task a peer can
+        // park forever by connecting and saying nothing.
+        let mut tls_stream = timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream))
             .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "TLS handshake with {peer_addr} did not complete within {:?}",
+                    TLS_HANDSHAKE_TIMEOUT
+                )
+            })?
             .context("TLS handshake failed")?;
 
         Log::new(Some(&status_tx)).debug(format!("DoT TLS handshake complete with {}", peer_addr));
@@ -142,7 +262,18 @@ impl DotServer {
         loop {
             // Read length-prefixed DNS message (2-byte big-endian length)
             let mut len_buf = [0u8; 2];
-            match tls_stream.read_exact(&mut len_buf).await {
+            let read_len =
+                match timeout(IDLE_READ_TIMEOUT, tls_stream.read_exact(&mut len_buf)).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        Log::new(Some(&status_tx)).debug(format!(
+                            "DoT connection from {} idle for {:?}, closing",
+                            peer_addr, IDLE_READ_TIMEOUT
+                        ));
+                        break;
+                    }
+                };
+            match read_len {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     Log::new(Some(&status_tx))
@@ -156,9 +287,11 @@ impl DotServer {
                 }
             }
 
+            // A `u16` length cannot exceed 65535, so the old `dns_len > 65535` arm was
+            // unreachable and read as a bound that was not there.
             let dns_len = u16::from_be_bytes(len_buf) as usize;
 
-            if dns_len == 0 || dns_len > 65535 {
+            if dns_len == 0 {
                 Log::new(Some(&status_tx))
                     .warn(format!("Invalid DoT DNS message length: {}", dns_len));
                 break;
@@ -170,6 +303,17 @@ impl DotServer {
                 Log::new(Some(&status_tx)).error(format!("Failed to read DoT DNS message: {}", e));
                 break;
             }
+
+            app_state
+                .update_connection_stats(
+                    server_id,
+                    connection_id,
+                    Some((dns_len + 2) as u64),
+                    None,
+                    Some(1),
+                    None,
+                )
+                .await;
 
             Log::new(Some(&status_tx))
                 .debug(format!("DoT received {} bytes from {}", dns_len, peer_addr));
@@ -193,7 +337,11 @@ impl DotServer {
 
             let query = &queries[0];
             let domain = query.name().to_utf8();
-            let query_type = format!("{:?}", query.query_type());
+            // Display, not Debug: the model reads this string and echoes it back into
+            // `send_dns_nxdomain`'s `query_type`, which parses it with
+            // `RecordType::from_str`. Debug and Display agree for the common types and
+            // do not for all of them, so `{:?}` was a round-trip waiting to break.
+            let query_type = query.query_type().to_string();
             let query_id = dns_message.id();
 
             Log::new(Some(&status_tx)).info(format!(
@@ -226,7 +374,7 @@ impl DotServer {
                 &llm_client,
                 &app_state,
                 server_id,
-                None,
+                Some(connection_id),
                 &event,
                 protocol.as_ref(),
             )
@@ -248,20 +396,16 @@ impl DotServer {
                         use crate::llm::actions::protocol_trait::ActionResult;
                         match protocol_result {
                             ActionResult::Output(bytes) => {
-                                // DNS action returned binary response directly
-                                // Send length-prefixed response
-                                let len = bytes.len() as u16;
-                                let mut response = len.to_be_bytes().to_vec();
-                                response.extend_from_slice(bytes);
-
-                                if let Err(e) = tls_stream.write_all(&response).await {
-                                    Log::new(Some(&status_tx))
-                                        .error(format!("Failed to send DoT response: {}", e));
-                                } else {
-                                    let log = Log::new(Some(&status_tx));
-                                    log.debug(format!("DoT sent {} bytes", bytes.len()));
-                                    log.trace(format!("DoT response hex: {}", hex::encode(bytes)));
-                                }
+                                Self::send_framed(
+                                    &mut tls_stream,
+                                    bytes,
+                                    peer_addr,
+                                    connection_id,
+                                    server_id,
+                                    &app_state,
+                                    &status_tx,
+                                )
+                                .await;
                             }
                             ActionResult::Custom { data, .. } => {
                                 if let Some(output_data) =
@@ -269,24 +413,16 @@ impl DotServer {
                                 {
                                     // Decode hex DNS response
                                     if let Ok(response_bytes) = hex::decode(output_data) {
-                                        // Send length-prefixed response
-                                        let len = response_bytes.len() as u16;
-                                        let mut response = len.to_be_bytes().to_vec();
-                                        response.extend_from_slice(&response_bytes);
-
-                                        if let Err(e) = tls_stream.write_all(&response).await {
-                                            Log::new(Some(&status_tx)).error(format!(
-                                                "Failed to send DoT response: {}",
-                                                e
-                                            ));
-                                        } else {
-                                            let log = Log::new(Some(&status_tx));
-                                            log.debug(format!(
-                                                "DoT sent {} bytes",
-                                                response_bytes.len()
-                                            ));
-                                            log.trace(format!("DoT response hex: {}", output_data));
-                                        }
+                                        Self::send_framed(
+                                            &mut tls_stream,
+                                            &response_bytes,
+                                            peer_addr,
+                                            connection_id,
+                                            server_id,
+                                            &app_state,
+                                            &status_tx,
+                                        )
+                                        .await;
                                     }
                                 }
                             }
@@ -315,23 +451,32 @@ impl DotServer {
                     // query id and question section must be echoed or a stub resolver
                     // discards the packet as unsolicited and we are back to silence, so this
                     // reuses the DNS server's own builder rather than synthesising a header.
-                    let overloaded = crate::llm::is_overload_error(&e);
+                    // `decision=` tag, as `src/server/radius/` does it: SERVFAIL is the
+                    // same byte sequence whatever went wrong, so the log is the only place
+                    // the distinction can survive.
+                    let decision = if crate::llm::is_overload_error(&e) {
+                        "fail_closed_llm_overload"
+                    } else {
+                        "fail_closed_llm_error"
+                    };
                     Log::new(Some(&status_tx)).warn(format!(
-                        "DoT answering SERVFAIL to {} (overload={}): {}",
-                        peer_addr, overloaded, e
+                        "DoT answering SERVFAIL to {} decision={}: {}",
+                        peer_addr, decision, e
                     ));
                     match crate::server::dns::actions::build_servfail(&dns_message) {
                         Ok(packet) => {
                             // RFC 7858 uses the DNS-over-TCP framing: a two-byte length
                             // prefix in front of every message.
-                            let mut framed = (packet.len() as u16).to_be_bytes().to_vec();
-                            framed.extend_from_slice(&packet);
-                            if let Err(send_err) = tls_stream.write_all(&framed).await {
-                                Log::new(Some(&status_tx)).error(format!(
-                                    "DoT failed to send SERVFAIL to {}: {}",
-                                    peer_addr, send_err
-                                ));
-                            }
+                            Self::send_framed(
+                                &mut tls_stream,
+                                &packet,
+                                peer_addr,
+                                connection_id,
+                                server_id,
+                                &app_state,
+                                &status_tx,
+                            )
+                            .await;
                         }
                         Err(build_err) => {
                             Log::new(Some(&status_tx)).error(format!(
@@ -349,5 +494,66 @@ impl DotServer {
         Log::new(Some(&status_tx)).info(format!("DoT connection from {} closed", peer_addr));
 
         Ok(())
+    }
+
+    /// Write one DNS message to the peer in RFC 7858 framing: a two-byte big-endian
+    /// length followed by the message.
+    ///
+    /// The length is checked rather than cast. Every call site used
+    /// `bytes.len() as u16`, which **wraps** silently: a 65540-byte message — reachable
+    /// through `send_dns_response`, whose whole point is that the model hands over
+    /// arbitrary hex — announces a length of 4 and then writes 65540 bytes. The peer
+    /// reads 4 of them as a message and the remaining 65536 as the next length prefix
+    /// and the next message, so the stream is desynchronised for good and every
+    /// subsequent query on that connection is answered with garbage. Refusing to send
+    /// is the only safe outcome; a DNS message cannot exceed 65535 bytes by definition,
+    /// so nothing legitimate is being turned away.
+    #[allow(clippy::too_many_arguments)]
+    async fn send_framed(
+        tls_stream: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        message: &[u8],
+        peer_addr: SocketAddr,
+        connection_id: ConnectionId,
+        server_id: ServerId,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) {
+        let Ok(len) = u16::try_from(message.len()) else {
+            Log::new(Some(status_tx)).error(format!(
+                "DoT refusing to send a {}-byte message to {}: RFC 7858 framing carries a \
+                 16-bit length, so this cannot be put on the wire without desynchronising \
+                 the connection",
+                message.len(),
+                peer_addr
+            ));
+            return;
+        };
+
+        let mut framed = Vec::with_capacity(message.len() + 2);
+        framed.extend_from_slice(&len.to_be_bytes());
+        framed.extend_from_slice(message);
+
+        if let Err(e) = tls_stream.write_all(&framed).await {
+            Log::new(Some(status_tx)).error(format!(
+                "Failed to send DoT response to {}: {}",
+                peer_addr, e
+            ));
+            return;
+        }
+
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                None,
+                Some(framed.len() as u64),
+                None,
+                Some(1),
+            )
+            .await;
+
+        let log = Log::new(Some(status_tx));
+        log.debug(format!("DoT sent {} bytes to {}", message.len(), peer_addr));
+        log.trace(format!("DoT response hex: {}", hex::encode(message)));
     }
 }

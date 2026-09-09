@@ -409,6 +409,7 @@ impl DohClient {
     /// of the point of doing DNS over HTTPS.
     async fn build_http_client(
         client_id: ClientId,
+        server_url: &str,
         app_state: &Arc<AppState>,
     ) -> Result<reqwest::Client> {
         let (ca_pem, insecure) = app_state
@@ -437,11 +438,18 @@ impl DohClient {
         // single DNS query paid for a fresh TLS stack and a fresh handshake, and none of
         // the connection pooling reqwest provides was ever used. Under load it is
         // seconds per query.
+        //
+        // Keyed by host as well as by trust settings, because the resolver override below
+        // is per-host: a client cached under one host and reused for another would carry
+        // the wrong override.
         static CLIENTS: std::sync::OnceLock<
-            std::sync::Mutex<std::collections::HashMap<(Option<String>, bool), reqwest::Client>>,
+            std::sync::Mutex<
+                std::collections::HashMap<(String, Option<String>, bool), reqwest::Client>,
+            >,
         > = std::sync::OnceLock::new();
         let cache = CLIENTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-        let key = (ca_pem.clone(), insecure);
+        let host = crate::llm::ollama_client::host_of(server_url).to_string();
+        let key = (host.clone(), ca_pem.clone(), insecure);
         if let Ok(guard) = cache.lock() {
             if let Some(client) = guard.get(&key) {
                 return Ok(client.clone());
@@ -466,6 +474,7 @@ impl DohClient {
         // nothing, no response and no timeout, because the request future had not been
         // created yet and there was no timeout to fire.
         let pem_for_build = ca_pem.clone();
+        let host_for_build = host.clone();
         let client = tokio::task::spawn_blocking(move || {
             let mut builder = reqwest::Client::builder()
                 .use_rustls_tls()
@@ -473,6 +482,27 @@ impl DohClient {
                 // connection and then said nothing hung the query forever with nothing in
                 // the log. A DNS query that takes longer than this is useless anyway.
                 .timeout(std::time::Duration::from_secs(10));
+
+            // Never resolve a literal IP through the system resolver.
+            //
+            // `reqwest` hands the URL host to its resolver unconditionally and
+            // `hyper-util`'s `GaiResolver` does not special-case a dotted quad, so
+            // `https://127.0.0.1:8443/dns-query` performs a real `getaddrinfo("127.0.0.1")`.
+            // On macOS that goes through libinfo to mDNSResponder — one system-wide daemon,
+            // and a serialisation point — measured at 8.25 seconds with ~100 processes
+            // asking at once. That is longer than the 10s budget above leaves for the rest
+            // of the query, against a server that is up and idle.
+            //
+            // This is the same override `crate::llm::ollama_client::client_for_endpoint`
+            // applies; it cannot be reused directly because this builder needs rustls, the
+            // caller's trust settings and a timeout. `host_of` does the parsing, including
+            // the trap it exists for: stripping only the scheme leaves `127.0.0.1:8443`,
+            // which does not parse as an `IpAddr`, so the bypass silently would not engage.
+            // A hostname is left alone — resolving it is the resolver's job.
+            if let Ok(ip) = host_for_build.parse::<std::net::IpAddr>() {
+                builder = builder.resolve(&host_for_build, std::net::SocketAddr::new(ip, 0));
+            }
+
             if let Some(pem) = pem_for_build {
                 let cert = reqwest::Certificate::from_pem(pem.as_bytes())
                     .context("ca_cert_pem is not a valid PEM certificate")?;
@@ -605,7 +635,7 @@ impl DohClient {
         // server presenting a private-CA or self-signed certificate -- including NetGet's
         // own DoH server, which is TLS-only and serves a self-signed cert, so the two
         // halves of this codebase could not talk to each other at all.
-        let http_client = Self::build_http_client(client_id, app_state).await?;
+        let http_client = Self::build_http_client(client_id, server_url, app_state).await?;
         let response = if use_get {
             // GET method with base64url-encoded query
             use base64::Engine as _;

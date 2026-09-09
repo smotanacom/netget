@@ -9,6 +9,7 @@ use crate::llm::action_helper::call_llm;
 use crate::llm::ollama_client::OllamaClient;
 use crate::logging::emit::Log;
 use crate::protocol::Event;
+use crate::server::connection::ConnectionId;
 use crate::server::DohProtocol;
 use crate::state::app_state::AppState;
 use crate::state::ServerId;
@@ -26,8 +27,35 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error};
+
+/// Bound on the TLS handshake for one accepted connection.
+///
+/// Without it, a peer that completes the TCP handshake and then sends nothing holds
+/// `acceptor.accept()` — and the task around it — open forever, at no cost to itself.
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Largest DoH request body accepted, in bytes.
+///
+/// A DNS message is at most 65535 bytes by construction (its length is carried in 16 bits
+/// wherever DNS is framed over a stream), so anything larger cannot be a DNS query. The body
+/// was read with `req.collect()`, which is unbounded: over an established HTTP/2 connection a
+/// peer could POST gigabytes to `/dns-query` and NetGet would buffer all of it in memory
+/// before discovering it was not a DNS message. This is a hard cap with headroom, not a
+/// tuning knob.
+const MAX_DOH_BODY_BYTES: u64 = 65_535;
+
+/// Pause after a failed `accept()` before trying again.
+///
+/// `accept` failing is usually transient (the peer went away between the SYN and the accept)
+/// and retrying immediately is right. It is not always transient: at the file-descriptor
+/// limit, `accept` returns `EMFILE` instantly and keeps doing so, and a bare `continue` then
+/// spins the accept loop at full speed writing a warning per iteration onto an **unbounded**
+/// status channel — turning "out of descriptors" into "out of memory". A short pause costs
+/// nothing in the transient case and bounds the pathological one.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
 /// DNS-over-HTTPS server
 pub struct DohServer;
@@ -99,6 +127,9 @@ impl DohServer {
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         let acceptor = TlsAcceptor::from(tls_config);
+        let local_addr = listener
+            .local_addr()
+            .context("Failed to get DoH listener local address")?;
 
         loop {
             match listener.accept().await {
@@ -106,14 +137,58 @@ impl DohServer {
                     Log::new(Some(&status_tx))
                         .debug(format!("DoH TCP connection from {}", peer_addr));
 
+                    // Register the peer before the handshake. Nothing tracked DoH
+                    // connections at all before this, so a DoH server drew an empty peer
+                    // list however many resolvers were talking to it, `{client_ip}` in the
+                    // `doh_query` log template rendered empty, and the rail's byte counters
+                    // stayed at zero.
+                    let connection_id = ConnectionId::new(app_state.get_next_unified_id().await);
+                    {
+                        use crate::state::server::{
+                            ConnectionState as ServerConnectionState, ConnectionStatus,
+                            ProtocolConnectionInfo,
+                        };
+                        let now = std::time::Instant::now();
+                        app_state
+                            .add_connection_to_server(
+                                server_id,
+                                ServerConnectionState {
+                                    id: connection_id,
+                                    remote_addr: peer_addr,
+                                    local_addr,
+                                    bytes_sent: 0,
+                                    bytes_received: 0,
+                                    packets_sent: 0,
+                                    packets_received: 0,
+                                    last_activity: now,
+                                    status: ConnectionStatus::Active,
+                                    status_changed_at: now,
+                                    protocol_info: ProtocolConnectionInfo::empty(),
+                                },
+                            )
+                            .await;
+                    }
+                    let _ = status_tx.send("__UPDATE_UI__".to_string());
+
                     let acceptor = acceptor.clone();
                     let llm_client = llm_client.clone();
+                    let conn_state = app_state.clone();
                     let app_state = app_state.clone();
                     let status_tx = status_tx.clone();
 
-                    tokio::spawn(async move {
+                    // Registered, not detached: `stop_server` aborts the tasks a server
+                    // registered, and an unregistered per-connection task outlives it, so a
+                    // stopped DoH server went on answering every connection it had already
+                    // accepted.
+                    let handle = tokio::spawn(async move {
                         if let Err(e) = Self::handle_connection(
-                            stream, peer_addr, acceptor, llm_client, app_state, server_id,
+                            stream,
+                            peer_addr,
+                            connection_id,
+                            acceptor,
+                            llm_client,
+                            app_state,
+                            server_id,
                             status_tx,
                         )
                         .await
@@ -124,29 +199,73 @@ impl DohServer {
                             error!("DoH connection error from {}: {:#}", peer_addr, e);
                         }
                     });
+                    conn_state.register_server_task(server_id, handle).await;
                 }
                 Err(e) => {
                     Log::new(Some(&status_tx))
                         .warn(format!("Failed to accept DoH TCP connection: {}", e));
+                    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                 }
             }
         }
     }
 
     /// Handle a single DoH connection
+    #[allow(clippy::too_many_arguments)]
     async fn handle_connection(
         stream: tokio::net::TcpStream,
         peer_addr: SocketAddr,
+        connection_id: ConnectionId,
         acceptor: TlsAcceptor,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         server_id: ServerId,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
-        // Perform TLS handshake
-        let tls_stream = acceptor
-            .accept(stream)
+        let closer = app_state.clone();
+        let close_tx = status_tx.clone();
+        let outcome = Self::serve_connection(
+            stream,
+            peer_addr,
+            connection_id,
+            acceptor,
+            llm_client,
+            app_state,
+            server_id,
+            status_tx,
+        )
+        .await;
+
+        // Mark the peer closed however the session ended — a failed handshake included, so
+        // a connection that never got past TLS does not sit in the rail as live.
+        closer
+            .close_connection_on_server(server_id, connection_id)
+            .await;
+        let _ = close_tx.send("__UPDATE_UI__".to_string());
+        outcome
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn serve_connection(
+        stream: tokio::net::TcpStream,
+        peer_addr: SocketAddr,
+        connection_id: ConnectionId,
+        acceptor: TlsAcceptor,
+        llm_client: OllamaClient,
+        app_state: Arc<AppState>,
+        server_id: ServerId,
+        status_tx: mpsc::UnboundedSender<String>,
+    ) -> Result<()> {
+        // Perform TLS handshake, bounded. An unbounded `accept` is a task a peer can park
+        // forever by connecting and saying nothing.
+        let tls_stream = timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream))
             .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "TLS handshake with {peer_addr} did not complete within {:?}",
+                    TLS_HANDSHAKE_TIMEOUT
+                )
+            })?
             .context("TLS handshake failed")?;
 
         Log::new(Some(&status_tx)).debug(format!("DoH TLS handshake complete with {}", peer_addr));
@@ -161,8 +280,16 @@ impl DohServer {
             let status_tx = status_tx.clone();
 
             async move {
-                Self::handle_request(req, peer_addr, server_id, llm_client, app_state, status_tx)
-                    .await
+                Self::handle_request(
+                    req,
+                    peer_addr,
+                    connection_id,
+                    server_id,
+                    llm_client,
+                    app_state,
+                    status_tx,
+                )
+                .await
             }
         });
 
@@ -179,9 +306,11 @@ impl DohServer {
     }
 
     /// Handle a single DoH HTTP request
+    #[allow(clippy::too_many_arguments)]
     async fn handle_request(
         req: Request<hyper::body::Incoming>,
         peer_addr: SocketAddr,
+        connection_id: ConnectionId,
         server_id: ServerId,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
@@ -234,7 +363,7 @@ impl DohServer {
             Method::POST => {
                 // Check Content-Type
                 if let Some(content_type) = req.headers().get("content-type") {
-                    if content_type != "application/dns-message" {
+                    if !is_dns_message_content_type(content_type) {
                         Log::new(Some(&status_tx))
                             .warn(format!("Invalid DoH Content-Type: {:?}", content_type));
                         return Ok(error_response(
@@ -250,9 +379,27 @@ impl DohServer {
                     ));
                 }
 
-                // Read request body
-                let body = req.collect().await?.to_bytes();
-                body.to_vec()
+                // Read the body under a hard cap.
+                //
+                // `req.collect()` alone is unbounded — a peer that has completed TLS and the
+                // HTTP/2 preface can stream a body of any size and NetGet buffers all of it
+                // before deciding it is not DNS. `Limited` stops reading at the cap and
+                // errors, so the memory a single request can claim is bounded by a constant.
+                use http_body_util::Limited;
+                let limited = Limited::new(req.into_body(), MAX_DOH_BODY_BYTES as usize);
+                match limited.collect().await {
+                    Ok(collected) => collected.to_bytes().to_vec(),
+                    Err(e) => {
+                        Log::new(Some(&status_tx)).warn(format!(
+                            "DoH POST body from {} exceeded {} bytes or could not be read: {}",
+                            peer_addr, MAX_DOH_BODY_BYTES, e
+                        ));
+                        return Ok(error_response(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "DNS message too large",
+                        ));
+                    }
+                }
             }
             _ => {
                 Log::new(Some(&status_tx)).warn(format!("Unsupported DoH method: {}", method));
@@ -266,6 +413,17 @@ impl DohServer {
         let log = Log::new(Some(&status_tx));
         log.debug(format!("DoH received {} bytes", dns_bytes.len()));
         log.trace(format!("DoH DNS query hex: {}", hex::encode(&dns_bytes)));
+
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                Some(dns_bytes.len() as u64),
+                None,
+                Some(1),
+                None,
+            )
+            .await;
 
         // Parse DNS query
         let dns_message = match DnsMessage::from_vec(&dns_bytes) {
@@ -288,7 +446,9 @@ impl DohServer {
 
         let query = &queries[0];
         let domain = query.name().to_utf8();
-        let query_type = format!("{:?}", query.query_type());
+        // Display, not Debug: the model reads this string and echoes it back into
+        // `send_dns_nxdomain`'s `query_type`, which parses it with `RecordType::from_str`.
+        let query_type = query.query_type().to_string();
         let query_id = dns_message.id();
 
         Log::new(Some(&status_tx)).info(format!(
@@ -318,7 +478,7 @@ impl DohServer {
             &llm_client,
             &app_state,
             server_id,
-            None,
+            Some(connection_id),
             &event,
             protocol.as_ref(),
         )
@@ -326,11 +486,49 @@ impl DohServer {
         {
             Ok(result) => result,
             Err(e) => {
-                Log::new(Some(&status_tx)).warn(format!("DoH LLM call failed: {}", e));
-                return Ok(error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "LLM error",
+                // Answer SERVFAIL in a 200, the way DNS and DoT answer SERVFAIL on the wire.
+                //
+                // RFC 8484 §4.2.1 makes 200 the status for "the HTTP transaction carried a
+                // DNS message"; whether that message is an answer or a failure is DNS's
+                // business, not HTTP's. A 5xx instead tells the client the *resolver
+                // endpoint* is broken, which makes real DoH clients mark the server down and
+                // fail over — a heavier reaction than the transient backend hiccup that
+                // caused it. The transaction id and question are echoed by `build_servfail`,
+                // without which the client discards the message.
+                //
+                // `decision=`, as `src/server/radius/` does it: SERVFAIL is the same bytes
+                // whatever went wrong, so the log is the only place the distinction lives.
+                let decision = if crate::llm::is_overload_error(&e) {
+                    "fail_closed_llm_overload"
+                } else {
+                    "fail_closed_llm_error"
+                };
+                Log::new(Some(&status_tx)).warn(format!(
+                    "DoH answering SERVFAIL to {} decision={}: {}",
+                    peer_addr, decision, e
                 ));
+
+                return Ok(
+                    match crate::server::dns::actions::build_servfail(&dns_message) {
+                        Ok(packet) => dns_message_response(packet),
+                        Err(build_err) => {
+                            // Nothing DNS-shaped can be produced, so the failure has to be
+                            // expressed in HTTP. The peer gets a category, never the error text.
+                            Log::new(Some(&status_tx)).error(format!(
+                                "DoH failed to build SERVFAIL for {}: {}",
+                                peer_addr, build_err
+                            ));
+                            let failure = crate::utils::WireFailure::classify(&e);
+                            match failure {
+                                crate::utils::WireFailure::Overloaded => retry_later_response(),
+                                crate::utils::WireFailure::Unavailable => error_response(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    failure.prefixed_text(),
+                                ),
+                            }
+                        }
+                    },
+                );
             }
         };
 
@@ -354,6 +552,17 @@ impl DohServer {
                     log.debug(format!("DoH sending {} bytes", bytes.len()));
                     log.trace(format!("DoH response hex: {}", hex::encode(bytes)));
 
+                    app_state
+                        .update_connection_stats(
+                            server_id,
+                            connection_id,
+                            None,
+                            Some(bytes.len() as u64),
+                            None,
+                            Some(1),
+                        )
+                        .await;
+
                     // Return DNS response with correct Content-Type.
                     // Content-Length is left to hyper, which derives it from the
                     // Full<Bytes> body - keeping every builder input constant so
@@ -367,6 +576,17 @@ impl DohServer {
                             let log = Log::new(Some(&status_tx));
                             log.debug(format!("DoH sending {} bytes", response_bytes.len()));
                             log.trace(format!("DoH response hex: {}", output_data));
+
+                            app_state
+                                .update_connection_stats(
+                                    server_id,
+                                    connection_id,
+                                    None,
+                                    Some(response_bytes.len() as u64),
+                                    None,
+                                    Some(1),
+                                )
+                                .await;
 
                             // Return DNS response with correct Content-Type
                             return Ok(dns_message_response(response_bytes));
@@ -409,6 +629,36 @@ fn dns_message_response(body: Vec<u8>) -> Response<Full<Bytes>> {
         .status(StatusCode::OK)
         .header("Content-Type", "application/dns-message")
         .body(Full::new(Bytes::from(body)))
+        .expect("constant status and headers always build a valid response")
+}
+
+/// Is this `Content-Type` `application/dns-message`?
+///
+/// RFC 9110 §8.3 makes the media type case-insensitive and allows parameters after a `;`, so
+/// `Application/DNS-Message` and `application/dns-message; charset=utf-8` are both the same
+/// type. The check was a byte-for-byte `!=` against the canonical spelling, which rejected
+/// both as "Invalid Content-Type" — a conformant client turned away for being conformant.
+fn is_dns_message_content_type(value: &hyper::header::HeaderValue) -> bool {
+    let Ok(text) = value.to_str() else {
+        return false;
+    };
+    let media_type = text.split(';').next().unwrap_or("").trim();
+    media_type.eq_ignore_ascii_case("application/dns-message")
+}
+
+/// A `503` telling the client to come back, for a transient backend saturation.
+///
+/// Distinct from the 500 path on purpose: a client that sees 503 + `Retry-After` backs off,
+/// where a 500 is recorded as a permanent fault. This mirrors what `src/server/http` does with
+/// the same two `WireFailure` categories.
+fn retry_later_response() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::SERVICE_UNAVAILABLE)
+        .header("Content-Type", "text/plain")
+        .header("Retry-After", "1")
+        .body(Full::new(Bytes::from(
+            crate::utils::WireFailure::Overloaded.prefixed_text(),
+        )))
         .expect("constant status and headers always build a valid response")
 }
 

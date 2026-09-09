@@ -70,7 +70,7 @@ impl Protocol for DnsProtocol {
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(53))
             .implementation("hickory-proto for parsing and construction; UDP only, no TCP fallback")
             .llm_control("Response records (A, AAAA, MX, TXT, CNAME, NXDOMAIN)")
-            .e2e_testing("tests/server/dns/test.rs - hickory-client AsyncClient over UDP, mock-driven")
+            .e2e_testing("tests/server/dns/dig_test.rs drives ISC BIND's dig, which shares no code with the hickory stack this server encodes with: it asserts the A rdata, the TXT character-string, RCODE 3 for NXDOMAIN, and no id mismatch, and it FAILS rather than skipping when dig is absent. tests/server/dns/test.rs additionally covers the same ground with hickory-client - useful, but circular on its own, since hickory-client decodes with the same codec hickory-proto encoded with.")
             .notes("Excellent scripting candidate; static handlers cannot echo the client's transaction ID, use script mode for deterministic answers")
             .build()
     }

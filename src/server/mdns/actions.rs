@@ -21,6 +21,12 @@ impl MdnsProtocol {
     }
 }
 
+impl Default for MdnsProtocol {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Implement Protocol trait (common functionality)
 impl Protocol for MdnsProtocol {
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
@@ -90,14 +96,31 @@ impl Protocol for MdnsProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            .state(DevelopmentState::Beta)
+            // Experimental, demoted from Beta (September 2026), for two independent
+            // reasons — either one is disqualifying.
+            //
+            // 1. The evidence claimed did not exist. This entry used to say the tests were
+            //    "asserting on ServiceResolved". They were not: all four computed a
+            //    `found_service` flag and then *printed* it, so the suite was green whether
+            //    or not anything was advertised, and one of them was observed reporting a
+            //    sibling test's service as its own success. They assert properly now.
+            // 2. The evidence is circular even when it holds. `mdns-sd` is the crate this
+            //    server registers through, so the test is one crate round-tripping through
+            //    itself — the reason `websocket` and `webrtc_signaling` are not Beta, and
+            //    the reason `rss` had to switch to `feed-rs` before it could be.
+            //
+            // Beta means "works against real clients"; nothing here has been shown to a
+            // client this server does not itself contain. Fixing the tests raised what they
+            // prove but did not change which rating that supports, so this is Experimental
+            // rather than a reflexive one-notch step down.
+            .state(DevelopmentState::Experimental)
             // Announces on 224.0.0.251:5353 - an unprivileged port, and joining
             // a multicast group needs no elevated privileges.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation("mdns-sd ServiceDaemon (not hickory-proto); binds no listener of its own")
             .llm_control("Service registration at startup only - no query handling, no runtime updates")
-            .e2e_testing("mdns-sd, an independent mDNS implementation, in tests/server/mdns/test.rs and not #[ignore]d: its ServiceDaemon browses and resolves the services this server advertises, asserting on ServiceResolved.")
-            .notes("Multicast service discovery; advertisement-only, incoming mDNS queries are handled by the library, not by the LLM")
+            .e2e_testing("tests/server/mdns/test.rs, not #[ignore]d: an mdns-sd ServiceDaemon browses the group and each test asserts its own instance resolves, by name, with its TXT properties intact. Circular evidence, though - mdns-sd is also what this server registers through. An independent peer (dns-sd -L on macOS, avahi-browse -r on Linux) is what a Beta rating needs.")
+            .notes("Multicast service discovery; advertisement-only. Services are registered once, from the mdns_server_startup event, and cannot be added, changed or removed afterwards - register_mdns_service is a no-op outside that pass because the daemon handle is not reachable from an action. Incoming mDNS queries are answered by mdns-sd, not by the LLM.")
             .build()
     }
     fn description(&self) -> &'static str {
@@ -258,7 +281,7 @@ fn register_mdns_service_action() -> ActionDefinition {
 // ============================================================================
 
 pub static REGISTER_MDNS_SERVICE_ACTION: LazyLock<ActionDefinition> =
-    LazyLock::new(|| register_mdns_service_action());
+    LazyLock::new(register_mdns_service_action);
 
 // ============================================================================
 // mDNS Event Type Constants

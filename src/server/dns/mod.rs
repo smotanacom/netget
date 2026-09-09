@@ -138,11 +138,19 @@ impl DnsServer {
                                         peer_addr
                                     ));
 
+                                    // `Some(connection_id)`, not `None`. The connection was
+                                    // registered above, and this argument is what
+                                    // `call_llm_inner` uses to look up the peer address for
+                                    // `EventLogContext` — so with `None` the `dns_query`
+                                    // event's own INFO template, "DNS {query_type} {domain}
+                                    // from {client_ip}", rendered every access-log line as
+                                    // "... from " with nothing after it. It is also what
+                                    // scopes connection-scoped handlers and tasks.
                                     match call_llm(
                                         &llm_clone,
                                         &state_clone,
                                         server_id,
-                                        None,
+                                        Some(connection_id),
                                         &event,
                                         protocol_clone.as_ref(),
                                     )
@@ -214,16 +222,20 @@ impl DnsServer {
                                             // query ID and question section are echoed, without
                                             // which a stub resolver discards the packet and we
                                             // are back to silence.
+                                            // `decision=` tag, as `src/server/radius/`
+                                            // does it: SERVFAIL is the same bytes whatever
+                                            // went wrong, so the log is the only place the
+                                            // distinction can survive.
+                                            let decision = if crate::llm::is_overload_error(&e) {
+                                                "fail_closed_llm_overload"
+                                            } else {
+                                                "fail_closed_llm_error"
+                                            };
                                             log.warn(format!(
-                                                "DNS LLM call failed for query from {} ({}): {}",
-                                                peer_addr, connection_id, e
+                                                "DNS LLM call failed for query from {} ({}) \
+                                                 decision={}: {}",
+                                                peer_addr, connection_id, decision, e
                                             ));
-                                            if crate::llm::is_overload_error(&e) {
-                                                log.warn(format!(
-                                                    "DNS SERVFAIL to {}: LLM capacity exhausted",
-                                                    peer_addr
-                                                ));
-                                            }
 
                                             match actions::build_servfail(&query) {
                                                 Ok(packet) => {

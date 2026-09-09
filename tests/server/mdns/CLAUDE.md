@@ -33,13 +33,18 @@ record properties.
 
 ## Client Library
 
-**mdns-sd** v0.11+ - Multicast DNS service discovery
+**mdns-sd** v0.15 - Multicast DNS service discovery
 
 - `ServiceDaemon::new()` - Create mDNS daemon
 - `browse(service_type)` - Browse for services of a type
 - `recv_async()` - Receive service events asynchronously
-- Events: `ServiceFound`, `ServiceResolved`, `ServiceRemoved`
-- Real mDNS library ensures protocol correctness
+- Events: `ServiceFound`, `ServiceResolved(ResolvedService)`, `ServiceRemoved`
+
+**This is circular evidence**, and it is why `mdns` is Experimental: `mdns-sd` is
+also the crate the *server* registers through, so the suite asserts that one crate
+round-trips through itself. It does genuinely cover NetGet's registration plumbing;
+it does not cover interop. An independent client (`dns-sd -L` on macOS,
+`avahi-browse -r` on Linux) is what a Beta rating would need.
 
 ## Expected Runtime
 
@@ -66,11 +71,33 @@ record properties.
 
 ## Known Issues
 
-- **Discovery timing** - Tests wait up to 10 seconds for service resolution
-- **Flaky on some networks** - Multicast may be blocked or delayed
-- Tests use polling with timeout (not ideal but necessary for mDNS)
-- Service resolution may succeed on `ServiceFound` instead of `ServiceResolved`
-- Tests may pass even if properties are missing (resolution might not include TXT)
+- **Discovery timing** - Tests wait up to 20 seconds for service resolution, on the
+  *condition* rather than on a fixed sleep, so a fast machine returns immediately
+- **Flaky on some networks** - Multicast may be blocked or delayed. Where it is, these
+  tests now fail rather than passing quietly, which is the point
+- Circular evidence - see "Client Library" above
+
+### Fixed in September 2026, and worth not reintroducing
+
+Three defects, all of which made a green run meaningless:
+
+1. **Nothing was asserted.** Every test computed a `found_service` flag and then
+   *printed* it: `if found { println!("verified") } else { println!("Note: not
+   discovered") }`. `verify_mocks()` was the only real check, and it proves the startup
+   LLM call happened - not that a byte reached the group. This section used to record
+   "Tests may pass even if properties are missing" as a known issue; it was the whole
+   problem.
+2. **A neighbour's advertisement counted as success.** Browsing `_http._tcp.local.`
+   returns every such service on the link, these four tests run concurrently, and two of
+   them advertise into it. A captured run had `test_mdns_service_advertisement` report
+   `Instance: Web Service._http._tcp.local.` - the *other* test's service - and call
+   itself verified. Every wait now matches the instance name it registered, and the
+   instance names are distinct.
+3. **The wait loop broke on the wrong event.** `ServiceFound` arrives before
+   `ServiceResolved`, and the `_ => break` arm treated it as end-of-stream, abandoning a
+   service that was about to resolve. This section used to describe accepting
+   `ServiceFound` as acceptable; it is not - only `ServiceResolved` carries the SRV/TXT
+   data the assertions read.
 
 ## Example Test Pattern
 
