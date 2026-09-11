@@ -21,6 +21,18 @@ use crate::server::TcpProtocol;
 use crate::state::app_state::AppState;
 use actions::{TCP_CONNECTION_OPENED_EVENT, TCP_DATA_RECEIVED_EVENT};
 
+/// Most bytes that may pile up in one connection's `queued_data` while its LLM call is in
+/// flight.
+///
+/// An LLM call takes seconds, and every byte the peer sends during it is appended to
+/// `queued_data` with nothing to stop it: a peer that streams for the length of one call can
+/// push NetGet's memory as fast as its link allows, pre-authentication, on the protocol every
+/// other protocol copies. 8 MiB is far more than any request/response exchange this server is
+/// for, and reaching it means the peer is not waiting for answers at all — so the connection is
+/// closed rather than the queue trimmed, which would hand the model a truncated message it had
+/// no way to know was truncated.
+const MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
+
 /// Connection state for LLM processing
 #[derive(Debug, Clone, PartialEq)]
 enum ConnectionState {
@@ -458,19 +470,42 @@ impl TcpServer {
             }
         };
 
-        // If processing, queue the data
+        // If processing, queue the data — up to MAX_QUEUED_BYTES.
         if current_state == ConnectionState::Processing {
-            connections
-                .lock()
-                .await
-                .entry(connection_id)
-                .and_modify(|conn| {
-                    conn.queued_data.extend_from_slice(&data);
-                });
-            Log::new(Some(&status_tx)).debug(format!(
-                "Queued {} bytes for {}",
+            let (queued_len, write_half) = {
+                let mut conns = connections.lock().await;
+                let Some(conn) = conns.get_mut(&connection_id) else {
+                    return; // Connection closed while we were waiting for the lock
+                };
+                conn.queued_data.extend_from_slice(&data);
+                (conn.queued_data.len(), conn.write_half.clone())
+            };
+
+            let log = Log::new(Some(&status_tx));
+            if queued_len > MAX_QUEUED_BYTES {
+                log.warn(format!(
+                    "Connection {connection_id} queued {queued_len} bytes while awaiting a \
+                     response (limit {MAX_QUEUED_BYTES}); closing: decision=queue_overflow"
+                ));
+                // Same signal as every other server-side close on raw TCP: FIN, so the peer
+                // reads EOF now instead of blocking on an answer that is never coming.
+                {
+                    let mut write = write_half.lock().await;
+                    let _ = write.shutdown().await;
+                }
+                connections.lock().await.remove(&connection_id);
+                app_state
+                    .close_connection_on_server(server_id, connection_id)
+                    .await;
+                let _ = status_tx.send("__UPDATE_UI__".to_string());
+                return;
+            }
+
+            log.debug(format!(
+                "Queued {} bytes for {} ({} queued)",
                 data.len(),
-                connection_id
+                connection_id,
+                queued_len
             ));
             return;
         }
@@ -639,14 +674,79 @@ impl TcpServer {
                         }
                     }
 
-                    // Handle wait_for_more
+                    // Handle wait_for_more.
+                    //
+                    // The fragment the model was just shown goes back to the *head* of the
+                    // queue, ahead of anything that arrived during the call. `wait_for_more`
+                    // means "these bytes are an incomplete message"; dropping them was the one
+                    // thing that could not be right, because the model would never be shown the
+                    // front of the message again and could only reassemble it by having copied
+                    // it into memory first. Now the accumulation the action's name promises
+                    // actually happens.
                     if should_wait {
-                        connections
-                            .lock()
-                            .await
-                            .entry(connection_id)
-                            .and_modify(|conn| conn.state = ConnectionState::Accumulating);
-                        log.debug(format!("Waiting for more data from {connection_id}"));
+                        let (queued_len, arrived_during_call, write_half_for_close) = {
+                            let mut conns = connections.lock().await;
+                            let Some(conn) = conns.get_mut(&connection_id) else {
+                                return;
+                            };
+                            let arrived_during_call = !conn.queued_data.is_empty();
+                            let mut merged = all_data.to_vec();
+                            merged.append(&mut conn.queued_data);
+                            conn.queued_data = merged;
+                            conn.state = ConnectionState::Accumulating;
+                            (
+                                conn.queued_data.len(),
+                                arrived_during_call,
+                                conn.write_half.clone(),
+                            )
+                        };
+
+                        // Same bound as the Processing queue: a model that answers
+                        // `wait_for_more` to everything must not be a way to grow memory
+                        // without limit either.
+                        if queued_len > MAX_QUEUED_BYTES {
+                            log.warn(format!(
+                                "Connection {connection_id} accumulated {queued_len} bytes across \
+                                 wait_for_more (limit {MAX_QUEUED_BYTES}); closing: \
+                                 decision=queue_overflow"
+                            ));
+                            {
+                                let mut write = write_half_for_close.lock().await;
+                                let _ = write.shutdown().await;
+                            }
+                            connections.lock().await.remove(&connection_id);
+                            app_state
+                                .close_connection_on_server(server_id, connection_id)
+                                .await;
+                            let _ = status_tx.send("__UPDATE_UI__".to_string());
+                            return;
+                        }
+
+                        // If bytes arrived while the model was thinking, they *are* the "more"
+                        // it asked for. Returning here would park them until the next read,
+                        // which may never come — the peer has sent its whole message and is
+                        // waiting for us. Go round again with the joined payload instead.
+                        if arrived_during_call {
+                            let joined = {
+                                let mut conns = connections.lock().await;
+                                let Some(conn) = conns.get_mut(&connection_id) else {
+                                    return;
+                                };
+                                conn.state = ConnectionState::Processing;
+                                std::mem::take(&mut conn.queued_data)
+                            };
+                            log.debug(format!(
+                                "wait_for_more on {connection_id}: {} bytes already waiting, \
+                                 continuing",
+                                joined.len()
+                            ));
+                            all_data = Bytes::from(joined);
+                            continue;
+                        }
+
+                        log.debug(format!(
+                            "Waiting for more data from {connection_id} ({queued_len} bytes held)"
+                        ));
                         return;
                     }
 

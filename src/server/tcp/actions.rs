@@ -6,64 +6,24 @@ use crate::llm::actions::{
 };
 use crate::protocol::log_template::LogTemplate;
 use crate::protocol::EventType;
-use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
 use anyhow::{Context, Result};
 use serde_json::json;
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
-use tokio::sync::Mutex;
+use std::sync::LazyLock;
 
-/// Connection data for TCP protocol
-pub struct ConnectionData {
-    pub write_half: Arc<Mutex<tokio::io::WriteHalf<tokio::net::TcpStream>>>,
-}
-
-/// TCP protocol action handler
-pub struct TcpProtocol {
-    /// Map of active connections (for async actions)
-    connections: Arc<Mutex<HashMap<ConnectionId, ConnectionData>>>,
-}
-
-impl Default for TcpProtocol {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// TCP protocol action handler.
+///
+/// Stateless. The running server ([`crate::server::tcp::TcpServer`]) owns the connection map,
+/// because only it holds the write halves. This type used to keep a second map of its own to
+/// back `send_to_connection` / `list_connections` async actions; nothing ever inserted into it,
+/// so `list_connections` always saw zero connections and `send_to_connection` could not route
+/// anywhere. Both actions are gone — the same removal `socket_file` made for the same reason.
+#[derive(Default)]
+pub struct TcpProtocol;
 
 impl TcpProtocol {
     pub fn new() -> Self {
-        Self {
-            connections: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    pub fn with_connections(
-        connections: Arc<Mutex<HashMap<ConnectionId, ConnectionData>>>,
-    ) -> Self {
-        Self { connections }
-    }
-
-    /// Add a connection to the protocol handler
-    pub async fn add_connection(
-        &self,
-        connection_id: ConnectionId,
-        write_half: Arc<Mutex<tokio::io::WriteHalf<tokio::net::TcpStream>>>,
-    ) {
-        self.connections
-            .lock()
-            .await
-            .insert(connection_id, ConnectionData { write_half });
-    }
-
-    /// Remove a connection from the protocol handler
-    pub async fn remove_connection(&self, connection_id: &ConnectionId) {
-        self.connections.lock().await.remove(connection_id);
-    }
-
-    /// Get list of active connection IDs
-    pub async fn list_connection_ids(&self) -> Vec<ConnectionId> {
-        self.connections.lock().await.keys().copied().collect()
+        Self
     }
 }
 
@@ -81,11 +41,13 @@ impl Protocol for TcpProtocol {
             ]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
-        vec![
-            send_to_connection_action(),
-            close_connection_action(),
-            list_connections_action(),
-        ]
+        // Only `close_connection` survives here. `send_to_connection` and `list_connections`
+        // were advertised for a long time and could not work: nothing ever told this type about
+        // a connection, so `list_connections` always saw none, and the executor's `Output` is
+        // written to whichever connection is being handled — so `send_to_connection` parsed,
+        // validated and then discarded its `connection_id` and wrote to a different peer than
+        // the model asked for. `socket_file` removed the same pair for the same reason.
+        vec![close_connection_action()]
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![
@@ -239,42 +201,13 @@ impl Server for TcpProtocol {
             .context("Missing 'type' field in action")?;
 
         match action_type {
-            "send_to_connection" => {
-                // Async action - not fully implemented here, needs to be handled by caller
-                // because we need async context to send data
-                let connection_id_str = action
-                    .get("connection_id")
-                    .and_then(|v| v.as_str())
-                    .context("Missing 'connection_id' parameter")?;
-
-                let data = action
-                    .get("data")
-                    .and_then(|v| v.as_str())
-                    .context("Missing 'data' parameter")?;
-
-                let _connection_id = ConnectionId::from_string(connection_id_str)
-                    .context("Invalid connection_id format")?;
-
-                // Return the data with connection ID embedded
-                // The caller will need to handle actually sending it
-                Ok(ActionResult::Output(decode_outbound_data(data, &action)?))
-            }
-            "close_connection" => {
-                // Async action - signal that connection should be closed
-                let connection_id_str = action
-                    .get("connection_id")
-                    .and_then(|v| v.as_str())
-                    .context("Missing 'connection_id' parameter")?;
-
-                let _connection_id = ConnectionId::from_string(connection_id_str)
-                    .context("Invalid connection_id format")?;
-
-                Ok(ActionResult::CloseConnection)
-            }
-            "list_connections" => {
-                // This needs to be handled specially by the caller
-                Ok(ActionResult::NoAction)
-            }
+            // `connection_id` is accepted and ignored: every caller of this executor already
+            // owns exactly one connection (the LLM path handles one; the dashboard's peer task
+            // targets one). It is *optional* because [ disconnect this peer ] injects a bare
+            // `{"type": "close_connection"}` (`src/tui/keymap.rs`), and requiring the field made
+            // that button fail with "Missing 'connection_id' parameter" on the one protocol
+            // every other protocol is told to copy.
+            "close_connection" => Ok(ActionResult::CloseConnection),
             "send_tcp_data" => self.execute_send_tcp_data(action),
             "wait_for_more" => Ok(ActionResult::WaitForMore),
             "close_this_connection" => Ok(ActionResult::CloseConnection),
@@ -359,73 +292,32 @@ fn encoding_parameter() -> Parameter {
     .with_choices(["utf8", "hex"])
 }
 
-/// Action definition for send_to_connection (async)
-fn send_to_connection_action() -> ActionDefinition {
-    ActionDefinition {
-        name: "send_to_connection".to_string(),
-        description: "Send data to a specific TCP connection (async action)".to_string(),
-        parameters: vec![
-            Parameter {
-                name: "connection_id".to_string(),
-                type_hint: "string".to_string(),
-                description: "Connection ID to send to".to_string(),
-                required: true,
-            },
-            Parameter {
-                name: "data".to_string(),
-                type_hint: "string".to_string(),
-                description: "Data to send. Interpreted according to 'encoding': by default the characters of this string are sent as-is (UTF-8)".to_string(),
-                required: true,
-            },
-            encoding_parameter(),
-        ],
-        example: json!({
-            "type": "send_to_connection",
-            "connection_id": "conn-12345",
-            "data": "Hello from TCP",
-            "encoding": "utf8"
-        }),
-        log_template: Some(
-            LogTemplate::new()
-                .with_info("-> TCP to {connection_id}")
-                .with_debug("TCP send_to_connection: connection_id={connection_id}"),
-        ),
-    }
-}
-
 /// Action definition for close_connection (async)
+///
+/// `connection_id` is optional and ignored — see the executor. It stays declared so an existing
+/// prompt or handler that supplies one is not rejected.
 fn close_connection_action() -> ActionDefinition {
     ActionDefinition {
         name: "close_connection".to_string(),
-        description: "Close a specific TCP connection (async action)".to_string(),
+        description: "Close the TCP connection this action is executed against. Equivalent to \
+                      close_this_connection."
+            .to_string(),
         parameters: vec![Parameter {
             name: "connection_id".to_string(),
             type_hint: "string".to_string(),
-            description: "Connection ID to close".to_string(),
-            required: true,
+            description:
+                "Optional and ignored: the connection being handled is always the one closed"
+                    .to_string(),
+            required: false,
         }],
         example: json!({
-            "type": "close_connection",
-            "connection_id": "conn-12345"
+            "type": "close_connection"
         }),
         log_template: Some(
             LogTemplate::new()
-                .with_info("TCP close connection {connection_id}")
-                .with_debug("TCP close_connection: connection_id={connection_id}"),
+                .with_info("TCP close connection")
+                .with_debug("TCP close_connection"),
         ),
-    }
-}
-
-/// Action definition for list_connections (async)
-fn list_connections_action() -> ActionDefinition {
-    ActionDefinition {
-        name: "list_connections".to_string(),
-        description: "List all active TCP connections (async action)".to_string(),
-        parameters: vec![],
-        example: json!({
-            "type": "list_connections"
-        }),
-        log_template: Some(LogTemplate::new().with_debug("TCP list_connections")),
     }
 }
 
@@ -461,16 +353,17 @@ fn send_tcp_data_action() -> ActionDefinition {
 fn wait_for_more_action() -> ActionDefinition {
     ActionDefinition {
         name: "wait_for_more".to_string(),
-        // The old text was "accumulate incomplete protocol data", which promises something the
-        // server does not do: WaitForMore only sets ConnectionState::Accumulating, and the
-        // payload you were shown is dropped. Only bytes arriving *during* the LLM call are
-        // merged in, via queued_data. Kept word-for-word in step with the QUIC action of the
-        // same name - the two raw-stream protocols should not drift apart on this.
-        description: "Answer this event with nothing and wait for the peer to send more. Use \
-            it when the bytes you were given are an incomplete message. IMPORTANT: the bytes \
-            in THIS event are not repeated in the next one - each event carries only what \
-            has arrived since the last. If you need this fragment to make sense of what comes \
-            next, put it in your memory now, because you will not be shown it again."
+        // This text has been wrong in both directions. It first promised an accumulation the
+        // server did not perform, then conceded that the fragment was dropped. The server now
+        // keeps it: WaitForMore pushes the payload back to the head of `queued_data`, so the
+        // next event carries this fragment joined to whatever arrived after it. QUIC's action
+        // of the same name still drops it — the two raw-stream protocols have drifted and
+        // `src/server/quic` needs the same repair.
+        description: "Answer this event with nothing and wait for the peer to send the rest. \
+            Use it when the bytes you were given are an incomplete message: they are kept, and \
+            the next event you receive on this connection carries them joined to everything \
+            that arrives afterwards, as one payload. You do not need to copy the fragment into \
+            your memory."
             .to_string(),
         parameters: vec![],
         example: json!({
@@ -570,8 +463,11 @@ pub static TCP_DATA_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     .with_alternative_example(serde_json::json!({
         "type": "wait_for_more"
     }))
+    // close_this_connection, not close_connection: `call_llm` builds this event's tool list
+    // from the actions above, so an example naming a verb that is not in it showed the model a
+    // tool it had never been given.
     .with_alternative_example(serde_json::json!({
-        "type": "close_connection"
+        "type": "close_this_connection"
     }))
     .with_log_template(
         LogTemplate::new()

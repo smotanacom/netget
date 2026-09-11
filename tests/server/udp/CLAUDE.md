@@ -15,7 +15,8 @@ responses.
 ## LLM Call Budget
 
 - `test_udp_echo_server()`: 1 LLM call (datagram received event)
-- **Total: 1 LLM call** (minimal test coverage)
+- `test_send_to_address_reaches_the_named_address_only()`: 1 LLM call (datagram received event)
+- **Total: 2 LLM calls** (minimal test coverage)
 
 **Note**: This is the bare minimum for UDP testing. Most UDP protocol testing happens in dedicated protocol tests:
 
@@ -65,23 +66,35 @@ protocol-specific tests (DNS, DHCP, NTP, SNMP).
 - **Expected**: Response contains "Hello UDP"
 - **Timeout**: 5 seconds
 - **Purpose**: Basic UDP send/receive validation
+- The mock's `data` carries an explicit `"encoding": "hex"`. Without it the payload went through
+  the `auto` guess, so the test asserted the guess rather than the echo
+
+### 2. `send_to_address` (`test_send_to_address_reaches_the_named_address_only`)
+
+- **Prompt**: Forward what you receive elsewhere
+- **Client**: a peer sends one trigger datagram; a separate observer socket is the named target
+- **Expected**: the observer receives `FORWARDED`, and the triggering peer receives nothing
+- **Purpose**: the address used to be parsed and thrown away, so this action was a second
+  `send_udp_response`. Both halves are asserted, because a fix that sent to *both* addresses
+  would satisfy the first half alone
 
 ## Known Issues
 
-### 1. Lenient Failure Handling
+### 1. Lenient Failure Handling — fixed
 
-The test catches timeout errors and logs a note instead of failing:
+`test_udp_echo_server` used to catch the timeout and the receive error and *log a note* instead
+of failing:
 
 ```rust
-Err(e) => {
-    println!("Note: UDP echo may not be fully implemented yet: {}", e);
+Err(_) => {
+    println!("Note: UDP echo timeout after 5 seconds");
     // Don't fail the test, just note it
 }
 ```
 
-**Reason**: UDP echo was initially a placeholder test. Real UDP validation happens in protocol-specific tests.
-
-**Future Improvement**: Make this test more strict once UDP echo is confirmed working.
+The single assertion lived in the success arm, so a server that answered nothing at all passed.
+Both arms now return `Err`. It was labelled "initially a placeholder"; it had long since stopped
+being one.
 
 ### 2. No Response Validation
 
@@ -136,7 +149,7 @@ This is acceptable because:
 2. **Large datagrams**: No tests near 65K limit
 3. **Concurrent peers**: No tests for multiple simultaneous clients
 4. **Statelessness**: No tests verifying independent datagram handling
-5. **send_to_address action**: No tests for async send to arbitrary address
+5. **`auto` encoding**: no test pins the ambiguous default, in either direction
 
 ### Potential Improvements
 

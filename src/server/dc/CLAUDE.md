@@ -63,8 +63,11 @@ The LLM receives NMDC commands and responds with structured actions:
 - `send_dc_kick` - Kick user from hub
 - `send_dc_redirect` - Redirect user to another hub
 - `send_dc_raw` - Send raw NMDC command
-- `wait_for_more` - Buffer more data before responding
-- `close_connection` - Close client connection
+- `wait_for_more` - Answer with nothing and keep the connection open. It does **not** buffer
+  anything: the hub raises an event only after the closing `|`, so the model is never shown a
+  partial command and there is no accumulating state to enter. What it is for is the many NMDC
+  commands a hub does not reply to ($Version, $MyINFO, $GetINFO)
+- `close_connection` - Close this client's connection
 
 ### 4. Pipe-Delimited Message Processing
 
@@ -411,6 +414,28 @@ vocabulary; `close_connection` returns `CloseConnection`, which half-closes the 
 handle is removed on every exit path through the single cleanup after `run_connection`.
 Byte/packet counters are updated on every read and on every write (the `$Lock`, the LLM/handler
 replies). Test: `tests/server/dc/peer_inject_test.rs` (zero LLM calls).
+
+### 11. Command framing: the bound and the escaping
+
+Two things about `|` that were missing and are worth keeping straight.
+
+**Reading.** The accumulator grows a byte at a time until a `|` arrives. It had no cap and no
+timeout, so an **unauthenticated** peer that connects and never sends one grew it as fast as its
+link allowed until the process died — `nc host 411 < /dev/zero` was the whole attack. It is now
+bounded by `MAX_COMMAND_LEN` (64 KiB; the largest real command, a `$MyINFO` with a long
+description, stays well under a kilobyte), and exceeding it closes the connection with
+`decision=oversize_command`. The read half is also wrapped in a `BufReader`: the loop reads one
+byte at a time, and unbuffered that was one syscall per byte of every command.
+
+**Writing.** Every command is built as `format!("$Something {}|", value)`, so a `|` inside any
+interpolated value ends the command early and the client parses the remainder as a command of
+its own. `hub_name_command` had always stripped `|`, `\r` and `\n` from its two startup
+parameters; the ten action executors had not, so `{"message": "hi|$Kick alice"}` was two
+commands. `nmdc_field()` now does it for all of them. `send_dc_raw` is deliberately exempt —
+sending an arbitrary frame is its declared purpose.
+
+Tests: `test_oversize_command_is_refused_not_buffered` (no LLM call) and
+`test_pipe_in_a_message_cannot_inject_a_second_command`.
 
 ## Known Limitations
 

@@ -209,6 +209,25 @@ impl UdpServer {
                                                     ));
                                                 }
 
+                                                // Keep the pseudo-connection's counters live.
+                                                // This server registered every datagram with
+                                                // bytes_received set and then never touched
+                                                // the row again, so the rail's ↑ column and
+                                                // last_activity stayed at their initial values
+                                                // for the whole life of the entry — the module
+                                                // CLAUDE.md claimed "Response increments
+                                                // packets_sent and bytes_sent" and nothing did.
+                                                state_clone
+                                                    .update_connection_stats(
+                                                        server_id,
+                                                        connection_id,
+                                                        None,
+                                                        Some(output_data.len() as u64),
+                                                        None,
+                                                        Some(1),
+                                                    )
+                                                    .await;
+
                                                 log.info(format!(
                                                     "UDP response to {} ({} bytes)",
                                                     peer_addr,

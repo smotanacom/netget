@@ -20,7 +20,13 @@ protocol semantics and hub management.
 - `test_dc_hub_info()`: 2 LLM calls (ValidateNick + Key)
 - `test_dc_chat()`: 3 LLM calls (ValidateNick + Key + chat message)
 - `test_dc_search()`: 3 LLM calls (ValidateNick + Key + Search)
-- **Total: 10 LLM calls** (within budget)
+- `test_oversize_command_is_refused_not_buffered()`: 0 LLM calls (the bound is reached before
+  any event is raised)
+- `test_close_connection_actually_closes()`: 1 LLM call ($Quit)
+- `test_pipe_in_a_message_cannot_inject_a_second_command()`: 1 LLM call (chat line)
+- **Total: 12 LLM calls**, over the ~10 guideline by two. The three additions are each one call
+  or none, and each pins a defect that had no test at all: an unbounded pre-auth accumulator, a
+  `close_connection` that did not close, and `|` in an action field framing a second command
 
 **Optimization**: Tests are already consolidated to minimize LLM calls. Each test includes authentication overhead (
 ValidateNick + Key) but validates different DC features.
@@ -163,8 +169,26 @@ struggles with exact protocol syntax.
 **Notes**:
 
 - $SR format: `$SR source filename\x05size slots/slots\x05hubname|`
-- Test uses loose assertion (just checks for $SR presence)
-- LLM may format differently (test is lenient)
+- The assertion is loose (a `$SR` containing "test"), but it is now an **assertion**: the test
+  used to print "Note: Did not receive search result / This may be expected if search is not
+  fully implemented" and pass. The mock answers every `$Search` with a `$SR`, so a hub that
+  sent nothing was a real failure being reported as a note
+
+### 5. Oversize Command (`test_oversize_command_is_refused_not_buffered`)
+
+128 KiB with no `|` must be refused, not buffered. The pre-auth accumulator had no cap and no
+timeout. **0 LLM calls.**
+
+### 6. Close (`test_close_connection_actually_closes`)
+
+`close_connection` must send EOF. Its `break` used to leave only the inner action loop, so the
+hub logged "closing connection N" and carried on reading. **1 LLM call.**
+
+### 7. Command Injection (`test_pipe_in_a_message_cannot_inject_a_second_command`)
+
+A `|` in `send_dc_broadcast`'s `message` must be stripped, not framed. The assertion is about
+framing rather than words: `$Kick victim` still arrives, as inert text inside one command, and
+what must not appear is a second `|`. **1 LLM call.**
 
 ## Known Issues
 

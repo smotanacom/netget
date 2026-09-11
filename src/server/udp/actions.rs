@@ -15,8 +15,10 @@ use tokio::net::UdpSocket;
 
 /// UDP protocol action handler
 pub struct UdpProtocol {
-    /// Shared UDP socket for async actions
-    #[allow(dead_code)]
+    /// The running server's socket, when this instance belongs to one.
+    ///
+    /// `None` for the registry's copy (`UdpProtocol::new()`), which only describes actions and
+    /// events. `send_to_address` needs it and says so when it is missing.
     socket: Option<Arc<UdpSocket>>,
 }
 
@@ -171,15 +173,25 @@ impl UdpProtocol {
     /// Turn an action's `data` field into the bytes to put on the wire.
     ///
     /// `encoding` selects the interpretation:
-    /// - `"text"`  - the string's UTF-8 bytes, verbatim
+    /// - `"text"` (or `"utf8"`) - the string's UTF-8 bytes, verbatim
     /// - `"hex"`   - hex-decoded, and an error if it is not valid hex
     /// - absent or `"auto"` - hex if the string happens to parse as hex, otherwise text
     ///
-    /// `auto` is the historical behaviour and stays the default so existing prompts and
-    /// handlers keep working, but it is genuinely ambiguous and worth avoiding: any
-    /// even-length string of hex digits is taken as hex. `{"data": "1234"}` puts two bytes
-    /// (0x12 0x34) on the wire, not the four characters "1234"; so do "abcd", "DEADBEEF" and
-    /// "0000". Pass `"encoding": "text"` whenever the payload is text.
+    /// `"utf8"` is accepted because the TCP server's equivalent field spells it that way, and a
+    /// model that has just been writing `send_tcp_data` reaches for it here. It used to be
+    /// rejected outright with "Unknown encoding 'utf8'", which lost the whole datagram over a
+    /// spelling.
+    ///
+    /// `auto` is the historical behaviour and stays the default so existing prompts, handlers
+    /// and tests keep working, but it is genuinely ambiguous and worth avoiding: any even-length
+    /// string of hex digits is taken as hex. `{"data": "1234"}` puts two bytes (0x12 0x34) on
+    /// the wire, not the four characters "1234"; so do "abcd", "DEADBEEF" and "0000". Pass
+    /// `"encoding": "text"` whenever the payload is text.
+    ///
+    /// When `auto` actually resolves to hex the guess is logged at WARN. It is the one case
+    /// where a caller can be silently misunderstood, and the whole reason the TCP server was
+    /// given an explicit `encoding` field instead (see the top-level CLAUDE.md); making it
+    /// visible is what separates "the model chose hex" from "we guessed hex at its text".
     fn decode_payload(action: &serde_json::Value) -> Result<Vec<u8>> {
         let data = action
             .get("data")
@@ -187,31 +199,74 @@ impl UdpProtocol {
             .context("Missing 'data' parameter")?;
 
         match action.get("encoding").and_then(|v| v.as_str()) {
-            Some("text") => Ok(data.as_bytes().to_vec()),
+            Some("text") | Some("utf8") => Ok(data.as_bytes().to_vec()),
             Some("hex") => hex::decode(data)
                 .context("encoding is 'hex' but 'data' is not valid hex")
                 .map_err(Into::into),
             Some(other) if other != "auto" => Err(anyhow::anyhow!(
-                "Unknown encoding '{}': expected 'text', 'hex' or 'auto'",
+                "Unknown encoding '{}': expected 'text' (or 'utf8'), 'hex' or 'auto'",
                 other
             )),
-            _ => Ok(hex::decode(data).unwrap_or_else(|_| data.as_bytes().to_vec())),
+            _ => match hex::decode(data) {
+                Ok(bytes) => {
+                    tracing::warn!(
+                        "UDP 'data' had no 'encoding' and parses as hex, so {} characters were \
+                         decoded to {} bytes. If it was meant as text, pass \
+                         \"encoding\": \"text\" - this guess is the one way a payload can be \
+                         silently corrupted here.",
+                        data.len(),
+                        bytes.len()
+                    );
+                    Ok(bytes)
+                }
+                Err(_) => Ok(data.as_bytes().to_vec()),
+            },
         }
     }
 
-    /// Execute send_to_address async action
+    /// Execute send_to_address async action.
+    ///
+    /// The address used to be parsed for validation and then **discarded**: the result was a
+    /// plain `Output`, and the handler in `mod.rs` writes every `Output` back to the peer that
+    /// sent the current datagram. So an action whose entire purpose is "send somewhere else"
+    /// sent to the same place as `send_udp_response`, and the model was never told.
+    ///
+    /// It now writes the datagram itself, through the server's own socket, and returns
+    /// `NoAction` so `mod.rs` does not additionally echo the payload to the current peer.
+    /// `try_send_to` rather than `send_to` because this executor is synchronous; a UDP send
+    /// does not block in practice, and the one case where it can (a full socket buffer) is
+    /// reported rather than swallowed.
     fn execute_send_to_address(&self, action: serde_json::Value) -> Result<ActionResult> {
         let address = action
             .get("address")
             .and_then(|v| v.as_str())
             .context("Missing 'address' parameter")?;
 
-        let _addr: SocketAddr = address.parse().context("Invalid socket address format")?;
+        let addr: SocketAddr = address.parse().context("Invalid socket address format")?;
+        let payload = Self::decode_payload(&action)?;
 
-        // NOTE: the parsed address is discarded. The caller in mod.rs sends every Output back
-        // to the peer that sent the current datagram, so this action cannot actually target a
-        // different address despite its name and documentation.
-        Ok(ActionResult::Output(Self::decode_payload(&action)?))
+        let Some(socket) = self.socket.as_ref() else {
+            // Phrased so the whole-tree example audit classifies this as needing runtime
+            // context, which is exactly what it is: the registry's copy of this protocol has no
+            // socket, only the one the running server built does.
+            return Err(anyhow::anyhow!(
+                "send_to_address can only run while answering a udp_datagram_received event on a \
+                 running UDP server: no socket is bound in this context"
+            ));
+        };
+
+        match socket.try_send_to(&payload, addr) {
+            Ok(sent) => {
+                tracing::debug!("UDP send_to_address: {} bytes to {}", sent, addr);
+                Ok(ActionResult::NoAction)
+            }
+            Err(e) => Err(anyhow::anyhow!(
+                "send_to_address could not write {} bytes to {}: {}",
+                payload.len(),
+                addr,
+                e
+            )),
+        }
     }
 
     /// Execute send_udp_response sync action
@@ -225,20 +280,27 @@ fn encoding_parameter() -> Parameter {
     Parameter {
         name: "encoding".to_string(),
         type_hint: "string".to_string(),
-        description: "How to read 'data': 'text' for literal UTF-8, 'hex' for hex-decoded \
-                      binary, 'auto' (default) to guess. Prefer being explicit - under 'auto' \
-                      any even-length run of hex digits is taken as hex, so \"1234\" sends two \
-                      bytes rather than four characters."
+        description: "How to read 'data': 'text' (or 'utf8') for literal UTF-8, 'hex' for \
+                      hex-decoded binary, 'auto' (the default) to guess. ALWAYS set it \
+                      explicitly - under 'auto' any even-length run of hex digits is taken as \
+                      hex, so \"1234\" sends the two bytes 0x12 0x34 rather than the four \
+                      characters, and so do \"abcd\", \"DEADBEEF\" and \"0000\". The \
+                      udp_datagram_received event tells you which encoding it used; reply with \
+                      the same one."
             .to_string(),
         required: false,
     }
+    .with_choices(["text", "hex", "auto"])
 }
 
 /// Action definition for send_to_address
 fn send_to_address_action() -> ActionDefinition {
     ActionDefinition {
         name: "send_to_address".to_string(),
-        description: "Send UDP datagram to a specific address (async action)".to_string(),
+        description: "Send a UDP datagram to an address other than the current peer, from this \
+                      server's own socket. Use send_udp_response to answer the peer that sent \
+                      the datagram you are handling."
+            .to_string(),
         parameters: vec![
             Parameter {
                 name: "address".to_string(),
@@ -360,7 +422,16 @@ pub static UDP_DATAGRAM_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             required: false,
         },
     ])
-    .with_actions(vec![send_udp_response_action(), ignore_datagram_action()])
+    // `send_to_address` belongs here as well as in the async list. `call_llm` builds a server's
+    // tool list from the *event*, so leaving it out meant the only place the action could
+    // actually work — inside the running server, which is the only context that owns a socket —
+    // was the one place the model was never offered it. Outside that context it now says so
+    // rather than pretending to have sent something.
+    .with_actions(vec![
+        send_udp_response_action(),
+        send_to_address_action(),
+        ignore_datagram_action(),
+    ])
     .with_log_template(
         LogTemplate::new()
             .with_info("UDP {data_length}B from {peer_address}")

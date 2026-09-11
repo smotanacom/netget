@@ -195,3 +195,86 @@ async fn test_reverse_shell_fails_closed_on_no_answer() -> E2EResult<()> {
     println!("=== Test passed ===\n");
     Ok(())
 }
+
+/// Greeting with silence must keep the session, not drop it.
+///
+/// `reverse_shell_session_opened`'s own description offers "stay silent and wait for their first
+/// command", and there was no way to say it: `call_llm` builds the tool list from the event, and
+/// `no_shell_output` was missing from that event's actions. A model taking the description at
+/// its word answered with zero actions, which `consult` reads as `NoUsableAnswer` — so following
+/// the documentation produced a failure notice and a FIN before the operator typed anything.
+///
+/// The distinction this pins is the one the protocol is careful about everywhere else: a
+/// deliberate "print nothing" is not the same as "no answer came back".
+#[tokio::test]
+async fn test_silent_greeting_keeps_the_session() -> E2EResult<()> {
+    println!("\n=== E2E Test: reverse-shell silent greeting ===");
+
+    let prompt = "reverse-shell listener on port {AVAILABLE_PORT} that stays quiet until spoken to";
+
+    let server = helpers::start_netget_server(NetGetConfig::new(prompt).with_mock(|mock| {
+        mock.on_event("reverse_shell_session_opened")
+            .respond_with_actions(serde_json::json!([
+                { "type": "no_shell_output" }
+            ]))
+            .expect_calls(1)
+            .and()
+            .on_event("reverse_shell_command")
+            .and_event_data_contains("command", "id")
+            .respond_with_actions(serde_json::json!([
+                { "type": "send_shell_output", "output": "uid=33(www-data)\n" }
+            ]))
+            .expect_calls(1)
+            .and()
+            .on_instruction_containing("reverse-shell")
+            .respond_with_actions(serde_json::json!([
+                {
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "reverse-shell",
+                    "instruction": "Quiet shell emulation"
+                }
+            ]))
+            .expect_calls(1)
+            .and()
+    }))
+    .await?;
+    println!("Listener started on port {}", server.port);
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
+
+    // Nothing on connect, and — the part that matters — the session is still open. Before the
+    // fix this read returned the fail-closed notice followed by EOF.
+    let mut buf = vec![0u8; 1024];
+    match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)).await {
+        Err(_) => println!("✓ silent greeting, session still open"),
+        Ok(Ok(0)) => {
+            return Err(
+                "listener hung up on a silent greeting instead of waiting for a command".into(),
+            )
+        }
+        Ok(Ok(n)) => {
+            return Err(format!(
+                "listener wrote {:?} to a session the model answered with no_shell_output",
+                String::from_utf8_lossy(&buf[..n])
+            )
+            .into())
+        }
+        Ok(Err(e)) => return Err(format!("read error after connect: {}", e).into()),
+    }
+
+    // The session really is usable: the first command still gets its answer.
+    stream.write_all(b"id\n").await?;
+    stream.flush().await?;
+    let out = read_until(&mut stream, "www-data").await;
+    assert!(
+        out.contains("uid=33(www-data)"),
+        "the session did not survive the silent greeting; got {out:?}"
+    );
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    println!("=== Test passed ===\n");
+    Ok(())
+}

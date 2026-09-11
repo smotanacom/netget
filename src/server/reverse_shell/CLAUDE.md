@@ -87,7 +87,7 @@ through the peer task and do not touch the counters (matches the tcp/ftp referen
 
 | Event | Raised when | Actions offered |
 |---|---|---|
-| `reverse_shell_session_opened` | operator connects | send_shell_prompt, send_shell_output, end_shell_session |
+| `reverse_shell_session_opened` | operator connects | send_shell_prompt, send_shell_output, no_shell_output, end_shell_session |
 | `reverse_shell_command` | a newline-terminated line arrives | send_shell_output, send_shell_prompt, no_shell_output, end_shell_session |
 
 ## Actions
@@ -114,6 +114,12 @@ The four outcomes are kept structurally distinct (`Outcome` / `FailClosed` in `m
 
 - **output / close** — the model decided what to print and whether to end the session.
 - **`no_shell_output`** — the model explicitly decided to print nothing; the session stays open.
+  It is offered on **both** events. It used not to be offered on `reverse_shell_session_opened`,
+  whose description nevertheless invites the model to "stay silent and wait for their first
+  command" — and since `call_llm` builds the tool list from the event, the only way to say that
+  was to answer with zero actions, which is `NoUsableAnswer` and drops the session. Following
+  the documentation hung up on the operator before a byte was typed
+  (`test_silent_greeting_keeps_the_session`).
 - **no usable answer** (`FailClosed::NoUsableAnswer`) — the call succeeded but every action
   failed or produced nothing. Logged at WARN with `decision=fail_closed_no_answer`.
 - **LLM error** (`FailClosed::LlmError`) — the call itself returned `Err`. Logged at ERROR with
