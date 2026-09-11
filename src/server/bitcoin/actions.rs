@@ -18,6 +18,31 @@ use serde_json::json;
 use std::sync::LazyLock;
 
 /// Bitcoin protocol action handler
+/// The network magic for a name the model supplied, or an error naming the accepted values.
+///
+/// Five executors each carried their own copy of this match, and every copy ended
+/// `_ => Magic::BITCOIN`. So `"testnet4"`, `"Testnet"` or any typo produced **mainnet**
+/// magic silently: the reply went out with the wrong four leading bytes, the peer dropped it
+/// as a foreign network, and nothing anywhere said why. Refusing names the mistake and gives
+/// the model something to correct — and refusing is the safe direction here, because the
+/// failure it replaces is "answer on mainnet when asked for anything else".
+///
+/// A *missing* `network` still defaults to mainnet; the parameter is `required: false` and
+/// its description says so. It is only an unrecognised value that is an error.
+fn magic_for_network(network: &str) -> Result<Magic> {
+    match network {
+        "mainnet" | "main" => Ok(Magic::BITCOIN),
+        "testnet" | "test" => Ok(Magic::TESTNET3),
+        "signet" => Ok(Magic::SIGNET),
+        "regtest" => Ok(Magic::REGTEST),
+        other => Err(anyhow::anyhow!(
+            "unknown Bitcoin network '{}': expected one of mainnet (or main), testnet (or \
+             test), signet, regtest",
+            other
+        )),
+    }
+}
+
 pub struct BitcoinProtocol;
 
 impl BitcoinProtocol {
@@ -228,13 +253,7 @@ impl BitcoinProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("mainnet");
 
-        let magic = match network {
-            "mainnet" | "main" => Magic::BITCOIN,
-            "testnet" | "test" => Magic::TESTNET3,
-            "signet" => Magic::SIGNET,
-            "regtest" => Magic::REGTEST,
-            _ => Magic::BITCOIN,
-        };
+        let magic = magic_for_network(network)?;
 
         // Get optional parameters with defaults
         let version = action
@@ -308,13 +327,7 @@ impl BitcoinProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("mainnet");
 
-        let magic = match network {
-            "mainnet" | "main" => Magic::BITCOIN,
-            "testnet" | "test" => Magic::TESTNET3,
-            "signet" => Magic::SIGNET,
-            "regtest" => Magic::REGTEST,
-            _ => Magic::BITCOIN,
-        };
+        let magic = magic_for_network(network)?;
 
         let raw_msg = RawNetworkMessage::new(magic, NetworkMessage::Verack);
         let mut bytes = Vec::new();
@@ -332,13 +345,7 @@ impl BitcoinProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("mainnet");
 
-        let magic = match network {
-            "mainnet" | "main" => Magic::BITCOIN,
-            "testnet" | "test" => Magic::TESTNET3,
-            "signet" => Magic::SIGNET,
-            "regtest" => Magic::REGTEST,
-            _ => Magic::BITCOIN,
-        };
+        let magic = magic_for_network(network)?;
 
         let nonce = action
             .get("nonce")
@@ -361,13 +368,7 @@ impl BitcoinProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("mainnet");
 
-        let magic = match network {
-            "mainnet" | "main" => Magic::BITCOIN,
-            "testnet" | "test" => Magic::TESTNET3,
-            "signet" => Magic::SIGNET,
-            "regtest" => Magic::REGTEST,
-            _ => Magic::BITCOIN,
-        };
+        let magic = magic_for_network(network)?;
 
         let nonce = action
             .get("nonce")
@@ -390,13 +391,7 @@ impl BitcoinProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("mainnet");
 
-        let magic = match network {
-            "mainnet" | "main" => Magic::BITCOIN,
-            "testnet" | "test" => Magic::TESTNET3,
-            "signet" => Magic::SIGNET,
-            "regtest" => Magic::REGTEST,
-            _ => Magic::BITCOIN,
-        };
+        let magic = magic_for_network(network)?;
 
         let raw_msg = RawNetworkMessage::new(magic, NetworkMessage::GetAddr);
         let mut bytes = Vec::new();
