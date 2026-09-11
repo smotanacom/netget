@@ -37,6 +37,19 @@ const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 /// closes parks this client forever — and the model is waiting on the response event.
 const RESPONSE_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Strip control characters from a query before it goes on the wire.
+///
+/// RFC 3912 is one line, one query. A `query` containing CR or LF would put a *second* query
+/// line on the wire that the model never asked for, and the client would then attribute the
+/// server's reply to the first — so what reaches the response event would not describe what
+/// was actually asked. `finger`'s client (`strip_controls`) and `gopher`'s (which refuses a
+/// selector containing CR or LF outright) both guard this; WHOIS did not.
+///
+/// ESC goes with them: a query is echoed into the log and onto the operator's dashboard.
+fn sanitize_query(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// A WHOIS reply as it came off the socket.
 struct Reply {
     /// Decoded lossily on purpose: registry servers still emit Latin-1, and `read_to_string`
@@ -454,6 +467,7 @@ impl WhoisClient {
         let mut stream = TcpStream::connect(remote_addr)
             .await
             .with_context(|| format!("WHOIS follow-up could not reach {remote_addr}"))?;
+        let query = sanitize_query(query);
         stream.write_all(format!("{query}\r\n").as_bytes()).await?;
         stream.flush().await?;
 
@@ -479,11 +493,11 @@ impl WhoisClient {
     {
         match result {
             ClientActionResult::Custom { name, data } if name == "whois_query" => {
-                let query = data
-                    .get("query")
-                    .and_then(|v| v.as_str())
-                    .context("Missing query in action data")?
-                    .to_string();
+                let query = sanitize_query(
+                    data.get("query")
+                        .and_then(|v| v.as_str())
+                        .context("Missing query in action data")?,
+                );
                 debug!("WHOIS client {} querying: {}", client_id, query);
                 let query_bytes = format!("{}\r\n", query);
                 {

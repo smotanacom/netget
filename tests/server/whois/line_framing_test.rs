@@ -166,4 +166,116 @@ mod whois_line_framing_test {
         server.stop().await?;
         Ok(())
     }
+
+    /// A record field is one line, so CR/LF in one must not forge another.
+    ///
+    /// This is the family's signature defect — FTP's `send_ftp_response` documented that text
+    /// must not contain CR/LF and checked nothing, so a `message` of
+    /// `"Password required\r\n230 User logged in"` turned a 331 into a successful login.
+    /// A WHOIS record has no authentication in it, but it is still `Key: value` lines, and a
+    /// forged `Registrant Name:` is indistinguishable to whoever reads the output from one the
+    /// model asserted. `send_whois_response` is free text and deliberately unfiltered; a
+    /// *record* is not free text.
+    #[tokio::test]
+    async fn crlf_in_a_record_field_cannot_forge_another_field() -> E2EResult<()> {
+        let config = NetGetConfig::new("listen on port {AVAILABLE_PORT} via whois")
+            .with_log_level("info")
+            .with_mock(|mock| {
+                mock.on_instruction_containing("listen on port")
+                    .and_instruction_containing("whois")
+                    .respond_with_actions(serde_json::json!([
+                        {
+                            "type": "open_server",
+                            "port": 0,
+                            "base_stack": "whois",
+                            "instruction": "",
+                            "event_handlers": [{
+                                "event_pattern": "whois_query",
+                                "handler": {
+                                    "type": "static",
+                                    "actions": [
+                                        {
+                                            "type": "send_whois_record",
+                                            "domain": "example.com",
+                                            // Every one of these tries to end its line early.
+                                            "registrar": "Good Registrar\r\nRegistrant Name: FORGED",
+                                            "registrant": "Real Org\r\nAdmin Name: FORGED",
+                                            "name_servers": [
+                                                "ns1.example.com\r\nName Server: forged.example"
+                                            ]
+                                        },
+                                        {"type": "close_connection"}
+                                    ]
+                                }
+                            }]
+                        }
+                    ]))
+                    .expect_calls(1)
+                    .and()
+            });
+
+        let server = start_netget_server(config).await?;
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
+        stream.write_all(b"example.com\r\n").await?;
+        stream.flush().await?;
+
+        let seen = read_until(&mut stream, "Name Server:", 20).await;
+
+        // The guarantee is structural: **no forged line**. The words `Registrant Name: FORGED`
+        // are still in the output, and should be — sanitising is not censoring. What matters
+        // is that they are inside the `Registrar:` field's own line, where a line-oriented
+        // reader attributes them correctly, instead of starting a line of their own.
+        let lines: Vec<&str> = seen.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("Registrant Name:"))
+                .count(),
+            1,
+            "exactly one line may begin `Registrant Name:`; a CR/LF in `registrar` forged \
+             another: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("Admin Name:"))
+                .count(),
+            1,
+            "exactly one line may begin `Admin Name:`; a CR/LF in `registrant` forged \
+             another: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("Name Server:"))
+                .count(),
+            1,
+            "one name server was asked for, so exactly one line may begin `Name Server:`: \
+             {lines:?}"
+        );
+        // Positively: the forged name server is still there, *inside* the real one's line.
+        // Asserting its absence would be asserting censorship, which is not the property.
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("Name Server: ns1.example.com")
+                    && l.contains("forged.example")),
+            "the forged name server should have been folded into the real one's line: \
+             {lines:?}"
+        );
+
+        // The text survives, with each of CR and LF becoming a space rather than being
+        // deleted — deleting would concatenate the two sides into `Good RegistrarRegistrant`,
+        // which reads as a single value and is its own small lie.
+        assert!(
+            seen.contains("Registrar: Good Registrar  Registrant Name: FORGED"),
+            "the field's text should be preserved with the line break turned into spaces: \
+             {seen:?}"
+        );
+
+        server.wait_for_mocks(30).await;
+        server.verify_mocks().await?;
+        server.stop().await?;
+        Ok(())
+    }
 }

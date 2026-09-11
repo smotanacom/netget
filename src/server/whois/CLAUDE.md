@@ -45,6 +45,28 @@ thing to do and is what both `send_*` action descriptions say;
 `tests/server/whois/e2e_test.rs` proves the real client is satisfied when they
 are paired. The timeout is a floor under the mistake, not a substitute.
 
+### Injection hygiene
+
+A WHOIS **response** is free text and `send_whois_response` is deliberately
+unfiltered — multi-line output is its whole purpose. A WHOIS **record** is not
+free text: it is `Key: value` lines, so every single-line field of
+`send_whois_record` (and `send_error`'s `message`) is stripped of control
+characters first. Without that, a `registrar` of
+`"Foo\r\nRegistrant Name: Bar"` forged a field the model never asserted, and
+nothing reading the output — a human, or more dangerously a script grepping for
+`Registrant Name:` — could tell it from a real one.
+
+This is the line-oriented family's signature defect. What is worth recording is
+the direction it was found in: **both of this server's neighbours had added the
+guard independently and WHOIS, the one they were told to copy, had not** —
+`gopher`'s `sanitize_field`, `finger`'s `strip_controls`, `ident`'s
+`sanitize_token`.
+
+CR, LF and tab become a space rather than vanishing (gopher's choice): deleting
+them concatenates the two sides into one word, `Good RegistrarRegistrant`, which
+reads as a single value and is its own small lie. The guarantee is *no forged
+line*, not that the words disappear.
+
 ### Framing and bounds
 
 A query is a **line**, not a TCP segment. Reads accumulate to a newline under
