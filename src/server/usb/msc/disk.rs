@@ -158,7 +158,20 @@ impl DiskImage {
             rounded
         };
 
-        let total_sectors = (size_bytes / bytes_per_sector as u64) as u32;
+        // `as u32` truncated: a 4 TiB request produced a sector count that wrapped to a small
+        // number, so the device advertised a capacity bearing no relation to the mapping behind
+        // it. SCSI READ(10) addresses 32 bits of sectors and nothing larger is representable,
+        // so refuse rather than round.
+        let total_sectors =
+            u32::try_from(size_bytes / bytes_per_sector as u64).with_context(|| {
+                format!(
+                    "Disk image {} is {} bytes, more than the {} sectors a 32-bit LBA can \
+                     address",
+                    path.display(),
+                    size_bytes,
+                    u32::MAX
+                )
+            })?;
         if total_sectors == 0 {
             anyhow::bail!(
                 "Disk image {} is smaller than one 512-byte sector",
@@ -210,8 +223,12 @@ impl DiskImage {
             );
         }
 
-        let offset = (lba * self.bytes_per_sector) as usize;
-        let length = (count * self.bytes_per_sector) as usize;
+        // In `usize`, not `u32`. `lba * 512` overflows 32 bits at 4 GiB, which is well inside
+        // what `mount_disk` accepts -- a debug or test build panicked on the multiply and a
+        // release build wrapped to a small offset and served the wrong sectors. Nothing here
+        // is bounded by 32 bits except the LBA itself, which SCSI READ(10) defines that way.
+        let offset = lba as usize * self.bytes_per_sector as usize;
+        let length = count as usize * self.bytes_per_sector as usize;
 
         trace!(
             "Reading {} sectors from LBA {} (offset {}, length {})",
@@ -248,7 +265,7 @@ impl DiskImage {
             );
         }
 
-        let offset = (lba * self.bytes_per_sector) as usize;
+        let offset = lba as usize * self.bytes_per_sector as usize;
         let length = data.len();
 
         trace!(
@@ -286,8 +303,8 @@ impl DiskImage {
             );
         }
 
-        let offset = (lba * self.bytes_per_sector) as usize;
-        let length = (count * self.bytes_per_sector) as usize;
+        let offset = lba as usize * self.bytes_per_sector as usize;
+        let length = count as usize * self.bytes_per_sector as usize;
 
         debug!("Zeroing {} sectors from LBA {}", count, lba);
 

@@ -245,7 +245,10 @@ impl UsbMscProtocol {
         });
 
         if let Some(id) = requested {
-            let connection_id = ConnectionId::new(id as u32);
+            let Ok(id) = u32::try_from(id) else {
+                anyhow::bail!("connection_id {id} is not a valid connection number");
+            };
+            let connection_id = ConnectionId::new(id);
             return handlers.get(&connection_id).cloned().ok_or_else(|| {
                 anyhow::anyhow!(
                     "No USB mass storage device attached on connection {}",
@@ -575,11 +578,18 @@ impl Server for UsbMscProtocol {
                 // Write protection defaults to *on*, matching how a device starts up. A model
                 // that wants the host to be able to write has to say so.
                 let write_protect = action["write_protect"].as_bool().unwrap_or(true);
+                // Bounded, not just fitted into 32 bits. `u32::try_from` alone accepted
+                // 4294967295 MB, i.e. a 4 PiB `set_len` on a sparse file whose sector count
+                // then had to be truncated to be representable. `MAX_DISK_MB` is the largest
+                // image a 32-bit LBA can address at 512 bytes per sector.
                 let size_mb = action["size_mb"].as_u64().unwrap_or(10);
-                let size_mb = u32::try_from(size_mb).context("size_mb is out of range")?;
-                if size_mb == 0 {
-                    anyhow::bail!("size_mb must be at least 1");
+                if !(1..=MAX_DISK_MB).contains(&size_mb) {
+                    anyhow::bail!(
+                        "size_mb is {size_mb}; a virtual drive must be between 1 and \
+                         {MAX_DISK_MB} MB (a 32-bit LBA addresses no more)"
+                    );
                 }
+                let size_mb = size_mb as u32;
 
                 // Open the image before touching the device: a bad path must not leave the
                 // handler half-remounted.
@@ -623,6 +633,14 @@ impl Server for UsbMscProtocol {
         }
     }
 }
+
+/// Largest virtual drive `mount_disk` will create, in megabytes.
+///
+/// SCSI READ(10) carries a 32-bit LBA and the sector size is fixed at 512, so 2 TiB is the
+/// most this device can address. Anything past it has to be truncated somewhere, and a device
+/// that advertises a capacity it cannot reach is worse than one that refuses to be that big.
+#[cfg(feature = "usb-msc")]
+const MAX_DISK_MB: u64 = (u32::MAX as u64) * 512 / (1024 * 1024);
 
 // Action definitions
 

@@ -534,4 +534,83 @@ mod usb_msc_e2e {
         server.stop().await?;
         Ok(())
     }
+
+    /// Sector offsets are computed in `usize`, so a disk past 4 GiB addresses correctly.
+    ///
+    /// `read_sectors` did `(lba * self.bytes_per_sector) as usize` -- a `u32` multiply that
+    /// overflows at exactly 4 GiB, which is well inside what `mount_disk` accepted. In a debug
+    /// or test build it panicked inside a URB callback (swallowed, with the server still
+    /// reporting `Running`); in release it wrapped to a small offset and served the wrong
+    /// sectors as though they were the right ones.
+    ///
+    /// The image is sparse: `open_or_create` calls `set_len`, so no bytes are written.
+    #[tokio::test]
+    async fn sector_offsets_do_not_overflow_past_four_gibibytes() {
+        use ::netget::server::usb::msc::disk::DiskImage;
+
+        let dir = std::env::temp_dir().join(format!(
+            "netget-usb-msc-offset-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("sparse.img");
+
+        // 5 GiB: the first LBA whose byte offset exceeds u32::MAX is 8388608.
+        let mut disk = DiskImage::open_or_create(&path, 5 * 1024).expect("sparse image");
+        let first_past_32_bits: u32 = 8_388_608;
+        assert!(disk.total_sectors() > first_past_32_bits);
+
+        let sectors = disk
+            .read_sectors(first_past_32_bits, 1)
+            .expect("a sector past the 32-bit byte boundary must be readable");
+        assert_eq!(sectors.len(), 512);
+
+        let payload = vec![0xA5u8; 512];
+        assert_eq!(
+            disk.write_sectors(first_past_32_bits, &payload)
+                .expect("and writable"),
+            1
+        );
+        assert_eq!(
+            disk.read_sectors(first_past_32_bits, 1).expect("read back"),
+            payload,
+            "the bytes must come back from the sector they were written to, not a wrapped one"
+        );
+
+        drop(disk);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A drive larger than a 32-bit LBA can address is refused rather than truncated.
+    ///
+    /// `size_mb` was only checked to fit in `u32`, so 4294967295 was accepted -- a 4 PiB
+    /// `set_len` whose sector count then had to be truncated by `as u32` to be stored. The
+    /// device advertised a capacity bearing no relation to the mapping behind it.
+    #[tokio::test]
+    async fn a_drive_larger_than_a_32_bit_lba_is_refused() {
+        use ::netget::llm::actions::Server;
+        use ::netget::server::usb::msc::UsbMscProtocol;
+
+        let protocol = UsbMscProtocol::new();
+        let err = protocol
+            .execute_action(serde_json::json!({
+                "type": "mount_disk",
+                "disk_image": "/nonexistent/netget-must-not-create-this.img",
+                "size_mb": u32::MAX as u64
+            }))
+            .expect_err("a 4 PiB drive must be refused");
+        let message = format!("{err}");
+        assert!(
+            message.contains("size_mb"),
+            "the refusal must name the parameter that was out of range: {message}"
+        );
+        assert!(
+            !std::path::Path::new("/nonexistent/netget-must-not-create-this.img").exists(),
+            "the size must be checked before anything touches the filesystem"
+        );
+    }
 }
