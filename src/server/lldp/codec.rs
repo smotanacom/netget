@@ -436,13 +436,25 @@ impl Lldpdu {
         push_tlv(&mut out, TLV_TIME_TO_LIVE, &self.ttl.to_be_bytes())?;
 
         if let Some(text) = &self.port_description {
-            push_text_tlv(&mut out, TLV_PORT_DESCRIPTION, "port_description", text, false)?;
+            push_text_tlv(
+                &mut out,
+                TLV_PORT_DESCRIPTION,
+                "port_description",
+                text,
+                false,
+            )?;
         }
         if let Some(text) = &self.system_name {
             push_text_tlv(&mut out, TLV_SYSTEM_NAME, "system_name", text, false)?;
         }
         if let Some(text) = &self.system_description {
-            push_text_tlv(&mut out, TLV_SYSTEM_DESCRIPTION, "system_description", text, true)?;
+            push_text_tlv(
+                &mut out,
+                TLV_SYSTEM_DESCRIPTION,
+                "system_description",
+                text,
+                true,
+            )?;
         }
         if let Some((supported, enabled)) = self.capabilities {
             let mut value = Vec::with_capacity(4);

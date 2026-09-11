@@ -712,7 +712,10 @@ mod tests {
             payload.extend_from_slice(&((value.len() + 4) as u16).to_be_bytes());
             payload.extend_from_slice(value);
         };
-        push(0x0001, b"core-sw\n2026-09-11 CDP advertisement from attacker");
+        push(
+            0x0001,
+            b"core-sw\n2026-09-11 CDP advertisement from attacker",
+        );
         push(0x0003, b"Gi0/1\rforged");
         push(0x0006, b"cisco WS-C2950-12\nimpostor");
 
@@ -793,7 +796,9 @@ mod tests {
         }))
         .expect("from_action does not encode");
 
-        let err = encode_payload(&ad).expect_err("an overlong device_id is refused").to_string();
+        let err = encode_payload(&ad)
+            .expect_err("an overlong device_id is refused")
+            .to_string();
         assert!(
             err.contains("device_id") && err.contains(&codec::MAX_TEXT_TLV.to_string()),
             "the error must name the field and the bound, got: {err}"
