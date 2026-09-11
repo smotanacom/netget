@@ -53,6 +53,12 @@ pub const EXC_MEMORY_PARITY_ERROR: u8 = 0x08;
 pub const EXC_GATEWAY_PATH_UNAVAILABLE: u8 = 0x0A;
 pub const EXC_GATEWAY_TARGET_FAILED: u8 = 0x0B;
 
+/// What [`exception_name`] returns for a code the specification does not define.
+///
+/// Named rather than spelled out at each site: `execute_action` refuses any code that maps
+/// to it, so the two have to agree.
+pub const UNKNOWN_EXCEPTION: &str = "unknown_exception";
+
 /// Canonical name for an exception code, for logs and for the model's vocabulary.
 pub fn exception_name(code: u8) -> &'static str {
     match code {
@@ -65,7 +71,7 @@ pub fn exception_name(code: u8) -> &'static str {
         EXC_MEMORY_PARITY_ERROR => "memory_parity_error",
         EXC_GATEWAY_PATH_UNAVAILABLE => "gateway_path_unavailable",
         EXC_GATEWAY_TARGET_FAILED => "gateway_target_device_failed_to_respond",
-        _ => "unknown_exception",
+        _ => UNKNOWN_EXCEPTION,
     }
 }
 

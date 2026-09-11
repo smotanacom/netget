@@ -544,17 +544,19 @@ async fn crossing_a_confinement_boundary_raises_can_bus_state_changed_once() -> 
     assert_eq!(frame.id, 0x7E8);
 
     // The operator is told, in the state the ladder actually names.
+    //
+    // Asserted unconditionally. This used to substitute an empty string when the status
+    // never arrived and then guard the real assertion behind `if !line.is_empty()`, so a
+    // server that reported nothing at all passed silently - which is the one outcome the
+    // check exists to catch.
     let line = server
         .wait_for_status("bus state", 20)
         .await
-        .or_else(|| Some(String::new()))
-        .unwrap();
-    if !line.is_empty() {
-        assert!(
-            line.contains("error_active -> error_passive"),
-            "the transition must name both ends: {line}"
-        );
-    }
+        .expect("the server must report the bus-state transition on its status stream");
+    assert!(
+        line.contains("error_active -> error_passive"),
+        "the transition must name both ends: {line}"
+    );
 
     // Same condition again: not a transition, so no second frame.
     client.send_to(&error_passive_frame(), server.addr).await?;

@@ -837,3 +837,124 @@ async fn test_unsupported_version_is_answered_without_consulting_the_model() -> 
     assert_eq!(to_hex(&[0x0A, 0xFF]), "0aff");
     Ok(())
 }
+
+// ===========================================================================
+// A sequence number the header cannot hold refuses the session, it does not wrap
+// ===========================================================================
+
+/// A model answer with a sequence number wider than the header field must **fail closed**,
+/// and the refusal must be a refusing cause rather than a wrapped accept.
+///
+/// This is two properties in one exchange, and neither had a test.
+///
+/// The first is the narrowing cast. GTPv1's header sequence is 16 bits while the action's
+/// `sequence` parameter is validated as a `u32`, so `sequence as u16` turned 70000 into
+/// 4464 silently. That is worse than it sounds: the peer matches a response to its request
+/// by sequence number, so a wrapped one is discarded and the request times out - a failure
+/// that reads as a lost packet, sending whoever debugs it to the network rather than to the
+/// field.
+///
+/// The second is `synthesised_refusal`, the protocol's most important safety property:
+/// every path that cannot produce a real answer must still put a *refusing* cause on the
+/// wire. The mock below asks for `request_accepted` and supplies every field an accepted
+/// session needs; the only thing wrong with it is the sequence. If the bound were missing
+/// the client would receive cause 128 and believe a session existed.
+#[tokio::test]
+async fn test_a_sequence_wider_than_the_header_field_fails_closed() -> E2EResult<()> {
+    let config = NetGetConfig::new(
+        "Start a GTP server on port {AVAILABLE_PORT} acting as a GGSN for the internet APN",
+    )
+    .with_log_level("debug")
+    .with_mock(|mock| {
+        mock.on_instruction_containing("GTP server")
+            .and_instruction_containing("on port")
+            .respond_with_actions(json!([{
+                "type": "open_server",
+                "port": 0,
+                "base_stack": "gtp",
+                "instruction": "Act as a GGSN for the internet APN"
+            }]))
+            .expect_calls(1)
+            .and()
+            // Everything here is a valid, accepting answer except the sequence: 70000 needs
+            // 17 bits and the GTPv1 field has 16.
+            .on_event("gtp_create_session_request")
+            .respond_with_actions(json!([{
+                "type": "send_gtp_create_session_response",
+                "cause": "request_accepted",
+                "sequence": 70000,
+                "assigned_address": "10.45.0.2",
+                "control_teid": 48879,
+                "data_teid": 48880,
+                "charging_id": 7
+            }]))
+            .expect_calls(1)
+            .and()
+    });
+
+    let server = start_netget_server(config).await?;
+    server
+        .wait_for_log("GTP control plane receive loop started", 15)
+        .await?;
+
+    let control: SocketAddr = format!("127.0.0.1:{}", server.port).parse()?;
+    let socket = UdpSocket::bind("127.0.0.1:0").await?;
+
+    let mut body = Vec::new();
+    body.extend(tv(2, &tbcd(TEST_IMSI)));
+    body.extend(tv(16, &0x1111_1111u32.to_be_bytes()));
+    body.extend(tv(17, &0x2222_2222u32.to_be_bytes()));
+    body.extend(tv(20, &[5]));
+    body.extend(tlv(128, &[0xF1, 0x21]));
+    body.extend(tlv(131, &apn_labels("internet")));
+    body.extend(tlv(133, &[127, 0, 0, 1]));
+    body.extend(tlv(133, &[127, 0, 0, 1]));
+
+    let reply = parse_v1(
+        &exchange(&socket, control, &v1_message(16, 0, 1, &body)).await,
+        true,
+    );
+
+    assert_eq!(
+        reply.message_type, 17,
+        "the refusal must still be a Create PDP Context Response, not silence - a peer that \
+         hears nothing retransmits rather than releasing the session"
+    );
+    assert_eq!(
+        reply.sequence,
+        Some(1),
+        "the synthesised refusal must carry the request's own sequence, which is the one \
+         value we know fits"
+    );
+
+    let cause = reply
+        .ie(1)
+        .expect("a Create PDP Context Response carries a Cause IE");
+    assert_ne!(
+        cause,
+        [128u8].as_slice(),
+        "cause 128 is Request accepted: the model's accepting answer must NOT have reached \
+         the wire, because the sequence it came with could not be encoded"
+    );
+    assert!(
+        !(128..=191).contains(&cause[0]),
+        "GTPv1 causes 128-191 are the acceptance range (TS 29.060 §7.7.1); a synthesised \
+         refusal must fall outside it, got {cause:?}"
+    );
+    assert_eq!(
+        reply.u32_ie(17),
+        None,
+        "a refusal must not carry the control TEID the model tried to assign - a refusal \
+         that hands out tunnel endpoints is an accept wearing a rejection's cause"
+    );
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    assert!(
+        server.output_contains("decision=fail_closed").await,
+        "the fail-closed path must be recorded with its own decision token, because the \
+         wire cannot distinguish it from a refusal the model chose deliberately"
+    );
+    server.stop().await?;
+    Ok(())
+}

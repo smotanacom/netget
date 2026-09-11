@@ -47,6 +47,64 @@ struct ConnectionData {
     write_half: Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
 }
 
+/// How much one connection may accumulate before we give up on it: eight ADUs' worth.
+///
+/// The buffer is both the framing accumulator and the queue for bytes that arrive while a
+/// request is with the model, so this bound has to be enforced on *append* as well as in
+/// the framing loop. Checking it only in the loop leaves the queue unbounded for the whole
+/// duration of an LLM call, which at the shipped `--llm-queue-timeout` of 120s is long
+/// enough for a peer to push gigabytes into it.
+const MAX_BUFFERED: usize = MAX_ADU_LEN * 8;
+
+/// Why a request is being answered the way it is.
+///
+/// The wire cannot carry the distinction: a model that deliberately refuses with exception
+/// 0x04 and a model that never answered at all both put `04` on the wire. So the log
+/// carries it instead, with stable tokens - `decision=fail_closed_` finds every request the
+/// model did not actually answer. Mirrors `src/server/radius/`, which is the reference for
+/// this split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decision {
+    /// The model supplied the values, or accepted the write.
+    ModelAnswer,
+    /// The model deliberately refused, with a Modbus exception of its choosing.
+    ModelReject,
+    /// The specification determined the answer; the model was never asked.
+    SpecReject,
+    /// Addressed to a unit id this device does not answer for.
+    UnitMismatch,
+    /// The LLM backend failed. Nobody decided anything.
+    FailClosedLlmError,
+    /// The model was asked and returned nothing this request could use.
+    FailClosedNoAction,
+    /// The model answered a different question: bits for a register read, a write ack for
+    /// a read, or the wrong number of values for the quantity requested.
+    FailClosedWrongShape,
+}
+
+impl Decision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Decision::ModelAnswer => "model_answer",
+            Decision::ModelReject => "model_reject",
+            Decision::SpecReject => "spec_reject",
+            Decision::UnitMismatch => "unit_mismatch",
+            Decision::FailClosedLlmError => "fail_closed_llm_error",
+            Decision::FailClosedNoAction => "fail_closed_no_action",
+            Decision::FailClosedWrongShape => "fail_closed_wrong_shape",
+        }
+    }
+
+    fn is_fail_closed(self) -> bool {
+        matches!(
+            self,
+            Decision::FailClosedLlmError
+                | Decision::FailClosedNoAction
+                | Decision::FailClosedWrongShape
+        )
+    }
+}
+
 /// Modbus TCP server.
 pub struct ModbusServer;
 
@@ -272,6 +330,30 @@ impl ModbusServer {
                 return; // Connection closed while we waited for the lock
             };
             conn.buffer.extend_from_slice(&data);
+
+            // Enforced here as well as in the framing loop below: while a request is with
+            // the model this function is the *only* code touching the buffer, and it
+            // returns early, so a loop-only check would let a flooding peer grow the queue
+            // without bound for the whole duration of the call.
+            if conn.buffer.len() > MAX_BUFFERED {
+                error!(
+                    "Modbus {} buffered {} bytes without a complete frame; closing",
+                    connection_id,
+                    conn.buffer.len()
+                );
+                conn.buffer.clear();
+                drop(conns);
+                Self::close(
+                    connection_id,
+                    server_id,
+                    &app_state,
+                    &connections,
+                    &status_tx,
+                )
+                .await;
+                return;
+            }
+
             if conn.state == ConnectionState::Processing {
                 log.debug(format!(
                     "Queued {} bytes for Modbus {connection_id}",
@@ -291,7 +373,7 @@ impl ModbusServer {
                 };
 
                 // Guard against a peer that never sends a parseable frame.
-                if conn.buffer.len() > MAX_ADU_LEN * 8 {
+                if conn.buffer.len() > MAX_BUFFERED {
                     error!(
                         "Modbus {} buffered {} bytes without a complete frame; closing",
                         connection_id,
@@ -354,8 +436,12 @@ impl ModbusServer {
             if let Some(expected) = unit_id_filter {
                 if adu.unit_id != expected {
                     warn!(
-                        "Modbus {} addressed unit {} but this device answers for unit {}",
-                        connection_id, adu.unit_id, expected
+                        "Modbus {} addressed unit {} but this device answers for unit {} \
+                         decision={}",
+                        connection_id,
+                        adu.unit_id,
+                        expected,
+                        Decision::UnitMismatch.as_str()
                     );
                     let pdu =
                         codec::encode_exception(function_code, codec::EXC_GATEWAY_TARGET_FAILED);
@@ -380,11 +466,12 @@ impl ModbusServer {
                 Ok(r) => r,
                 Err(exception_code) => {
                     debug!(
-                        "Modbus {} rejecting fc={:#04x} with exception {:#04x} ({})",
+                        "Modbus {} rejecting fc={:#04x} with exception {:#04x} ({}) decision={}",
                         connection_id,
                         function_code,
                         exception_code,
-                        codec::exception_name(exception_code)
+                        codec::exception_name(exception_code),
+                        Decision::SpecReject.as_str()
                     );
                     let pdu = codec::encode_exception(function_code, exception_code);
                     Self::send_pdu(
@@ -406,7 +493,7 @@ impl ModbusServer {
             event_data["unit_id"] = serde_json::json!(adu.unit_id);
             let event = Event::new(event_type, event_data);
 
-            let pdu = match call_llm(
+            let (decision, pdu) = match call_llm(
                 &llm_client,
                 &app_state,
                 server_id,
@@ -428,16 +515,42 @@ impl ModbusServer {
                 }
                 Err(e) => {
                     // Non-fatal: the client still gets a device-failure exception (wire
-                    // fallback), so this is WARN not ERROR.
+                    // fallback), so this is WARN not ERROR. The error text stays in the
+                    // log; the wire gets only the exception code.
                     log.warn(format!("Modbus LLM error on {connection_id}: {e}"));
                     // Fail closed and say so on the wire. Writing nothing would leave the
                     // client blocked until its own timeout with no diagnostic.
-                    codec::encode_exception(
-                        request.function_code(),
-                        codec::EXC_SERVER_DEVICE_FAILURE,
+                    (
+                        Decision::FailClosedLlmError,
+                        codec::encode_exception(
+                            request.function_code(),
+                            codec::EXC_SERVER_DEVICE_FAILURE,
+                        ),
                     )
                 }
             };
+
+            // Log the decision before writing it, and make the fail-closed paths loud.
+            // On this protocol a fabricated value has physical consequences, so an
+            // operator has to be able to tell "the device said so" from "nobody
+            // answered" - and the wire cannot: both can be exception 0x04.
+            let summary = format!(
+                "Modbus {} {} unit={} @{} x{} decision={}",
+                connection_id,
+                request.function_name(),
+                adu.unit_id,
+                request.start_address(),
+                request.quantity(),
+                decision.as_str()
+            );
+            if decision.is_fail_closed() {
+                log.error(format!(
+                    "{summary} (answered with an exception because no usable answer was \
+                     produced)"
+                ));
+            } else {
+                log.debug(&summary);
+            }
 
             Self::send_pdu(
                 connection_id,
@@ -512,7 +625,7 @@ impl ModbusServer {
         connection_id: ConnectionId,
         request: &ModbusRequest,
         results: &[ActionResult],
-    ) -> Vec<u8> {
+    ) -> (Decision, Vec<u8>) {
         let fc = request.function_code();
 
         for result in results {
@@ -522,12 +635,18 @@ impl ModbusServer {
 
             match name.as_str() {
                 RESULT_EXCEPTION => {
+                    // `execute_action` has already checked this against the exception
+                    // codes the specification defines, so the fallback is unreachable
+                    // today. It is written as a fail-closed default rather than a cast so
+                    // it stays correct if another producer of this result ever appears:
+                    // `n as u8` would silently turn 0x104 into 0x04.
                     let code = data
                         .get("exception_code")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(codec::EXC_SERVER_DEVICE_FAILURE as u64)
-                        as u8;
-                    return codec::encode_exception(fc, code);
+                        .filter(|n| *n <= u8::MAX as u64)
+                        .map(|n| n as u8)
+                        .unwrap_or(codec::EXC_SERVER_DEVICE_FAILURE);
+                    return (Decision::ModelReject, codec::encode_exception(fc, code));
                 }
                 RESULT_BITS => {
                     if !request.is_bit_read() {
@@ -537,7 +656,10 @@ impl ModbusServer {
                             connection_id,
                             request.function_name()
                         );
-                        return codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE);
+                        return (
+                            Decision::FailClosedWrongShape,
+                            codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
+                        );
                     }
                     let values: Vec<bool> = data
                         .get("values")
@@ -552,9 +674,15 @@ impl ModbusServer {
                             values.len(),
                             request.quantity()
                         );
-                        return codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE);
+                        return (
+                            Decision::FailClosedWrongShape,
+                            codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
+                        );
                     }
-                    return codec::encode_bits_response(fc, &values);
+                    return (
+                        Decision::ModelAnswer,
+                        codec::encode_bits_response(fc, &values),
+                    );
                 }
                 RESULT_REGISTERS => {
                     if !request.is_register_read() {
@@ -564,14 +692,23 @@ impl ModbusServer {
                             connection_id,
                             request.function_name()
                         );
-                        return codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE);
+                        return (
+                            Decision::FailClosedWrongShape,
+                            codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
+                        );
                     }
+                    // Filtered, never cast. `n as u16` would turn a model's 65736 into
+                    // 200 and put it on the wire as a plant reading, which on this
+                    // protocol is a fabricated measurement with physical consequences.
+                    // Anything out of range is dropped here, which makes the count wrong,
+                    // which the check below turns into an exception.
                     let values: Vec<u16> = data
                         .get("values")
                         .and_then(|v| v.as_array())
                         .map(|a| {
                             a.iter()
                                 .filter_map(|v| v.as_u64())
+                                .filter(|n| *n <= u16::MAX as u64)
                                 .map(|n| n as u16)
                                 .collect()
                         })
@@ -584,9 +721,15 @@ impl ModbusServer {
                             values.len(),
                             request.quantity()
                         );
-                        return codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE);
+                        return (
+                            Decision::FailClosedWrongShape,
+                            codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
+                        );
                     }
-                    return codec::encode_registers_response(fc, &values);
+                    return (
+                        Decision::ModelAnswer,
+                        codec::encode_registers_response(fc, &values),
+                    );
                 }
                 RESULT_WRITE_ACK => {
                     if !request.is_write() {
@@ -596,9 +739,12 @@ impl ModbusServer {
                             connection_id,
                             request.function_name()
                         );
-                        return codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE);
+                        return (
+                            Decision::FailClosedWrongShape,
+                            codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
+                        );
                     }
-                    return codec::encode_write_ack(request);
+                    return (Decision::ModelAnswer, codec::encode_write_ack(request));
                 }
                 _ => {}
             }
@@ -610,7 +756,10 @@ impl ModbusServer {
             connection_id,
             request.function_name()
         );
-        codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE)
+        (
+            Decision::FailClosedNoAction,
+            codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
+        )
     }
 
     /// Frame a PDU and write it, updating counters and the dual logs.

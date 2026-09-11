@@ -33,6 +33,22 @@ pub const HEADER_LEN: usize = 8;
 /// bounds what an unauthenticated peer can make the server reserve.
 pub const MAX_MESSAGE_LEN: usize = 65_535;
 
+/// Largest SS7 user part this server will put inside a Protocol Data parameter, in octets.
+///
+/// `MAX_MESSAGE_LEN` bounds the **decode** side, where a hostile peer chooses the number.
+/// This bounds the **encode** side, where the model does — and that side had no bound at
+/// all: `Parameter::write_into` writes `declared_len()` as a `u16`, so a user part of 65520
+/// octets or more wrapped the Parameter Length field and produced a message no SS7 peer
+/// could parse.
+///
+/// The arithmetic: the common header is 8 octets, the parameter header 4, and Protocol
+/// Data's fixed fields (OPC, DPC, SI, NI, MP, SLS) another 12 — so 65535 − 24 = 65511.
+///
+/// This is three orders of magnitude above anything real. A genuine MSU carries at most 272
+/// octets of user part, which is why exceeding it means the model has misunderstood the
+/// field rather than hit a legitimate ceiling.
+pub const MAX_USER_DATA_LEN: usize = MAX_MESSAGE_LEN - HEADER_LEN - 4 - 12;
+
 // ---------------------------------------------------------------------------
 // Message classes and types (RFC 4666 section 3.1.3 / 3.1.4)
 // ---------------------------------------------------------------------------

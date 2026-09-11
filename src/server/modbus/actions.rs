@@ -336,11 +336,20 @@ impl Server for ModbusProtocol {
                     .context("send_modbus_exception requires an 'exception_code'")?;
 
                 let code = if let Some(n) = raw.as_u64() {
-                    if n == 0 || n > 0xFF {
+                    // Checked against the codes the specification actually defines, not
+                    // against `u8`. A bare range check plus `n as u8` would have put 0x104
+                    // on the wire as 0x04 (server device failure) and 0x07 as an exception
+                    // no client can interpret.
+                    if n > u8::MAX as u64
+                        || codec::exception_name(n as u8) == codec::UNKNOWN_EXCEPTION
+                    {
                         anyhow::bail!(
                             "send_modbus_exception 'exception_code' {n} is not a Modbus \
-                             exception; use 1 (illegal function), 2 (illegal data address), \
-                             3 (illegal data value) or 4 (server device failure)"
+                             exception code. The specification defines 1 (illegal function), \
+                             2 (illegal data address), 3 (illegal data value), 4 (server \
+                             device failure), 5 (acknowledge), 6 (server device busy), \
+                             8 (memory parity error), 10 (gateway path unavailable) and \
+                             11 (gateway target device failed to respond)."
                         );
                     }
                     n as u8

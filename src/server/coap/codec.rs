@@ -17,6 +17,20 @@ pub const HEADER_LEN: usize = 4;
 /// Marks the start of the payload, after any options.
 pub const PAYLOAD_MARKER: u8 = 0xFF;
 
+/// Largest response payload this server will put on the wire, in bytes.
+///
+/// RFC 7252 §4.6: absent any knowledge of the path MTU, a CoAP endpoint must assume
+/// `MAX_MESSAGE_SIZE` of 1152 bytes, "leading to a maximum payload size of 1024 bytes". A
+/// constrained peer is entitled to drop anything larger, and without Block-wise transfer
+/// (RFC 7959, not implemented here) there is no legal way to split it.
+///
+/// The bound is enforced in `actions.rs::decode_payload`, on the model's side of the wire,
+/// so an oversize representation is a legible error the model can act on. Without it
+/// `send_to` fails with `EMSGSIZE` somewhere past 65507 bytes and the peer simply never
+/// hears back - a fail-silent, which is the one outcome a request/response protocol must
+/// not produce.
+pub const MAX_PAYLOAD_LEN: usize = 1024;
+
 /// CoAP version implemented here.
 pub const VERSION: u8 = 1;
 

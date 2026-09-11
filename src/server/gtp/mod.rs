@@ -874,6 +874,29 @@ impl GtpServer {
         )
     }
 
+    /// Read the model's `sequence` override, refusing anything wider than the header field.
+    ///
+    /// Returns the request's own sequence when the model omitted it, which is the documented
+    /// default and almost always what a response wants.
+    fn checked_sequence(
+        data: &serde_json::Value,
+        version: GtpVersion,
+        fallback: u32,
+    ) -> Result<u32> {
+        match data.get("sequence").and_then(|v| v.as_u64()) {
+            Some(v) if v > version.max_sequence() as u64 => anyhow::bail!(
+                "sequence {v} does not fit a GTPv{} header: the field is {} bits, so the \
+                 largest value is {}. Copy the request's own sequence from the event, or \
+                 omit 'sequence' entirely and the server echoes it for you.",
+                version.as_number(),
+                version.sequence_bits(),
+                version.max_sequence()
+            ),
+            Some(v) => Ok(v as u32),
+            None => Ok(fallback),
+        }
+    }
+
     /// Turn one `ActionResult::Custom` into wire bytes.
     ///
     /// `Ok(None)` means "this result is not one of ours"; `Err` means the model asked for
@@ -885,11 +908,14 @@ impl GtpServer {
         name: &str,
         data: &serde_json::Value,
     ) -> Result<Option<(Decision, Option<(Vec<u8>, Plane)>)>> {
-        let sequence = data
-            .get("sequence")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .unwrap_or(ctx.sequence);
+        // Checked against the width of the field it is going into, not against `u32`.
+        // `optional_u32` in actions.rs cannot do this: a sequence number is 16 bits in
+        // GTPv1 and 24 in GTPv2, and only `mod.rs` knows which version is being answered.
+        // Without the check `sequence as u16` turned a model's 70000 into 4464, which the
+        // peer cannot match to any outstanding request — so the response is discarded and
+        // the request times out, a failure that reads as a lost packet rather than a bad
+        // field.
+        let sequence = Self::checked_sequence(data, ctx.version, ctx.sequence)?;
         let teid = data
             .get("teid")
             .and_then(|v| v.as_u64())
@@ -960,9 +986,27 @@ impl GtpServer {
                         .unwrap_or_default(),
                 )
                 .context("gtp_gpdu payload is not valid hex")?;
-                let header = match data.get("sequence").and_then(|v| v.as_u64()) {
-                    Some(seq) => GtpV1Header::with_sequence(codec::V1_G_PDU, target, seq as u16),
-                    None => GtpV1Header::new(codec::V1_G_PDU, target),
+                if payload.len() > codec::MAX_GPDU_PAYLOAD_LEN {
+                    anyhow::bail!(
+                        "G-PDU payload is {} octets, over the {}-octet limit. GTP-U's Length \
+                         field is 16 bits and the datagram has to fit one UDP packet, so a \
+                         larger T-PDU would wrap the length field and then fail to send at \
+                         all. A T-PDU is one IP packet — send several G-PDUs instead.",
+                        payload.len(),
+                        codec::MAX_GPDU_PAYLOAD_LEN
+                    );
+                }
+                // A G-PDU is always GTPv1 whatever version the surrounding context is, so
+                // re-check against the 16-bit field rather than reusing `sequence`, which
+                // was checked against `ctx.version`.
+                let header = match data.get("sequence") {
+                    Some(serde_json::Value::Null) | None => {
+                        GtpV1Header::new(codec::V1_G_PDU, target)
+                    }
+                    Some(_) => {
+                        let seq = Self::checked_sequence(data, GtpVersion::V1, ctx.sequence)?;
+                        GtpV1Header::with_sequence(codec::V1_G_PDU, target, seq as u16)
+                    }
                 };
                 let bytes = GtpV1Message {
                     header,

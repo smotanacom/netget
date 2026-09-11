@@ -437,3 +437,92 @@ fn test_codec_header_bits_match_the_rfc() {
         Err(ng::DecodeError::BadTokenLength { tkl: 9 })
     );
 }
+
+// ===========================================================================
+// A response has to fit one datagram, and the model is told so
+// ===========================================================================
+
+/// A representation larger than one datagram must be **refused at the action**, with a
+/// message the model can act on.
+///
+/// Without the bound the oversize datagram reaches `send_to`, which fails with `EMSGSIZE`
+/// past ~65507 bytes: the error is logged and the peer simply never hears back. A
+/// request/response protocol must not produce a fail-silent, and a CON client would
+/// retransmit four times and then give up with no diagnostic anywhere on its side.
+///
+/// RFC 7252 §4.6 fixes the number: with the path MTU unknown an endpoint assumes
+/// MAX_MESSAGE_SIZE of 1152, "leading to a maximum payload size of 1024 bytes". Block-wise
+/// transfer (RFC 7959) is the legal way to exceed it and is not implemented here.
+#[test]
+fn test_oversize_payload_is_refused_rather_than_silently_dropped() {
+    use netget::llm::actions::protocol_trait::Server;
+    use netget::server::coap::actions::CoapProtocol;
+    use netget::server::coap::codec;
+
+    let protocol = CoapProtocol::new();
+
+    let at_limit = "x".repeat(codec::MAX_PAYLOAD_LEN);
+    assert!(
+        protocol
+            .execute_action(serde_json::json!({
+                "type": "send_coap_response",
+                "code": "2.05",
+                "payload": at_limit,
+            }))
+            .is_ok(),
+        "exactly MAX_PAYLOAD_LEN bytes is legal and must still be accepted - a guard that \
+         refused everything would pass the over-limit assertion below for the wrong reason"
+    );
+
+    let over_limit = "x".repeat(codec::MAX_PAYLOAD_LEN + 1);
+    let err = protocol
+        .execute_action(serde_json::json!({
+            "type": "send_coap_response",
+            "code": "2.05",
+            "payload": over_limit,
+        }))
+        .expect_err("one byte over the limit must be refused");
+    let err = err.to_string();
+    assert!(
+        err.contains(&codec::MAX_PAYLOAD_LEN.to_string()),
+        "the refusal must tell the model the actual limit, got: {err}"
+    );
+    assert!(
+        err.contains("7959") || err.contains("Block-wise"),
+        "the refusal should name Block-wise transfer as the reason there is no legal way \
+         to send it, got: {err}"
+    );
+
+    // The bound is on the decoded bytes, not on the string: two hex digits per byte, so a
+    // hex payload of 2 * MAX_PAYLOAD_LEN characters is exactly at the limit and legal.
+    let hex_at_limit = "41".repeat(codec::MAX_PAYLOAD_LEN);
+    assert!(protocol
+        .execute_action(serde_json::json!({
+            "type": "send_coap_response",
+            "code": "2.05",
+            "payload": hex_at_limit,
+            "encoding": "hex",
+        }))
+        .is_ok());
+
+    let hex_over_limit = "41".repeat(codec::MAX_PAYLOAD_LEN + 1);
+    assert!(
+        protocol
+            .execute_action(serde_json::json!({
+                "type": "send_coap_response",
+                "code": "2.05",
+                "payload": hex_over_limit,
+                "encoding": "hex",
+            }))
+            .is_err(),
+        "the limit counts decoded bytes; a hex payload must not get twice the budget"
+    );
+
+    // A response with no payload at all is unaffected.
+    assert!(protocol
+        .execute_action(serde_json::json!({
+            "type": "send_coap_response",
+            "code": "4.04",
+        }))
+        .is_ok());
+}
