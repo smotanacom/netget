@@ -59,12 +59,17 @@ impl Protocol for WhoisProtocol {
                  binary (`whois -h localhost -p PORT example.com`) and asserts the record it \
                  prints; the rest use a raw TCP socket for the cases whois(1) cannot reach - an \
                  error reply, two queries on one connection, and connection logging. Note macOS \
-                 whois(1) segfaults when -h is given an IP literal; a hostname works.",
+                 whois(1) segfaults when -h is given an IP literal; a hostname works. \
+                 line_framing_test.rs additionally pins that a query split across four TCP \
+                 segments raises one event, and that 16 KiB with no newline is refused; \
+                 peer_inject_test.rs covers dashboard injection with zero LLM calls.",
             )
             .notes(
                 "Simple line-based protocol. RFC 3912 has the server close as soon as its output \
-                 is finished; this server keeps reading instead, so a handler that answers \
-                 without close_connection leaves whois(1) blocked on EOF.",
+                 is finished; this server keeps reading so several queries can share a \
+                 connection, so a handler that answers without close_connection leaves whois(1) \
+                 blocked on EOF until the 15s post-reply idle timeout closes it. Pair the answer \
+                 with close_connection. Queries are read as lines, capped at 4 KiB.",
             )
             .build()
     }

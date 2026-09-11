@@ -1,4 +1,22 @@
-//! WHOIS server implementation
+//! WHOIS (RFC 3912) server.
+//!
+//! The client sends one line, the server answers with free text. Three properties of the read
+//! loop are worth knowing before changing it, because none of them is obvious from the RFC:
+//!
+//! 1. **A query is a *line*, not a TCP segment.** The loop used to raise one `whois_query`
+//!    event per `read()`, so a query split across two segments became two events with two
+//!    partial queries, and a peer dripping one byte at a time bought one LLM call per byte.
+//!    That is unmetered work for anyone who can open a socket, so reads now accumulate to a
+//!    newline under [`MAX_QUERY_BYTES`].
+//! 2. **Reads are bounded in time as well as size.** A peer that connects and says nothing
+//!    otherwise holds a task and a connection slot for as long as it likes.
+//! 3. **The idle timeout is what rescues a real client from this server's one known
+//!    non-conformance.** RFC 3912 has the server close as soon as its output is finished, and
+//!    `whois(1)` reads until EOF — but this server keeps reading so several queries can share
+//!    a connection, so a handler that answers without `close_connection` would otherwise
+//!    block a real client forever. It now blocks for [`IDLE_AFTER_REPLY_TIMEOUT`] instead.
+//!    Pairing the answer with `close_connection` is still the right thing to do, and is what
+//!    both `send_*` action descriptions say.
 pub mod actions;
 
 use crate::llm::action_helper::call_llm;
@@ -11,9 +29,25 @@ use actions::WHOIS_QUERY_EVENT;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
+
+/// A WHOIS query is a domain, a handle or an IP. Anything past this is not one, and buffering
+/// it for a peer who may never send a newline is a memory hole reachable by anyone.
+const MAX_QUERY_BYTES: usize = 4096;
+
+/// How long to wait for the first query from a peer that has only connected.
+const FIRST_QUERY_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long to wait for a *further* query after one has been answered.
+///
+/// Shorter than the first wait on purpose: RFC 3912 expects the connection to be over at this
+/// point, so anyone still holding it open is the exception. See the module note — this is the
+/// bound that turns "blocked forever" into "blocked briefly" for a client whose handler forgot
+/// `close_connection`.
+const IDLE_AFTER_REPLY_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct WhoisServer;
 
@@ -212,168 +246,280 @@ async fn run_whois_session<R, W>(
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let mut buffer = vec![0u8; 4096];
     let log = Log::new(Some(status_tx));
+    let mut lines = QueryLineReader::new(&mut reader);
+    let mut answered_one = false;
 
     loop {
-        match reader.read(&mut buffer).await {
-            Ok(0) => {
+        let read_timeout = if answered_one {
+            IDLE_AFTER_REPLY_TIMEOUT
+        } else {
+            FIRST_QUERY_READ_TIMEOUT
+        };
+
+        let (query, n) = match lines.next_query(read_timeout).await {
+            QueryRead::Line(line, n) => (line, n),
+            QueryRead::Eof => {
                 log.info(format!("WHOIS client {} disconnected", peer_addr));
                 break;
             }
-            Ok(n) => {
-                let query_data = buffer[..n].to_vec();
-                let query_str = String::from_utf8_lossy(&query_data).to_string();
-
-                // Update connection stats
-                app_state
-                    .update_connection_stats(
-                        server_id,
-                        connection_id,
-                        Some(n as u64),
-                        None,
-                        Some(1),
-                        None,
-                    )
-                    .await;
-
-                // Summary + payload are FileOnly: the whois_query event template
-                // surfaces the query to the TUI.
-                log.debug(format!("WHOIS received {} bytes from {}", n, peer_addr));
-                log.trace(format!("WHOIS query data: {}", query_str.trim()));
-
-                // Parse query (trim whitespace and newlines)
-                let query = query_str.trim().to_string();
-
-                // Create event
-                let event = Event::new(
-                    &WHOIS_QUERY_EVENT,
-                    serde_json::json!({
-                        "query": query,
-                    }),
-                );
-
-                log.debug(format!("WHOIS calling LLM for query from {}", peer_addr));
-
-                // Call LLM
-                match call_llm(
-                    llm_client,
+            QueryRead::TimedOut => {
+                log.info(format!(
+                    "WHOIS client {} sent nothing further within {}s; closing",
+                    peer_addr,
+                    read_timeout.as_secs()
+                ));
+                break;
+            }
+            QueryRead::TooLong => {
+                // A '%' line is a comment in every WHOIS dialect, so a client reads this as a
+                // remark and never as a record. Fixed text, so there is no placeholder an
+                // internal error could reach.
+                log.warn(format!(
+                    "WHOIS query from {} exceeded {} bytes with no newline; refusing",
+                    peer_addr, MAX_QUERY_BYTES
+                ));
+                let _ = write_counted(
+                    write_half,
+                    b"% netget: query too long\r\n",
                     app_state,
                     server_id,
-                    Some(connection_id),
-                    &event,
-                    protocol.as_ref(),
+                    connection_id,
                 )
-                .await
-                {
-                    Ok(execution_result) => {
-                        // Display messages from LLM
-                        for message in &execution_result.messages {
-                            log.info(message);
-                        }
+                .await;
+                break;
+            }
+            QueryRead::Failed(e) => {
+                log.error(format!("WHOIS read error from {}: {}", peer_addr, e));
+                break;
+            }
+        };
 
-                        log.debug(format!(
-                            "WHOIS got {} protocol results",
-                            execution_result.protocol_results.len()
-                        ));
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                Some(n as u64),
+                None,
+                Some(1),
+                None,
+            )
+            .await;
 
-                        // Send all outputs to client and check for close.
-                        //
-                        // WHOIS is one query, one response, then close (RFC 3912),
-                        // so a connection that closes without writing anything is
-                        // indistinguishable to the client from a server that is
-                        // broken. Track whether anything reached the wire and
-                        // answer below if nothing did.
-                        let mut should_close = false;
-                        let mut wrote_output = false;
-                        for protocol_result in execution_result.protocol_results {
-                            match protocol_result {
-                                crate::llm::actions::protocol_trait::ActionResult::Output(output_data) => {
-                                    if let Err(e) = write_counted(
-                                        write_half,
-                                        &output_data,
-                                        app_state,
-                                        server_id,
-                                        connection_id,
-                                    )
-                                    .await
-                                    {
-                                        log.error(format!("WHOIS write error: {}", e));
-                                        return;
-                                    }
-                                    wrote_output = true;
+        // Summary + payload are FileOnly: the whois_query event template surfaces the query
+        // to the TUI.
+        log.debug(format!("WHOIS received {} bytes from {}", n, peer_addr));
+        log.trace(format!("WHOIS query data: {}", query));
 
-                                    // Summary + payload FileOnly; access line below on TUI.
-                                    log.debug(format!(
-                                        "WHOIS sent {} bytes to {}",
-                                        output_data.len(),
-                                        peer_addr
-                                    ));
-                                    log.trace(format!(
-                                        "WHOIS response: {}",
-                                        String::from_utf8_lossy(&output_data)
-                                    ));
-                                    log.info(format!(
-                                        "WHOIS response to {} ({} bytes)",
-                                        peer_addr,
-                                        output_data.len()
-                                    ));
-                                }
-                                crate::llm::actions::protocol_trait::ActionResult::CloseConnection => {
-                                    should_close = true;
-                                    log.debug("WHOIS closing connection per LLM request");
-                                }
-                                _ => {} // Ignore other action results
-                            }
-                        }
+        let event = Event::new(
+            &WHOIS_QUERY_EVENT,
+            serde_json::json!({
+                "query": query,
+            }),
+        );
 
-                        // Nothing reached the wire: the model answered with only a
-                        // close, or with actions that all failed. Say so in a WHOIS
-                        // comment line rather than hanging up silently — '%' is the
-                        // conventional comment marker, so a client reads it as a
-                        // remark and never as a record.
-                        if !wrote_output {
-                            log.warn(format!(
-                                "WHOIS produced no response for {} ({} failed action(s)); \
-                                 answering with a comment instead of closing silently",
-                                peer_addr,
-                                execution_result.failures.len()
-                            ));
-                            let notice = b"% netget: no data was produced for this query\r\n";
-                            if write_counted(
+        log.debug(format!("WHOIS calling LLM for query from {}", peer_addr));
+
+        match call_llm(
+            llm_client,
+            app_state,
+            server_id,
+            Some(connection_id),
+            &event,
+            protocol.as_ref(),
+        )
+        .await
+        {
+            Ok(execution_result) => {
+                for message in &execution_result.messages {
+                    log.info(message);
+                }
+
+                log.debug(format!(
+                    "WHOIS got {} protocol results",
+                    execution_result.protocol_results.len()
+                ));
+
+                // Send all outputs to the client and note whether a close was asked for.
+                //
+                // WHOIS is one query, one response, then close (RFC 3912), so a connection
+                // that closes without writing anything is indistinguishable to the client
+                // from a server that is broken. Track whether anything reached the wire and
+                // answer below if nothing did.
+                let mut should_close = false;
+                let mut wrote_output = false;
+                for protocol_result in execution_result.protocol_results {
+                    match protocol_result {
+                        crate::llm::actions::protocol_trait::ActionResult::Output(output_data) => {
+                            if let Err(e) = write_counted(
                                 write_half,
-                                notice,
+                                &output_data,
                                 app_state,
                                 server_id,
                                 connection_id,
                             )
                             .await
-                            .is_err()
                             {
+                                log.error(format!("WHOIS write error: {}", e));
                                 return;
                             }
-                        }
+                            wrote_output = true;
 
-                        // Break loop if LLM requested connection close
-                        if should_close {
-                            break;
+                            // Summary + payload FileOnly; access line below on TUI.
+                            log.debug(format!(
+                                "WHOIS sent {} bytes to {}",
+                                output_data.len(),
+                                peer_addr
+                            ));
+                            log.trace(format!(
+                                "WHOIS response: {}",
+                                String::from_utf8_lossy(&output_data)
+                            ));
+                            log.info(format!(
+                                "WHOIS response to {} ({} bytes)",
+                                peer_addr,
+                                output_data.len()
+                            ));
                         }
+                        crate::llm::actions::protocol_trait::ActionResult::CloseConnection => {
+                            should_close = true;
+                            log.debug("WHOIS closing connection per LLM request");
+                        }
+                        _ => {} // Ignore other action results
                     }
-                    Err(e) => {
-                        // Same reasoning as above: the client is waiting for a
-                        // response it will otherwise never get.
-                        log.warn(format!("WHOIS LLM call failed: {}", e));
-                        let notice = b"% netget: the query could not be answered\r\n";
-                        let _ =
-                            write_counted(write_half, notice, app_state, server_id, connection_id)
-                                .await;
-                        break;
+                }
+
+                // Nothing reached the wire: the model answered with only a close, or with
+                // actions that all failed. Say so in a WHOIS comment line rather than hanging
+                // up silently — '%' is the conventional comment marker, so a client reads it
+                // as a remark and never as a record.
+                if !wrote_output {
+                    log.warn(format!(
+                        "WHOIS {:?} from {} decision=model_silent ({} failed action(s)); \
+                         answering with a comment instead of closing silently",
+                        query,
+                        peer_addr,
+                        execution_result.failures.len()
+                    ));
+                    let notice = b"% netget: no data was produced for this query\r\n";
+                    if write_counted(write_half, notice, app_state, server_id, connection_id)
+                        .await
+                        .is_err()
+                    {
+                        return;
                     }
+                }
+
+                answered_one = true;
+                if should_close {
+                    break;
                 }
             }
             Err(e) => {
-                log.error(format!("WHOIS read error from {}: {}", peer_addr, e));
+                // The peer gets a category, the log gets the error. Two fixed byte literals
+                // rather than one, because WHOIS has no status code and a comment line is the
+                // only place the distinction can live at all: a client (or the human reading
+                // it) should know whether to come back. Byte literals, so there is no
+                // placeholder anything derived from `e` could reach —
+                // `crate::utils::WireFailure` exists for exactly this, and returns
+                // `&'static str` for the same reason.
+                let (category, notice): (&str, &[u8]) =
+                    match crate::utils::WireFailure::classify(&e) {
+                        crate::utils::WireFailure::Overloaded => (
+                            "overloaded",
+                            b"% netget: backend at capacity, retry later\r\n",
+                        ),
+                        crate::utils::WireFailure::Unavailable => (
+                            "unavailable",
+                            b"% netget: the query could not be answered\r\n",
+                        ),
+                    };
+                log.warn(format!(
+                    "WHOIS {:?} from {} decision=fail_closed_llm_error category={}",
+                    query, peer_addr, category
+                ));
+                log.debug(format!("WHOIS LLM call failed: {}", e));
+                let _ =
+                    write_counted(write_half, notice, app_state, server_id, connection_id).await;
                 break;
+            }
+        }
+    }
+}
+
+/// What one attempt to read a query line produced.
+enum QueryRead {
+    /// A query (trimmed) and the wire bytes it consumed.
+    Line(String, usize),
+    /// The peer hung up with nothing pending.
+    Eof,
+    /// Nothing arrived within the caller's deadline.
+    TimedOut,
+    /// [`MAX_QUERY_BYTES`] arrived with no newline in them.
+    TooLong,
+    /// The socket errored.
+    Failed(std::io::Error),
+}
+
+/// Accumulates reads into whole lines.
+///
+/// A WHOIS query is a line, and the previous loop treated each `read()` as one — so a query
+/// split across two TCP segments raised two `whois_query` events carrying two fragments, and a
+/// peer sending a byte at a time bought one LLM call per byte from an unauthenticated socket.
+/// Leftovers after the newline are kept, because a client may send a second query.
+struct QueryLineReader<'a, R> {
+    reader: &'a mut R,
+    pending: Vec<u8>,
+    chunk: Vec<u8>,
+}
+
+impl<'a, R: tokio::io::AsyncRead + Unpin> QueryLineReader<'a, R> {
+    fn new(reader: &'a mut R) -> Self {
+        Self {
+            reader,
+            pending: Vec::new(),
+            chunk: vec![0u8; 1024],
+        }
+    }
+
+    /// The `timeout` bounds the wait for *more bytes*, not the whole line: a peer that is
+    /// still sending keeps the connection alive, which is what a client on a slow link needs.
+    async fn next_query(&mut self, timeout: Duration) -> QueryRead {
+        loop {
+            if let Some(idx) = self.pending.iter().position(|b| *b == b'\n') {
+                let consumed = idx + 1;
+                let line: Vec<u8> = self.pending.drain(..consumed).collect();
+                return QueryRead::Line(
+                    String::from_utf8_lossy(&line[..idx]).trim().to_string(),
+                    consumed,
+                );
+            }
+            if self.pending.len() > MAX_QUERY_BYTES {
+                return QueryRead::TooLong;
+            }
+
+            let read = match tokio::time::timeout(timeout, self.reader.read(&mut self.chunk)).await
+            {
+                Err(_) => return QueryRead::TimedOut,
+                Ok(read) => read,
+            };
+
+            match read {
+                Ok(0) => {
+                    if self.pending.is_empty() {
+                        return QueryRead::Eof;
+                    }
+                    // A query with no terminator, followed by a half-close. Real clients send
+                    // CRLF, but answering is better than dropping someone who did not.
+                    let line = std::mem::take(&mut self.pending);
+                    let consumed = line.len();
+                    return QueryRead::Line(
+                        String::from_utf8_lossy(&line).trim().to_string(),
+                        consumed,
+                    );
+                }
+                Ok(n) => self.pending.extend_from_slice(&self.chunk[..n]),
+                Err(e) => return QueryRead::Failed(e),
             }
         }
     }
