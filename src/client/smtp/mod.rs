@@ -18,13 +18,51 @@ use crate::client::smtp::actions::SMTP_CLIENT_CONNECTED_EVENT;
 use crate::llm::actions::client_trait::{Client, ClientActionResult};
 use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ClientLlmResult;
-use crate::protocol::Event;
+use crate::protocol::{Event, StartupParams};
 use crate::state::app_state::AppState;
 use crate::state::{ClientId, ClientStatus};
 
 /// How often the idle task checks whether the client row is still there. The same task
 /// drains injected commands, so this is a floor on shutdown latency, not on responsiveness.
 const LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The session defaults taken from the declared startup parameters.
+///
+/// `username`, `password` and `use_tls` are declared in `get_startup_parameters()` and were
+/// read by nothing at connect: `deliver` took all three off the *action* instead, so what the
+/// caller passed when opening the client was discarded. Nothing failed loudly — a client
+/// opened against a plaintext relay simply demanded STARTTLS on every message (the action's
+/// own default is `true`) and every delivery was refused, and credentials supplied once at
+/// connect had to be repeated by the model on every single `send_email` or no AUTH was sent.
+///
+/// They arrive on `ConnectContext::startup_params`. `ClientInstance::protocol_data` is not a
+/// second source here: `cli/client_startup.rs` leaves it `Value::Null`, and the only keys this
+/// client writes there are the ones it derives itself (`smtp_server`, `smtp_port`).
+///
+/// A value on the action still wins — the model may legitimately authenticate as someone else
+/// for one message — so these are defaults, not overrides.
+#[derive(Clone, Debug, Default)]
+struct SmtpSettings {
+    username: Option<String>,
+    password: Option<String>,
+    /// `None` means the caller said nothing; `deliver` then defaults to STARTTLS.
+    use_tls: Option<bool>,
+}
+
+impl SmtpSettings {
+    /// Read the three declared parameters, propagating a wrong-typed value rather than
+    /// unwrapping it: over MCP an `unwrap` here kills the request task and hangs the caller.
+    fn from_startup_params(params: Option<&StartupParams>) -> Result<Self> {
+        let Some(params) = params else {
+            return Ok(Self::default());
+        };
+        Ok(Self {
+            username: params.get_optional_string("username")?,
+            password: params.get_optional_string("password")?,
+            use_tls: params.get_optional_bool("use_tls")?,
+        })
+    }
+}
 
 /// What one executed SMTP action did.
 ///
@@ -54,11 +92,16 @@ impl SmtpClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<StartupParams>,
     ) -> Result<SocketAddr> {
         info!(
             "SMTP client {} initializing connection to {}",
             client_id, remote_addr
         );
+
+        // Read before anything is registered, so a wrong-typed parameter becomes an `Error`
+        // status on a client that never half-started.
+        let settings = Arc::new(SmtpSettings::from_startup_params(startup_params.as_ref())?);
 
         // Parse server address (format: hostname:port or just hostname). The port is kept:
         // without it every message went to whatever `SmtpTransport::relay` defaults to, so a
@@ -102,6 +145,7 @@ impl SmtpClient {
             llm_client.clone(),
             app_state.clone(),
             status_tx.clone(),
+            settings.clone(),
         ));
         app_state
             .register_client_task(client_id, command_task)
@@ -148,7 +192,7 @@ impl SmtpClient {
                     // message and nothing was ever sent. They go through the same
                     // `apply_action` an injected command uses.
                     for action in actions {
-                        match Self::apply_action(client_id, &app_state, action).await {
+                        match Self::apply_action(client_id, &app_state, action, &settings).await {
                             Ok(applied) => {
                                 Self::follow_up(
                                     applied,
@@ -156,6 +200,7 @@ impl SmtpClient {
                                     &llm_client,
                                     &app_state,
                                     &status_tx,
+                                    &settings,
                                 )
                                 .await
                             }
@@ -194,6 +239,7 @@ impl SmtpClient {
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
+        settings: Arc<SmtpSettings>,
     ) {
         use crate::llm::actions::protocol_trait::Protocol;
         use crate::state::client_handles::ClientSendOutcome;
@@ -223,7 +269,7 @@ impl SmtpClient {
             let mut disconnect = false;
 
             let outcome: Result<ClientSendOutcome> =
-                match Self::apply_action(client_id, &app_state, action.clone()).await {
+                match Self::apply_action(client_id, &app_state, action.clone(), &settings).await {
                     Err(e) => Ok(ClientSendOutcome::Rejected {
                         error: e.to_string(),
                     }),
@@ -290,8 +336,9 @@ impl SmtpClient {
                 let llm_client = llm_client.clone();
                 let state = app_state.clone();
                 let tx = status_tx.clone();
+                let settings = settings.clone();
                 let handle = tokio::spawn(async move {
-                    Self::follow_up(applied, client_id, &llm_client, &state, &tx).await;
+                    Self::follow_up(applied, client_id, &llm_client, &state, &tx, &settings).await;
                 });
                 app_state.register_client_task(client_id, handle).await;
             }
@@ -312,6 +359,7 @@ impl SmtpClient {
         client_id: ClientId,
         app_state: &Arc<AppState>,
         action: serde_json::Value,
+        settings: &SmtpSettings,
     ) -> Result<SmtpApplied> {
         let protocol = SmtpClientProtocol::new();
         match protocol.execute_action(action)? {
@@ -331,7 +379,7 @@ impl SmtpClient {
                     .unwrap_or_default()
                     .to_string();
 
-                let endpoint = Self::deliver(client_id, app_state, &data).await?;
+                let endpoint = Self::deliver(client_id, app_state, &data, settings).await?;
                 Ok(SmtpApplied::Delivered {
                     to,
                     subject,
@@ -353,6 +401,7 @@ impl SmtpClient {
         client_id: ClientId,
         app_state: &Arc<AppState>,
         data: &serde_json::Value,
+        settings: &SmtpSettings,
     ) -> Result<String> {
         use lettre::message::Message;
 
@@ -393,11 +442,24 @@ impl SmtpClient {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        let username = data.get("username").and_then(|v| v.as_str());
-        let password = data.get("password").and_then(|v| v.as_str());
+        // The action wins where it says something; the startup parameters are the session
+        // default; STARTTLS is the default of last resort. `execute_action` deliberately omits
+        // a field the action did not carry, so "absent" here really means the model said
+        // nothing rather than "the executor filled in `true` for it".
+        let username = data
+            .get("username")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| settings.username.clone());
+        let password = data
+            .get("password")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| settings.password.clone());
         let use_tls = data
             .get("use_tls")
             .and_then(|v| v.as_bool())
+            .or(settings.use_tls)
             .unwrap_or(true);
 
         info!("SMTP client {} sending email to {:?}", client_id, to);
@@ -420,8 +482,7 @@ impl SmtpClient {
         }
 
         if let (Some(user), Some(pass)) = (username, password) {
-            transport_builder =
-                transport_builder.credentials(Credentials::new(user.to_string(), pass.to_string()));
+            transport_builder = transport_builder.credentials(Credentials::new(user, pass));
         }
 
         if use_tls {
@@ -461,6 +522,7 @@ impl SmtpClient {
         llm_client: &OllamaClient,
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
+        settings: &SmtpSettings,
     ) {
         let SmtpApplied::Delivered { to, subject, .. } = applied else {
             match applied {
@@ -520,10 +582,10 @@ impl SmtpClient {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
                 for action in actions {
-                    match Self::apply_action(client_id, app_state, action).await {
+                    match Self::apply_action(client_id, app_state, action, settings).await {
                         Ok(applied) => {
                             Box::pin(Self::follow_up(
-                                applied, client_id, llm_client, app_state, status_tx,
+                                applied, client_id, llm_client, app_state, status_tx, settings,
                             ))
                             .await
                         }

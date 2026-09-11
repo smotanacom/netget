@@ -17,6 +17,7 @@ use crate::client::xmpp::actions::{
 use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ClientLlmResult;
 use crate::protocol::Event;
+use crate::protocol::StartupParams;
 use crate::state::app_state::AppState;
 use crate::state::{ClientId, ClientStatus};
 
@@ -55,10 +56,16 @@ impl XmppClientConnection {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<StartupParams>,
     ) -> Result<SocketAddr> {
         // Parse JID and password from remote_addr or get from startup params
-        let (jid, password, _server_addr) =
-            Self::parse_connection_info(&remote_addr, &app_state, client_id).await?;
+        let (jid, password, _server_addr) = Self::parse_connection_info(
+            &remote_addr,
+            startup_params.as_ref(),
+            &app_state,
+            client_id,
+        )
+        .await?;
 
         info!("XMPP client {} connecting as {}", client_id, jid);
         let _ = status_tx.send(format!("[CLIENT] XMPP client {} connecting...", client_id));
@@ -304,14 +311,37 @@ impl XmppClientConnection {
         Ok("0.0.0.0:0".parse().unwrap())
     }
 
-    /// Parse connection information from remote_addr and startup params
+    /// Parse connection information from the startup parameters, falling back to
+    /// `remote_addr`.
+    ///
+    /// `jid` and `password` are declared startup parameters, so the authoritative source is
+    /// [`ConnectContext::startup_params`](crate::protocol::ConnectContext) — what the caller
+    /// actually supplied. This used to read them off `ClientInstance::protocol_data`, which
+    /// `cli/client_startup.rs` leaves as `Value::Null` and only a client that writes to it
+    /// ever populates; this client writes `jid` there, but not until after it has connected,
+    /// so both were permanently `None` at the one moment they were wanted. Every connection
+    /// therefore fell through to parsing `remote_addr` as `user@domain@password`, and a
+    /// caller who supplied the declared parameters instead was rejected outright.
+    ///
+    /// The `protocol_data` lookup is kept as a second chance, and either source can supply
+    /// one half: whatever is still missing is taken from `remote_addr`.
     async fn parse_connection_info(
         remote_addr: &str,
+        startup_params: Option<&StartupParams>,
         app_state: &Arc<AppState>,
         client_id: ClientId,
     ) -> Result<(Jid, String, String)> {
-        // Try to get from startup params first
-        let params = app_state
+        // What the caller passed at connect. Propagated, never unwrapped: a wrong-typed value
+        // must name itself in the client's Error status, not kill the task that started it.
+        let (mut jid_str, mut password) = match startup_params {
+            Some(params) => (
+                params.get_optional_string("jid")?,
+                params.get_optional_string("password")?,
+            ),
+            None => (None, None),
+        };
+
+        let stored = app_state
             .with_client_mut(client_id, |client| {
                 let jid = client
                     .get_protocol_field("jid")
@@ -323,13 +353,14 @@ impl XmppClientConnection {
                     .map(|s| s.to_string());
                 (jid, pass)
             })
-            .await;
-
-        let (jid_str, password) = params.unwrap_or((None, None));
+            .await
+            .unwrap_or((None, None));
+        jid_str = jid_str.or(stored.0);
+        password = password.or(stored.1);
 
         let (jid_str, password) = match (jid_str, password) {
             (Some(j), Some(p)) => (j, p),
-            _ => {
+            (have_jid, have_password) => {
                 // Parse from remote_addr: "user@domain@password"
                 let parts: Vec<&str> = remote_addr.split('@').collect();
                 if parts.len() < 3 {
@@ -339,9 +370,12 @@ impl XmppClientConnection {
                 }
                 let user = parts[0];
                 let domain = parts[1];
-                let password = parts[2..].join("@"); // In case password contains @
+                let addr_password = parts[2..].join("@"); // In case password contains @
 
-                (format!("{}@{}", user, domain), password)
+                (
+                    have_jid.unwrap_or_else(|| format!("{}@{}", user, domain)),
+                    have_password.unwrap_or(addr_password),
+                )
             }
         };
 

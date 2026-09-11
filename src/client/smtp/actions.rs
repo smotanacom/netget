@@ -327,6 +327,7 @@ impl Client for SmtpClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                ctx.startup_params,
             )
             .await
         })
@@ -381,10 +382,12 @@ impl Client for SmtpClientProtocol {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let use_tls = action
-                    .get("use_tls")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
+                // Deliberately `Option`, not `unwrap_or(true)`. Defaulting here made "the
+                // action omitted use_tls" indistinguishable from "the action asked for TLS",
+                // so the declared `use_tls` startup parameter could never apply to a message
+                // the model did not explicitly mark. The default now lives in one place, at
+                // the point of delivery.
+                let use_tls = action.get("use_tls").and_then(|v| v.as_bool());
 
                 // Return custom result with email data
                 Ok(ClientActionResult::Custom {

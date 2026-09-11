@@ -28,10 +28,17 @@ SMTP is a **request-based protocol** (like HTTP), not a persistent stream (like 
 
 ### State Management
 
-Client state tracked in `ClientInstance.protocol_data`:
+Client state tracked in `ClientInstance.protocol_data` — only values this client derives for
+itself, never anything the caller passed:
 
 - `smtp_server`: Server hostname
+- `smtp_port`: Port from `remote_addr`
 - `remote_addr`: Full server address with port
+
+The declared startup parameters (`username`, `password`, `use_tls`) do **not** live there.
+They arrive on `ConnectContext::startup_params` and are held for the session in
+`SmtpSettings`. `cli/client_startup.rs` leaves `protocol_data` as `Value::Null`, so anything
+read from it before the client writes it is unconditionally absent.
 
 ### LLM Integration
 
@@ -79,13 +86,18 @@ Client state tracked in `ClientInstance.protocol_data`:
 
 Supports optional SMTP authentication:
 
-- **Username/Password**: Pass via `username` and `password` parameters
+- **Username/Password**: as startup parameters for the whole session, or on an individual
+  `send_email` action. The action wins where it says something; the startup parameters are
+  the session default. A model told nothing about credentials can therefore still deliver.
 - **Credentials**: Converted to lettre `Credentials` object
 - **No auth**: Leave credentials empty for open relays (testing)
 
 ### TLS/STARTTLS
 
-- **Enabled by default**: `use_tls: true`
+- **Enabled by default**: `use_tls: true`, and that default now lives in exactly one place
+  (`deliver`). `execute_action` deliberately leaves `use_tls` absent when the action omits it,
+  so "the model said nothing" stays distinguishable from "the model asked for TLS" — without
+  that distinction the declared `use_tls` startup parameter could never apply to any message.
 - **STARTTLS**: Upgrades connection to TLS after initial handshake
 - **TLS Parameters**: Configurable via lettre's `TlsParameters`
 - **Certificate validation**: Enabled by default (can be disabled for testing)
@@ -108,6 +120,7 @@ SmtpClient::connect_with_llm_actions(
     app_state,
     status_tx,
     client_id,
+    startup_params,   // username / password / use_tls, read here and nowhere else
 )
 ```
 
@@ -223,3 +236,24 @@ listener rather than a NetGet SMTP server on purpose: that server raises one eve
 (`smtp_command`) for the banner *and* every command, so a `static` handler is forced to answer
 `CONNECTION_ESTABLISHED`, `EHLO`, `MAIL`, `RCPT`, `DATA` and `.` with identical bytes and no
 session can complete. Driving it would take a `script` handler.
+
+### Startup parameters were declared and read by nothing
+
+Fixed September 2026. `username`, `password` and `use_tls` are declared in
+`get_startup_parameters()` and `deliver` read all three off the **action**, so what the caller
+passed when opening the client was discarded entirely. It never failed loudly:
+
+- `use_tls` — the executor's own default was `true`, so a client opened against a plaintext
+  relay with `use_tls: false` demanded STARTTLS on every message and every delivery was
+  refused. Only the model naming `use_tls: false` on each individual `send_email` worked.
+- `username` / `password` — credentials supplied once at connect were never sent, so a server
+  requiring AUTH refused every message unless the model repeated them on every action, which
+  a model that was never told them cannot do.
+
+Same shape as the `git` and `xmpp` clients, and no whole-tree ratchet can see it:
+`startup_param_drift_test` asks whether a declared parameter is read *somewhere* textually,
+and all three were — from the action rather than from the startup parameters.
+
+Pinned by `tests/client/smtp/startup_params_test.rs`, whose peer offers no STARTTLS and
+refuses `MAIL FROM` until a correct `AUTH PLAIN`, so a delivery that succeeds is proof on the
+wire that both parameters arrived.

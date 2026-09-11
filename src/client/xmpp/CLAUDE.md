@@ -208,6 +208,17 @@ The client handler parses the custom action and executes the corresponding XMPP 
 **Security:** Not ideal for production use
 **Workaround:** Use startup params instead of URL
 
+Until September 2026 that workaround did not exist. `jid` and `password` were declared
+startup parameters, but `parse_connection_info` read them off
+`ClientInstance::protocol_data` — which `cli/client_startup.rs` leaves as `Value::Null`,
+and which this client writes to only *after* it has connected. Both were therefore always
+`None`, every connection fell through to parsing `remote_addr` as `user@domain@password`,
+and a caller who used the declared parameters instead was refused with "Invalid XMPP
+address format". They are now read from `ConnectContext::startup_params`, which is where
+what the caller actually passed arrives; `protocol_data` is consulted only as a second
+chance, and either source may supply one half with `remote_addr` filling in the other.
+Pinned by `tests/client/xmpp/startup_params_test.rs`.
+
 ## Connection String Format
 
 **Option 1: URL Format**
@@ -231,7 +242,11 @@ open_client xmpp example.com --param jid=alice@example.com --param password=secr
 ## Security Considerations
 
 1. **TLS Encryption:** tokio-xmpp uses TLS by default (STARTTLS or direct TLS)
-2. **Password Storage:** Passwords stored in AppState protocol_data (in-memory only)
+2. **Password Storage:** The password is taken from the startup parameters and moved
+   straight into `tokio_xmpp::Client`; it is never written to `protocol_data`. Only the
+   connected `jid` is recorded there. A password embedded in `remote_addr` is a different
+   matter — `remote_addr` is shown in the dashboard and the status stream, which is the
+   reason to prefer the startup parameters
 3. **SASL Authentication:** Uses library's SASL implementation (PLAIN, SCRAM)
 
 **⚠️ Warning:** Do not hardcode passwords in prompts or instructions. Use startup params.
