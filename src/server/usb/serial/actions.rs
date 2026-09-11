@@ -255,9 +255,11 @@ impl UsbSerialProtocol {
         // and looked like it worked; with two or more, every action failed with "the action
         // must name one with 'connection_id'" and no value the model could send would work.
         // Same repair as usb-keyboard, usb-mouse and usb-msc.
+        // `id as u32` silently aliased: `connection_id: 4294967298` resolved to connection 2.
         let requested = action["connection_id"]
             .as_u64()
-            .map(|id| ConnectionId::new(id as u32))
+            .and_then(|id| u32::try_from(id).ok())
+            .map(ConnectionId::new)
             .or_else(|| {
                 action["connection_id"]
                     .as_str()
@@ -498,15 +500,43 @@ impl Server for UsbSerialProtocol {
                     return Err(anyhow::anyhow!("send_data requires non-empty 'data'"));
                 }
                 let bytes = data.as_bytes().to_vec();
-                self.with_serial_handler(&action, |serial| serial.queue_tx(&bytes))?;
+                let dropped =
+                    self.with_serial_handler(&action, |serial| serial.queue_tx(&bytes))?;
+                if dropped > 0 {
+                    // The transmit buffer is bounded, so a host that is not draining it makes
+                    // this a real refusal. Saying so is the point: the alternative is the model
+                    // believing it sent bytes that were thrown away.
+                    return Err(anyhow::anyhow!(
+                        "send_data queued {} of {} byte(s); the transmit buffer is full because \
+                         the host is not reading. Wait for it to drain before sending more.",
+                        bytes.len() - dropped,
+                        bytes.len()
+                    ));
+                }
                 Ok(ActionResult::NoAction)
             }
             "set_line_coding" => {
-                let baud_rate = action["baud_rate"]
+                // Range-checked before the cast, not after. `as u32` and `as u8` wrap
+                // silently, so `baud_rate: 5000000000` became 705032704 and `data_bits: 264`
+                // became 8 -- the port then reported a line configuration to the host that
+                // nobody had asked for, and GET_LINE_CODING handed the wrong one back.
+                let baud_raw = action["baud_rate"]
                     .as_u64()
-                    .context("set_line_coding requires 'baud_rate'")?
-                    as u32;
-                let data_bits = action["data_bits"].as_u64().unwrap_or(8) as u8;
+                    .context("set_line_coding requires 'baud_rate'")?;
+                let baud_rate = u32::try_from(baud_raw).ok().filter(|b| *b > 0).context(
+                    "set_line_coding 'baud_rate' must be between 1 and 4294967295 (CDC PSTN 1.2 \
+                     encodes dwDTERate as 32 bits)",
+                )?;
+
+                let data_bits_raw = action["data_bits"].as_u64().unwrap_or(8);
+                if !matches!(data_bits_raw, 5 | 6 | 7 | 8 | 16) {
+                    return Err(anyhow::anyhow!(
+                        "set_line_coding 'data_bits' is {}; CDC PSTN 1.2 table 17 allows only \
+                         5, 6, 7, 8 or 16",
+                        data_bits_raw
+                    ));
+                }
+                let data_bits = data_bits_raw as u8;
 
                 // The wire encodes parity and stop bits as small integers (CDC PSTN 1.2,
                 // table 17); the model speaks names.

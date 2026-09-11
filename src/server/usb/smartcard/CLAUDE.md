@@ -123,7 +123,7 @@ The server does not interpret it.
 
 ## Responding
 
-`respond_to_apdu` takes a body plus a two-byte status word:
+`respond_to_apdu` takes an optional body plus a **required** two-byte status word:
 
 ```json
 {"type": "respond_to_apdu", "data_text": "NetGet PIV", "sw1": "90", "sw2": "00"}
@@ -146,11 +146,32 @@ interrupt endpoint.
 ## Fail closed
 
 If the handler errors, returns no `respond_to_apdu`, or returns one that cannot be decoded, the
-card answers **`6F00`** (ISO 7816-4 "no precise diagnosis") and logs at ERROR. It never falls
-through to `9000`. The model's own refusal (`6982`, `6A82`, `6D00`, …) is therefore structurally
-distinguishable from the model having said nothing — the OAuth2 failure mode in the root
-CLAUDE.md, avoided by construction. A malformed command APDU is answered `6700` locally and
-never reaches the handler, so garbage cannot be used to drive LLM calls.
+card answers **`6F00`** (ISO 7816-4 "no precise diagnosis") and logs at ERROR with a `decision=`
+tag. It never falls through to `9000`. The model's own refusal (`6982`, `6A82`, `6D00`, …) is
+therefore structurally distinguishable from the model having said nothing — the OAuth2 failure
+mode in the root CLAUDE.md, avoided by construction. A malformed command APDU is answered `6700`
+locally and never reaches the handler, so garbage cannot be used to drive LLM calls.
+
+**"It never falls through to `9000`" was false when this section first claimed it**, and the
+gap is worth keeping because the sentence read as a guarantee. `sw1` and `sw2` defaulted to
+`"90"` and `"00"` — in `execute_action` *and* again in `decode_status_byte`, so removing one
+would not have been enough — which meant
+`{"type": "respond_to_apdu", "data_text": "AUTH OK"}` put `41555448204F4B9000` on the wire. The
+handler had named no status word at all and the card reported success anyway. Only the third
+case above (an *absent* `respond_to_apdu`) actually failed closed; a present one with a missing
+field did not, and that is the likelier model output of the two.
+
+Both defaults are gone and both parameters are declared `required: true`, so nothing between
+the model's answer and the wire can invent a status word. The reasoning is `eapol`'s: success
+must be spelled out rather than reachable by omission. It matters more here than the shape
+alone suggests, and for the opposite reason to the obvious one — this server holds no PIN and
+no key (see *No built-in card logic* below), so **the model is the access control** and there
+is no second gate behind it. `src/server/nfc/` had the identical defect in the identical two
+layers; the tag and the card were fixed the same way.
+
+`tests/server/usb_smartcard/e2e_test.rs` pins it with an INTERNAL AUTHENTICATE case. Restore
+either default and it fails with `41555448204F4B9000` on the wire — the test was verified that
+way round, so it is known to catch the original defect rather than merely to agree with the fix.
 
 The card always answers *something*, so a host is never left waiting on its own timeout.
 

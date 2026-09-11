@@ -514,9 +514,13 @@ impl UsbSmartCardServer {
         {
             Ok(execution) => execution,
             Err(e) => {
+                // `decision=` tags, as `src/server/radius/` does. 6F00 is what the card
+                // answers whether the model refused, said nothing, or could not be reached,
+                // so the wire cannot carry the distinction and the log must.
                 console_error!(
                     status_tx,
-                    "USB smart card handler failed for {} on {}: {}; answering 6F00",
+                    "USB smart card handler failed for {} on {} \
+                     decision=fail_closed_llm_error, answering 6F00: {}",
                     event.id(),
                     connection_id,
                     e
@@ -555,7 +559,8 @@ impl UsbSmartCardServer {
                 Err(e) => {
                     console_error!(
                         status_tx,
-                        "USB smart card respond_to_apdu could not be decoded on {}: {}",
+                        "USB smart card respond_to_apdu could not be decoded on {} \
+                         decision=fail_closed_undecodable, falling through to 6F00: {}",
                         connection_id,
                         e
                     );
@@ -568,8 +573,8 @@ impl UsbSmartCardServer {
             None => {
                 console_error!(
                     status_tx,
-                    "USB smart card handler produced no respond_to_apdu for {} on {}; \
-                     answering 6F00",
+                    "USB smart card handler produced no respond_to_apdu for {} on {} \
+                     decision=model_silent, answering 6F00",
                     event.id(),
                     connection_id
                 );
@@ -714,14 +719,24 @@ fn decode_apdu_response(data: &Value) -> Result<ApduResponse> {
         ));
     }
 
-    let sw1 = decode_status_byte(data, "sw1", 0x90)?;
-    let sw2 = decode_status_byte(data, "sw2", 0x00)?;
+    let sw1 = decode_status_byte(data, "sw1")?;
+    let sw2 = decode_status_byte(data, "sw2")?;
     Ok(ApduResponse::new(body, sw1, sw2))
 }
 
-fn decode_status_byte(data: &Value, field: &str, default: u8) -> Result<u8> {
+/// Decode one status byte of a normalised `respond_to_apdu` payload.
+///
+/// **There is deliberately no default.** `execute_action` already refuses an action that names
+/// no status word; this is the second layer, so nothing between the model's answer and the wire
+/// can invent one and 9000 cannot be produced except by a handler that spelled it out. A
+/// missing field here is an error, which the caller logs as `decision=fail_closed_undecodable`
+/// and answers `6F00`.
+fn decode_status_byte(data: &Value, field: &str) -> Result<u8> {
     let Some(value) = data.get(field).and_then(|v| v.as_str()) else {
-        return Ok(default);
+        return Err(anyhow!(
+            "'{field}' is missing from the respond_to_apdu payload; a status word is never \
+             defaulted, because the default would be success"
+        ));
     };
     match actions::parse_hex(field, value)?.as_slice() {
         [byte] => Ok(*byte),

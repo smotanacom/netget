@@ -98,6 +98,28 @@ it needs nusb work in `mod.rs`, not an action declaration on its own.
 - `claim_interface`: Claim another USB interface
 - `wait_for_more`: Wait before responding
 
+## Transfer parameters are bounded and range-checked
+
+Three defects, all on the path from the model's answer to `nusb`:
+
+- **`length` reached the allocator unbounded.** `bulk_transfer_in` and `interrupt_transfer_in`
+  read it as `as_u64().unwrap() as usize` and handed it to `RequestBuffer::new`, which allocates
+  it up front. One action saying `"length": 4000000000` was four gigabytes, per call.
+  `MAX_TRANSFER_BYTES` is 64 KiB — larger than any single transfer a device completes in one go
+  — and it is checked in **both** `execute_action` and `apply_usb_result`, because the two
+  readers are far enough apart that a future caller could reach the second without passing the
+  first.
+- **Every wire-width field narrowed silently.** `request_type: 384` reached the device as 128 —
+  a device-to-host standard request, an entirely different transfer from the one the model asked
+  for — with nothing in the log to say a value had been altered. All are checked at full width
+  now (`byte_field`, `word_field`) and the refusal names the range, because that message is what
+  the model's repair loop reads.
+- **Six `.unwrap()`s inside `tokio::spawn`.** `apply_usb_result` re-read the same fields with
+  `.unwrap()`. A panic there is swallowed: the client task would die, the client would go on
+  reporting `Connected`, and nothing would explain it — the failure mode the root `CLAUDE.md`
+  describes for `block_on` in a URB callback, in a different place. They are fallible reads that
+  report an error to the model now.
+
 ## Data Encoding
 
 All USB data is **hex-encoded** for LLM interaction:

@@ -313,4 +313,67 @@ mod usb_mouse_e2e {
         server.stop().await?;
         Ok(())
     }
+
+    /// A model asking for an absurd movement must be refused, not obeyed.
+    ///
+    /// `split_movement` emits one 4-byte report per 127 units, and nothing bounded the units.
+    /// `{"type": "move_relative", "x": 9223372036854775807}` therefore asked for ~7.3e16
+    /// reports: `execute_action` is synchronous and runs on a tokio worker, so the executor
+    /// never returned, the worker never came back, and the queue grew until the process died.
+    /// `move_absolute` had a second shape of the same bug -- it computes `-screen_width - 127`,
+    /// which overflows `i64` outright for a large dimension, panicking in every test build and
+    /// wrapping in release.
+    ///
+    /// This runs against `execute_action` directly rather than through USB/IP, because the
+    /// point is that the executor refuses *before* anything is queued.
+    #[tokio::test]
+    async fn absurd_movement_is_refused_rather_than_queued() {
+        use ::netget::llm::actions::Server;
+        use ::netget::server::usb::mouse::UsbMouseProtocol;
+
+        let protocol = UsbMouseProtocol::new();
+
+        for (label, action) in [
+            (
+                "move_relative x",
+                serde_json::json!({"type": "move_relative", "x": i64::MAX, "y": 0}),
+            ),
+            (
+                "move_relative y",
+                serde_json::json!({"type": "move_relative", "x": 0, "y": i64::MIN}),
+            ),
+            (
+                "move_absolute screen_width",
+                serde_json::json!({
+                    "type": "move_absolute", "x": 1, "y": 1,
+                    "screen_width": i64::MAX, "screen_height": 1080
+                }),
+            ),
+            (
+                "drag end_x",
+                serde_json::json!({
+                    "type": "drag", "start_x": 0, "start_y": 0,
+                    "end_x": i64::MAX, "end_y": 0
+                }),
+            ),
+        ] {
+            let result = protocol.execute_action(action);
+            assert!(
+                result.is_err(),
+                "{label}: an out-of-range coordinate must be refused, not turned into reports"
+            );
+        }
+
+        // A guard that refused everything would pass the assertions above while breaking the
+        // protocol, so pin the ordinary case too. No host is attached, so this fails at
+        // handler resolution -- after the range check, which is the part being pinned.
+        let err = protocol
+            .execute_action(serde_json::json!({"type": "move_relative", "x": 50, "y": -20}))
+            .expect_err("no host is attached in this test");
+        let message = format!("{err}");
+        assert!(
+            message.contains("No USB/IP host") || message.contains("nowhere to go"),
+            "an ordinary movement must reach handler resolution, not be range-refused: {message}"
+        );
+    }
 }

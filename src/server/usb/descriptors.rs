@@ -4,6 +4,33 @@
 //! - HID devices (keyboard, mouse)
 //! - CDC ACM devices (serial)
 //! - Custom devices
+//!
+//! # Most of the builders here have no callers, and that is not obvious
+//!
+//! Nine of them — `build_device_descriptor`, `build_string_descriptor`,
+//! `build_language_id_descriptor`, `char_to_usage`, and every `build_*_config_descriptor`
+//! (keyboard, mouse, FIDO2, CDC ACM, MSC) — are reachable from nothing in `src/` or `tests/`.
+//! The `usbip` crate builds the device and configuration descriptors itself from
+//! `UsbDevice::new(..).with_interface(class, subclass, protocol, name, endpoints, handler)`,
+//! so every protocol here describes its device that way and none of these are consulted.
+//!
+//! They do not warn, because `dead_code` does not fire on a `pub` item in a library crate. So
+//! a reader — or a model reading the source — reasonably concludes the wire format a device
+//! presents is decided here, when it is decided by the endpoint lists in each protocol's
+//! `mod.rs`. Verify with:
+//!
+//! ```bash
+//! grep -rn build_device_descriptor src/ tests/ | grep -v descriptors.rs
+//! ```
+//!
+//! What *is* live: `MouseReport` and `mouse_buttons`, `build_hid_mouse_report_descriptor`,
+//! `FIDO_HID_REPORT_DESCRIPTOR`, `LineCoding` and `ControlLineState`, and the MSC
+//! `CommandBlockWrapper` / `CommandStatusWrapper` / `scsi_*` tables. HID *report* descriptors
+//! are the exception to the rule above precisely because `usbip` cannot invent one — it is the
+//! device's own description of its report layout, which is why those are the ones with callers.
+//!
+//! The rest are kept as a checked reference rather than deleted, but do not read a caller into
+//! them.
 
 use crate::server::usb::common::*;
 
@@ -154,13 +181,31 @@ pub fn build_hid_keyboard_config_descriptor() -> Vec<u8> {
     desc
 }
 
-/// Build a USB string descriptor
-/// String descriptors are UTF-16LE encoded with a 2-byte header
+/// Build a USB string descriptor.
+///
+/// String descriptors are UTF-16LE with a 2-byte header, and `bLength` is a **single byte** —
+/// so the whole descriptor cannot exceed 255 bytes, which is 126 UTF-16 code units of text.
+/// This used to be `desc.push(len as u8)` with no check: a 127-character string produced
+/// `bLength = 0` and a 128-character one produced 2, in both cases a descriptor whose declared
+/// length contradicts its own contents. The string is truncated to what the field can describe
+/// instead, on a code-unit boundary so a surrogate pair is never split in half.
 pub fn build_string_descriptor(s: &str) -> Vec<u8> {
+    /// UTF-16 code units that fit alongside the 2-byte header within a `u8` `bLength`.
+    const MAX_CODE_UNITS: usize = (u8::MAX as usize - 2) / 2;
+
     let mut desc = Vec::new();
 
     // Encode string as UTF-16LE
-    let utf16: Vec<u16> = s.encode_utf16().collect();
+    let mut utf16: Vec<u16> = s.encode_utf16().collect();
+    if utf16.len() > MAX_CODE_UNITS {
+        // Do not cut between the halves of a surrogate pair: a lone surrogate is not valid
+        // UTF-16 and a host decoding it gets a replacement character rather than a short name.
+        let mut keep = MAX_CODE_UNITS;
+        if (0xD800..0xDC00).contains(&utf16[keep - 1]) {
+            keep -= 1;
+        }
+        utf16.truncate(keep);
+    }
     let len = 2 + utf16.len() * 2;
 
     desc.push(len as u8); // bLength

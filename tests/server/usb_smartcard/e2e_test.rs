@@ -284,9 +284,17 @@ mod usb_smartcard_e2e {
 
     /// The card powers up with the ATR the handler configured, answers an APDU with the body
     /// and status word the handler chose, and falls closed to `6F00` when the handler answers
-    /// nothing.
+    /// nothing -- **or answers without naming a status word**.
     ///
-    /// LLM calls: 5 (startup, reader_ready, attached, two APDUs)
+    /// That last case is the one worth stating plainly. `respond_to_apdu` defaulted `sw1`/`sw2`
+    /// to `"90"`/`"00"` in two places, so
+    /// `{"type": "respond_to_apdu", "data_text": "AUTH OK"}` put `AUTH OK 90 00` on the wire.
+    /// This card carries a PIN and an RSA key, so that is an *omission* completing an
+    /// authentication -- the OAuth2 fail-open shape the root `CLAUDE.md` calls the most
+    /// dangerous pattern in this codebase, and the same defect `src/server/nfc/` had. Restore
+    /// either default and this test fails with `41555448204F4B9000` on the wire.
+    ///
+    /// LLM calls: 6 (startup, reader_ready, attached, three APDUs)
     #[tokio::test]
     async fn test_usb_smartcard_atr_and_apdu_exchange() -> E2EResult<()> {
         // A distinctive ATR: 3B 8F 80 01 4E 65 74 47 65 74 ("NetGet" in the historical bytes),
@@ -325,6 +333,16 @@ mod usb_smartcard_e2e {
                 .and_event_data_contains("ins_name", "VERIFY")
                 .respond_with_actions(serde_json::json!([
                     { "type": "show_message", "message": "Refusing to answer VERIFY" }
+                ]))
+                .expect_calls(1)
+                .and()
+                // INTERNAL AUTHENTICATE: the handler answers with a body and *no status word
+                // at all*. A card with a PIN and a key is an access-control device, so the
+                // missing bytes must not be filled in with success.
+                .on_event("usb_smartcard_apdu_received")
+                .and_event_data_contains("ins", "88")
+                .respond_with_actions(serde_json::json!([
+                    { "type": "respond_to_apdu", "data_text": "AUTH OK" }
                 ]))
                 .expect_calls(1)
                 .and()
@@ -400,6 +418,24 @@ mod usb_smartcard_e2e {
             verify.data,
             vec![0x6F, 0x00],
             "a handler that returns no respond_to_apdu must produce 6F00, never 9000"
+        );
+
+        // INTERNAL AUTHENTICATE (INS 0x88), answered with a body and no status word. The card
+        // must refuse rather than complete the omission to 9000: naming no status word is not
+        // approval, and on this protocol approval means an authentication succeeded.
+        let auth = client
+            .transmit_apdu(&[0x00, 0x88, 0x00, 0x00, 0x04, 0xDE, 0xAD, 0xBE, 0xEF, 0x00])
+            .await?;
+        assert_eq!(
+            auth.data,
+            vec![0x6F, 0x00],
+            "a respond_to_apdu naming no status word must fail closed, not be completed to \
+             9000; got {}",
+            hex::encode_upper(&auth.data)
+        );
+        assert!(
+            !auth.data.ends_with(&[0x90, 0x00]),
+            "the wire must not carry a success status word the handler never named"
         );
 
         // Wait for the exchange the mocks describe, rather than trusting a fixed

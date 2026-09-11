@@ -82,6 +82,23 @@ is more reports than a relative move and **visibly moves the pointer to the corn
 also assumes the host applies no pointer acceleration; with acceleration on, the second leg
 overshoots.
 
+### Coordinates are bounded, and it is not cosmetic
+
+`split_movement` emits one 4-byte report per 127 units of travel, because a boot-protocol report
+carries one signed byte per axis. Nothing bounded the units, so
+`{"type": "move_relative", "x": 9223372036854775807}` asked for roughly 7.3e16 reports —
+`execute_action` is synchronous and runs on a tokio worker, so it never returned, the worker
+never came back, and the queue grew until the process died.
+
+`move_absolute` and `drag` had the same bug in a second shape: both do arithmetic on the
+coordinates before anything looks at them (`-screen_width - 127`, `end_x - start_x`,
+`dx * step`), each of which overflows `i64` outright. `Cargo.toml` declares no `[profile.dev]`,
+so that panics in debug and test builds and wraps in release — the wrong way round.
+
+Travel is now range-checked at full width to +/-65535 per axis and screen dimensions to
+1..=65535, both far past any real display, capping one action at 517 reports. `scroll` was
+already capped (`.min(64)`) and `drag`'s step count still clamps to 64.
+
 ### `connection_id` is optional
 
 Every action takes an optional `connection_id`. With exactly one host attached it is inferred;

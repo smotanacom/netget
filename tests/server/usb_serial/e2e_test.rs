@@ -389,4 +389,61 @@ mod usb_serial_e2e {
         server.stop().await?;
         Ok(())
     }
+
+    /// A line configuration the wire cannot carry must be refused, not wrapped into one it can.
+    ///
+    /// `baud_rate` was read as `as_u64()? as u32` and `data_bits` as `as_u64()? as u8`, both of
+    /// which wrap in silence: `baud_rate: 5000000000` became 705032704 and `data_bits: 264`
+    /// became 8. The port then reported a configuration to the host through GET_LINE_CODING
+    /// that no one had asked for, and nothing in the log said a value had been altered.
+    #[tokio::test]
+    async fn a_line_coding_that_does_not_fit_the_wire_is_refused() {
+        use ::netget::llm::actions::Server;
+        use ::netget::server::usb::serial::actions::UsbSerialProtocol;
+
+        let protocol = UsbSerialProtocol::new();
+
+        for (label, action) in [
+            (
+                "baud_rate past 32 bits",
+                serde_json::json!({"type": "set_line_coding", "baud_rate": 5_000_000_000u64}),
+            ),
+            (
+                "baud_rate of zero",
+                serde_json::json!({"type": "set_line_coding", "baud_rate": 0}),
+            ),
+            (
+                "data_bits past a byte",
+                serde_json::json!({
+                    "type": "set_line_coding", "baud_rate": 115200, "data_bits": 264
+                }),
+            ),
+            (
+                "data_bits the class does not define",
+                serde_json::json!({
+                    "type": "set_line_coding", "baud_rate": 115200, "data_bits": 9
+                }),
+            ),
+        ] {
+            assert!(
+                protocol.execute_action(action).is_err(),
+                "{label}: must be refused rather than silently narrowed"
+            );
+        }
+
+        // The ordinary case must still get past the range check -- a guard that refused
+        // everything would satisfy the loop above. No port is attached, so this fails at
+        // handler resolution, which is after the checks being pinned.
+        let err = protocol
+            .execute_action(serde_json::json!({
+                "type": "set_line_coding", "baud_rate": 115200, "data_bits": 8,
+                "parity": "none", "stop_bits": 1
+            }))
+            .expect_err("no port is attached in this test");
+        let message = format!("{err}");
+        assert!(
+            !message.contains("baud_rate") && !message.contains("data_bits"),
+            "a valid line coding must not be refused by the range checks: {message}"
+        );
+    }
 }

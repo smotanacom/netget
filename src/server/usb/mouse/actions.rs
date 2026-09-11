@@ -148,7 +148,11 @@ impl UsbMouseProtocol {
         });
 
         if let Some(id) = requested {
-            let connection_id = ConnectionId::new(id as u32);
+            // `id as u32` silently aliased: `connection_id: 4294967298` resolved to
+            // connection 2 and moved a pointer in somebody else's session.
+            let connection_id = u32::try_from(id).map(ConnectionId::new).map_err(|_| {
+                anyhow::anyhow!("connection_id {} is not a valid connection number", id)
+            })?;
             return handlers.get(&connection_id).cloned().ok_or_else(|| {
                 anyhow::anyhow!("No USB mouse attached on connection {}", connection_id)
             });
@@ -195,6 +199,64 @@ impl UsbMouseProtocol {
         }
         Ok(count)
     }
+}
+
+/// The largest movement, in HID report units, any one action may ask for on either axis.
+///
+/// A boot-protocol report carries one signed byte per axis, so `split_movement` turns a large
+/// movement into `magnitude / 127` reports -- and nothing bounded the magnitude. A model that
+/// answered `{"type": "move_relative", "x": 9223372036854775807}` asked for roughly 7.3e16
+/// four-byte reports: the executor never returns, the queue grows until the process is killed,
+/// and because `execute_action` is synchronous it takes a tokio worker with it. 65535 is far
+/// past the diagonal of any real display and still costs at most 517 reports.
+#[cfg(feature = "usb-mouse")]
+const MAX_MOVEMENT: i64 = 65_535;
+
+/// Largest screen dimension `move_absolute` will accept.
+///
+/// It is used as `-screen_width - 127`, which overflows `i64` outright for a large value --
+/// a panic in debug and test builds, a wrap in release, since this crate declares no
+/// `[profile.dev]` and so gets `overflow-checks` in exactly the builds where it is least
+/// useful to find it.
+#[cfg(feature = "usb-mouse")]
+const MAX_SCREEN_DIMENSION: i64 = 65_535;
+
+/// Read a signed coordinate and range-check it before anything does arithmetic on it.
+#[cfg(feature = "usb-mouse")]
+fn movement_field(action: &serde_json::Value, field: &str, action_type: &str) -> Result<i64> {
+    let value = action[field]
+        .as_i64()
+        .with_context(|| format!("{action_type} requires '{field}' field"))?;
+    if !(-MAX_MOVEMENT..=MAX_MOVEMENT).contains(&value) {
+        return Err(anyhow::anyhow!(
+            "{} '{}' is {}, outside the +/-{} this device can move in one action",
+            action_type,
+            field,
+            value,
+            MAX_MOVEMENT
+        ));
+    }
+    Ok(value)
+}
+
+/// Read a screen dimension and range-check it before it is negated and offset.
+#[cfg(feature = "usb-mouse")]
+fn screen_dimension(action: &serde_json::Value, field: &str, default: i64) -> Result<i64> {
+    let value = match action.get(field) {
+        Some(v) if !v.is_null() => v
+            .as_i64()
+            .with_context(|| format!("move_absolute '{field}' must be an integer"))?,
+        _ => return Ok(default),
+    };
+    if !(1..=MAX_SCREEN_DIMENSION).contains(&value) {
+        return Err(anyhow::anyhow!(
+            "move_absolute '{}' is {}, outside 1..={}",
+            field,
+            value,
+            MAX_SCREEN_DIMENSION
+        ));
+    }
+    Ok(value)
 }
 
 /// Split a movement into steps a single HID report can carry.
@@ -385,12 +447,8 @@ impl Server for UsbMouseProtocol {
         // ran a USB/IP session (see mod.rs). They drive handler.rs now.
         match action_type {
             "move_relative" => {
-                let x = action["x"]
-                    .as_i64()
-                    .context("move_relative requires 'x' field")?;
-                let y = action["y"]
-                    .as_i64()
-                    .context("move_relative requires 'y' field")?;
+                let x = movement_field(&action, "x", "move_relative")?;
+                let y = movement_field(&action, "y", "move_relative")?;
                 if x == 0 && y == 0 {
                     return Err(anyhow::anyhow!(
                         "move_relative with x=0 and y=0 would move nothing"
@@ -404,14 +462,10 @@ impl Server for UsbMouseProtocol {
             }
 
             "move_absolute" => {
-                let x = action["x"]
-                    .as_i64()
-                    .context("move_absolute requires 'x' field")?;
-                let y = action["y"]
-                    .as_i64()
-                    .context("move_absolute requires 'y' field")?;
-                let screen_width = action["screen_width"].as_i64().unwrap_or(1920);
-                let screen_height = action["screen_height"].as_i64().unwrap_or(1080);
+                let x = movement_field(&action, "x", "move_absolute")?;
+                let y = movement_field(&action, "y", "move_absolute")?;
+                let screen_width = screen_dimension(&action, "screen_width", 1920)?;
+                let screen_height = screen_dimension(&action, "screen_height", 1080)?;
 
                 if !(0..=screen_width).contains(&x) || !(0..=screen_height).contains(&y) {
                     return Err(anyhow::anyhow!(
@@ -493,15 +547,17 @@ impl Server for UsbMouseProtocol {
             }
 
             "drag" => {
-                let start_x = action["start_x"]
+                let start_x = movement_field(&action, "start_x", "drag")?;
+                let start_y = movement_field(&action, "start_y", "drag")?;
+                let end_x = movement_field(&action, "end_x", "drag")?;
+                let end_y = movement_field(&action, "end_y", "drag")?;
+                // Clamped, not just floored: `duration_ms / 10` is the step count and is
+                // itself clamped to 64 below, so an absurd value is harmless -- but reading it
+                // into a bounded range keeps that true if the step formula ever changes.
+                let duration_ms = action["duration_ms"]
                     .as_i64()
-                    .context("drag requires 'start_x'")?;
-                let start_y = action["start_y"]
-                    .as_i64()
-                    .context("drag requires 'start_y'")?;
-                let end_x = action["end_x"].as_i64().context("drag requires 'end_x'")?;
-                let end_y = action["end_y"].as_i64().context("drag requires 'end_y'")?;
-                let duration_ms = action["duration_ms"].as_i64().unwrap_or(500).max(0);
+                    .unwrap_or(500)
+                    .clamp(0, 60_000);
                 let button = action["button"].as_str().unwrap_or("left");
                 let bit = button_bit(button)?;
 

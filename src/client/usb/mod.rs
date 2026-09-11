@@ -22,6 +22,38 @@ use crate::protocol::Event;
 use crate::state::app_state::AppState;
 use crate::state::{ClientId, ClientStatus};
 
+/// Read a byte-wide field out of an already-validated action payload, refusing a wrapped value.
+///
+/// The payload is built by `UsbClientProtocol::execute_action`, so in the ordinary case every
+/// field is present and in range. This exists because the read used to be `.unwrap() as u8`,
+/// and this code runs inside `tokio::spawn`: a panic there is swallowed, the client task dies,
+/// and the client goes on reporting `Connected` with nothing in the log to explain it.
+fn byte_of(data: &serde_json::Value, field: &str) -> Option<u8> {
+    data.get(field)
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u8::try_from(v).ok())
+}
+
+/// The 16-bit counterpart of [`byte_of`].
+fn word_of(data: &serde_json::Value, field: &str) -> Option<u16> {
+    data.get(field)
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u16::try_from(v).ok())
+}
+
+/// Read a transfer length, re-applying the same bound `execute_action` enforces.
+///
+/// Checked twice on purpose: this value reaches `RequestBuffer::new`, which allocates it
+/// outright, and the two readers are far enough apart that a future caller could reach this one
+/// without passing the first.
+fn length_of(data: &serde_json::Value) -> Option<usize> {
+    let value = data.get("length").and_then(|v| v.as_u64())?;
+    if value > crate::client::usb::actions::MAX_TRANSFER_BYTES as u64 {
+        return None;
+    }
+    Some(value as usize)
+}
+
 /// Connection state for LLM processing
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
@@ -473,10 +505,31 @@ impl UsbClient {
                 crate::llm::actions::client_trait::ClientActionResult::Custom { name, data } => {
                     match name.as_str() {
                         "control_transfer" => {
-                            let request_type = data["request_type"].as_u64().unwrap() as u8;
-                            let request = data["request"].as_u64().unwrap() as u8;
-                            let value = data["value"].as_u64().unwrap() as u16;
-                            let index = data["index"].as_u64().unwrap() as u16;
+                            // Read, never unwrapped. These fields arrive from
+                            // `UsbClientProtocol::execute_action`, which validates them --
+                            // but this runs inside `tokio::spawn`, where a panic is swallowed:
+                            // the client task would die, the client would stay `Connected`,
+                            // and nothing would say why. A malformed field is now an error the
+                            // model is told about.
+                            let (request_type, request, value, index) = match (
+                                byte_of(&data, "request_type"),
+                                byte_of(&data, "request"),
+                                word_of(&data, "value"),
+                                word_of(&data, "index"),
+                            ) {
+                                (Some(rt), Some(r), Some(v), Some(i)) => (rt, r, v, i),
+                                _ => {
+                                    error!(
+                                        "USB client {} control_transfer has malformed fields: {}",
+                                        client_id, data
+                                    );
+                                    return UsbApplied::Executed(
+                                        "control_transfer: request_type, request, value and \
+                                         index must each be an integer in range"
+                                            .to_string(),
+                                    );
+                                }
+                            };
                             let out_data = data["data"]
                                 .as_array()
                                 .map(|arr| {
@@ -485,7 +538,7 @@ impl UsbClient {
                                         .collect::<Vec<u8>>()
                                 })
                                 .unwrap_or_default();
-                            let length = data["length"].as_u64().unwrap_or(0) as usize;
+                            let length = length_of(&data).unwrap_or(0);
 
                             trace!(
                                 "USB client {} control transfer: type={:02x} req={:02x} val={:04x} idx={:04x}",
@@ -613,7 +666,16 @@ impl UsbClient {
                             }
                         }
                         "bulk_transfer_out" => {
-                            let endpoint = data["endpoint"].as_u64().unwrap() as u8;
+                            let Some(endpoint) = byte_of(&data, "endpoint") else {
+                                error!(
+                                    "USB client {} bulk_transfer_out has no usable endpoint: {}",
+                                    client_id, data
+                                );
+                                return UsbApplied::Executed(
+                                    "bulk_transfer_out: 'endpoint' must be an integer in 0..=255"
+                                        .to_string(),
+                                );
+                            };
                             let out_data = data["data"]
                                 .as_array()
                                 .map(|arr| {
@@ -650,8 +712,19 @@ impl UsbClient {
                             }
                         }
                         "bulk_transfer_in" => {
-                            let endpoint = data["endpoint"].as_u64().unwrap() as u8;
-                            let length = data["length"].as_u64().unwrap() as usize;
+                            let (Some(endpoint), Some(length)) =
+                                (byte_of(&data, "endpoint"), length_of(&data))
+                            else {
+                                error!(
+                                    "USB client {} bulk_transfer_in has malformed fields: {}",
+                                    client_id, data
+                                );
+                                return UsbApplied::Executed(
+                                    "bulk_transfer_in: 'endpoint' must be 0..=255 and 'length' a \
+                                     bounded byte count"
+                                        .to_string(),
+                                );
+                            };
 
                             trace!(
                                 "USB client {} bulk IN transfer: endpoint={:02x} length={}",
@@ -726,8 +799,19 @@ impl UsbClient {
                             ))
                         }
                         "interrupt_transfer_in" => {
-                            let endpoint = data["endpoint"].as_u64().unwrap() as u8;
-                            let length = data["length"].as_u64().unwrap() as usize;
+                            let (Some(endpoint), Some(length)) =
+                                (byte_of(&data, "endpoint"), length_of(&data))
+                            else {
+                                error!(
+                                    "USB client {} interrupt_transfer_in has malformed fields: {}",
+                                    client_id, data
+                                );
+                                return UsbApplied::Executed(
+                                    "interrupt_transfer_in: 'endpoint' must be 0..=255 and 'length' a \
+                                     bounded byte count"
+                                        .to_string(),
+                                );
+                            };
 
                             trace!(
                                 "USB client {} interrupt IN transfer: endpoint={:02x} length={}",
@@ -802,7 +886,8 @@ impl UsbClient {
                             ))
                         }
                         "claim_interface" => {
-                            let interface_num = data["interface_number"].as_u64().unwrap() as u8;
+                            let interface_num =
+                                byte_of(&data, "interface_number").unwrap_or_default();
                             info!(
                                 "USB client {} interface {} already claimed, skipping",
                                 client_id, interface_num

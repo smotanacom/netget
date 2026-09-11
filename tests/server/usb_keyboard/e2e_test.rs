@@ -321,4 +321,90 @@ mod usb_keyboard_e2e {
         server.stop().await?;
         Ok(())
     }
+
+    /// A `connection_id` too large to be one must not silently become a different one.
+    ///
+    /// Every USB protocol resolved the model's `connection_id` with `ConnectionId::new(id as
+    /// u32)`. That wraps: `4294967298` is connection **2** after the cast, so an action naming
+    /// a nonsense connection would have been carried out against a real host's session -- and
+    /// on a keyboard that means keystrokes typed into somebody else's window. The value is now
+    /// read at its full width and refused if it is not a connection number.
+    #[tokio::test]
+    async fn an_out_of_range_connection_id_is_refused_rather_than_wrapped() {
+        use ::netget::llm::actions::Server;
+        use ::netget::server::usb::keyboard::UsbKeyboardProtocol;
+
+        let protocol = UsbKeyboardProtocol::new();
+
+        let err = protocol
+            .execute_action(serde_json::json!({
+                "type": "type_text", "text": "hello", "connection_id": 4_294_967_298u64
+            }))
+            .expect_err("a connection id past 32 bits must be refused");
+        let message = format!("{err}");
+        assert!(
+            message.contains("4294967298"),
+            "the refusal must quote the value the model sent, so its repair loop can see it: \
+             {message}"
+        );
+        assert!(
+            !message.contains("connection 2"),
+            "the id must not have been narrowed to a real connection: {message}"
+        );
+
+        // An in-range id that simply has no host attached is a different, ordinary error --
+        // otherwise the check above would be indistinguishable from refusing everything.
+        let err = protocol
+            .execute_action(serde_json::json!({
+                "type": "type_text", "text": "hello", "connection_id": 2
+            }))
+            .expect_err("no host is attached in this test");
+        assert!(
+            format!("{err}").contains("No USB keyboard attached"),
+            "an in-range id must reach handler lookup: {err}"
+        );
+    }
+
+    /// A string descriptor must never declare a length it does not have.
+    ///
+    /// Lives here because `src/server/usb/descriptors.rs` is shared across the whole USB family
+    /// under the `usb-common` feature and has no test directory of its own; declaring one would
+    /// mean editing `tests/server/mod.rs`.
+    ///
+    /// `bLength` is a single byte, so the whole descriptor caps at 255 bytes -- 126 UTF-16 code
+    /// units of text. The builder did `desc.push(len as u8)` with no check, so a 127-character
+    /// string declared `bLength = 0` and a 128-character one declared 2: in both cases a
+    /// descriptor contradicting its own contents, which a host either rejects or reads past.
+    #[tokio::test]
+    async fn a_string_descriptor_never_declares_a_length_it_does_not_have() {
+        use ::netget::server::usb::descriptors::build_string_descriptor;
+
+        for len in [0usize, 1, 125, 126, 127, 128, 200, 1000] {
+            let descriptor = build_string_descriptor(&"a".repeat(len));
+            assert_eq!(
+                descriptor[0] as usize,
+                descriptor.len(),
+                "bLength must equal the real length for a {len}-character string"
+            );
+            assert!(
+                descriptor.len() <= u8::MAX as usize,
+                "a {len}-character string produced a descriptor bLength cannot describe"
+            );
+            assert_eq!(descriptor[1], 0x03, "bDescriptorType must be STRING");
+        }
+
+        // Truncation must not split a surrogate pair, or the host decodes a lone surrogate.
+        // Each emoji is two UTF-16 code units, so 200 of them is 400 -- well past the cap, and
+        // the cut lands exactly where a naive truncation would halve one.
+        let emoji = build_string_descriptor(&"\u{1F600}".repeat(200));
+        assert_eq!(emoji[0] as usize, emoji.len());
+        let units: Vec<u16> = emoji[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert!(
+            String::from_utf16(&units).is_ok(),
+            "the truncated descriptor must still be valid UTF-16"
+        );
+    }
 }

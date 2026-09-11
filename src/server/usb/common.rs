@@ -92,12 +92,17 @@ pub mod hid_request {
     pub const SET_PROTOCOL: u8 = 0x0b;
 }
 
-/// CDC-specific request codes
+/// CDC-specific request codes.
 ///
-/// Unused: `usb-serial` does not implement CDC class control requests yet, so
-/// a host's SET_LINE_CODING / SET_CONTROL_LINE_STATE is handled by the usbip
-/// crate's defaults rather than by the device. Kept as the reference table for
-/// when it does.
+/// This carried a note saying `usb-serial` "does not implement CDC class control
+/// requests yet", which stopped being true some time ago and is worth correcting
+/// rather than leaving: `UsbCdcAcmSerialHandler::handle_control`
+/// (`src/server/usb/serial/handler.rs`) matches on these constants and answers
+/// SET_LINE_CODING, GET_LINE_CODING, SET_CONTROL_LINE_STATE and SEND_BREAK
+/// itself. `SEND_ENCAPSULATED_COMMAND` and `GET_ENCAPSULATED_RESPONSE` fall
+/// through to the catch-all, which answers empty on purpose — an error would
+/// abort the USB/IP session for the whole device, and a host probing an optional
+/// request must not unplug the port.
 pub mod cdc_request {
     pub const SEND_ENCAPSULATED_COMMAND: u8 = 0x00;
     pub const GET_ENCAPSULATED_RESPONSE: u8 = 0x01;

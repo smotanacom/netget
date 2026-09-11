@@ -48,6 +48,14 @@ mod cdc_notification {
     pub const UART_STATE_OVERRUN: u16 = 1 << 6;
 }
 
+/// Most device-to-host bytes held waiting for the host's bulk IN URBs.
+///
+/// The model fills this buffer and the host drains it, so with no cap the model's pace decides
+/// how much memory a port holds and a host that never polls never gives any of it back.
+/// 64 KiB is several seconds of traffic at 115200 baud, the port's own default line rate.
+#[cfg(feature = "usb-serial")]
+const MAX_TX_BUFFER: usize = 64 * 1024;
+
 /// A virtual CDC ACM serial port.
 ///
 /// `Debug` is required by `usbip::UsbInterfaceHandler` as of 0.9. It is derived: the only
@@ -120,9 +128,28 @@ impl UsbCdcAcmSerialHandler {
     }
 
     /// Queue bytes for the host to read on the next bulk IN URB.
-    pub fn queue_tx(&mut self, data: &[u8]) {
-        trace!("USB serial queue {} byte(s) for the host", data.len());
-        self.tx_buffer.extend_from_slice(data);
+    ///
+    /// Bounded: the host drains this one bulk IN URB at a time and may never poll at all, while
+    /// `send_data` can be called on every model turn. An unbounded buffer therefore grows at
+    /// the model's pace and shrinks at the host's, which is the wrong way round. A real UART
+    /// drops on a full transmit buffer and reports it, so that is what this does -- the drop is
+    /// returned rather than swallowed so the caller can tell the model its bytes did not go.
+    pub fn queue_tx(&mut self, data: &[u8]) -> usize {
+        let room = MAX_TX_BUFFER.saturating_sub(self.tx_buffer.len());
+        let taken = data.len().min(room);
+        self.tx_buffer.extend_from_slice(&data[..taken]);
+        let dropped = data.len() - taken;
+        if dropped > 0 {
+            warn!(
+                "USB serial transmit buffer is full at {} byte(s); dropped {} of {} queued",
+                self.tx_buffer.len(),
+                dropped,
+                data.len()
+            );
+        } else {
+            trace!("USB serial queue {} byte(s) for the host", data.len());
+        }
+        dropped
     }
 
     /// Replace the reported line parameters.
