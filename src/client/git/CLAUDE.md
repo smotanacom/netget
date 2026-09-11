@@ -69,11 +69,20 @@ requirements. This is a placeholder and doesn't represent an actual network endp
 - `remote_url`: URL of the remote repository (for clone/fetch/push)
 - `username`/`password`: Authentication credentials
 
-**Startup parameters:** `local_path`, `username`, `password` — all three are read
-by `connect_with_llm_actions`. `local_path` is opened as the working repository if
-it already is one, and is the default destination for a `git_clone` that omits
-`path`; it was declared and read by *nothing* while all three startup examples told
-the model to set it.
+**Startup parameters:** `local_path`, `username`, `password`, `allowed_root`,
+`allow_remote_writes` — all five are read by `connect_with_llm_actions`. `local_path` is
+opened as the working repository if it already is one, and is the default destination for a
+`git_clone` that omits `path`. The last two are the sandbox; see **Security Considerations**.
+
+**They are read from `ConnectContext::startup_params`, not from `protocol_data`, and the
+distinction is not cosmetic.** `cli/client_startup.rs` leaves `ClientInstance::protocol_data`
+as `Value::Null` and only a client that writes to it itself ever populates it — which this one
+does not. So a parameter read *only* through `get_protocol_field` is never actually delivered,
+whatever the declaration says, and that was the state of `local_path`, `username` and
+`password`: declared, threaded all the way to `Cred::userpass_plaintext`, and always `None`.
+`read_field` now consults `startup_params` first and keeps the `protocol_data` lookup as a
+second chance. **If you add a startup parameter to any client, check which of the two channels
+actually carries it** — the declaration compiling is not evidence that it arrives.
 
 **State Flow:**
 
@@ -311,17 +320,92 @@ against an event that could not fire, and never noticed because the test never r
 
 ## Security Considerations
 
-1. **Credential Exposure**: Passwords/tokens stored in memory during operations
-2. **Clone Arbitrary URLs**: LLM could clone malicious repositories
-3. **File System Access**: Git operations can write to arbitrary paths
-4. **Network Requests**: Clone/fetch operations make external network requests
+### Filesystem confinement — implemented, not "future"
 
-**Mitigations:**
+Every path this client touches comes from the model. `sandbox.rs` bounds them to one root
+directory. **What is and is not confined is the part to read carefully.**
 
-- Use personal access tokens (PATs) instead of passwords
-- Validate repository URLs before operations
-- Restrict local paths to safe directories (future: sandboxing)
-- Run NetGet with minimal file system permissions
+**Confined.** Every model-supplied path is resolved against the `allowed_root` startup
+parameter and **refused** if it lands outside. Three entry points, and all twelve verbs:
+
+| Entry point | Checked where | Note |
+|---|---|---|
+| `local_path` startup parameter | `connect_with_llm_actions` | Refused at startup, because it is also the default clone destination |
+| `remote_addr` | `connect_with_llm_actions` | Refused at startup **when it names a real directory** outside the root — it may legitimately be a clone URL, and a non-existent value simply seeds no repository, as before |
+| the repository `Repository::open` *landed on* | same | `open` walks **upward** looking for a `.git`, so the result is re-checked: the path handed in can be inside the root while the repository it found is above it |
+| `git_clone`'s `path` | `run_git_operation` | The clone destination |
+| `git_clone`'s `url`, when local | `run_git_operation` | A `file://` or bare-path source. Reading someone else's repository into the workspace is an exfiltration step, not a harmless read — once it is there, a permitted `git_push` can publish it. `file://` contains `://`, so "has a scheme means remote" is a hole; `classify_clone_source` unwraps it |
+| the open repository, for every other verb | `require_repo()` | `git_fetch`, `git_status`, `git_list_branches`, `git_log`, `git_pull`, `git_push`, `git_checkout`, `git_delete_branch`, `git_list_tags`, `git_create_tag`, `git_diff` |
+
+`require_repo()` re-checks rather than trusting the two places that can set `repo_path`. It
+costs one `canonicalize` per operation and makes the property **local to the function**: each
+verb is confined because it checks, not because of an argument about what could have reached
+a session field. It also catches what the entry-point checks structurally cannot — a
+workspace repository moved, or replaced by a symlink, after it was opened.
+
+**How escape is prevented.** Canonicalisation, not string comparison: `<root>/a/../../etc`
+and `<root>/link -> /etc` are both textually inside the root. `resolve` canonicalises the
+**longest existing ancestor** — where every symlink and every resolvable `..` lives — then
+re-appends the non-existent tail, refusing any `..` in that tail because nothing real remains
+for it to mean. A clone destination that does not exist yet is therefore still checkable.
+
+**Refuse, never relocate.** A path outside the root is an error naming `allowed_root`, not a
+path quietly rewritten to sit inside. A model that asked for `/tmp/x` and got `<root>/tmp/x`
+has a confusing bug where a refusal is a clear one, and the silent rewrite would also make
+`git_clone` report success for a repository that is not where the model believes it is.
+
+A *relative* path is different and **is** resolved against the root rather than the process's
+cwd. That is not a relocation — a relative path names no location until something supplies a
+base — and resolving against the cwd would mean `./my-repo`, which every startup example
+uses, was refused for being outside the root.
+
+**Default root**: the platform local-data directory —
+`~/Library/Application Support/netget/git-workspace` on macOS,
+`~/.local/share/netget/git-workspace` on Linux. Deliberately neither `$HOME` nor the cwd (for
+a developer the cwd is this repository, which is the thing being protected). **Not**
+`~/.netget/git-workspace`: `Settings::settings_path` makes `~/.netget` NetGet's settings
+*file*, so `create_dir_all` beneath it fails with `ENOTDIR`.
+
+**Destructive verbs: only the ones confinement cannot reach are gated.** `allow_remote_writes`
+(default **false**) gates `git_push` and `git_delete_branch` *when a `remote` is given*.
+Confinement bounds what happens on this disk and says nothing about where a push **goes** —
+the remote URL comes out of the cloned repository's own config and the push carries this
+client's credentials, so it can publish to or delete a branch on a real forge, and deleting
+the workspace does not undo it.
+
+`git_checkout` and a `force` **local** branch delete are deliberately **not** gated. Their
+damage is confined to `allowed_root`, which is a scratch workspace; gating them would train
+the operator to leave the flag on for routine work, and an opt-in that is always on means
+nothing.
+
+### Not confined, and worth knowing
+
+- **Network clone/fetch/pull reach arbitrary URLs.** `git_clone https://…` contacts whatever
+  host the model names. That is what a Git client is for; confinement bounds where the result
+  lands, not who is contacted.
+- **Credentials live in memory** for the session (`username` / `password` startup
+  parameters) and are handed to `Cred::userpass_plaintext`. Prefer a PAT over a password, and
+  scope it.
+- **A TOCTOU window remains**: a symlink created between the check and libgit2's own `open()`
+  is not seen. Closing it needs `openat2(RESOLVE_BENEATH)` or a per-operation chroot, neither
+  of which libgit2 exposes. Exploiting it requires an attacker who can already write inside
+  the workspace — a strictly larger capability than anything this guard defends against.
+- **The workspace is shared between clients** and persists across runs. One Git client can
+  read and modify what another cloned. Give each client its own `allowed_root` if that
+  matters.
+
+`tests/client/git/sandbox_test.rs` pins all of the above — both the boundary itself and the
+boundary *as wired*, through a real client and `AppState::send_to_client`, because a guard
+that is correct but unreachable is the failure mode worth testing for.
+
+### Other considerations
+
+1. **Clone Arbitrary URLs**: the LLM could clone a malicious repository. The contents land
+   inside `allowed_root`; NetGet does not execute anything from them, but a hook in a cloned
+   repository is not run by libgit2 either, so the risk is what the operator does with the
+   workspace afterwards.
+2. **Run NetGet with minimal file system permissions** — confinement is defence in depth, not
+   a substitute for the OS boundary.
 
 ## Example Usage
 

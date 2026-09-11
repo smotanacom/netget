@@ -72,6 +72,12 @@ async fn injected_git_action_runs_against_the_session_repository() {
     let client_id = ClientForm {
         protocol: "git".to_string(),
         remote_addr: Some(repo_path.display().to_string()),
+        // The Git client confines every path it touches to `allowed_root`, so a test
+        // repository in a tempdir has to declare that tempdir. See
+        // `src/client/git/sandbox.rs`; the default root is a NetGet-owned workspace.
+        startup_params: Some(serde_json::json!({
+            "allowed_root": temp.path().display().to_string()
+        })),
         instruction: Some("test client".to_string()),
         ..Default::default()
     }
@@ -177,6 +183,11 @@ async fn injected_git_action_without_a_repository_reports_why() {
     let client_id = ClientForm {
         protocol: "git".to_string(),
         remote_addr: Some(not_a_repo.display().to_string()),
+        // Inside the sandbox, so the refusal under test is "no repository is open",
+        // not "that path is outside allowed_root".
+        startup_params: Some(serde_json::json!({
+            "allowed_root": temp.path().display().to_string()
+        })),
         instruction: Some("test client".to_string()),
         ..Default::default()
     }

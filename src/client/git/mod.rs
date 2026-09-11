@@ -1,14 +1,17 @@
 //! Git client implementation
 pub mod actions;
+pub mod sandbox;
 
 pub use actions::GitClientProtocol;
+pub use sandbox::{GitSandbox, ALLOWED_ROOT_PARAM, ALLOW_REMOTE_WRITES_PARAM};
 
+use crate::protocol::StartupParams;
 use anyhow::{Context, Result};
 use git2::{
     BranchType, Cred, FetchOptions, ObjectType, RemoteCallbacks, Repository, StatusOptions,
 };
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
@@ -31,18 +34,39 @@ use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 /// why nothing outside that task could run a Git action: the working repository was
 /// unreachable. Behind an `Arc<Mutex<_>>` the LLM path and the injected-command loop
 /// share one session, so `[ send ]` operates on the repository the LLM just cloned.
-#[derive(Default)]
 struct GitSession {
     repo_path: Option<PathBuf>,
     /// The `local_path` startup parameter, used as the clone destination when a
-    /// `git_clone` action does not name one.
+    /// `git_clone` action does not name one. Already resolved inside the sandbox.
     local_path: Option<String>,
     username: Option<String>,
     password: Option<String>,
+    /// The filesystem boundary every model-supplied path is checked against. See
+    /// [`sandbox`]. Held here rather than rebuilt per operation so the root is
+    /// canonicalised (and created) exactly once, at connect.
+    sandbox: GitSandbox,
 }
 
-/// Read one string startup parameter off the client's stored protocol data.
-async fn read_field(app_state: &AppState, client_id: ClientId, key: &str) -> Option<String> {
+/// Read one string startup parameter.
+///
+/// Two sources, in order, because the client has two and only one of them is reliably
+/// populated. `ConnectContext::startup_params` carries what the caller actually passed;
+/// `ClientInstance::protocol_data` is left `Value::Null` by `cli/client_startup.rs` and is
+/// written only by clients that write to it themselves — which this one does not. A
+/// parameter read *only* from `protocol_data` is therefore never delivered, whatever the
+/// declaration says, and that was the state of `local_path`, `username` and `password`. The
+/// `protocol_data` lookup is kept as a second chance in case something populates it later.
+async fn read_field(
+    params: Option<&StartupParams>,
+    app_state: &AppState,
+    client_id: ClientId,
+    key: &str,
+) -> Option<String> {
+    if let Some(params) = params {
+        if let Ok(Some(value)) = params.get_optional_string(key) {
+            return Some(value);
+        }
+    }
     app_state
         .with_client_mut(client_id, |client| {
             client
@@ -52,6 +76,49 @@ async fn read_field(app_state: &AppState, client_id: ClientId, key: &str) -> Opt
         })
         .await
         .flatten()
+}
+
+/// Read one boolean startup parameter, accepting the string forms a model is apt to send.
+///
+/// `"true"` and `true` are the same intent, and a parameter that silently reads as `false`
+/// because the model quoted it is the "declared but does nothing when turned" trap. Anything
+/// unrecognised is `false` — this gates a destructive capability, so an unparseable value
+/// must not open it.
+async fn read_bool_field(
+    params: Option<&StartupParams>,
+    app_state: &AppState,
+    client_id: ClientId,
+    key: &str,
+) -> bool {
+    fn truthy(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Bool(b) => *b,
+            serde_json::Value::String(s) => matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "true" | "yes" | "1" | "on"
+            ),
+            _ => false,
+        }
+    }
+
+    if let Some(params) = params {
+        // `get_optional_bool` rejects the quoted form outright, and a model that sends
+        // `"false"` must not be read as an unparseable value that then falls through to a
+        // second source. So the raw value is consulted when the typed accessor declines.
+        if let Ok(Some(b)) = params.get_optional_bool(key) {
+            return b;
+        }
+        if let Ok(Some(raw)) = params.get_optional_string(key) {
+            return truthy(&serde_json::Value::String(raw));
+        }
+    }
+    app_state
+        .with_client_mut(client_id, |client| {
+            client.get_protocol_field(key).map(truthy)
+        })
+        .await
+        .flatten()
+        .unwrap_or(false)
 }
 
 /// What one executed action did. Shared vocabulary between the connected-event handler
@@ -98,7 +165,9 @@ impl GitClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<StartupParams>,
     ) -> Result<SocketAddr> {
+        let params = startup_params.as_ref();
         // For Git, remote_addr can be either:
         // 1. A repository URL (for cloning)
         // 2. A local path (for existing repo)
@@ -126,6 +195,33 @@ impl GitClient {
             .await
             .unwrap_or_default();
 
+        // Build the filesystem boundary before anything is allowed to name a path. Failing
+        // here fails the connect: a Git client whose workspace could not be established has
+        // nowhere safe to work, and starting it anyway would mean the first `git_clone`
+        // decides where NetGet writes.
+        let sandbox = GitSandbox::new(
+            read_field(params, &app_state, client_id, sandbox::ALLOWED_ROOT_PARAM)
+                .await
+                .as_deref(),
+            read_bool_field(
+                params,
+                &app_state,
+                client_id,
+                sandbox::ALLOW_REMOTE_WRITES_PARAM,
+            )
+            .await,
+        )?;
+        info!(
+            "Git client {} confined to {} (remote writes {})",
+            client_id,
+            sandbox.root().display(),
+            if sandbox.remote_writes_allowed() {
+                "permitted"
+            } else {
+                "refused"
+            }
+        );
+
         // Seed the session from `remote_addr` when it already names a repository on
         // disk. Without this, every verb other than `git_clone` was a no-op on a
         // freshly created client - `repo_path` started `None` and only a clone could
@@ -134,23 +230,69 @@ impl GitClient {
         //
         // `local_path` is tried the same way, and for the same reason: all three startup
         // examples tell the model to set it, and until now nothing in the client read it.
-        let local_path = read_field(&app_state, client_id, "local_path").await;
+        //
+        // Both are now confined. The two are treated differently on purpose:
+        //
+        //  * `local_path` is unambiguously a path, and it is also the default clone
+        //    destination, so an out-of-root value is refused *here* rather than at the
+        //    first clone. Failing at startup names the parameter while the operator is
+        //    still looking at it.
+        //  * `remote_addr` may legitimately be a clone URL, and refusing every URL that
+        //    does not resolve inside the root would break the ordinary case. So it is
+        //    refused only when it names a *real directory on this disk* outside the root —
+        //    which is exactly the case the guard exists for, and which no URL can be. A
+        //    non-existent value simply does not seed a repository, as before.
+        let local_path = match read_field(params, &app_state, client_id, "local_path").await {
+            Some(raw) => Some(
+                sandbox
+                    .resolve(&raw, "the `local_path` startup parameter")?
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            None => None,
+        };
+
+        if Path::new(&remote_addr).is_dir() && sandbox.resolve(&remote_addr, "remote_addr").is_err()
+        {
+            let err = sandbox.resolve(&remote_addr, "remote_addr").unwrap_err();
+            warn!(
+                "Git client {} refused: remote_addr names a directory outside the sandbox",
+                client_id
+            );
+            return Err(err);
+        }
+
         let session = Arc::new(Mutex::new(GitSession {
             repo_path: [Some(remote_addr.clone()), local_path.clone()]
                 .into_iter()
                 .flatten()
+                // Confine before opening. `Repository::open` walks *up* from the path it is
+                // given looking for a `.git`, so an unconfined candidate one level outside
+                // the root could open an enclosing repository that is entirely outside it.
+                .filter_map(|candidate| sandbox.resolve(&candidate, "repository path").ok())
                 .find_map(|candidate| match Repository::open(&candidate) {
                     Ok(repo) => {
                         let path = repo
                             .workdir()
                             .map(|w| w.to_path_buf())
-                            .unwrap_or_else(|| PathBuf::from(&candidate));
-                        info!(
-                            "Git client {} opened existing repository at {}",
-                            client_id,
-                            path.display()
-                        );
-                        Some(path)
+                            .unwrap_or_else(|| candidate.clone());
+                        // `open` walked upwards to find this, so re-check the result: the
+                        // repository it landed on may sit above the root even though the
+                        // path handed in did not.
+                        match sandbox.resolve(&path.to_string_lossy(), "opened repository") {
+                            Ok(confined) => {
+                                info!(
+                                    "Git client {} opened existing repository at {}",
+                                    client_id,
+                                    confined.display()
+                                );
+                                Some(confined)
+                            }
+                            Err(e) => {
+                                warn!("Git client {} ignoring repository: {}", client_id, e);
+                                None
+                            }
+                        }
                     }
                     Err(_) => None,
                 }),
@@ -162,8 +304,9 @@ impl GitClient {
             // never actually supplied. CLAUDE.md calls a declared-but-unread
             // parameter dead weight the model will try to use; this was the shape
             // where the plumbing existed and only the seeding was missing.
-            username: read_field(&app_state, client_id, "username").await,
-            password: read_field(&app_state, client_id, "password").await,
+            username: read_field(params, &app_state, client_id, "username").await,
+            password: read_field(params, &app_state, client_id, "password").await,
+            sandbox,
         }));
 
         // Command channel for injected actions (the dashboard's [ send ] / composer).
@@ -525,13 +668,14 @@ impl GitClient {
         };
 
         // Copy the session out; git2 is synchronous, so nothing awaits while we hold it.
-        let (repo_path, local_path, username, password) = {
+        let (repo_path, local_path, username, password, sandbox) = {
             let guard = session.lock().await;
             (
                 guard.repo_path.clone(),
                 guard.local_path.clone(),
                 guard.username.clone(),
                 guard.password.clone(),
+                guard.sandbox.clone(),
             )
         };
 
@@ -545,6 +689,7 @@ impl GitClient {
                 local_path.as_deref(),
                 username.as_deref(),
                 password.as_deref(),
+                &sandbox,
                 client_id,
                 &op_status_tx,
             )
@@ -571,19 +716,32 @@ impl GitClient {
         local_path: Option<&str>,
         username: Option<&str>,
         password: Option<&str>,
+        sandbox: &GitSandbox,
         client_id: ClientId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<OperationOutcome> {
         // Every verb but `git_clone` needs an open repository. This used to be a silent
         // `if let Some(..)` that did nothing when no repository was open, so a model (or
         // an operator) got success-shaped silence for an operation that never ran.
-        let require_repo = || -> Result<&PathBuf> {
-            repo_path.as_ref().ok_or_else(|| {
+        //
+        // The confinement check is repeated here rather than trusted from the two places
+        // that can set `repo_path` (connect-time seeding and `git_clone`). It costs one
+        // `canonicalize` per operation and makes the property local to this function: every
+        // verb below is confined because *it* checks, not because of an argument about what
+        // could have reached the session field. It also catches the case the entry-point
+        // checks structurally cannot — a workspace repository that was moved, or replaced
+        // by a symlink, after it was opened.
+        let require_repo = || -> Result<PathBuf> {
+            let path = repo_path.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
                     "{name} needs an open repository: this client has none (clone one with \
                      git_clone, or point remote_addr at a local repository)"
                 )
-            })
+            })?;
+            sandbox.resolve(
+                &path.to_string_lossy(),
+                &format!("the repository {name} would act on"),
+            )
         };
 
         match name {
@@ -594,7 +752,7 @@ impl GitClient {
                     .context("Missing url")?;
                 // `path` falls back to the client's `local_path` startup parameter, which is
                 // what every startup example sets and what nothing used to read.
-                let path = data
+                let requested_path = data
                     .get("path")
                     .and_then(|v| v.as_str())
                     .or(local_path)
@@ -603,13 +761,36 @@ impl GitClient {
                          parameter on the client",
                     )?;
 
-                info!("Git client {} cloning {} to {}", client_id, url, path);
+                // The destination is where this client writes, so it is confined. A
+                // relative path lands inside the root; an absolute one outside it is
+                // refused, not quietly moved (see `sandbox`).
+                let destination = sandbox.resolve(requested_path, "the git_clone 'path'")?;
+
+                // The *source* is confined too when it is local. A `file://` or bare-path
+                // clone reads an arbitrary repository, and its contents then sit in the
+                // workspace where a permitted git_push could publish them — so pointing a
+                // clone at the operator's private work is an exfiltration step, not a
+                // read-only convenience. A network URL is not a filesystem concern and is
+                // left alone.
+                let effective_url = match sandbox::classify_clone_source(url) {
+                    sandbox::CloneSource::Remote => url.to_string(),
+                    sandbox::CloneSource::Local(local) => sandbox
+                        .resolve(
+                            &local,
+                            "the git_clone 'url', which names a local repository",
+                        )?
+                        .to_string_lossy()
+                        .into_owned(),
+                };
+
+                let shown = destination.display().to_string();
+                info!("Git client {} cloning {} to {}", client_id, url, shown);
                 let _ = status_tx.send(format!(
                     "[CLIENT] Git client {} cloning {} to {}",
-                    client_id, url, path
+                    client_id, url, shown
                 ));
 
-                Self::git_clone(url, path, username, password)
+                Self::git_clone(&effective_url, &shown, username, password)
                     .with_context(|| format!("clone of {url} failed"))?;
                 info!("Git client {} clone successful", client_id);
                 let _ = status_tx.send(format!(
@@ -617,9 +798,9 @@ impl GitClient {
                     client_id
                 ));
                 Ok(OperationOutcome {
-                    detail: format!("git_clone {url} -> {path}"),
+                    detail: format!("git_clone {url} -> {shown}"),
                     output: None,
-                    repo_path: Some(PathBuf::from(path)),
+                    repo_path: Some(destination),
                 })
             }
             "git_fetch" => {
@@ -633,7 +814,7 @@ impl GitClient {
                     "Git client {} fetching from remote {}",
                     client_id, remote_name
                 );
-                Self::git_fetch(path, remote_name, username, password)
+                Self::git_fetch(&path, remote_name, username, password)
                     .with_context(|| format!("fetch from {remote_name} failed"))?;
                 Ok(OperationOutcome::summary(format!(
                     "git_fetch from '{remote_name}'"
@@ -642,7 +823,7 @@ impl GitClient {
             "git_status" => {
                 let path = require_repo()?;
                 info!("Git client {} getting status", client_id);
-                let status_text = Self::git_status(path).context("status failed")?;
+                let status_text = Self::git_status(&path).context("status failed")?;
                 info!("Git client {} status: {}", client_id, status_text);
                 Ok(OperationOutcome::with_output(
                     format!(
@@ -664,7 +845,7 @@ impl GitClient {
                 let path = require_repo()?;
 
                 info!("Git client {} listing branches", client_id);
-                let branches = Self::git_list_branches(path, include_remote)
+                let branches = Self::git_list_branches(&path, include_remote)
                     .context("list branches failed")?;
                 info!("Git client {} branches: {}", client_id, branches.join(", "));
                 Ok(OperationOutcome::with_output(
@@ -678,7 +859,7 @@ impl GitClient {
                 let path = require_repo()?;
 
                 info!("Git client {} getting log (max {})", client_id, max_count);
-                let log_text = Self::git_log(path, max_count).context("log failed")?;
+                let log_text = Self::git_log(&path, max_count).context("log failed")?;
                 info!("Git client {} log retrieved", client_id);
                 debug!("Log:\n{}", log_text);
                 // The log itself goes to the model, not just its line count: an
@@ -697,7 +878,7 @@ impl GitClient {
                 let path = require_repo()?;
 
                 info!("Git client {} pulling from {}", client_id, remote_name);
-                let result = Self::git_pull(path, remote_name, branch, username, password)
+                let result = Self::git_pull(&path, remote_name, branch, username, password)
                     .with_context(|| format!("pull from {remote_name} failed"))?;
                 info!("Git client {} pull: {}", client_id, result);
                 Ok(OperationOutcome::with_output(
@@ -711,10 +892,15 @@ impl GitClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("origin");
                 let branch = data.get("branch").and_then(|v| v.as_str());
+                // Gated separately from path confinement, because no allow-list of local
+                // directories bounds where a push *goes*: the remote URL comes out of the
+                // cloned repository's own config and the push carries this client's
+                // credentials. Deleting the workspace does not undo a push.
+                sandbox.require_remote_writes("git_push")?;
                 let path = require_repo()?;
 
                 info!("Git client {} pushing to {}", client_id, remote_name);
-                let result = Self::git_push(path, remote_name, branch, username, password)
+                let result = Self::git_push(&path, remote_name, branch, username, password)
                     .with_context(|| format!("push to {remote_name} failed"))?;
                 info!("Git client {} push: {}", client_id, result);
                 Ok(OperationOutcome::with_output(
@@ -734,7 +920,7 @@ impl GitClient {
                 let path = require_repo()?;
 
                 info!("Git client {} checking out {}", client_id, target);
-                let result = Self::git_checkout(path, target, create)
+                let result = Self::git_checkout(&path, target, create)
                     .with_context(|| format!("checkout of {target} failed"))?;
                 info!("Git client {} checkout: {}", client_id, result);
                 Ok(OperationOutcome::with_output(
@@ -749,11 +935,19 @@ impl GitClient {
                     .context("Missing 'branch' field")?;
                 let force = data.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
                 let remote = data.get("remote").and_then(|v| v.as_str());
+                // Only the *remote* half is gated. Deleting a local branch — `force` or
+                // not — destroys history inside a scratch clone, which is what a scratch
+                // clone is for, and gating it would train the operator to leave the flag on
+                // for routine work. Deleting a branch on a real forge is not recoverable by
+                // deleting the workspace, so it is opt-in.
+                if remote.is_some() {
+                    sandbox.require_remote_writes("git_delete_branch with a 'remote'")?;
+                }
                 let path = require_repo()?;
 
                 info!("Git client {} deleting branch {}", client_id, branch);
                 let result =
-                    Self::git_delete_branch(path, branch, force, remote, username, password)
+                    Self::git_delete_branch(&path, branch, force, remote, username, password)
                         .with_context(|| format!("delete of branch {branch} failed"))?;
                 info!("Git client {} delete branch: {}", client_id, result);
                 Ok(OperationOutcome::with_output(
@@ -764,7 +958,7 @@ impl GitClient {
             "git_list_tags" => {
                 let path = require_repo()?;
                 info!("Git client {} listing tags", client_id);
-                let tags = Self::git_list_tags(path).context("list tags failed")?;
+                let tags = Self::git_list_tags(&path).context("list tags failed")?;
                 info!("Git client {} tags: {}", client_id, tags);
                 Ok(OperationOutcome::with_output(
                     format!("git_list_tags: {tags}"),
@@ -781,7 +975,7 @@ impl GitClient {
                 let path = require_repo()?;
 
                 info!("Git client {} creating tag {}", client_id, tag_name);
-                let result = Self::git_create_tag(path, tag_name, target, message)
+                let result = Self::git_create_tag(&path, tag_name, target, message)
                     .with_context(|| format!("creation of tag {tag_name} failed"))?;
                 info!("Git client {} create tag: {}", client_id, result);
                 Ok(OperationOutcome::with_output(
@@ -798,7 +992,7 @@ impl GitClient {
                 let path = require_repo()?;
 
                 info!("Git client {} getting diff", client_id);
-                let diff_text = Self::git_diff(path, target, staged).context("diff failed")?;
+                let diff_text = Self::git_diff(&path, target, staged).context("diff failed")?;
                 info!("Git client {} diff: {}", client_id, diff_text);
                 Ok(OperationOutcome::with_output(
                     format!("git_diff: {} byte(s) of diff", diff_text.len()),

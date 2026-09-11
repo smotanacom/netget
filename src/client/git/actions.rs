@@ -1,5 +1,6 @@
 //! Git client protocol actions implementation
 
+use crate::client::git::sandbox;
 use crate::llm::actions::{
     client_trait::{Client, ClientActionResult},
     protocol_trait::Protocol,
@@ -112,11 +113,49 @@ impl Protocol for GitClientProtocol {
                 // examples told the model to set it.
                 description: "Local path for Git operations: opened as the working repository \
                               if it already is one, and used as the clone destination when \
-                              git_clone omits 'path'"
+                              git_clone omits 'path'. Must be inside allowed_root; a relative \
+                              path is taken relative to it"
                     .to_string(),
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("./my-repo"),
+            },
+            ParameterDefinition {
+                // Read by `GitClient::connect_with_llm_actions`, which builds a
+                // `sandbox::GitSandbox` from it before any path is accepted. Every
+                // model-supplied path -- `local_path`, `remote_addr`, `git_clone`'s `path`
+                // and a local `git_clone` `url` -- is canonicalised and refused if it lands
+                // outside. See `src/client/git/sandbox.rs`.
+                name: sandbox::ALLOWED_ROOT_PARAM.to_string(),
+                description:
+                    "Directory this client may read and write. Every path the model supplies \
+                     is resolved and REFUSED (never relocated) if it falls outside, and a \
+                     relative path is taken relative to this root. Defaults to a NetGet-owned \
+                     workspace under the platform's local-data directory (on macOS \
+                     ~/Library/Application Support/netget/git-workspace; on Linux \
+                     ~/.local/share/netget/git-workspace). Point it at a wider directory only \
+                     if you intend this client to reach there."
+                        .to_string(),
+                type_hint: "string".to_string(),
+                required: false,
+                example: json!("/Users/you/netget-git-sandbox"),
+            },
+            ParameterDefinition {
+                // Read by `GitClient::connect_with_llm_actions` and enforced in
+                // `run_git_operation` via `GitSandbox::require_remote_writes`.
+                name: sandbox::ALLOW_REMOTE_WRITES_PARAM.to_string(),
+                description: "Permit operations that write to a REMOTE repository: git_push, and \
+                     git_delete_branch when a 'remote' is given. Defaults to false. These are \
+                     gated separately from allowed_root because no local directory boundary \
+                     can bound where a push goes -- the remote URL comes from the cloned \
+                     repository's own config and the push uses this client's credentials, so \
+                     it can publish to or delete a branch on a real forge. Local-only \
+                     destructive verbs (git_checkout, git_delete_branch with force and no \
+                     remote) are NOT gated: their damage is confined to allowed_root."
+                    .to_string(),
+                type_hint: "bool".to_string(),
+                required: false,
+                example: json!(false),
             },
             ParameterDefinition {
                 name: "username".to_string(),
@@ -539,6 +578,13 @@ impl Client for GitClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                // The declared startup parameters have to be handed over explicitly.
+                // `ClientInstance::protocol_data` — which `read_field` consults — is left
+                // `Value::Null` by `client_startup.rs` and is only ever populated by a
+                // client that writes to it itself, so a parameter read *only* from there
+                // is never actually delivered. `ctx.startup_params` is the channel that
+                // carries what the caller passed.
+                ctx.startup_params,
             )
             .await
         })
