@@ -229,6 +229,86 @@ pub static OLLAMA_SHOW_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     )
 });
 
+/// Answer `/api/embeddings` with a vector, or with the dimensionality of one.
+fn ollama_embeddings_response_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "ollama_embeddings_response".to_string(),
+        description: "Answer the /api/embeddings request. Supply `embedding` when the exact \
+                      vector matters, or `dimensions` when only its shape does - a \
+                      `dimensions`-only answer returns a deterministic ramp, which is a \
+                      well-formed vector but carries no meaning. Without this action the \
+                      request is refused; nothing is invented."
+            .to_string(),
+        parameters: vec![
+            Parameter {
+                name: "embedding".to_string(),
+                type_hint: "array".to_string(),
+                description: "The embedding vector, as an array of numbers".to_string(),
+                required: false,
+            },
+            Parameter {
+                name: "dimensions".to_string(),
+                type_hint: "number".to_string(),
+                description: "Length of the vector to return when `embedding` is omitted \
+                              (1-4096). Real Ollama models are 384-8192 wide; 768 is typical."
+                    .to_string(),
+                required: false,
+            },
+        ],
+        example: json!({
+            "type": "ollama_embeddings_response",
+            "dimensions": 768
+        }),
+        log_template: Some(
+            LogTemplate::new()
+                .with_info("-> Ollama embeddings ({dimensions} dimensions)")
+                .with_debug("Ollama ollama_embeddings_response: dimensions={dimensions}"),
+        ),
+    }
+}
+
+/// `/api/embeddings`: a client asking for a vector.
+///
+/// This used to answer every request with a hardcoded 768-element ramp, with no event, no
+/// `call_llm` anywhere in the path and no way for the server's instruction to reach it - the
+/// same defect `/api/show` and the four model-management endpoints had. A server told "this
+/// instance serves only llama2" embedded for every model name asked of it, and a server the
+/// operator had told to refuse everything embedded anyway.
+pub static OLLAMA_EMBEDDINGS_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
+    EventType::new(
+        "ollama_embeddings_request",
+        "A client asked /api/embeddings to embed a prompt. Answer with \
+         ollama_embeddings_response, or refuse with ollama_error_response.",
+        json!({
+            "type": "ollama_embeddings_response",
+            "dimensions": 768
+        }),
+    )
+    .with_parameters(vec![
+        Parameter {
+            name: "model".to_string(),
+            type_hint: "string".to_string(),
+            description: "Model the client asked to embed with".to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "prompt".to_string(),
+            type_hint: "string".to_string(),
+            description: "Text the client asked to embed".to_string(),
+            required: false,
+        },
+    ])
+    .with_actions(vec![
+        ollama_embeddings_response_action(),
+        ollama_error_response_action(),
+    ])
+    .with_log_template(
+        LogTemplate::new()
+            .with_info("{client_ip} Ollama embeddings {model}")
+            .with_debug("Ollama embeddings request: model={model}"),
+    )
+});
+
 /// Model-management event: `/api/pull`, `/api/create`, `/api/copy`, `/api/delete`.
 ///
 /// These four endpoints used to answer `{"status":"success"}` unconditionally, without an
@@ -297,6 +377,7 @@ impl Protocol for OllamaProtocol {
             ollama_models_response_action(),
             ollama_admin_ok_action(),
             ollama_show_response_action(),
+            ollama_embeddings_response_action(),
             ollama_error_response_action(),
         ]
     }
@@ -323,8 +404,19 @@ impl Protocol for OllamaProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .implementation("hyper with Ollama-compatible HTTP endpoints")
-            .llm_control("LLM controls responses to API requests (generate, chat, embeddings)")
-            .e2e_testing("ollama Python library and reqwest Rust client")
+            .llm_control(
+                "Every endpoint is a model decision: /api/generate, /api/chat, /api/tags, \
+                 /api/show, /api/embeddings and the four model-management endpoints each \
+                 raise an event and refuse when the model does not answer.",
+            )
+            .e2e_testing(
+                "tests/server/ollama/e2e_test.rs. Driven by ollama-rs 0.3 - the same \
+                 third-party crate netget uses to talk to a real Ollama, here in the client \
+                 role - for /api/tags, /api/generate and /api/chat, plus reqwest for the raw \
+                 JSON envelope, the refusal paths and the endpoints ollama-rs does not \
+                 expose. An earlier version of this field claimed an \"ollama Python \
+                 library\"; no Python was ever involved.",
+            )
             .notes("Mock Ollama API server for testing and honeypot purposes")
             .build()
     }
@@ -445,6 +537,7 @@ impl Server for OllamaProtocol {
                     data,
                 })
             }
+            "ollama_embeddings_response" => self.execute_ollama_embeddings_response(action),
             "ollama_error_response" => self.execute_ollama_error_response(action),
             _ => Err(anyhow::anyhow!("Unknown Ollama action: {}", action_type)),
         }
@@ -473,6 +566,81 @@ impl OllamaProtocol {
         Ok(ActionResult::Custom {
             name: "ollama_models_response".to_string(),
             data: json!({"status": "acknowledged"}),
+        })
+    }
+
+    /// Build the `/api/embeddings` vector the model asked for.
+    ///
+    /// `dimensions` is validated here rather than where the response is built, so an
+    /// unusable value is refused while the repair loop can still correct it. The cap is not
+    /// cosmetic: the vector is serialised into the reply and `dimensions` is model-supplied,
+    /// so an unbounded value is an allocation a single request can name.
+    fn execute_ollama_embeddings_response(
+        &self,
+        action: serde_json::Value,
+    ) -> Result<ActionResult> {
+        const MAX_DIMENSIONS: u64 = 4096;
+
+        if let Some(values) = action.get("embedding") {
+            let values = values
+                .as_array()
+                .context("ollama_embeddings_response 'embedding' must be an array of numbers")?;
+            if values.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "ollama_embeddings_response 'embedding' must not be empty; omit it and \
+                     give 'dimensions' instead, or refuse with ollama_error_response"
+                ));
+            }
+            if values.len() as u64 > MAX_DIMENSIONS {
+                return Err(anyhow::anyhow!(
+                    "ollama_embeddings_response 'embedding' has {} elements; the limit is {}",
+                    values.len(),
+                    MAX_DIMENSIONS
+                ));
+            }
+            let vector: Vec<f64> = values
+                .iter()
+                .map(|v| {
+                    v.as_f64().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "ollama_embeddings_response 'embedding' must contain only \
+                             numbers, got {v}"
+                        )
+                    })
+                })
+                .collect::<Result<_>>()?;
+            debug!(
+                "Execute: ollama_embeddings_response ({} given)",
+                vector.len()
+            );
+            return Ok(ActionResult::Custom {
+                name: "ollama_embeddings_response".to_string(),
+                data: json!({ "embedding": vector }),
+            });
+        }
+
+        let dimensions = action.get("dimensions").and_then(|v| v.as_u64()).context(
+            "ollama_embeddings_response needs either 'embedding' (an array of numbers) or \
+             'dimensions' (how long a vector to return)",
+        )?;
+        if dimensions == 0 || dimensions > MAX_DIMENSIONS {
+            return Err(anyhow::anyhow!(
+                "ollama_embeddings_response 'dimensions' {} is out of range; use 1-{} (768 \
+                 is a typical embedding width)",
+                dimensions,
+                MAX_DIMENSIONS
+            ));
+        }
+
+        // A deterministic ramp. It is not an embedding of anything, and the action's own
+        // description says so - the alternative is asking a model to emit 768 floats.
+        let vector: Vec<f64> = (0..dimensions)
+            .map(|i| i as f64 / dimensions as f64)
+            .collect();
+        debug!("Execute: ollama_embeddings_response ({dimensions} dimensions)");
+        Ok(ActionResult::Custom {
+            name: "ollama_embeddings_response".to_string(),
+            data: json!({ "embedding": vector }),
         })
     }
 
@@ -598,5 +766,6 @@ fn get_ollama_event_types() -> Vec<EventType> {
         OLLAMA_MODELS_REQUEST_EVENT.clone(),
         OLLAMA_ADMIN_REQUEST_EVENT.clone(),
         OLLAMA_SHOW_REQUEST_EVENT.clone(),
+        OLLAMA_EMBEDDINGS_REQUEST_EVENT.clone(),
     ]
 }
