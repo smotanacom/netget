@@ -12,7 +12,10 @@ The OpenAPI client implementation provides LLM-controlled HTTP/HTTPS requests dr
   - Same library used by OpenAPI server
   - Parses YAML/JSON specifications
   - Provides typed access to paths, operations, parameters
-- **reqwest** - Modern async HTTP client for Rust
+- **reqwest** - Modern async HTTP client for Rust, built **once** for the process on
+  `spawn_blocking` (`OpenApiClient::http_client`). Building it loads the platform root store,
+  which on macOS is a synchronous keychain read; on the async runtime that parks a tokio
+  worker. It used to be rebuilt per operation *and* built once at connect and dropped.
   - Same library used by HTTP client
   - Supports HTTP/1.1, HTTP/2, HTTPS (TLS via rustls)
   - Automatic protocol negotiation via ALPN
@@ -178,7 +181,8 @@ LLMs can select operations and provide parameters without knowing URL structure.
 
 - `spec` (optional) - OpenAPI spec in YAML or JSON (inline)
 - `spec_file` (optional) - Path to OpenAPI spec file
-- `base_url` (optional) - Override base URL (default: first server in spec or http://remote_addr)
+- `base_url` (optional) - Override base URL. The default is `remote_addr`, **not** the spec's
+  `servers[0]`; see "Base URL Handling" for why the order matters.
 
 **Note:** Either `spec` or `spec_file` is required.
 
@@ -196,7 +200,12 @@ status_tx.send("[CLIENT] OpenAPI operation executed");  // → TUI
 - **Operation Not Found**: Error, request not sent
 - **Missing Path Params**: Error, request not sent
 - **Request Failed**: Log error, call LLM with error event (future)
-- **Timeout**: reqwest handles with 30s timeout
+- **Timeout**: 30s, set on the shared client
+- **Response size**: bounded at 8 MiB. `response.text()` buffers the whole body with no limit
+  and the body is remote-controlled — it goes into an `openapi_operation_response` event and
+  from there into an LLM prompt. It also used `unwrap_or_default()`, which turned a read
+  failure into an empty body: downstream that reads as "the server answered with nothing"
+  rather than "we could not read the answer"
 - **LLM Error**: Log, continue accepting actions
 
 ## Features
@@ -216,9 +225,25 @@ status_tx.send("[CLIENT] OpenAPI operation executed");  // → TUI
 ### Base URL Handling
 
 Priority order:
-1. `base_url` parameter (override)
-2. First server in spec's `servers` array
-3. `http://remote_addr` (fallback)
+1. `base_url` parameter (an explicit override, so it wins over everything)
+2. `remote_addr` — the address the operator or model actually named. Scheme-qualified is used
+   as given; a bare `host:port` gets `http://`, because reqwest needs an absolute URL and a
+   relative one fails every request in a way that presents as the server being unreachable
+3. The first entry of the spec's `servers` array, only when nothing was named — and it logs
+   that it is doing so
+4. Otherwise the client refuses to connect
+
+**Order 2 and 3 used to be the other way round, and that was a real defect.** The spec's
+declared server won over `remote_addr`, so an operator who said "connect to 127.0.0.1:9000"
+and handed over a spec whose `servers:` block names `https://api.production.example.com` got
+the production host — silently, with no log line saying the named address had been discarded.
+A spec is data supplied with the request, frequently by the model, so it must not be able to
+retarget the client. This is the DynamoDB shape from the root `CLAUDE.md` reached by a
+different route: a client that loses its target and arrives at a real service.
+
+The tell was sitting in the test suite the whole time. `tests/client/openapi/e2e_test.rs`
+rewrites `{port}` *inside the spec* before every run, which is the workaround you write when
+`remote_addr` is not what decides. `target_precedence_test.rs` now pins all three levels.
 
 Example:
 ```yaml
@@ -277,7 +302,10 @@ Client uses first server: `https://api.example.com/v1`
 ```
 
 **LLM Flow**:
-1. Spec parsed, base URL: `https://jsonplaceholder.typicode.com`
+1. Spec parsed. The base URL is **`remote_addr`**, not the spec's
+   `https://jsonplaceholder.typicode.com` — the spec's server is used only when no address
+   was named, and the client logs when it ignores one. Pass `base_url` to force the spec's
+   host.
 2. Connected event shows: `listTodos`
 3. `execute_operation("listTodos")`
 4. Response: 200 OK, body: `[{...}, {...}]`

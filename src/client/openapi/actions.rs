@@ -334,7 +334,14 @@ impl Protocol for OpenApiClientProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("openapi-rs parser, reqwest HTTP client (HTTP/1.1, HTTP/2)")
             .llm_control("Operation selection, parameter provision, spec-driven requests")
-            .e2e_testing("Mock HTTP server with known OpenAPI spec")
+            .e2e_testing(
+                "tests/client/openapi/. target_precedence_test pins that remote_addr wins \
+                 over the spec's servers[0] - the spec must not be able to retarget the \
+                 client - and that base_url overrides both; command_channel_test drives the \
+                 injected-operation path against a loopback stub; e2e_test runs the real \
+                 binary against a NetGet OpenAPI server. The peer is always netget or a stub \
+                 written in the test, never a third-party OpenAPI implementation.",
+            )
             .notes("Spec-driven request construction, path parameter substitution")
             .build()
     }
