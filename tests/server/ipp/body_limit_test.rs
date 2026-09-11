@@ -51,13 +51,14 @@ async fn an_oversized_body_is_refused_without_reaching_the_model() -> E2EResult<
         });
 
     let server = helpers::start_netget_server(config).await?;
+    wait_until_listening(server.port).await?;
 
     // A well-formed 8-byte header so nothing else can be blamed for the refusal, then bulk.
     let mut body = vec![0x01, 0x01, 0x00, 0x02, 0xAA, 0xBB, 0xCC, 0xDD];
     body.resize(OVERSIZED, 0x00);
 
     let response = tokio::time::timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         reqwest::Client::new()
             .post(format!("http://127.0.0.1:{}/printers/netget", server.port))
             .header("Content-Type", "application/ipp")
@@ -122,6 +123,7 @@ async fn a_body_under_the_cap_is_still_answered() -> E2EResult<()> {
         });
 
     let server = helpers::start_netget_server(config).await?;
+    wait_until_listening(server.port).await?;
 
     // 1 MiB: a plausible Print-Job document, comfortably inside the cap.
     let mut body = vec![0x01, 0x01, 0x00, 0x02, 0x00, 0x00, 0x02, 0xA7];
@@ -129,7 +131,7 @@ async fn a_body_under_the_cap_is_still_answered() -> E2EResult<()> {
     body.resize(1024 * 1024, b'A');
 
     let response = tokio::time::timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         reqwest::Client::new()
             .post(format!("http://127.0.0.1:{}/printers/netget", server.port))
             .header("Content-Type", "application/ipp")
@@ -150,4 +152,24 @@ async fn a_body_under_the_cap_is_still_answered() -> E2EResult<()> {
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     Ok(())
+}
+
+/// Poll until the IPP server's TCP port accepts a connection.
+///
+/// `start_netget_server` returns when startup has been *parsed*, not when the socket is bound.
+/// Every other test here posts a few dozen bytes and wins the race by accident; these post a
+/// megabyte and nine, which takes long enough under `--test-threads=100` that losing it shows
+/// up as the server "answering wrongly" rather than as a connection refused. Wait for the
+/// condition instead of hoping.
+async fn wait_until_listening(port: u16) -> E2EResult<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(_) => return Ok(()),
+            Err(e) if std::time::Instant::now() >= deadline => {
+                return Err(format!("IPP server never bound port {port}: {e}").into())
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+        }
+    }
 }
