@@ -85,8 +85,11 @@ impl Protocol for BluetoothBlePresenterProtocol {
 
     /// HID-over-GATT caveat: a host will only treat this as an input device once
     /// it bonds, and ble-peripheral-rust 0.2 exposes no pairing or bonding control.
-    /// The GATT layout below is correct and readable; whether a given OS accepts it
-    /// as a real HID device is platform dependent and untested.
+    /// The GATT layout below is pinned byte-for-byte against the USB HID 1.11 item
+    /// encoding and the SIG characteristic definitions by
+    /// `tests/server/bluetooth_ble_presenter/report_descriptor_test.rs`; whether a
+    /// given OS accepts it as a real input device is a separate question, needs an
+    /// adapter and a real central, and is untested.
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
@@ -99,7 +102,19 @@ impl Protocol for BluetoothBlePresenterProtocol {
                 "Base BLE GATT control (add_service, start_advertising, stop_advertising, respond_to_read, respond_to_write, send_notification); the LLM builds the HID Service (0x1812) in keyboard mode, sending page up/down itself.",
             )
             .e2e_testing(
-                "Two automated suites, neither of which is evidence for a rating above Experimental. tests/server/bluetooth_ble_presenter/e2e_test.rs covers the wiring only: open_server reaches this protocol's spawn, the base brings the radio up, and a bluetooth_ble_started event is raised and answered - it builds no service and puts no byte on the wire, and it claims the machine's Bluetooth adapter. gatt_examples_test.rs needs no adapter and pins every UUID and value byte in the startup examples against the Bluetooth SIG layout, byte order included. Proving the profile works still needs a real central (nRF Connect, btleplug) completing a read or a subscription against a service this profile built; nothing in the tree does that.",
+                "Three automated suites, none of which is evidence for a rating above \
+                 Experimental. report_descriptor_test.rs walks the HID report descriptor as a \
+                 host would and pins it, build_presenter_report's keycodes and the GATT values \
+                 against literal spec bytes; gatt_examples_test.rs pins every UUID and value \
+                 byte in the startup examples against the Bluetooth SIG layout, byte order \
+                 included. Both are pure unit tests: no adapter, not #[ignore]d. e2e_test.rs \
+                 covers the wiring only - open_server reaches this protocol's spawn, the base \
+                 brings the radio up, and a bluetooth_ble_started event is raised and answered \
+                 - and it claims the machine's Bluetooth adapter. Whether a real host accepts \
+                 this as an input device is untested: it needs an independent central (nRF \
+                 Connect, btleplug) completing a read or a subscription against a service this \
+                 profile built, and HID-over-GATT additionally requires bonding, which \
+                 ble-peripheral-rust 0.2 exposes no control over.",
             )
             .notes(
                 "Thin profile wrapper over the bluetooth-ble base stack. It prepends an instruction describing the HID Service (0x1812) in keyboard mode, sending page up/down and otherwise reuses the base entirely: the base hardcodes BluetoothBleProtocol when it calls the LLM, so the action vocabulary, the event types and the executor are the base's. This protocol deliberately declares no actions or events of its own - one that did would be documented to the model but never reachable at runtime.",
@@ -121,6 +136,59 @@ impl Protocol for BluetoothBlePresenterProtocol {
 
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
         use crate::llm::actions::StartupExamples;
+
+        use crate::server::bluetooth_ble_presenter::{
+            HID_PRESENTER_INPUT_REPORT_LEN, HID_PRESENTER_REPORT_DESCRIPTOR,
+        };
+
+        // The report map is hex-encoded from the descriptor const rather than written out
+        // again here. A model copies these examples verbatim onto a real GATT table, so a
+        // second hand-maintained copy is a report map that drifts from the one the profile
+        // documents — which is exactly what happened: the literal that used to sit here had
+        // its padding item's two bytes transposed (`Usage Page (0x75)` where `Report Size (5)`
+        // was meant), which left `Report Size` at 1 and made the whole report ten bits — not a
+        // whole number of bytes, and four times shorter than the eight-byte initial value
+        // published on the very same characteristic.
+        // The three readable characteristics, in the full 128-bit form the base's
+        // `Uuid::parse_str` requires, and the one value that is not derived from a const.
+        const HID_INFORMATION_UUID: &str = "00002a4a-0000-1000-8000-00805f9b34fb";
+        const HID_REPORT_MAP_UUID: &str = "00002a4b-0000-1000-8000-00805f9b34fb";
+        const HID_REPORT_UUID: &str = "00002a4d-0000-1000-8000-00805f9b34fb";
+        /// bcdHID 0x0111 (v1.11) as a little-endian uint16, then bCountryCode 0x00 and Flags
+        /// 0x02 (NormallyConnectable). Every GATT integer is little-endian, so the version is
+        /// `1101`; written the other way round a host reads HID version 17.01.
+        const HID_INFORMATION_VALUE: &str = "11010002";
+
+        let report_map = hex::encode(HID_PRESENTER_REPORT_DESCRIPTOR);
+        // An all-zeroes report of the exact length the descriptor declares: "no key is held".
+        // Sized from the const so it cannot disagree with the report map.
+        let empty_report = hex::encode(vec![0u8; HID_PRESENTER_INPUT_REPORT_LEN]);
+        // One script rather than a static handler, because this service has three readable
+        // characteristics and a static handler cannot tell them apart - answering every read
+        // with the Report's zero octets left a host unable to parse the Report Map, and so
+        // unable to interpret any report that followed.
+        //
+        // It is built from the consts above with `format!` for the same reason the descriptor
+        // is a const at all: a hex literal pasted in here is the thing that drifts.
+        //
+        // The body must PRINT one JSON value. Writing `actions = [...]` assigns a local and
+        // prints nothing, so the executor records the handler as failed and the event falls
+        // through to the model - the opposite of what a static layout is for, and silently.
+        let read_script = format!(
+            "import json,sys\n\
+             e = json.load(sys.stdin)['event']\n\
+             v = {{'{hid_info_uuid}': '{hid_info}',\n\
+                  '{report_map_uuid}': '{report_map}',\n\
+                  '{report_uuid}': '{empty_report}'}}.get(\n\
+                 str(e.get('characteristic_uuid', '')).lower())\n\
+             print(json.dumps({{'actions': [{{'type': 'respond_to_read', 'value': v}}] if v else []}}))",
+            hid_info_uuid = HID_INFORMATION_UUID,
+            hid_info = HID_INFORMATION_VALUE,
+            report_map_uuid = HID_REPORT_MAP_UUID,
+            report_map = report_map,
+            report_uuid = HID_REPORT_UUID,
+            empty_report = empty_report,
+        );
 
         // Every event id and action name below is one the base stack really emits and really
         // executes. UUIDs are written in full 128-bit form because the base parses them with
@@ -150,7 +218,7 @@ impl Protocol for BluetoothBlePresenterProtocol {
                         "handler": {
                             "type": "script",
                             "language": "python",
-                            "code": "import json,sys\ne=json.load(sys.stdin)['event']\nv={'00002a4a-0000-1000-8000-00805f9b34fb':'01110002','00002a4b-0000-1000-8000-00805f9b34fb':'05010906a1010507190029ff150026ff0075089501810005091901290115002501750195018102057595018103c0','00002a4d-0000-1000-8000-00805f9b34fb':'0000000000000000'}.get(str(e.get('characteristic_uuid','')).lower())\nprint(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))"
+                            "code": read_script
                         }
                     }
                 ]
@@ -177,27 +245,27 @@ impl Protocol for BluetoothBlePresenterProtocol {
                                     "primary": true,
                                     "characteristics": [
                                         {
-                                            "uuid": "00002a4a-0000-1000-8000-00805f9b34fb",
+                                            "uuid": HID_INFORMATION_UUID,
                                             "properties": [
                                                 "read"
                                             ],
                                             "permissions": [
                                                 "readable"
                                             ],
-                                            "initial_value": "01110002"
+                                            "initial_value": HID_INFORMATION_VALUE
                                         },
                                         {
-                                            "uuid": "00002a4b-0000-1000-8000-00805f9b34fb",
+                                            "uuid": HID_REPORT_MAP_UUID,
                                             "properties": [
                                                 "read"
                                             ],
                                             "permissions": [
                                                 "readable"
                                             ],
-                                            "initial_value": "05010906a1010507190029ff150026ff0075089501810005091901290115002501750195018102057595018103c0"
+                                            "initial_value": report_map
                                         },
                                         {
-                                            "uuid": "00002a4d-0000-1000-8000-00805f9b34fb",
+                                            "uuid": HID_REPORT_UUID,
                                             "properties": [
                                                 "read",
                                                 "notify"
@@ -205,7 +273,7 @@ impl Protocol for BluetoothBlePresenterProtocol {
                                             "permissions": [
                                                 "readable"
                                             ],
-                                            "initial_value": "0000000000000000"
+                                            "initial_value": empty_report
                                         },
                                         {
                                             "uuid": "00002a4c-0000-1000-8000-00805f9b34fb",
@@ -245,7 +313,7 @@ impl Protocol for BluetoothBlePresenterProtocol {
                         "handler": {
                             "type": "script",
                             "language": "python",
-                            "code": "import json,sys\ne=json.load(sys.stdin)['event']\nv={'00002a4a-0000-1000-8000-00805f9b34fb':'01110002','00002a4b-0000-1000-8000-00805f9b34fb':'05010906a1010507190029ff150026ff0075089501810005091901290115002501750195018102057595018103c0','00002a4d-0000-1000-8000-00805f9b34fb':'0000000000000000'}.get(str(e.get('characteristic_uuid','')).lower())\nprint(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))"
+                            "code": read_script.clone()
                         }
                     }
                 ]

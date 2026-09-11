@@ -122,19 +122,23 @@ fn the_static_example_builds_the_right_service() {
 
 /// HID Information (0x2A4A) is four octets: `bcdHID` as a little-endian `uint16`, then
 /// `bCountryCode`, then a flags octet (bit 0 RemoteWake, bit 1 NormallyConnectable).
-/// `01110002` is bcdHID 0x1101 = 1.11, country 0x00 (not localised), flags 0x02
+/// `11010002` is bcdHID 0x0111 = 1.11, country 0x00 (not localised), flags 0x02
 /// (NormallyConnectable).
 ///
-/// The version is the trap: written big-endian the same octets say bcdHID 0x0111, a version
-/// that does not exist, and a host may refuse the device outright.
+/// The version is the trap, and this test was on the wrong side of it: it asserted `01110002`
+/// and called the result "1.11". bcdHID is *binary-coded decimal*, so version 1.11 is the
+/// literal digits 0x0111 and the little-endian wire order is `11 01`. Read the other way the
+/// same octets are 0x1101 — version 11.01 — which a host may refuse outright. Arriving at
+/// "1.11" from `01 11` requires reading the value big-endian and the digits as decimal, two
+/// errors that cancel in the prose and not on the wire.
 #[test]
 fn hid_information_is_a_little_endian_version_then_country_then_flags() {
     let bytes = initial_bytes(0x2A4A);
-    assert_eq!(bytes, vec![0x01, 0x11, 0x00, 0x02]);
+    assert_eq!(bytes, vec![0x11, 0x01, 0x00, 0x02]);
     assert_eq!(bytes.len(), 4, "HID Information is exactly four octets");
 
     let bcd_hid = u16::from_le_bytes([bytes[0], bytes[1]]);
-    assert_eq!(bcd_hid, 0x1101, "bcdHID 0x1101 is HID 1.11");
+    assert_eq!(bcd_hid, 0x0111, "bcdHID 0x0111 is HID 1.11 in BCD");
     assert_eq!(bytes[2], 0x00, "bCountryCode 0 means not localised");
     assert_eq!(bytes[3] & 0b10, 0b10, "flags bit 1: NormallyConnectable");
 
