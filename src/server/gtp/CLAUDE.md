@@ -149,7 +149,15 @@ memory across the session if it wants the fully correct behaviour.
 defaults:
 
 - `sequence` defaults to the request's own sequence number. A GTP peer matches a response to
-  its request by this number.
+  its request by this number. **It is range-checked against the header field it is going
+  into, not against `u32`** — 16 bits in GTPv1, 24 in GTPv2 — and an over-wide value fails
+  closed rather than wrapping. `optional_u32` in `actions.rs` cannot do this check, because
+  only `mod.rs` knows which version is being answered; `render` calls `checked_sequence`
+  instead. The defect this closes is a nasty one to debug: `70000 as u16` is `4464`, the peer
+  cannot match it to any outstanding request, and the symptom is a request that times out —
+  which reads as a lost packet and sends you to the network rather than to the field.
+  `tests/server/gtp/e2e_test.rs::test_a_sequence_wider_than_the_header_field_fails_closed`
+  pins it, and is also the only test of the `synthesised_refusal` path.
 - `teid` defaults to the peer's own control TEID — taken from IE 17 (GTPv1) or the Sender
   F-TEID (GTPv2) — falling back to the request header's TEID. On a first contact the request
   header carries 0, so the IE is the only source.
@@ -216,7 +224,7 @@ a hex payload and checking the literal octets that reach the wire.
 
 ## Maturity: Experimental, and precisely why
 
-The transport **is** exercised — real UDP sockets, real datagrams, real replies, thirteen
+The transport **is** exercised — real UDP sockets, real datagrams, real replies, fourteen
 passing tests. What is missing is the one thing that would make it Beta: **no third-party GTP
 implementation has ever accepted a packet this server produced.**
 
