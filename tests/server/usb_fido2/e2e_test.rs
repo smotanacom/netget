@@ -895,6 +895,123 @@ mod tests {
         }
     }
 
+    /// A host must not be able to reserve memory by *declaring* a message it never sends.
+    ///
+    /// `BCNT` is 16 bits, so one 64-byte init packet could declare 65535 bytes. The assembler
+    /// called `Vec::with_capacity(bcnt)` and kept the buffer until the message completed, so a
+    /// host that simply never sent the continuation frames held 64 KiB per channel id -- and
+    /// there was no cap on channel ids either. 64 bytes on the wire bought ~1000x its own size
+    /// in resident memory, indefinitely, before any user-presence decision.
+    ///
+    /// Remove either bound in `ctaphid.rs` and this test fails.
+    #[tokio::test]
+    async fn a_host_cannot_reserve_memory_by_declaring_messages_it_never_sends() {
+        use ::netget::server::usb::fido2::ctaphid::{
+            CtapHidCommand, CtapHidHandler, MAX_ASSEMBLING_CHANNELS, MAX_MESSAGE_SIZE,
+        };
+
+        // One init packet on channel `cid` declaring `bcnt` bytes and carrying 57 of them.
+        fn init_packet(cid: u32, bcnt: u16) -> Vec<u8> {
+            let mut packet = vec![0u8; 64];
+            packet[0..4].copy_from_slice(&cid.to_be_bytes());
+            packet[4] = (CtapHidCommand::Cbor as u8) | 0x80;
+            packet[5..7].copy_from_slice(&bcnt.to_be_bytes());
+            packet
+        }
+
+        let mut handler = CtapHidHandler::new();
+
+        // A BCNT the transport cannot frame a reply to is refused outright, and the refusal
+        // names the channel it happened on rather than the broadcast one.
+        let rejected = handler
+            .process_packet(&init_packet(0x0000_0001, u16::MAX))
+            .expect_err("BCNT=65535 exceeds the 7609-byte CTAPHID maximum and must be refused");
+        let rejection = ::netget::server::usb::fido2::ctaphid::rejection_of(&rejected);
+        assert_eq!(
+            rejection.cid, 0x0000_0001,
+            "the refusal must name the host's channel"
+        );
+        assert_eq!(
+            handler.assembling_channels(),
+            0,
+            "a refused message must retain nothing"
+        );
+
+        // A BCNT at the maximum is legal and does consume a channel.
+        let legal = u16::try_from(MAX_MESSAGE_SIZE).expect("the maximum fits in BCNT");
+        for cid in 1..=MAX_ASSEMBLING_CHANNELS as u32 {
+            assert!(
+                handler
+                    .process_packet(&init_packet(0x1000_0000 + cid, legal))
+                    .expect("a message at the maximum size is legal")
+                    .is_none(),
+                "an incomplete message must not be returned as complete"
+            );
+        }
+        assert_eq!(handler.assembling_channels(), MAX_ASSEMBLING_CHANNELS);
+
+        // One more channel is refused, so the retained memory is capped rather than unbounded.
+        handler
+            .process_packet(&init_packet(0xdead_beef, legal))
+            .expect_err("a host must not open more concurrent assemblies than the cap allows");
+        assert_eq!(
+            handler.assembling_channels(),
+            MAX_ASSEMBLING_CHANNELS,
+            "a refused channel must not be retained"
+        );
+
+        // Re-initializing a channel already assembling replaces its buffer, so it is free.
+        assert!(handler
+            .process_packet(&init_packet(0x1000_0001, legal))
+            .expect("re-initializing an open channel is not a new allocation")
+            .is_none());
+        assert_eq!(handler.assembling_channels(), MAX_ASSEMBLING_CHANNELS);
+    }
+
+    /// A reply too long to frame is refused, not silently garbled.
+    ///
+    /// `seq` is 7 bits, so the 129th continuation packet reused sequence 0 while `BCNT`
+    /// separately wrapped through `as u16` -- a host received a well-formed-looking answer
+    /// that decoded to the wrong thing. One byte past the maximum now produces the single
+    /// `INVALID_LEN` error frame that says so.
+    #[tokio::test]
+    async fn a_reply_longer_than_the_transport_can_frame_is_refused() {
+        use ::netget::server::usb::fido2::ctaphid::{
+            CtapHidCommand, CtapHidHandler, MAX_MESSAGE_SIZE,
+        };
+
+        let handler = CtapHidHandler::new();
+        let cid = 0x0bad_0bad_u32;
+
+        // Exactly at the limit still fragments normally: a guard that refused everything
+        // would pass the assertion below while breaking the protocol.
+        let at_limit =
+            handler.fragment_response(cid, CtapHidCommand::Msg, &vec![0x77u8; MAX_MESSAGE_SIZE]);
+        assert_eq!(
+            at_limit.len(),
+            129,
+            "the maximum message is 1 init + 128 continuations"
+        );
+
+        let over = handler.fragment_response(
+            cid,
+            CtapHidCommand::Msg,
+            &vec![0x77u8; MAX_MESSAGE_SIZE + 1],
+        );
+        assert_eq!(over.len(), 1, "an unframeable reply is one error packet");
+        assert_eq!(
+            u32::from_be_bytes([over[0][0], over[0][1], over[0][2], over[0][3]]),
+            cid,
+            "the error must go to the channel that asked"
+        );
+        assert_eq!(
+            over[0][4],
+            (CtapHidCommand::Error as u8) | 0x80,
+            "an unframeable reply is answered with CTAPHID ERROR"
+        );
+        assert_eq!(over[0][7], 0x03, "CTAP1_ERR_INVALID_LEN");
+    }
+
     /// The approval manager's own contract, including the two shapes the E2E tests rely on:
     /// an unanswered request denies, and `approve`/`deny` are callable from a synchronous
     /// context (they used to need `Handle::current().block_on`, which panicked).

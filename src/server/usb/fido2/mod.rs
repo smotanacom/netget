@@ -528,11 +528,15 @@ impl usbip::UsbInterfaceHandler for Fido2HidHandler {
                     debug!("CTAPHID: waiting for continuation packets");
                 }
                 Err(e) => {
-                    warn!("CTAPHID packet error: {}", e);
-                    self.response_packets = vec![CtapHidPacket::build_error(
-                        0xffffffff,
-                        ctaphid::CtapHidError::InvalidSeq,
-                    )];
+                    // Answer on the channel the host used, with the code the refusal names.
+                    // Every error used to become INVALID_SEQ on the broadcast channel, so a
+                    // host that had declared an unframeable BCNT, or opened one channel too
+                    // many, was told its sequence number was wrong on a channel it was not
+                    // listening to.
+                    let rejection = ctaphid::rejection_of(&e);
+                    warn!("CTAPHID packet error: {:#}", e);
+                    self.response_packets =
+                        vec![CtapHidPacket::build_error(rejection.cid, rejection.error)];
                 }
             }
 
