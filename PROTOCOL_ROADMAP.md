@@ -688,6 +688,31 @@ presents as `;; connection timed out` against a perfectly healthy server. Use th
 async spawn. Related: `start_netget_server` returns when startup is *parsed*, not
 when the socket is bound.
 
+## Wave 4/5 — cut short by a second session limit, work preserved
+
+Six agents were killed mid-task on 11 September. **Every one had committed real fixes first**,
+and those were merged; each agent's final in-flight edits were preserved by the supervising
+session as a `wip(...)` commit at the tip of its branch and **deliberately excluded from the
+merge**. The precedent for that caution is the previous wave, whose `wip` commit contained a
+helper referencing a function that existed nowhere and could never have compiled.
+
+| batch | branch | merged | unverified WIP left on branch |
+|---|---|---|---|
+| core-transport | `worktree-agent-a3e18a8987266e2bc` | 4 commits | `00883c69` |
+| netmgmt | `worktree-agent-a49600538a485057e` | 2 commits | `6293ce0c` |
+| chat | `worktree-agent-a48f49cf447d93de7` | 1 commit | `eb6cc6bb` |
+| tls-vpn | `worktree-agent-a357b18f2ed735606` | 4 commits | `dd7f5d41` |
+| web-aux | `worktree-agent-a09462d7c51094ccf` | 8 commits | `7d408691` |
+| auth-web | `worktree-agent-aa3a5bf60938d9bda` | **none** | `07b85160` — all its work is unverified |
+
+**To resume**: `git merge --no-ff worktree-agent-<id>` picks up the WIP too, so verify it first.
+`auth-web` should simply be re-run — it committed nothing, and it is the family containing the
+OAuth2 fail-open that `CLAUDE.md` names as the worst defect in the codebase's history.
+
+**The stack-overflow class has now been found in four protocols**: AMQP, NATS and STOMP in the
+messaging family, and SNMP's BER decoder here — *"one 60 KB datagram kills the whole process"*.
+It is worth checking any remaining decoder that can call itself.
+
 ## The 39 batches
 
 ```
