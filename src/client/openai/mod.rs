@@ -56,9 +56,13 @@ impl OpenAiClient {
             .transpose()?
             .flatten();
 
+        // The endpoint comes from `remote_addr` and from nowhere else, and it is resolved
+        // here so there is exactly one place to read. See `api_base_for`.
+        let api_base = api_base_for(&remote_addr)?;
+
         info!(
-            "OpenAI client {} initializing with API endpoint: {}",
-            client_id, remote_addr
+            "OpenAI client {} initializing with API base: {}",
+            client_id, api_base
         );
 
         // Store configuration in protocol_data
@@ -69,8 +73,7 @@ impl OpenAiClient {
                     "default_model".to_string(),
                     serde_json::json!(default_model),
                 );
-                client
-                    .set_protocol_field("api_endpoint".to_string(), serde_json::json!(remote_addr));
+                client.set_protocol_field("api_endpoint".to_string(), serde_json::json!(api_base));
                 if let Some(org) = organization {
                     client.set_protocol_field("organization".to_string(), serde_json::json!(org));
                 }
@@ -83,7 +86,7 @@ impl OpenAiClient {
             .await;
         Log::new(Some(&status_tx)).info(format!(
             "OpenAI client {} ready (endpoint: {})",
-            client_id, remote_addr
+            client_id, api_base
         ));
         let _ = status_tx.send("__UPDATE_UI__".to_string());
 
@@ -109,7 +112,7 @@ impl OpenAiClient {
             let event = Event::new(
                 &OPENAI_CLIENT_CONNECTED_EVENT,
                 serde_json::json!({
-                    "api_endpoint": remote_addr.clone(),
+                    "api_endpoint": api_base.clone(),
                 }),
             );
 
@@ -284,7 +287,7 @@ impl OpenAiClient {
                 let max_tokens = data
                     .get("max_tokens")
                     .and_then(|v| v.as_u64())
-                    .map(|n| n as u32);
+                    .and_then(|n| u32::try_from(n).ok());
                 let functions = data.get("functions").cloned().filter(|v| !v.is_null());
                 let model_label = model.clone().unwrap_or_else(|| "<default>".to_string());
 
@@ -601,7 +604,7 @@ impl OpenAiClient {
                             data.get("temperature").and_then(|v| v.as_f64()),
                             data.get("max_tokens")
                                 .and_then(|v| v.as_u64())
-                                .map(|n| n as u32),
+                                .and_then(|n| u32::try_from(n).ok()),
                             data.get("functions").cloned().filter(|v| !v.is_null()),
                             &app_state,
                             &status_tx,
@@ -680,19 +683,13 @@ impl OpenAiClient {
             client_id, model_to_use
         );
 
-        // Build OpenAI client
-        use async_openai::{types::*, Client as OpenAiApiClient};
+        use async_openai::types::*;
 
-        let mut config = async_openai::config::OpenAIConfig::new().with_api_key(&api_key);
-
-        // Override API base if custom endpoint is provided
-        if let Some(endpoint) = api_endpoint {
-            if !endpoint.is_empty() && endpoint != "https://api.openai.com/v1" {
-                config = config.with_api_base(&endpoint);
-            }
-        }
-
-        let openai_client = OpenAiApiClient::with_config(config);
+        let api_endpoint = api_endpoint.context(
+            "No API endpoint recorded for this client; refusing rather than falling back to \
+             api.openai.com",
+        )?;
+        let openai_client = api_client(&api_endpoint, &api_key).await?;
 
         // Parse messages array
         let messages_array = messages.as_array().context("Messages must be an array")?;
@@ -748,7 +745,11 @@ impl OpenAiClient {
         }
 
         if let Some(tokens) = max_tokens {
-            request.max_tokens(tokens as u16);
+            // `tokens as u16` was the second of two narrowing casts on this value:
+            // `max_tokens: 70000` reached the wire as 4464, which reads as a deliberate
+            // budget rather than as the request the model actually made. The field is a
+            // `u32`; the value is range-checked in `execute_action` before it gets here.
+            request.max_tokens(tokens);
         }
 
         // Add function calling support
@@ -897,18 +898,13 @@ impl OpenAiClient {
             client_id, model_to_use
         );
 
-        // Build OpenAI client
-        use async_openai::{types::*, Client as OpenAiApiClient};
+        use async_openai::types::*;
 
-        let mut config = async_openai::config::OpenAIConfig::new().with_api_key(&api_key);
-
-        if let Some(endpoint) = api_endpoint {
-            if !endpoint.is_empty() && endpoint != "https://api.openai.com/v1" {
-                config = config.with_api_base(&endpoint);
-            }
-        }
-
-        let openai_client = OpenAiApiClient::with_config(config);
+        let api_endpoint = api_endpoint.context(
+            "No API endpoint recorded for this client; refusing rather than falling back to \
+             api.openai.com",
+        )?;
+        let openai_client = api_client(&api_endpoint, &api_key).await?;
 
         // Parse input (can be string or array)
         let input_value = if let Some(text) = input.as_str() {
@@ -980,6 +976,102 @@ impl OpenAiClient {
             }
         }
     }
+}
+
+/// How long one OpenAI API call may take, end to end.
+///
+/// `async-openai` builds a `reqwest::Client::new()` when it is not given one, and that has no
+/// timeout at all. The injected-command loop awaits each request in turn, so an endpoint that
+/// accepts the connection and never answers used to wedge the dashboard's `[ send ]` for this
+/// client for the life of the process.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Turn the address the operator named into an API base URL, or refuse.
+///
+/// This is the only place the endpoint is decided. It used to be decided twice and by
+/// omission: the config was left at `async-openai`'s default unless `remote_addr` was
+/// non-empty *and* not literally `https://api.openai.com/v1`, so an empty or unrecorded
+/// address meant the vendor default — `https://api.openai.com/v1` — signed with whatever key
+/// the client was given. That is the DynamoDB shape from `CLAUDE.md`: a client that loses its
+/// target and reaches the real service instead of failing. Talking to real OpenAI is a
+/// legitimate thing to ask this client for; arriving there because nobody said otherwise is
+/// not.
+///
+/// A scheme is left as given. Without one, `https://` is assumed except for a loopback host,
+/// where `http://` is the only thing that could be meant — the same normalisation the Ollama
+/// client does for the same reason, that `reqwest` needs an absolute URL and a bare
+/// `host:port` fails every request with "relative URL without a base".
+///
+/// The base must include the version path (`/v1`); `async-openai` appends only the operation
+/// (`/chat/completions`) to it.
+fn api_base_for(remote_addr: &str) -> Result<String> {
+    let addr = remote_addr.trim();
+    if addr.is_empty() {
+        return Err(anyhow::anyhow!(
+            "OpenAI client needs an endpoint in remote_addr (for example \
+             https://api.openai.com/v1 or http://127.0.0.1:8080/v1); refusing to fall back to \
+             api.openai.com"
+        ));
+    }
+    if addr.contains("://") {
+        return Ok(addr.to_string());
+    }
+
+    let host = crate::llm::ollama_client::host_of(addr);
+    let loopback = host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+    Ok(format!(
+        "{}{}",
+        if loopback { "http://" } else { "https://" },
+        addr
+    ))
+}
+
+/// An `async-openai` client for `api_base`, over a `reqwest` client built once per endpoint.
+///
+/// `Client::with_config` makes its own `reqwest::Client::new()`, so every request used to pay
+/// for building the rustls stack and loading the platform root store — on macOS a synchronous
+/// keychain read through Security.framework, on the async runtime, parking a tokio worker.
+/// It also meant no timeout and no resolver override, so a client pointed at a literal IP
+/// performed a real `getaddrinfo` per request (measured at 8.25 s under concurrency).
+///
+/// Keyed by endpoint because the resolver override is per-host. The `Mutex` holds nothing
+/// across an await.
+async fn api_client(
+    api_base: &str,
+    api_key: &str,
+) -> Result<async_openai::Client<async_openai::config::OpenAIConfig>> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static CLIENTS: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+    let cache = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+
+    let http = match cache.lock().ok().and_then(|map| map.get(api_base).cloned()) {
+        Some(client) => client,
+        None => {
+            let owned = api_base.to_string();
+            let built = tokio::task::spawn_blocking(move || {
+                crate::llm::ollama_client::client_for_endpoint_with_timeout(&owned, REQUEST_TIMEOUT)
+            })
+            .await
+            .context("OpenAI HTTP client build task panicked")?;
+            match cache.lock() {
+                Ok(mut map) => map.entry(api_base.to_string()).or_insert(built).clone(),
+                Err(_) => built,
+            }
+        }
+    };
+
+    // The key is set on the config and nowhere else: it must not reach a log line, an event
+    // or the status stream. `async-openai` puts it in the Authorization header itself.
+    let config = async_openai::config::OpenAIConfig::new()
+        .with_api_key(api_key)
+        .with_api_base(api_base);
+    Ok(async_openai::Client::with_config(config).with_http_client(http))
 }
 
 /// The `openai_response_received` payload for a request that failed. Kept next to the

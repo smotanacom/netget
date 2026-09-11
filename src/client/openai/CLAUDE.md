@@ -117,7 +117,42 @@ LLM processes response
 - **`api_key`** (required): OpenAI API key (sk-...)
 - **`default_model`** (optional): Default model to use (default: gpt-3.5-turbo)
 - **`organization`** (optional): OpenAI organization ID
-- **`api_endpoint`** (optional in remote_addr): Custom API endpoint (default: https://api.openai.com/v1)
+- **`api_endpoint`**: not a startup parameter. The API base is `remote_addr`, resolved once by
+  `api_base_for` and stored in `protocol_data`. There is **no default**: an empty
+  `remote_addr` refuses to connect.
+
+  That refusal is the point. `async-openai`'s config defaults to `https://api.openai.com/v1`,
+  and this client used to leave the config alone unless `remote_addr` was non-empty *and* not
+  literally that string — so an unrecorded address meant presenting the key to real OpenAI.
+  It is the DynamoDB shape from the root `CLAUDE.md`: a client that loses its target and
+  reaches the real service instead of failing. Pointing this client at real OpenAI is a
+  legitimate request; arriving there because nobody said otherwise is not.
+
+  A scheme is used as given. Without one, `https://` is assumed except for a loopback host,
+  where `http://` is the only thing that could be meant — `reqwest` needs an absolute URL, and
+  a bare `api.openai.com:443` failed every request rather than doing anything useful. The base
+  must include the version path; `async-openai` appends only the operation to it.
+
+### The API key
+
+Read from `startup_params`, stored in `protocol_data`, and handed to `OpenAIConfig::with_api_key`.
+It is not interpolated into any log line, event payload or status message, and `organization`
+is treated the same way. Nothing on the response path echoes a request header.
+
+### Bounds on model-supplied numbers
+
+`max_tokens` had **two** narrowing casts between the model and the wire — `as u32` in the
+executor and `as u16` where the request was built — so `max_tokens: 70000` was sent as 4464.
+A budget silently replaced by a smaller one reads on the wire as a deliberate choice, which is
+the worst way for a cast to fail. It is now range-checked (1 to 1,000,000) and refused out of
+range, and `temperature` is checked against OpenAI's own 0.0-2.0 and refused if not finite.
+
+### Timeout
+
+300s per call. `async-openai` builds a `reqwest::Client::new()` when not given one, which has
+no timeout at all, and the injected-command loop awaits each request in turn — so an endpoint
+that accepted the connection and never answered wedged the dashboard's `[ send ]` for this
+client for the life of the process.
 
 ## Implementation Details
 
