@@ -339,10 +339,20 @@ impl TurnProtocol {
 
     /// Execute TURN error response
     fn execute_send_error_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let error_code = action
+        // Range-check before narrowing: `65536 as u16` is 0, which encodes an ERROR-CODE
+        // attribute with class 0 - not an error at all. RFC 8489 section 14.8 encodes the
+        // code as a class/number pair, so only 300-699 is representable.
+        let error_code_raw = action
             .get("error_code")
             .and_then(|v| v.as_u64())
-            .unwrap_or(400) as u16;
+            .unwrap_or(400);
+        if !(300..700).contains(&error_code_raw) {
+            return Err(anyhow::anyhow!(
+                "error_code {error_code_raw} is outside the 300-699 range RFC 8489 section \
+                 14.8 encodes as a class/number pair"
+            ));
+        }
+        let error_code = error_code_raw as u16;
 
         let reason = action
             .get("reason")

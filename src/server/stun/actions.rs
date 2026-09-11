@@ -243,10 +243,21 @@ impl StunProtocol {
         // than substituting a default. Silently answering 400 Bad Request when
         // the model asked for 401 Unauthorized would put a different decision on
         // the wire from the one it made, and hide the malformed action.
-        let error_code = action
+        let error_code_raw = action
             .get("error_code")
             .and_then(|v| v.as_u64())
-            .context("Missing or non-numeric 'error_code' field")? as u16;
+            .context("Missing or non-numeric 'error_code' field")?;
+
+        // Range-check *before* narrowing. `65836 as u16` is 300, which passes the check below
+        // and is then indistinguishable from a model that legitimately asked for 300 - the
+        // wrap has to be caught while the original value is still visible.
+        if !(300..700).contains(&error_code_raw) {
+            return Err(anyhow::anyhow!(
+                "error_code {error_code_raw} is outside the 300-699 range RFC 8489 section \
+                 14.8 encodes as a class/number pair"
+            ));
+        }
+        let error_code = error_code_raw as u16;
 
         if !(300..700).contains(&error_code) {
             return Err(anyhow::anyhow!(
