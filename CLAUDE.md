@@ -1201,6 +1201,29 @@ Read before assuming a subsystem is sound:
   idle timeout. `tests/server/nfs/dos_guard_test.rs` covers both paths from the wire, and both
   bounds were verified by removing them.
 
+- **`xmlrpc` 0.15 can be stack-overflowed by the reply to the first call, and `Transport` is
+  the seam that fixes it.** `Parser::parse_value` → `parse_value_inner` → `parse_value`
+  recurses with no depth counter and the crate caps neither body nor nesting, so ~20 bytes per
+  `<value><array><data>` level buys a `SIGSEGV` against the guard page — not a panic, so
+  `spawn_blocking` cannot contain it and the whole process dies.
+
+  `src/client/xmlrpc/CLAUDE.md` recorded this as unfixable because "`Request::call` with a
+  custom `Transport` takes a `reqwest` 0.11 `RequestBuilder`". **That is a provided impl of the
+  trait, not its signature.** `xmlrpc::Transport` is public with an associated `Stream: Read`
+  and anything may implement it. Reading a provided impl as the interface is the mistake worth
+  remembering — it held a one-line-away fix shut for months. NetGet now serialises with
+  `write_as_xml`, fetches with its own reqwest 0.12 client, refuses at 8 MiB while streaming,
+  measures element depth with quick-xml and refuses past 256, then hands the crate a
+  `PrefetchedTransport` over the screened bytes so parsing and fault handling are unchanged.
+
+  The body cap alone is **not** sufficient and it is worth knowing why: at ~20 bytes a level
+  even 1 MiB buys ~50 000 frames. Depth is the guard; size is the backstop.
+  `tests/client/xmlrpc/response_guard_test.rs` was verified by removing the depth bound, at
+  which point the test binary aborts with `fatal runtime error: stack overflow` rather than
+  failing — the same way the AMQP field-table bound was checked. Its second half asserts a
+  three-level reply still parses, because a guard that refused everything would pass the first
+  assertion.
+
 - **Fail-open defaults are the most dangerous pattern in this codebase.** When the LLM returns
   nothing usable, a protocol must not fall through to a permissive default. OAuth2 did: no
   action meant a hardcoded authorization code, a hardcoded access token, and introspection
