@@ -122,9 +122,10 @@ fn port_zero_means_unknown_until_started() {
 
 #[test]
 fn off_network_protocols_get_an_explanation_instead_of_a_command() {
-    // `nfc` is deliberately absent: only its *client* is off-network. See the pair of tests
-    // below — this list is for protocols where neither role touches a socket.
-    for name in ["USB-Keyboard", "bluetooth_ble_heart_rate", "pty"] {
+    // `nfc` and the USB *servers* are deliberately absent: both speak a real protocol over a
+    // real socket. See the tests below — this list is for protocols where nothing NetGet runs
+    // touches one.
+    for name in ["bluetooth_ble_heart_rate", "pty", "stdio"] {
         let plan = CapturePlan::build(server(name, "", 0), Platform::Linux);
         assert_eq!(plan.wire.transport, Transport::NotNetwork, "{name}");
         assert_eq!(plan.wireshark_command(), None, "{name}");
@@ -289,4 +290,88 @@ fn the_row_is_a_wireshark_action_on_servers_and_clients() {
     assert!(rows
         .iter()
         .any(|r| matches!(r.node, NodeId::Action(_, RowAction::Wireshark))));
+}
+
+/// The six USB servers are plain TCP listeners speaking USB/IP, and Wireshark has dissected it
+/// since 2.4. They used to inherit the nusb *client's* off-network answer because the table
+/// matched on the `usb` prefix alone — so the modal told the operator a capture was possible
+/// and handed over nothing to run. usbmon is not the alternative: no kernel enumerates these
+/// devices, so it cannot see them at all.
+#[test]
+fn usb_servers_speak_usbip_over_tcp_and_get_a_real_command() {
+    for name in ["USB-Keyboard", "usb_msc", "usb-fido2", "usb_smartcard"] {
+        let plan = CapturePlan::build(server(name, "127.0.0.1", 3240), Platform::Linux);
+
+        assert_eq!(plan.wire.transport, Transport::Tcp, "{name}");
+        assert_eq!(plan.capture_filter, "tcp port 3240", "{name}");
+        assert_eq!(
+            plan.decode_as.as_deref(),
+            Some("tcp.port==3240,usbip"),
+            "{name}"
+        );
+    }
+}
+
+/// The bare `usb` protocol is the nusb client, which reaches a real device through the OS.
+/// That one genuinely has nothing on a network.
+#[test]
+fn the_bare_usb_client_stays_off_network() {
+    let plan = CapturePlan::build(
+        CaptureTarget::client("usb", Some("127.0.0.1:3240")),
+        Platform::Linux,
+    );
+    assert_eq!(plan.wire.transport, Transport::NotNetwork);
+    assert_eq!(plan.wireshark_command(), None);
+}
+
+/// The redundancy family rides no port, so the entry is a BPF plus a display filter and never
+/// a decode-as — tshark already maps ip.proto 112, llc.dsap 0x42, ethertype 0x88cc,
+/// llc.cisco_pid 0x2000 and udp.port 1985 to these dissectors by default.
+#[test]
+fn the_redundancy_family_filters_at_the_link_layer_with_no_decode_as() {
+    for (name, filter, display) in [
+        ("vrrp", "ip proto 112", "vrrp"),
+        ("hsrp", "udp port 1985", "hsrp"),
+        ("stp", "ether dst 01:80:c2:00:00:00", "stp"),
+        ("lldp", "ether proto 0x88cc", "lldp"),
+        ("cdp", "ether dst 01:00:0c:cc:cc:cc", "cdp"),
+    ] {
+        let plan = CapturePlan::build(server(name, "", 0), Platform::Linux);
+
+        assert_eq!(plan.capture_filter, filter, "{name}");
+        assert_eq!(plan.display_filter, display, "{name}");
+        assert_eq!(plan.decode_as, None, "{name} needs no decode-as clause");
+    }
+}
+
+/// CARP shares IP protocol 112 with VRRP and is the default dissector for nothing, so without
+/// an explicit clause a CARP packet is dissected as VRRP — and a healthy CARP host then reads
+/// as a VRRPv2 master resigning. The note has to say so, because `wire_for` cannot see which
+/// variant the server was started with.
+#[test]
+fn the_vrrp_entry_warns_that_carp_needs_its_own_decode_as() {
+    let plan = CapturePlan::build(server("vrrp", "", 0), Platform::Linux);
+
+    assert!(
+        plan.notes
+            .iter()
+            .any(|n| n.contains("carp") && n.contains("ip.proto==112")),
+        "expected the CARP clause in the notes: {:?}",
+        plan.notes
+    );
+}
+
+/// The three link-layer filters name an Ethernet address or EtherType, which BPF rejects on a
+/// DLT_NULL loopback device. That is the `isis`/`arp` trap, and an operator who is not told
+/// gets "expression rejects all packets" with no idea why.
+#[test]
+fn the_ethernet_only_filters_say_they_will_not_work_on_loopback() {
+    for name in ["stp", "lldp", "cdp"] {
+        let plan = CapturePlan::build(server(name, "", 0), Platform::Linux);
+        assert!(
+            plan.notes.iter().any(|n| n.contains("loopback")),
+            "{name} must warn about the loopback rejection: {:?}",
+            plan.notes
+        );
+    }
 }

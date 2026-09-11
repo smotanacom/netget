@@ -158,6 +158,22 @@ PC/SC call is made and no reader is involved - so the whole exchange is capturab
 loopback. Wireshark has no vpcd dissector, so the length-prefixed APDUs appear as raw bytes; \
 read them in the hex pane.";
 
+const L2_ETHER_ONLY_NOTE: &str = "This filter names an Ethernet address or EtherType, which \
+BPF rejects on a loopback device (DLT_NULL on macOS) - the same trap as `isis` and `arp`. \
+Capture on a real NIC, or on the feth pair. The UDP test transport is not a way round it: \
+neither `eth_withoutfcs` nor these link-layer names is a valid `udp.port` decode-as target, so \
+those frames cannot be dissected at all.";
+
+const CARP_NOTE: &str = "If this server is running the `carp` variant, add `-d \
+ip.proto==112,carp`. CARP shares IP protocol 112 with VRRP and Wireshark registers `carp` as \
+the default for nothing, so without that clause a CARP packet is dissected as VRRP - and a \
+healthy CARP host then reads as a VRRPv2 master resigning.";
+
+const USBIP_NOTE: &str = "NetGet's USB servers are plain TCP listeners speaking USB/IP, so the \
+whole session is capturable on the port NetGet chose. This is strictly better than usbmon: no \
+kernel ever enumerates these devices, so usbmon cannot see them at all. The dissector handles \
+OP_REQ_IMPORT and USBIP_CMD_SUBMIT framing and the class payloads (CCID, HID, MSC).";
+
 const ARP_LOOPBACK_NOTE: &str = "`arp` is an Ethernet-only BPF keyword and is rejected on \
     loopback, which is DLT_NULL on macOS. Capture on a real interface; ARP is not carried on lo0 \
     at all, so there would be nothing to see there anyway. Same trap as isis.";
@@ -313,6 +329,24 @@ pub fn wire_for(protocol: &str) -> Wire {
         // `isis` is an Ethernet-only BPF keyword and is rejected outright on a
         // loopback device, so let the display filter do the selecting.
         "isis" => raw("", "isis"),
+        // The redundancy and discovery family. None of the five needs a `-d` clause: tshark's
+        // own defaults already map ip.proto 112, llc.dsap 0x42, ethertype 0x88cc,
+        // llc.cisco_pid 0x2000 and udp.port 1985 to these dissectors, so `raw(bpf, display)`
+        // is the right shape even for HSRP, which rides UDP.
+        //
+        // Only the first two can be captured on loopback; the three that name an Ethernet
+        // address or EtherType are rejected there.
+        "vrrp" => with_note(raw("ip proto 112", "vrrp"), CARP_NOTE),
+        "hsrp" => raw("udp port 1985", "hsrp"),
+        "stp" => with_note(
+            raw("ether dst 01:80:c2:00:00:00", "stp"),
+            L2_ETHER_ONLY_NOTE,
+        ),
+        "lldp" => with_note(raw("ether proto 0x88cc", "lldp"), L2_ETHER_ONLY_NOTE),
+        "cdp" => with_note(
+            raw("ether dst 01:00:0c:cc:cc:cc", "cdp"),
+            L2_ETHER_ONLY_NOTE,
+        ),
         "datalink" => raw("", ""),
         // ---- not on a network --------------------------------------------
         "pty" | "stdio" | "named_pipe" | "socket_file" | "ssh_agent" => offline(LOCAL_NOTE),
@@ -325,6 +359,16 @@ pub fn wire_for(protocol: &str) -> Wire {
              USB traffic can be captured with usbmon and dissected as `usbccid`; on macOS \
              there is no equivalent and the APDUs are not observable.",
         ),
+        // The six USB *servers* are plain TCP listeners speaking USB/IP. They inherited the
+        // client's answer purely because `starts_with("usb")` cannot tell the two apart, so
+        // the modal told the operator a capture was possible and then handed over nothing to
+        // run. `tcp.port==N,usbip` is accepted by this machine's tshark (checked, as the rest
+        // of this table's names were).
+        "usb_keyboard" | "usb_mouse" | "usb_serial" | "usb_msc" | "usb_fido2" | "usb_smartcard" => {
+            with_note(tcp("usbip"), USBIP_NOTE)
+        }
+        // The bare `usb` feature is the nusb *client*, which talks to a real device through
+        // the OS and genuinely is off-network.
         n if n.starts_with("usb") => offline(USB_NOTE),
         n if n.starts_with("bluetooth") => offline(BLE_NOTE),
         _ => PLAIN_TCP,
