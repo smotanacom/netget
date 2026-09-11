@@ -99,24 +99,18 @@ impl WebRtcClientProtocol {
 // Implement Protocol trait (common functionality)
 impl Protocol for WebRtcClientProtocol {
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![
-            ParameterDefinition {
-                name: "ice_servers".to_string(),
-                description: "STUN/TURN servers for ICE (default: Google STUN)".to_string(),
-                type_hint: "array".to_string(),
-                required: false,
-                example: json!(["stun:stun.l.google.com:19302", "turn:turn.example.com:3478"]),
-            },
-            ParameterDefinition {
-                name: "signaling_mode".to_string(),
-                description:
-                    "Signaling mode: 'manual' (default) or 'websocket' with URL and peer ID"
-                        .to_string(),
-                type_hint: "string".to_string(),
-                required: false,
-                example: json!("manual"),
-            },
-        ]
+        vec![ParameterDefinition {
+            name: "ice_servers".to_string(),
+            description: "STUN/TURN servers for ICE. Default: NONE — host candidates \
+                              only, which is what a loopback or LAN peer uses. Set this to \
+                              reach anything behind NAT; the default used to be Google's \
+                              public STUN server, so merely starting a client talked to a \
+                              third party."
+                .to_string(),
+            type_hint: "array".to_string(),
+            required: false,
+            example: json!(["stun:stun.example.com:3478", "turn:turn.example.com:3478"]),
+        }]
     }
 
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -282,28 +276,28 @@ impl Protocol for WebRtcClientProtocol {
         "WebRTC"
     }
 
+    /// The events this client raises — **the same `LazyLock` statics it actually
+    /// emits**, not fresh copies.
+    ///
+    /// This used to build four inline `EventType`s whose `example` was
+    /// `{"type": "placeholder", …}` and which carried no parameters, while the
+    /// statics above (which do carry parameters) were the ones emitted. Three
+    /// consequences, all invisible:
+    ///
+    /// * `placeholder` is not an action any executor accepts, so the one worked
+    ///   example per event was unusable.
+    /// * The parameter lists were not shown here at all.
+    /// * `webrtc_connected` was declared and emitted by **nothing**. Because it was
+    ///   inline rather than a `&CONST` emit site, `event_emit_sites_test` — which
+    ///   scans for constants — could not see it, so a never-emitted event was still
+    ///   offered to operators as a routing pattern. It is removed rather than
+    ///   relabelled: it was described as "(deprecated)", but nothing ever fired it,
+    ///   so there is no deprecation, only an absence.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "webrtc_connected",
-                "Triggered when WebRTC data channel opens (deprecated)",
-                json!({"type": "placeholder", "event_id": "webrtc_connected"}),
-            ),
-            EventType::new(
-                "webrtc_channel_opened",
-                "Triggered when a WebRTC data channel opens",
-                json!({"type": "placeholder", "event_id": "webrtc_channel_opened"}),
-            ),
-            EventType::new(
-                "webrtc_message_received",
-                "Triggered when a message is received",
-                json!({"type": "placeholder", "event_id": "webrtc_message_received"}),
-            ),
-            EventType::new(
-                "webrtc_signaling_connected",
-                "Triggered when connected to signaling server (WebSocket mode)",
-                json!({"type": "placeholder", "event_id": "webrtc_signaling_connected"}),
-            ),
+            WEBRTC_CLIENT_CHANNEL_OPENED_EVENT.clone(),
+            WEBRTC_CLIENT_MESSAGE_RECEIVED_EVENT.clone(),
+            WEBRTC_CLIENT_SIGNALING_CONNECTED_EVENT.clone(),
         ]
     }
 

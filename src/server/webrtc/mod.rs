@@ -58,7 +58,25 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::{
+    accept_async_with_config,
+    tungstenite::{protocol::WebSocketConfig, Message},
+};
+
+/// Longest a peer may take to complete the signalling WebSocket upgrade.
+const SIGNALLING_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Largest signalling frame accepted. One SDP offer or answer; a large real one
+/// is a few kilobytes.
+const SIGNALLING_MAX_MESSAGE_BYTES: usize = 256 * 1024;
+
+/// Largest number of data-channel events queued behind one in-flight LLM call.
+///
+/// Each queued event costs its own model round-trip when it is drained, so a peer
+/// flooding the channel during a slow call both grows this without bound and buys
+/// itself an unbounded number of calls. Dropping the oldest keeps the newest
+/// traffic, which is what a conversation cares about.
+const MAX_QUEUED_EVENTS: usize = 64;
 use tracing::{debug, error, info, trace, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
@@ -202,6 +220,7 @@ impl WebRtcServerData {
         peer_id: PeerId,
         offer: RTCSessionDescription,
         connection_id: ConnectionId,
+        signalling_addr: SocketAddr,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
@@ -293,6 +312,7 @@ impl WebRtcServerData {
                             msg.data.len(),
                             ctx.peer_id
                         );
+                        ctx.record_traffic(msg.data.len() as u64, 0).await;
                         ctx.handle_peer_event(PeerEvent::Message {
                             text,
                             is_binary: !msg.is_string,
@@ -340,9 +360,16 @@ impl WebRtcServerData {
         let unspecified = SocketAddr::from(([0, 0, 0, 0], 0));
         let conn_state = ServerConnectionState {
             id: connection_id,
-            // WebRTC is peer-to-peer over ICE; there is no single stable remote address, so
-            // the signalling peer's address is recorded by the caller instead.
-            remote_addr: unspecified,
+            // WebRTC is peer-to-peer over ICE, so there is no single stable remote
+            // address for the *media* path; the signalling socket's address is the
+            // one thing that is both stable and true, so it is what the dashboard
+            // and the access log show.
+            //
+            // This comment used to say the address "is recorded by the caller
+            // instead". No caller did: the row read 0.0.0.0:0 for the life of
+            // every peer. A comment asserting that something happens elsewhere is
+            // worth checking — that is the whole reason this one survived.
+            remote_addr: signalling_addr,
             local_addr: unspecified,
             bytes_sent: 0,
             bytes_received: 0,
@@ -462,6 +489,20 @@ impl PeerCtx {
                     }
                     ConnectionState::Processing | ConnectionState::Accumulating => {
                         peer.state = ConnectionState::Accumulating;
+                        // Bounded: this was an unbounded `Vec` fed by whatever the
+                        // peer sends while one LLM call is in flight, and each
+                        // entry later costs its own round-trip. Dropping the
+                        // oldest keeps the newest traffic, which is what a
+                        // conversation cares about, and the WARN says so rather
+                        // than losing messages silently.
+                        if peer.queued.len() >= MAX_QUEUED_EVENTS {
+                            peer.queued.remove(0);
+                            warn!(
+                                "WebRTC peer {} queued more than {} events during one LLM \
+                                 call; dropping the oldest",
+                                self.peer_id, MAX_QUEUED_EVENTS
+                            );
+                        }
                         peer.queued.push(event.clone());
                         false
                     }
@@ -572,6 +613,26 @@ impl PeerCtx {
         }
     }
 
+    /// Add one data-channel message to this connection's counters.
+    ///
+    /// Nothing called `update_connection_stats` here, so the rail's `↓/↑` columns
+    /// stayed at the zeros the connection was registered with for the life of
+    /// every peer — a live data channel was indistinguishable from an idle one.
+    /// The 10-second idle sweep is not a hazard: `connectionless()` is correctly
+    /// not declared, so it never looks at these connections.
+    async fn record_traffic(&self, received: u64, sent: u64) {
+        self.app_state
+            .update_connection_stats(
+                self.server_id,
+                self.connection_id,
+                (received > 0).then_some(received),
+                (sent > 0).then_some(sent),
+                (received > 0).then_some(1),
+                (sent > 0).then_some(1),
+            )
+            .await;
+    }
+
     /// Write one text message on this peer's data channel, if it has an open one.
     async fn send_on_channel(&self, text: String) {
         let channel = {
@@ -582,7 +643,10 @@ impl PeerCtx {
         };
         match channel {
             Some(channel) => match channel.send_text(text).await {
-                Ok(n) => trace!("WebRTC sent {} bytes to peer {}", n, self.peer_id),
+                Ok(n) => {
+                    trace!("WebRTC sent {} bytes to peer {}", n, self.peer_id);
+                    self.record_traffic(0, n as u64).await;
+                }
                 Err(e) => error!("WebRTC failed to send to peer {}: {}", self.peer_id, e),
             },
             None => warn!(
@@ -731,9 +795,36 @@ impl WebRtcServer {
         llm_client: OllamaClient,
         server_id: ServerId,
     ) -> Result<()> {
-        let ws = accept_async(stream)
-            .await
-            .context("WebSocket handshake failed")?;
+        // Two bounds, both absent before and both reachable by anyone who can open
+        // a TCP connection — `max_peers` gates *accepted offers*, so it bounds
+        // neither of these:
+        //
+        // * The handshake gets a deadline. A socket that connects and never sends
+        //   an HTTP upgrade parked inside `accept_async` forever, holding a task
+        //   and an fd.
+        // * Frames get a size limit. Bare `accept_async` takes tungstenite's
+        //   defaults of 64 MiB per message and 16 MiB per frame, so a single
+        //   pre-admission peer could make the server buffer 64 MiB. Signalling
+        //   here carries one SDP offer or answer; the largest real one is a few
+        //   kilobytes, so 256 KiB is generous by two orders of magnitude.
+        let config = WebSocketConfig {
+            max_message_size: Some(SIGNALLING_MAX_MESSAGE_BYTES),
+            max_frame_size: Some(SIGNALLING_MAX_MESSAGE_BYTES),
+            ..Default::default()
+        };
+        let ws = tokio::time::timeout(
+            SIGNALLING_HANDSHAKE_TIMEOUT,
+            accept_async_with_config(stream, Some(config)),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "WebSocket handshake from {} did not complete within {:?}",
+                remote_addr,
+                SIGNALLING_HANDSHAKE_TIMEOUT
+            )
+        })?
+        .context("WebSocket handshake failed")?;
         debug!(
             "WebRTC signalling connection established with {}",
             remote_addr
@@ -908,6 +999,7 @@ impl WebRtcServer {
                             peer_id.clone(),
                             offer,
                             connection_id,
+                            remote_addr,
                             llm_client.clone(),
                             Arc::clone(&app_state),
                             status_tx.clone(),

@@ -183,8 +183,14 @@ fn offer_actions() -> Vec<ActionDefinition> {
             parameters: vec![Parameter {
                 name: "reason".to_string(),
                 type_hint: "string".to_string(),
-                description: "Why the peer is being refused".to_string(),
-                required: true,
+                description: "Why the peer is being refused. Optional: a refusal with no \
+                              reason is still a refusal, and the peer gets a generic one. \
+                              This was declared required while the executor defaulted it, \
+                              which is the wrong half of that pair to fix — refusing to \
+                              execute a rejection because it lacked a sentence would turn a \
+                              model's denial into an error, and an error is not a denial."
+                    .to_string(),
+                required: false,
             }],
             example: json!({
                 "type": "reject_offer",

@@ -16,11 +16,11 @@ A Binding response is **fully determined by the request** — reflect the source
 XOR-MAPPED-ADDRESS and echo the transaction ID — so **by default the server answers statically
 with no LLM round-trip.** The model is consulted only when the operator **opts in**: a non-empty
 server instruction, or a per-event handler configured for the binding event (gated by
-`should_call_llm` in `mod.rs`, which is `has_instruction || has_handler`). Opt-in is how you ask
-for non-standard behaviour such as lying about the mapped address. Even in opt-in mode, if the
-LLM call fails the server **falls back to the correct static Binding response** rather than
-erroring. See `send_static_binding_response` in `mod.rs`. The `## LLM Integration` section below
-therefore describes the opt-in path, not the default one.
+`operator_wants_dynamic` in `mod.rs`, which is `has_instruction || has_handler`). Opt-in is how
+you ask for non-standard behaviour such as lying about the mapped address. Even in opt-in mode,
+if the LLM call fails the server **falls back to the correct static Binding response** rather
+than erroring. See `send_static_binding_response` in `mod.rs`. The `## LLM Integration` section
+below therefore describes the opt-in path, not the default one.
 
 ## Library Choices
 
@@ -142,8 +142,13 @@ and the client timed out):
   `peer_addr`)
 - `xor_mapped_address`: true = XOR-MAPPED-ADDRESS (default), false = MAPPED-ADDRESS
 - `software`: Optional SOFTWARE attribute value (default `"NetGet/1.0"`)
-- `message_integrity`: Accepted but **not implemented** - no MESSAGE-INTEGRITY
-  attribute is ever added
+
+There is deliberately **no `message_integrity` parameter**. One used to be declared,
+described to the model as "Include MESSAGE-INTEGRITY attribute", and thrown away by the
+executor — the flag did nothing whichever way it was set. RFC 8489 §14.6 computes that
+attribute over a key derived from a username/realm/password this server neither holds nor
+has any way to obtain, so it could never have been honoured; the parameter is gone rather
+than documented-as-inert, because an inert knob is one the model will keep reaching for.
 
 ### Echoing the transaction ID without an LLM call
 
@@ -212,12 +217,23 @@ Stun {
 
 ### Request Validation Checks
 
-1. **Minimum Length**: At least 20 bytes (header only)
-2. **Magic Cookie**: Bytes 4-7 must be 0x2112A442
-3. **Message Type**: Must be Binding Request (class=0, method=1)
-4. **Transaction ID**: Extract 12 bytes (bytes 8-19)
+`parse_stun_header` in `mod.rs` returns `(transaction_id, message_type, servable)`, and
+`servable` means "this server may answer it", not "this parsed". A datagram must clear all
+of these:
 
-**Invalid Requests**: Silently ignored (no error response sent per RFC 8489).
+1. **Minimum Length**: At least 20 bytes (header only)
+2. **Leading bits**: The top two bits of the message type are zero (RFC 8489 §5). `0b01`
+   there is a TURN ChannelData frame, not STUN.
+3. **Magic Cookie**: Bytes 4-7 must be 0x2112A442
+4. **Declared Length**: A multiple of 4, and `20 + length` must not exceed the datagram
+5. **Message Type**: Must be Binding **Request** (class=0, method=1)
+6. **Transaction ID**: Extract 12 bytes (bytes 8-19)
+
+**Anything else: silently ignored** — no error response, per RFC 8489.
+
+Check 5 is a security control, not pedantry, and it was missing until September 2026: any
+datagram carrying the magic cookie was answered, including a Binding **Response**. See
+`## Security Considerations` below and `tests/server/stun/reflection_test.rs`.
 
 **Message class decoding**: class is `C1<<1 | C0` where C0 is bit 4 and C1 is bit 8
 (RFC 8489 section 5), giving 0 = request, 1 = indication, 2 = success response,
@@ -245,9 +261,13 @@ This only ever affected labelling, since a server receives requests.
 
 ### Current Limitations
 
-1. **IPv4 Only**
-    - IPv6 XOR-MAPPED-ADDRESS not implemented
-    - Could be added (XOR with magic cookie + transaction ID)
+1. **IPv6 is encoded, but untested against a real IPv6 client**
+    - `add_xor_mapped_address_attribute` and `add_mapped_address_attribute` both handle
+      `SocketAddr::V6` (family 0x02, first 4 bytes XORed with the magic cookie and the
+      remaining 12 with the transaction ID, per RFC 8489 §14.2). This section used to say
+      IPv6 "not implemented"; that was wrong, and under-claiming is as misleading as
+      over-claiming.
+    - No test binds an IPv6 socket, so the encoding is asserted by nothing.
 
 2. **No Authentication**
     - RFC 8489 defines MESSAGE-INTEGRITY and USERNAME attributes
@@ -258,9 +278,10 @@ This only ever affected labelling, since a server receives requests.
     - Does not relay traffic (use separate TURN server for relay)
 
 4. **Minimal Attribute Support**
-    - Only XOR-MAPPED-ADDRESS/MAPPED-ADDRESS, SOFTWARE and ERROR-CODE
-    - No FINGERPRINT, REALM, NONCE, etc.
-    - `message_integrity` is accepted by the action and ignored
+    - Only XOR-MAPPED-ADDRESS/MAPPED-ADDRESS, SOFTWARE and ERROR-CODE are **written**
+    - Inbound attributes are not parsed at all: the server reads the 20-byte header and
+      nothing past it, so there is no TLV walk here to drive out of bounds
+    - No FINGERPRINT, MESSAGE-INTEGRITY, REALM, NONCE, and no action can request one
 
 5. **No UDP Retransmission Handling**
     - STUN clients typically retry on timeout
@@ -351,13 +372,33 @@ Start a STUN server on port 3478. Wait 2 seconds before sending each response
 
 ## Security Considerations
 
-**Amplification Attack Potential**: STUN response (~32 bytes) is similar size to request (~20 bytes). Not suitable for
-DDoS amplification.
+**Only a Binding Request is answered.** This is the whole reflection surface, and it was
+wrong until September 2026: `parse_stun_header` returned valid for *any* datagram carrying
+the magic cookie, so a Binding **Response** was answered with another Binding response. Two
+consequences, each reachable with one forged packet:
 
-**IP Spoofing**: UDP allows spoofed source IPs. Server should NOT trust client IP for authentication (none implemented
-anyway).
+- **A response loop.** Spoof one datagram whose source address is a second NetGet STUN
+  server and the two answer each other's answers indefinitely. Nothing in either side
+  breaks the cycle — not a transaction-ID cache, not a rate limit, neither exists.
+- **Reflected amplification.** The reply is bigger than the request, so a spoofed source
+  turns this server into an amplifier aimed at a third party.
 
-**Rate Limiting**: Production deployments should rate-limit per source IP to prevent abuse.
+Both are closed by refusing every class but Request. `tests/server/stun/reflection_test.rs`
+pins it, with a genuine Binding Request as the control — otherwise "no reply" would be
+indistinguishable from an unreachable server.
+
+**Amplification Attack Potential**: a 20-byte request draws a 48-byte reply
+(20-byte header + 12-byte XOR-MAPPED-ADDRESS + 16-byte SOFTWARE), so roughly **2.4x**.
+That is inherent to STUN and no worse than any real STUN server, but it is not the
+"similar size, not suitable for amplification" this section used to claim. Shrinking it
+further would mean dropping SOFTWARE, which is a legitimate thing to want from a honeypot.
+
+**IP Spoofing**: UDP allows spoofed source IPs. The server must NOT trust the client IP for
+authentication — and cannot, since none is implemented.
+
+**Rate Limiting**: **there is none.** No per-source limit, no transaction-ID cache, no
+duplicate suppression: every well-formed Binding Request is answered, as fast as they
+arrive. On an untrusted network put a rate limiter in front of it.
 
 ## References
 
@@ -367,17 +408,22 @@ anyway).
 - WebRTC STUN Usage: https://developer.mozilla.org/en-US/docs/Web/API/RTCIceServer
 - STUN Message Structure: https://datatracker.ietf.org/doc/html/rfc8489#section-6
 
-## Failure behaviour: 500 Server Error
+## Failure behaviour: the correct static response, not an error
 
-When `call_llm` returns `Err`, the request is answered with a **Binding Error Response**
-(0x0111) carrying ERROR-CODE 500, built by `StunProtocol::build_error_response` with the
-request's transaction ID echoed. RFC 8489 §6.3.4 defines that class precisely so a server can
-say "I could not process this"; a silent drop is indistinguishable from packet loss, so the
-client works through its whole retransmission schedule (§6.2.1: 7 retries, ~39.5s) first.
+When `call_llm` returns `Err`, the request is answered with the ordinary **Binding Success
+Response** — the client's real reflected address, its transaction ID echoed — by
+`send_static_binding_response` in `mod.rs`, and the backend error goes to the log and the
+status stream only. Covered by `tests/server/stun/llm_failure_test.rs`.
 
-The one case that stays silent is a request with no usable 12-byte transaction ID — there is no
-response the client would accept — and that is logged at WARN saying so.
+This is a fail-*closed* answer despite looking permissive, and STUN is the rare protocol
+where that is true: a Binding response is neither a credential nor an approval, it is a fact
+about the requester's own source address, and it is exactly what the server would have sent
+had the operator never opted into LLM control. The model is consulted here only to permit
+*lying* about that address; falling back to the truth withholds the model's influence rather
+than granting anything. Compare `src/server/turn/`, where the same failure must grant
+nothing, and `src/server/radius/`, where it must refuse — there the reply *is* an assertion.
 
-This closes the "Error responses (400/500) not implemented" gap listed above for the server's
-own failure path; the model still has `send_stun_error_response` for deliberate errors. Covered
-by `tests/server/stun/llm_failure_test.rs`.
+**This section used to describe a 500 Binding Error Response instead**, matching an earlier
+implementation. `StunProtocol::build_error_response` survives from it and is now reached only
+through the `send_stun_error_response` action, i.e. when a handler or the model refuses a
+request deliberately.

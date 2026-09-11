@@ -4,11 +4,12 @@ pub mod actions;
 pub use actions::TurnClientProtocol;
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::turn::actions::{
@@ -37,7 +38,23 @@ struct ClientData {
     queued_events: Vec<Event>,
     memory: String,
     relay_address: Option<SocketAddr>,
+    /// Transaction ID (hex) -> the peer a CreatePermission request named.
+    ///
+    /// A CreatePermission Success Response carries no XOR-PEER-ADDRESS — RFC 8656
+    /// section 9.4 says it is empty — so the only way to know which peer was
+    /// permitted is to remember what we asked for. Without this the
+    /// `turn_permission_created` event reported `"peer_address": "unknown"` on a
+    /// field its own declaration marks `required: true`, i.e. a fabricated
+    /// constant where the model expected a fact.
+    ///
+    /// Bounded at `MAX_PENDING_PERMISSIONS` so a model issuing create_permission
+    /// in a loop cannot grow it without limit; a request evicted early simply
+    /// reports the peer as unknown again, which is the old behaviour and no worse.
+    pending_permissions: HashMap<String, SocketAddr>,
 }
+
+/// Cap on outstanding CreatePermission requests remembered for correlation.
+const MAX_PENDING_PERMISSIONS: usize = 256;
 
 /// TURN client that connects to a remote TURN server
 pub struct TurnClient;
@@ -95,6 +112,7 @@ impl TurnClient {
             queued_events: Vec::new(),
             memory: String::new(),
             relay_address: None,
+            pending_permissions: HashMap::new(),
         }));
 
         // Command channel for injected actions (the dashboard's [ send ]).
@@ -221,6 +239,22 @@ impl TurnClient {
                                     // Store relay address
                                     client_data_clone.lock().await.relay_address = Some(relay_addr);
 
+                                    // Also on the client record, so the relay this
+                                    // allocation actually got is visible to the dashboard,
+                                    // to MCP and to anything reading `protocol_data`. It
+                                    // used to live only in this task's private `ClientData`,
+                                    // where nothing outside the read loop could see it —
+                                    // which is also why no test could observe whether the
+                                    // response had been parsed at all.
+                                    app_state_clone
+                                        .with_client_mut(client_id, |client| {
+                                            client.set_protocol_field(
+                                                "relay_address".to_string(),
+                                                serde_json::json!(relay_addr.to_string()),
+                                            );
+                                        })
+                                        .await;
+
                                     Some(Event::new(
                                         &TURN_CLIENT_ALLOCATED_EVENT,
                                         serde_json::json!({
@@ -243,13 +277,37 @@ impl TurnClient {
                                 ))
                             }
                             "CreatePermissionResponse" => {
-                                // Permission created successfully
-                                Some(Event::new(
-                                    &TURN_CLIENT_PERMISSION_CREATED_EVENT,
-                                    serde_json::json!({
-                                        "peer_address": "unknown", // Would need to track request
-                                    }),
-                                ))
+                                // RFC 8656 section 9.4: the Success Response is empty, so
+                                // the peer is recovered from the transaction ID we recorded
+                                // when the request went out. This used to report the literal
+                                // string "unknown" for a field declared `required: true`.
+                                let peer_address = client_data_clone
+                                    .lock()
+                                    .await
+                                    .pending_permissions
+                                    .remove(&transaction_id_hex);
+
+                                match peer_address {
+                                    Some(peer) => Some(Event::new(
+                                        &TURN_CLIENT_PERMISSION_CREATED_EVENT,
+                                        serde_json::json!({
+                                            "peer_address": peer.to_string(),
+                                            "transaction_id": transaction_id_hex,
+                                        }),
+                                    )),
+                                    None => {
+                                        // Nothing we sent matches this transaction ID, so
+                                        // either it is a stray or a forgery. Raising the
+                                        // event with a made-up peer would tell the model a
+                                        // permission exists that it never asked for.
+                                        warn!(
+                                            "TURN client {} ignoring CreatePermission response \
+                                             for unknown transaction {}",
+                                            client_id, transaction_id_hex
+                                        );
+                                        None
+                                    }
+                                }
                             }
                             "DataIndication" => {
                                 // Extract peer address and data from DATA and XOR-PEER-ADDRESS
@@ -300,12 +358,22 @@ impl TurnClient {
                                     if let Some(instruction) =
                                         app_state_clone.get_instruction_for_client(client_id).await
                                     {
+                                        // Copy the memory out and drop the guard BEFORE the
+                                        // call. `&client_data_clone.lock().await.memory` as a
+                                        // match scrutinee kept the guard alive for the whole
+                                        // round-trip *and* the whole arm, so the re-lock in
+                                        // the Ok arm below deadlocked this read loop against
+                                        // itself on a non-reentrant tokio Mutex. It never
+                                        // fired only because `memory_updates` is currently
+                                        // hardcoded `None` in `action_helper` — a latent hang
+                                        // waiting on an unrelated feature being finished.
+                                        let memory = client_data_clone.lock().await.memory.clone();
                                         match call_llm_for_client(
                                             &llm_clone,
                                             &app_state_clone,
                                             client_id.to_string(),
                                             &instruction,
-                                            &client_data_clone.lock().await.memory,
+                                            &memory,
                                             Some(&event),
                                             protocol_clone.as_ref(),
                                             &status_clone,
@@ -497,7 +565,7 @@ impl TurnClient {
         action_result: crate::llm::actions::client_trait::ClientActionResult,
         socket: &Arc<UdpSocket>,
         remote_addr: SocketAddr,
-        _client_data: &Arc<Mutex<ClientData>>,
+        client_data: &Arc<Mutex<ClientData>>,
         status_tx: &mpsc::UnboundedSender<String>,
         client_id: ClientId,
     ) -> Result<ClientSendOutcome> {
@@ -529,7 +597,20 @@ impl TurnClient {
                     let peer_addr: SocketAddr =
                         peer_address.parse().context("Invalid peer_address")?;
 
-                    let message = Self::build_create_permission_request(peer_addr)?;
+                    let (message, transaction_id) =
+                        Self::build_create_permission_request(peer_addr)?;
+
+                    // Remember the peer before the datagram leaves, so a fast
+                    // response cannot arrive at the read loop first and find
+                    // nothing to correlate against.
+                    {
+                        let mut state = client_data.lock().await;
+                        if state.pending_permissions.len() >= MAX_PENDING_PERMISSIONS {
+                            state.pending_permissions.clear();
+                        }
+                        state.pending_permissions.insert(transaction_id, peer_addr);
+                    }
+
                     let sent = socket.send_to(&message, remote_addr).await?;
 
                     Log::new(Some(status_tx)).debug(format!(
@@ -647,8 +728,12 @@ impl TurnClient {
         Ok(message)
     }
 
-    /// Build TURN CreatePermission Request message
-    fn build_create_permission_request(peer_addr: SocketAddr) -> Result<Vec<u8>> {
+    /// Build TURN CreatePermission Request message.
+    ///
+    /// Returns the message and its transaction ID (hex), because the Success
+    /// Response is empty and correlating the reply back to a peer is only
+    /// possible if the caller keeps that ID.
+    fn build_create_permission_request(peer_addr: SocketAddr) -> Result<(Vec<u8>, String)> {
         let mut message = Vec::new();
 
         // STUN message type: CreatePermission Request (0x0008)
@@ -672,7 +757,7 @@ impl TurnClient {
         let total_length = (message.len() - 20) as u16;
         message[length_pos..length_pos + 2].copy_from_slice(&total_length.to_be_bytes());
 
-        Ok(message)
+        Ok((message, hex::encode(&transaction_id)))
     }
 
     /// Build TURN SendIndication message
@@ -821,29 +906,109 @@ impl TurnClient {
         // Extract message type
         let message_type_raw = u16::from_be_bytes([data[0], data[1]]);
 
-        let class = ((message_type_raw & 0x0110) >> 4) | ((message_type_raw & 0x0100) >> 7);
+        // RFC 8489 section 5: the 14-bit type interleaves method and class as
+        //   0b00 M11 M10 M9 M8 M7 C1 M6 M5 M4 C0 M3 M2 M1 M0
+        // so C0 is bit 4, C1 is bit 8, and class == C1<<1 | C0.
+        //
+        // This used to read `((raw & 0x0110) >> 4) | ((raw & 0x0100) >> 7)`, which
+        // shifts bit 8 by 4 rather than 8 and works out to C0 + 18*C1. Every class
+        // with C1 set therefore decoded to 18 or 19 and fell through the table
+        // below to "Unknown". Since a *client* receives nothing but responses and
+        // indications, that meant this client could not parse a single reply: an
+        // Allocate success (0x0103) decoded to 18, `relay_address` was never
+        // stored, and turn_allocated / turn_refreshed / turn_permission_created /
+        // turn_data_received could not fire however correct the server was. The
+        // sibling server has this right (`src/server/turn/mod.rs`); the two
+        // disagreed, and the client was the wrong one.
+        //
+        // The table below was wrong to match: it expected class 1 for a success
+        // response and 2 for an error, which are the *indication* and *success*
+        // values. Both are corrected together, because fixing either alone leaves
+        // the client just as deaf.
+        let c0 = (message_type_raw >> 4) & 0x1;
+        let c1 = (message_type_raw >> 8) & 0x1;
+        let class = (c1 << 1) | c0;
         let method = (message_type_raw & 0x000F)
             | ((message_type_raw & 0x00E0) >> 1)
             | ((message_type_raw & 0x3E00) >> 2);
 
+        // Class: 0 = request, 1 = indication, 2 = success response, 3 = error.
         let message_type = match (class, method) {
             (0, 3) => "AllocateRequest",
-            (1, 3) => "AllocateResponse",
-            (2, 3) => "AllocateError",
+            (2, 3) => "AllocateResponse",
+            (3, 3) => "AllocateError",
             (0, 4) => "RefreshRequest",
-            (1, 4) => "RefreshResponse",
-            (2, 4) => "RefreshError",
+            (2, 4) => "RefreshResponse",
+            (3, 4) => "RefreshError",
             (0, 8) => "CreatePermissionRequest",
-            (1, 8) => "CreatePermissionResponse",
-            (2, 8) => "CreatePermissionError",
-            (0, 6) => "SendIndication",
-            (0, 7) => "DataIndication",
+            (2, 8) => "CreatePermissionResponse",
+            (3, 8) => "CreatePermissionError",
+            (1, 6) => "SendIndication",
+            (1, 7) => "DataIndication",
             _ => "Unknown",
         };
 
         let transaction_id = data[8..20].to_vec();
 
         (Some(transaction_id), message_type.to_string(), true)
+    }
+
+    /// Walk the attributes of a STUN/TURN message, bounded by what actually arrived.
+    ///
+    /// **This is the only place attribute offsets are computed.** Four hand-rolled
+    /// copies of this walk used to exist — one each in `extract_xor_address`,
+    /// `extract_lifetime`, `extract_data_attribute` and `extract_error_code` — and
+    /// every one of them bounded the cursor against `20 + message_length`, a
+    /// 16-bit field the sender chooses, while indexing a buffer capped at 2048
+    /// bytes. Twenty bytes on the wire —
+    /// `00 07 FF FF 21 12 A4 42 <12-byte transaction id>` — index `data[20]` on a
+    /// 20-byte slice and **panic**. `tokio::spawn` swallows that panic, so the
+    /// read loop died silently while `AppState` went on reporting the client
+    /// `Connected` and the dashboard went on offering `[ send ]`: permanently deaf,
+    /// with nothing in the UI to say so. The socket is bound to `0.0.0.0:0` and the
+    /// loop never checks that a datagram came from the TURN server, so any host
+    /// that could reach the ephemeral port could send it.
+    ///
+    /// The rule, which the sibling server already followed, is to trust the
+    /// shorter of the declared length and what arrived.
+    fn attributes(data: &[u8]) -> Vec<(u16, &[u8])> {
+        if data.len() < 20 {
+            return Vec::new();
+        }
+
+        let declared = u16::from_be_bytes([data[2], data[3]]) as usize;
+        let end = 20usize.saturating_add(declared).min(data.len());
+
+        let mut attributes = Vec::new();
+        let mut pos = 20usize;
+        while pos + 4 <= end {
+            let attr_type = u16::from_be_bytes([data[pos], data[pos + 1]]);
+            let attr_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
+            let value_start = pos + 4;
+            let value_end = match value_start.checked_add(attr_len) {
+                Some(v) if v <= end => v,
+                // Truncated or lying length: stop, keep what we parsed.
+                _ => break,
+            };
+            attributes.push((attr_type, &data[value_start..value_end]));
+
+            // Attributes are padded to a 4-byte boundary. A zero-length attribute
+            // still advances by the 4-byte header, so this cannot spin.
+            let padded = attr_len.saturating_add(3) & !3usize;
+            pos = match value_start.checked_add(padded) {
+                Some(p) => p,
+                None => break,
+            };
+        }
+        attributes
+    }
+
+    /// First attribute of `attr_type`, if present.
+    fn attribute<'a>(data: &'a [u8], attr_type: u16) -> Option<&'a [u8]> {
+        Self::attributes(data)
+            .into_iter()
+            .find(|(t, _)| *t == attr_type)
+            .map(|(_, v)| v)
     }
 
     /// Extract XOR-RELAYED-ADDRESS attribute from TURN message
@@ -858,169 +1023,84 @@ impl TurnClient {
 
     /// Extract XOR'd address attribute from TURN message
     fn extract_xor_address(data: &[u8], attr_type: u16) -> Option<SocketAddr> {
-        if data.len() < 20 {
+        let attr_data = Self::attribute(data, attr_type)?;
+        if attr_data.len() < 4 {
             return None;
         }
 
-        let message_length = u16::from_be_bytes([data[2], data[3]]) as usize;
-        let mut pos = 20; // Start after header
+        let family = attr_data[1];
+        let xor_port = u16::from_be_bytes([attr_data[2], attr_data[3]]);
+        let port = xor_port ^ 0x2112;
 
-        while pos + 4 <= 20 + message_length {
-            let current_attr_type = u16::from_be_bytes([data[pos], data[pos + 1]]);
-            let attr_length = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-
-            if current_attr_type == attr_type {
-                // Found target attribute
-                if pos + 4 + attr_length > data.len() {
+        match family {
+            0x01 => {
+                // IPv4
+                if attr_data.len() < 8 {
                     return None;
                 }
 
-                let attr_data = &data[pos + 4..pos + 4 + attr_length];
-                if attr_data.len() < 4 {
-                    return None;
-                }
+                let magic_cookie = 0x2112A442u32.to_be_bytes();
+                let xor_ip = &attr_data[4..8];
+                let ip_bytes = [
+                    xor_ip[0] ^ magic_cookie[0],
+                    xor_ip[1] ^ magic_cookie[1],
+                    xor_ip[2] ^ magic_cookie[2],
+                    xor_ip[3] ^ magic_cookie[3],
+                ];
 
-                let family = attr_data[1];
-                let xor_port = u16::from_be_bytes([attr_data[2], attr_data[3]]);
-                let port = xor_port ^ 0x2112;
-
-                match family {
-                    0x01 => {
-                        // IPv4
-                        if attr_data.len() < 8 {
-                            return None;
-                        }
-
-                        let magic_cookie = 0x2112A442u32.to_be_bytes();
-                        let xor_ip = &attr_data[4..8];
-                        let ip_bytes = [
-                            xor_ip[0] ^ magic_cookie[0],
-                            xor_ip[1] ^ magic_cookie[1],
-                            xor_ip[2] ^ magic_cookie[2],
-                            xor_ip[3] ^ magic_cookie[3],
-                        ];
-
-                        let ip = std::net::Ipv4Addr::from(ip_bytes);
-                        return Some(SocketAddr::from((ip, port)));
-                    }
-                    0x02 => {
-                        // IPv6
-                        if attr_data.len() < 20 {
-                            return None;
-                        }
-
-                        let magic_cookie = 0x2112A442u32.to_be_bytes();
-                        let transaction_id = &data[8..20];
-                        let xor_ip = &attr_data[4..20];
-
-                        let mut ip_bytes = [0u8; 16];
-                        for i in 0..4 {
-                            ip_bytes[i] = xor_ip[i] ^ magic_cookie[i];
-                        }
-                        for i in 4..16 {
-                            ip_bytes[i] = xor_ip[i] ^ transaction_id[i - 4];
-                        }
-
-                        let ip = std::net::Ipv6Addr::from(ip_bytes);
-                        return Some(SocketAddr::from((ip, port)));
-                    }
-                    _ => return None,
-                }
+                let ip = std::net::Ipv4Addr::from(ip_bytes);
+                Some(SocketAddr::from((ip, port)))
             }
+            0x02 => {
+                // IPv6
+                if attr_data.len() < 20 {
+                    return None;
+                }
 
-            // Move to next attribute (with padding)
-            let padded_length = ((attr_length + 3) / 4) * 4;
-            pos += 4 + padded_length;
+                let magic_cookie = 0x2112A442u32.to_be_bytes();
+                let transaction_id = &data[8..20];
+                let xor_ip = &attr_data[4..20];
+
+                let mut ip_bytes = [0u8; 16];
+                for i in 0..4 {
+                    ip_bytes[i] = xor_ip[i] ^ magic_cookie[i];
+                }
+                for i in 4..16 {
+                    ip_bytes[i] = xor_ip[i] ^ transaction_id[i - 4];
+                }
+
+                let ip = std::net::Ipv6Addr::from(ip_bytes);
+                Some(SocketAddr::from((ip, port)))
+            }
+            _ => None,
         }
-
-        None
     }
 
     /// Extract LIFETIME attribute from TURN message
     fn extract_lifetime(data: &[u8]) -> Option<u32> {
-        if data.len() < 20 {
+        let value = Self::attribute(data, 0x000D)?;
+        if value.len() < 4 {
             return None;
         }
-
-        let message_length = u16::from_be_bytes([data[2], data[3]]) as usize;
-        let mut pos = 20;
-
-        while pos + 4 <= 20 + message_length {
-            let attr_type = u16::from_be_bytes([data[pos], data[pos + 1]]);
-            let attr_length = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-
-            if attr_type == 0x000D {
-                // LIFETIME attribute
-                if pos + 8 <= data.len() {
-                    return Some(u32::from_be_bytes([
-                        data[pos + 4],
-                        data[pos + 5],
-                        data[pos + 6],
-                        data[pos + 7],
-                    ]));
-                }
-            }
-
-            let padded_length = ((attr_length + 3) / 4) * 4;
-            pos += 4 + padded_length;
-        }
-
-        None
+        Some(u32::from_be_bytes([value[0], value[1], value[2], value[3]]))
     }
 
     /// Extract DATA attribute from TURN message
     fn extract_data_attribute(data: &[u8]) -> Option<Vec<u8>> {
-        if data.len() < 20 {
-            return None;
-        }
-
-        let message_length = u16::from_be_bytes([data[2], data[3]]) as usize;
-        let mut pos = 20;
-
-        while pos + 4 <= 20 + message_length {
-            let attr_type = u16::from_be_bytes([data[pos], data[pos + 1]]);
-            let attr_length = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-
-            if attr_type == 0x0013 {
-                // DATA attribute
-                if pos + 4 + attr_length <= data.len() {
-                    return Some(data[pos + 4..pos + 4 + attr_length].to_vec());
-                }
-            }
-
-            let padded_length = ((attr_length + 3) / 4) * 4;
-            pos += 4 + padded_length;
-        }
-
-        None
+        Self::attribute(data, 0x0013).map(|v| v.to_vec())
     }
 
     /// Extract ERROR-CODE attribute from TURN message
+    ///
+    /// RFC 8489 section 14.8: two reserved bytes, then a 3-bit class and a
+    /// number 0-99.
     fn extract_error_code(data: &[u8]) -> Option<u16> {
-        if data.len() < 20 {
+        let value = Self::attribute(data, 0x0009)?;
+        if value.len() < 4 {
             return None;
         }
-
-        let message_length = u16::from_be_bytes([data[2], data[3]]) as usize;
-        let mut pos = 20;
-
-        while pos + 4 <= 20 + message_length {
-            let attr_type = u16::from_be_bytes([data[pos], data[pos + 1]]);
-            let attr_length = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
-
-            if attr_type == 0x0009 {
-                // ERROR-CODE attribute
-                if pos + 8 <= data.len() && attr_length >= 4 {
-                    let class = (data[pos + 6] & 0x07) as u16;
-                    let number = data[pos + 7] as u16;
-                    return Some(class * 100 + number);
-                }
-            }
-
-            let padded_length = ((attr_length + 3) / 4) * 4;
-            pos += 4 + padded_length;
-        }
-
-        None
+        let class = (value[2] & 0x07) as u16;
+        let number = value[3] as u16;
+        Some(class * 100 + number)
     }
 }

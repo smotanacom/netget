@@ -230,12 +230,27 @@ impl StunClient {
             client_id, stun_server
         );
 
-        // Resolve STUN server address (may be hostname:port)
-        let stun_sock_addr: SocketAddr = tokio::net::lookup_host(&stun_server)
-            .await
-            .context(format!("Failed to resolve STUN server: {}", stun_server))?
-            .next()
-            .context("No addresses found for STUN server")?;
+        // Resolve STUN server address (may be hostname:port).
+        //
+        // A literal `IP:port` is NOT handed to the resolver. `tokio::net::lookup_host`
+        // calls `getaddrinfo` unconditionally, and on macOS that goes through libinfo to
+        // mDNSResponder — one system-wide daemon that serialises under concurrency, and
+        // which this repo has measured at **8.25 seconds** for `getaddrinfo("127.0.0.1")`
+        // with ~100 processes asking at once. `stunclient`'s end-to-end timeout is 10s,
+        // so a resolver stall of that size eats the whole budget and surfaces as "the
+        // STUN server did not answer" against a server that was never spoken to. The
+        // same trap is documented for reqwest in the root CLAUDE.md; this is the
+        // `lookup_host` spelling of it.
+        //
+        // A hostname is still left to the resolver: resolving it is the resolver's job.
+        let stun_sock_addr: SocketAddr = match stun_server.parse::<SocketAddr>() {
+            Ok(addr) => addr,
+            Err(_) => tokio::net::lookup_host(&stun_server)
+                .await
+                .context(format!("Failed to resolve STUN server: {}", stun_server))?
+                .next()
+                .context("No addresses found for STUN server")?,
+        };
 
         // Bind a new UDP socket for the query
         let local_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();

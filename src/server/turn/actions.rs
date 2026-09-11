@@ -45,17 +45,35 @@ impl Protocol for TurnProtocol {
     }
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
         use crate::llm::actions::ParameterDefinition;
-        vec![ParameterDefinition {
-            name: "relay_ip".to_string(),
-            type_hint: "string".to_string(),
-            description: "IP address advertised to clients in XOR-RELAYED-ADDRESS. Relay sockets \
-                          are always bound to the server's own listen address; set this only when \
-                          clients reach the relay at a different address (NAT, port forwarding). \
-                          Default: the server's listen address."
-                .to_string(),
-            required: false,
-            example: json!("203.0.113.5"),
-        }]
+        vec![
+            ParameterDefinition {
+                name: "relay_ip".to_string(),
+                type_hint: "string".to_string(),
+                description:
+                    "IP address advertised to clients in XOR-RELAYED-ADDRESS. Relay sockets \
+                     are always bound to the server's own listen address; set this only when \
+                     clients reach the relay at a different address (NAT, port forwarding). \
+                     Default: the server's listen address."
+                        .to_string(),
+                required: false,
+                example: json!("203.0.113.5"),
+            },
+            ParameterDefinition {
+                name: "peer_scope".to_string(),
+                type_hint: "string".to_string(),
+                description: "Which peer addresses this relay may be pointed at. \"any\" \
+                              (default) places no restriction — a client can be permitted to \
+                              relay to 127.0.0.1 or to an RFC 1918 address, which is a UDP \
+                              path into whatever the operator's host can reach. That is the \
+                              right default for a honeypot and on loopback, and it is the \
+                              wrong one anywhere else: set \"public\" to refuse loopback, \
+                              private, link-local (including the 169.254.169.254 metadata \
+                              address), multicast, broadcast and unspecified destinations."
+                    .to_string(),
+                required: false,
+                example: json!("public"),
+            },
+        ]
     }
     fn protocol_name(&self) -> &'static str {
         "TURN"
@@ -78,7 +96,7 @@ impl Protocol for TurnProtocol {
             .implementation("Manual TURN protocol (RFC 8656) with a real UDP relay: every granted allocation binds its own socket and forwards traffic both ways")
             .llm_control("Whether to grant Allocate/Refresh/CreatePermission/ChannelBind, the lifetime, and which peers are permitted (policy, LLM). With no policy configured the server grants nothing with no LLM call. The data plane never calls the LLM")
             .e2e_testing("Mocked E2E relays a payload between two real UDP peers in both directions (tests/server/turn/e2e_test.rs)")
-            .notes("Relays UDP: Send indications and ChannelData go out the allocation's relay socket to permitted peers, and peer traffic comes back as Data indications or ChannelData. The relay address is chosen by NetGet (the socket it actually bound), not by the model; an action naming any other address is refused with 508. No authentication (REALM/NONCE/MESSAGE-INTEGRITY are not implemented), so access control rests entirely on the model's grant decisions plus a 256-allocation cap. UDP relays only (no TCP allocations, no REQUESTED-ADDRESS-FAMILY), no reservation tokens or EVEN-PORT. Whether to grant is policy, not wire-determined, so with no operator policy (no instruction, no handler) every control request is fail-closed (grant nothing) with NO LLM round-trip; the LLM is consulted only when the operator supplies the grant policy. The ack-packet framing and the relay data plane remain mechanical")
+            .notes("THIS IS AN OPEN RELAY WHEN A POLICY GRANTS. Read the next three sentences before exposing it. (1) There is NO AUTHENTICATION: REALM, NONCE and MESSAGE-INTEGRITY are not implemented and no action can add them, so 'who may allocate' is entirely whatever answers turn_allocate_request — an instruction like 'grant allocations' means any host that can reach the port gets a relay, with no identity at all. (2) The DEFAULT DESTINATION SCOPE IS UNRESTRICTED (peer_scope=any): a permitted client can be relayed to 127.0.0.1, to RFC 1918 space or to 169.254.169.254, which is a UDP path from a stranger into whatever this host can reach, with the answers relayed back. That default is deliberate — this protocol exists to be pointed at by things under test, and a honeypot TURN server that refuses private destinations is not one — but set the peer_scope=public startup parameter anywhere it is not what you want, and it is NOT what you want on a reachable interface. (3) The only limits that do not depend on the model are a 256-allocation cap, a 3600s maximum lifetime and RFC 8656's fixed permission/channel lifetimes; there is no per-source rate limit and no cap on relayed bytes. With NO operator policy (no instruction, no handler) every control request is fail-closed — grant nothing, no LLM round-trip, no reply — which is why an unconfigured TURN server is safe and a configured one is exactly as safe as its policy. Mechanics: relays UDP only (no TCP allocations, no REQUESTED-ADDRESS-FAMILY, no reservation tokens or EVEN-PORT); Send indications and ChannelData go out the allocation's relay socket to permitted peers and peer traffic comes back as Data indications or ChannelData; the relay address is chosen by NetGet (the socket it actually bound), not by the model, and an action naming any other address is refused with 508. The ack-packet framing and the relay data plane are mechanical and never call the LLM")
             .build()
     }
     fn description(&self) -> &'static str {
@@ -182,6 +200,14 @@ impl Server for TurnProtocol {
                 .transpose()?
                 .flatten();
 
+            let peer_scope = ctx
+                .startup_params
+                .as_ref()
+                .map(|p| p.get_optional_string("peer_scope"))
+                .transpose()?
+                .flatten();
+            let peer_scope = crate::server::turn::PeerScope::parse(peer_scope.as_deref())?;
+
             use crate::server::turn::TurnServer;
             TurnServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
@@ -190,6 +216,7 @@ impl Server for TurnProtocol {
                 ctx.status_tx,
                 ctx.server_id,
                 relay_ip,
+                peer_scope,
             )
             .await
         })

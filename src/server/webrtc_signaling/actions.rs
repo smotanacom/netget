@@ -261,8 +261,21 @@ impl Protocol for WebRtcSignalingProtocol {
                  despite a non-#[ignore]d test that connects real WebSocket peers.",
             )
             .notes(
-                "No authentication: any client may claim any unused peer ID. Undeliverable \
-                 messages are dropped and the sender gets an error; nothing is queued.",
+                "No authentication: any client may claim any unused peer ID, first come \
+                 first served, and there is no way for a peer to verify who it is talking \
+                 to. A sender MUST have registered before it may relay — an unregistered \
+                 socket used to be able to inject offers, answers, ICE candidates and \
+                 arbitrary 'relay' JSON at any registered peer — and the 'from' field is \
+                 overwritten with the sender's registered id, because taking it from the \
+                 frame let any peer forge a message from any other. Limits: 1024 registered \
+                 peers, 128-byte peer IDs, 256 KiB per WebSocket message, 10s to complete \
+                 the upgrade. There is NO rate limit on relayed messages and the \
+                 per-connection writer queue is unbounded, so a peer that stops reading \
+                 accumulates whatever others send it — put this behind something that \
+                 limits connections on an untrusted network. Relay is never gated on the \
+                 model: the only lever the LLM has is disconnecting a peer at registration \
+                 time. Undeliverable messages are dropped and the sender gets an error; \
+                 nothing is queued. Plain ws:// only, no TLS.",
             )
             .build()
     }
@@ -282,23 +295,30 @@ impl Protocol for WebRtcSignalingProtocol {
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
         use crate::llm::actions::StartupExamples;
 
-        // Deterministic: welcome each new peer and forward every received
-        // message to its target peer, no LLM call. One script handles both
-        // events.
+        // Deterministic: welcome each new peer, no LLM call.
+        //
+        // It handles `webrtc_signaling_peer_connected` and nothing else, on
+        // purpose. This example used to carry a second arm for
+        // `webrtc_signaling_message_received` that was wrong three ways at once
+        // and would have taught every operator who copied it the same three
+        // mistakes: that event is declared `.with_no_actions()` so nothing it
+        // returns is ever executed; `target_peer` is not a parameter of
+        // `send_signaling_message` and the executor ignores it, so even on a
+        // usable event it would have written back to the *originating* peer; and
+        // the event carries no `message` key at all, so `.get("message", {})`
+        // yields `{}`, which passes the executor's `is_object()` check and puts a
+        // literal empty object on the wire.
+        //
+        // Forwarding is not something a handler needs to do in any case: the relay
+        // happens in Rust, before any handler is consulted.
         let script = r#"import json, sys
 data = json.load(sys.stdin)
 event = data["event"]
-et = data["event_type_id"]
-if et == "webrtc_signaling_peer_connected":
+if data["event_type_id"] == "webrtc_signaling_peer_connected":
     actions = [{"type": "send_signaling_message",
-                "target_peer": event.get("peer_id", ""),
                 "message": {"type": "relay", "from": "netget",
                             "to": event.get("peer_id", ""),
                             "data": {"welcome": True}}}]
-elif et == "webrtc_signaling_message_received":
-    actions = [{"type": "send_signaling_message",
-                "target_peer": event.get("target_peer", ""),
-                "message": event.get("message", {})}]
 else:
     actions = []
 print(json.dumps({"actions": actions}))"#;
@@ -393,6 +413,29 @@ impl Server for WebRtcSignalingProtocol {
                 if !message.is_object() {
                     anyhow::bail!("'message' must be a JSON object");
                 }
+                // The description promises "a valid signaling message: register,
+                // registered, offer, answer, ice_candidate, relay or error", and
+                // only `is_object()` enforced it — so any JSON at all went on the
+                // wire and a model following the description got no feedback when
+                // it produced something a peer cannot parse. Round-trip it through
+                // the same enum the server parses inbound frames with, so the
+                // promise and the check are the same statement.
+                let peer_id = message
+                    .get("peer_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                serde_json::from_value::<crate::server::webrtc_signaling::SignalingMessage>(
+                    message.clone(),
+                )
+                .with_context(|| {
+                    format!(
+                        "'message' is not a signaling message (peer_id {:?}); expected a \
+                         'type' of register, registered, offer, answer, ice_candidate, relay \
+                         or error, with that variant's fields",
+                        peer_id
+                    )
+                })?;
                 // Output is written to this peer's WebSocket as a text frame by
                 // WebRtcSignalingServer::apply_results.
                 Ok(ActionResult::Output(

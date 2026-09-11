@@ -58,12 +58,20 @@ impl crate::llm::actions::protocol_trait::Protocol for StunProtocol {
             .llm_control("Optional: Binding responses are static by default (mechanical), LLM only on opt-in")
             .e2e_testing("stuntman-client / WebRTC")
             .notes(
-                "IPv4 only, stateless UDP. A Binding response is fully determined by the request \
-                 (reflect source into XOR-MAPPED-ADDRESS, echo the transaction ID), so it is \
-                 answered STATICALLY with no LLM round-trip by default. The LLM is consulted only \
-                 when the operator opts in with a server instruction or a per-event handler — the \
-                 way to request non-standard behaviour such as lying about the mapped address. On \
-                 LLM failure in opt-in mode the server falls back to the correct static response.",
+                "Stateless UDP; IPv4 and IPv6 XOR-MAPPED-ADDRESS are both encoded. A Binding \
+                 response is fully determined by the request (reflect source into \
+                 XOR-MAPPED-ADDRESS, echo the transaction ID), so it is answered STATICALLY with \
+                 no LLM round-trip by default. The LLM is consulted only when the operator opts \
+                 in with a server instruction or a per-event handler — the way to request \
+                 non-standard behaviour such as lying about the mapped address. On LLM failure in \
+                 opt-in mode the server falls back to the correct static response. REFLECTION: \
+                 only a Binding REQUEST is answered; responses, indications and other methods are \
+                 dropped silently, so this cannot be looped against another STUN server. It is \
+                 still a ~2.4x amplifier for a spoofed source (20-byte request, 48-byte reply), \
+                 which is inherent to STUN and no worse than a real STUN server, and there is NO \
+                 per-source rate limit — put one in front of it on an untrusted network. No \
+                 authentication: MESSAGE-INTEGRITY, USERNAME, REALM, NONCE and FINGERPRINT are \
+                 not implemented and no action can add them.",
             )
             .build()
     }
@@ -205,11 +213,6 @@ impl StunProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("NetGet/1.0");
 
-        let message_integrity = action
-            .get("message_integrity")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
         // Parse transaction ID from hex
         let transaction_id_bytes =
             hex::decode(transaction_id).context("Invalid transaction_id hex")?;
@@ -229,7 +232,6 @@ impl StunProtocol {
             addr,
             xor_mapped_address,
             software,
-            message_integrity,
         )?;
 
         Ok(ActionResult::Output(packet))
@@ -237,15 +239,26 @@ impl StunProtocol {
 
     /// Execute STUN error response action
     fn execute_send_error_response(&self, action: serde_json::Value) -> Result<ActionResult> {
+        // Both are declared `required: true`, so the executor enforces it rather
+        // than substituting a default. Silently answering 400 Bad Request when
+        // the model asked for 401 Unauthorized would put a different decision on
+        // the wire from the one it made, and hide the malformed action.
         let error_code = action
             .get("error_code")
             .and_then(|v| v.as_u64())
-            .unwrap_or(400) as u16;
+            .context("Missing or non-numeric 'error_code' field")? as u16;
+
+        if !(300..700).contains(&error_code) {
+            return Err(anyhow::anyhow!(
+                "error_code {error_code} is outside the 300-699 range RFC 8489 section 14.8 \
+                 encodes as a class/number pair"
+            ));
+        }
 
         let reason = action
             .get("reason")
             .and_then(|v| v.as_str())
-            .unwrap_or("Bad Request");
+            .context("Missing 'reason' field")?;
 
         let transaction_id = action
             .get("transaction_id")
@@ -267,12 +280,20 @@ impl StunProtocol {
     }
 
     /// Build STUN binding response packet
+    ///
+    /// There is deliberately no MESSAGE-INTEGRITY here, and no parameter asking
+    /// for one. The action used to advertise `message_integrity` and the executor
+    /// took the boolean and threw it away, so a model that set it got exactly the
+    /// unauthenticated response it got with the flag off, while the parameter's
+    /// own description said "Include MESSAGE-INTEGRITY attribute". RFC 8489
+    /// section 14.6 computes that attribute over a key derived from a
+    /// username/realm/password the server does not have and has no way to obtain,
+    /// so the knob could never have been honoured. Removing it is the honest fix.
     fn build_binding_response(
         transaction_id: &[u8],
         mapped_addr: std::net::SocketAddr,
         use_xor: bool,
         software: &str,
-        _with_integrity: bool,
     ) -> Result<Vec<u8>> {
         let mut packet = Vec::new();
 
@@ -308,14 +329,15 @@ impl StunProtocol {
         Ok(packet)
     }
 
-    /// Build STUN error response packet
+    /// Build STUN error response packet (RFC 8489 §6.3.4).
     ///
-    /// `pub(crate)` so the server loop can answer a failed LLM call with a
-    /// Binding Error Response (500 Server Error) instead of dropping the
-    /// request. RFC 8489 §6.3.4 defines that response class precisely so a
-    /// server can say "I could not process this"; a silent drop is
-    /// indistinguishable from packet loss and costs the client its full
-    /// retransmission schedule (RFC 8489 §6.2.1: 7 retries, ~39.5s).
+    /// Reached only through `send_stun_error_response`, i.e. when a handler or
+    /// the model deliberately refuses a request. The server's *own* LLM-failure
+    /// path does not come here: it falls back to the mechanical Binding Success
+    /// Response, because for STUN the correct answer is a fact about the
+    /// requester's source address rather than anything the backend contributes.
+    /// This doc comment used to claim the opposite, and the `pub(crate)` it
+    /// justified is what is left of that.
     pub(crate) fn build_error_response(
         transaction_id: &[u8],
         error_code: u16,
@@ -549,12 +571,6 @@ fn send_stun_binding_response_action() -> ActionDefinition {
                 description: "Software version string. Default: \"NetGet/1.0\"".to_string(),
                 required: false,
             },
-            Parameter {
-                name: "message_integrity".to_string(),
-                type_hint: "boolean".to_string(),
-                description: "Include MESSAGE-INTEGRITY attribute. Default: false".to_string(),
-                required: false,
-            },
         ],
         example: json!({
             "type": "send_stun_binding_response",
@@ -659,7 +675,10 @@ pub static STUN_BINDING_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "message_type".to_string(),
             type_hint: "string".to_string(),
-            description: "STUN message type (e.g., BindingRequest, BindingResponse)".to_string(),
+            description: "STUN message type. Always \"BindingRequest\": the server drops every \
+                          other class and method before raising this event, so nothing else \
+                          reaches you here."
+                .to_string(),
             required: true,
         },
         Parameter {

@@ -8,7 +8,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::{
+    accept_async_with_config,
+    tungstenite::{protocol::WebSocketConfig, Message},
+};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::llm::action_helper::call_llm;
@@ -26,6 +29,25 @@ use actions::{
 
 /// Unique identifier for a signaling peer
 pub type PeerId = String;
+
+/// Longest a peer may take to complete the WebSocket upgrade.
+const SIGNALING_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Largest WebSocket message accepted. Signaling carries SDP and ICE candidates;
+/// a large real offer is a few kilobytes.
+const SIGNALING_MAX_MESSAGE_BYTES: usize = 256 * 1024;
+
+/// Largest number of peers that may be registered at once.
+///
+/// The registry is keyed on a string the peer chooses, so without this one host
+/// can register until memory runs out. The protocol's own CLAUDE.md recommended
+/// "1,000-10,000 concurrent peers" while nothing enforced anything.
+const SIGNALING_MAX_PEERS: usize = 1024;
+
+/// Longest peer id accepted. The id is echoed in log lines, in the registration
+/// event and on every relayed frame, so an unbounded one is stored and repeated
+/// many times over.
+const MAX_PEER_ID_BYTES: usize = 128;
 
 /// Signaling message types
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -123,7 +145,21 @@ impl WebRtcSignalingServerData {
         remote_addr: SocketAddr,
         connection_id: ConnectionId,
     ) -> Result<()> {
+        if peer_id.is_empty() || peer_id.len() > MAX_PEER_ID_BYTES {
+            anyhow::bail!(
+                "Peer ID must be 1-{} bytes, got {}",
+                MAX_PEER_ID_BYTES,
+                peer_id.len()
+            );
+        }
+
         let mut peers = self.peers.lock().await;
+        if peers.len() >= SIGNALING_MAX_PEERS {
+            anyhow::bail!(
+                "Signaling server is full ({} peers registered)",
+                SIGNALING_MAX_PEERS
+            );
+        }
         if peers.contains_key(&peer_id) {
             anyhow::bail!("Peer ID {} already registered", peer_id);
         }
@@ -208,17 +244,14 @@ impl WebRtcSignalingServer {
         ));
 
         // Create server data
+        //
+        // This used to be followed by a `set_protocol_field("server_data_ptr",
+        // Arc::into_raw(...) as usize)`. Nothing in the tree ever read that field
+        // and nothing ever called `Arc::from_raw`, so it leaked one `Arc` per
+        // server start and wrote a live heap address into server state that the
+        // TUI and MCP surfaces will happily print — an ASLR disclosure bought for
+        // a capability nobody used.
         let server_data = Arc::new(WebRtcSignalingServerData::new());
-
-        // Store server data in AppState for action execution
-        app_state
-            .with_server_mut(server_id, |server| {
-                server.set_protocol_field(
-                    "server_data_ptr".to_string(),
-                    serde_json::json!(Arc::into_raw(Arc::clone(&server_data)) as usize),
-                );
-            })
-            .await;
 
         let protocol = Arc::new(WebRtcSignalingProtocol::new());
 
@@ -281,8 +314,38 @@ impl WebRtcSignalingServer {
         server_id: ServerId,
         protocol: Arc<WebRtcSignalingProtocol>,
     ) -> Result<()> {
-        // Upgrade to WebSocket
-        let ws_stream = accept_async(stream).await?;
+        // Upgrade to WebSocket.
+        //
+        // Two bounds, both absent before and both reachable pre-registration by
+        // anyone who can open a TCP connection:
+        //
+        // * The handshake gets a deadline. A socket that connects and never sends
+        //   an HTTP upgrade parked inside `accept_async` forever, holding a task
+        //   and an fd while remaining invisible to the dashboard — a connection is
+        //   only added to `AppState` once it registers.
+        // * Frames get a size limit. Bare `accept_async` takes tungstenite's
+        //   defaults of 64 MiB per message and 16 MiB per frame, so a single peer
+        //   could make the server buffer 64 MiB, and a peer id is just a string in
+        //   a frame. Signaling carries SDP and ICE candidates; the largest real
+        //   offer is a few kilobytes, so 256 KiB is generous by two orders of
+        //   magnitude and still bounds the damage.
+        let config = WebSocketConfig {
+            max_message_size: Some(SIGNALING_MAX_MESSAGE_BYTES),
+            max_frame_size: Some(SIGNALING_MAX_MESSAGE_BYTES),
+            ..Default::default()
+        };
+        let ws_stream = tokio::time::timeout(
+            SIGNALING_HANDSHAKE_TIMEOUT,
+            accept_async_with_config(stream, Some(config)),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "WebSocket handshake from {} did not complete within {:?}",
+                remote_addr,
+                SIGNALING_HANDSHAKE_TIMEOUT
+            )
+        })??;
         info!("WebSocket connection established with {}", remote_addr);
 
         let (mut ws_tx, mut ws_rx) = ws_stream.split();
@@ -315,11 +378,25 @@ impl WebRtcSignalingServer {
                     let message: SignalingMessage = match serde_json::from_str(&text) {
                         Ok(m) => m,
                         Err(e) => {
-                            warn!("Invalid signaling message: {}", e);
+                            // The error goes to the log; the peer gets a category. serde's
+                            // message names the enum's variants and the exact column it
+                            // choked on ("unknown variant `foo`, expected one of `register`,
+                            // `offer`, ... at line 1 column 15"), and that was going verbatim
+                            // to an unauthenticated stranger. Same rule as
+                            // `crate::utils::WireFailure`, which does not apply here only
+                            // because this is a parse failure rather than a backend one.
+                            warn!(
+                                "Invalid signaling message from {}: {}",
+                                remote_addr,
+                                crate::utils::truncate_for_log(&e.to_string(), 300)
+                            );
                             let _ = Self::reply(
                                 &out_tx,
                                 &SignalingMessage::Error {
-                                    message: format!("Invalid signaling message: {}", e),
+                                    message: "invalid signaling message: expected a JSON \
+                                              object with a 'type' of register, offer, \
+                                              answer, ice_candidate or relay"
+                                        .to_string(),
                                 },
                             );
                             continue;
@@ -465,7 +542,7 @@ impl WebRtcSignalingServer {
                         | SignalingMessage::Answer { .. }
                         | SignalingMessage::IceCandidate { .. }
                         | SignalingMessage::Relay { .. } => {
-                            let (kind, from, to) = match &message {
+                            let (kind, claimed_from, to) = match &message {
                                 SignalingMessage::Offer { from, to, .. } => {
                                     ("offer", from.clone(), to.clone())
                                 }
@@ -481,9 +558,51 @@ impl WebRtcSignalingServer {
                                 _ => unreachable!(),
                             };
 
-                            // Relay first: a signaling server is a relay, and putting a
-                            // model round-trip in front of every ICE candidate would break
-                            // any real browser peer.
+                            // A sender must have registered. Nothing checked this: an
+                            // anonymous socket that never sent `register` could inject
+                            // offers, answers, ICE candidates and arbitrary `relay` JSON at
+                            // any registered peer. A relay with no identity at all on the
+                            // sending side is not a relay, it is an open injection point,
+                            // and the peer on the far end has no way to tell the difference.
+                            let Some(sender_id) = peer_id.clone() else {
+                                let _ = Self::reply(
+                                    &out_tx,
+                                    &SignalingMessage::Error {
+                                        message: "register before sending offer, answer, \
+                                                  ice_candidate or relay"
+                                            .to_string(),
+                                    },
+                                );
+                                Log::new(Some(&status_tx)).warn(format!(
+                                    "WebRTC signaling refused {} from unregistered {}",
+                                    kind, remote_addr
+                                ));
+                                continue;
+                            };
+
+                            // And `from` is this connection's registered id, not whatever
+                            // the frame claimed. It was taken verbatim, so any registered
+                            // peer could send an offer that both the recipient and the
+                            // `webrtc_signaling_message_received` event attributed to
+                            // somebody else — and the recipient would answer *that* peer,
+                            // splicing a stranger into a session it is not part of.
+                            //
+                            // A mismatch is rewritten rather than refused: the field is
+                            // redundant (the connection already identifies the sender) and
+                            // clients that fill it in correctly are unaffected.
+                            if claimed_from != sender_id {
+                                Log::new(Some(&status_tx)).warn(format!(
+                                    "WebRTC signaling rewrote forged 'from' on a {}: peer '{}' \
+                                     claimed to be '{}'",
+                                    kind, sender_id, claimed_from
+                                ));
+                            }
+                            let from = sender_id;
+                            let message = Self::with_sender(message, &from);
+
+                            // Relay: a signaling server is a relay, and putting a model
+                            // round-trip in front of every ICE candidate would break any
+                            // real browser peer.
                             let delivered = match server_data.forward_message(&to, &message).await {
                                 Ok(()) => true,
                                 Err(e) => {
@@ -627,6 +746,39 @@ impl WebRtcSignalingServer {
     fn reply(out_tx: &mpsc::UnboundedSender<Message>, message: &SignalingMessage) -> Result<()> {
         out_tx.send(Message::Text(serde_json::to_string(message)?))?;
         Ok(())
+    }
+
+    /// Replace a relayed message's `from` with the sender's registered peer id.
+    ///
+    /// The wire field is whatever the sender typed; this connection's identity is
+    /// what it registered. Delivering the former lets any peer forge an offer from
+    /// any other, so the latter is what goes out and what the event reports.
+    fn with_sender(message: SignalingMessage, sender: &str) -> SignalingMessage {
+        match message {
+            SignalingMessage::Offer { to, sdp, .. } => SignalingMessage::Offer {
+                from: sender.to_string(),
+                to,
+                sdp,
+            },
+            SignalingMessage::Answer { to, sdp, .. } => SignalingMessage::Answer {
+                from: sender.to_string(),
+                to,
+                sdp,
+            },
+            SignalingMessage::IceCandidate { to, candidate, .. } => {
+                SignalingMessage::IceCandidate {
+                    from: sender.to_string(),
+                    to,
+                    candidate,
+                }
+            }
+            SignalingMessage::Relay { to, data, .. } => SignalingMessage::Relay {
+                from: sender.to_string(),
+                to,
+                data,
+            },
+            other => other,
+        }
     }
 
     /// Execute whatever the LLM returned for a signaling event.
