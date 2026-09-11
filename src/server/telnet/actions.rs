@@ -106,13 +106,23 @@ impl Protocol for TelnetProtocol {
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(23))
-            .implementation("Line-based text over TCP; no IAC option negotiation")
+            .implementation(
+                "Line-based text over TCP. IAC sequences are stripped from the stream but not \
+                 answered; lines are capped at 8 KiB.",
+            )
             .llm_control("Every byte sent to the terminal")
-            .e2e_testing("nc / raw TCP (a real telnet client's IAC bytes are not stripped)")
+            .e2e_testing(
+                "tests/server/telnet/: test.rs (echo, prompt, multiple lines, concurrent \
+                 connections) and llm_failure_test.rs over raw TCP, plus line_framing_test.rs, \
+                 which sends a real telnet(1) negotiation preamble and asserts the handler \
+                 received the typed line alone, and asserts an 8 KiB run with no newline is \
+                 refused rather than buffered.",
+            )
             .notes(
-                "Telnet-lite: IAC/WILL/WONT/DO/DONT are passed through as data rather than \
-                 negotiated, so a real telnet client's negotiation bytes appear in the first \
-                 message. No E2E test.",
+                "Telnet-lite: IAC/WILL/WONT/DO/DONT and subnegotiations are recognised only \
+                 well enough to be removed from the data stream, never answered, so a real \
+                 telnet client stays in its default line mode and gets no reply to its offers. \
+                 Absent: character-at-a-time mode, TTYPE/NAWS, terminal emulation, TLS.",
             )
             .build()
     }
@@ -372,7 +382,8 @@ pub static TELNET_MESSAGE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(||
     EventType::new(
         "telnet_message_received",
         "A complete line of text arrived from a Telnet client. Lines are split on \\n and the \
-         trailing whitespace/CR is trimmed before you see them.",
+         trailing whitespace/CR is trimmed before you see them. A line longer than 8 KiB with \
+         no newline in it is refused by the server and never raises this event.",
         json!({
             "type": "send_telnet_line",
             "line": "Command received. Processing..."
@@ -382,9 +393,9 @@ pub static TELNET_MESSAGE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(||
         name: "message".to_string(),
         type_hint: "string".to_string(),
         description: "The line the client sent, trimmed of its trailing CR/LF and surrounding \
-            whitespace. Note that Telnet option negotiation is not handled: if a real telnet \
-            client is used, its IAC (0xFF) negotiation bytes arrive as part of the first \
-            message rather than being stripped"
+            whitespace. Telnet option negotiation is removed before you see it, so a real \
+            telnet client's IAC (0xFF) sequences never appear here - but the server does not \
+            *answer* them either, so the client stays in its default line mode"
             .to_string(),
         required: true,
     }])
