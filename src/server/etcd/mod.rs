@@ -661,12 +661,14 @@ impl EtcdServer {
         let mut kvs = vec![];
         let mut more = false;
         let mut count = 0;
+        let mut answered = false;
 
         for protocol_result in &execution_result.protocol_results {
             if let crate::llm::actions::protocol_trait::ActionResult::Custom { name, data } =
                 protocol_result
             {
                 if name == "etcd_range_response" {
+                    answered = true;
                     // Parse LLM response
                     if let Some(kvs_array) = data.get("kvs").and_then(|v| v.as_array()) {
                         for kv_json in kvs_array {
@@ -701,6 +703,30 @@ impl EtcdServer {
                         .unwrap_or(kvs.len() as i64);
                 }
             }
+        }
+
+        // The same fail-closed rule `handle_put` already applies, for the same reason.
+        // `kvs: [], count: 0` is not the absence of an answer - in etcd it *is* an answer, and
+        // a definite one: the key does not exist. A model that declined to answer, a static
+        // handler with an empty action list, or a reply whose actions were all unrecognised
+        // used to reach the client as "no such key", which is indistinguishable from a real
+        // lookup that found nothing. A handler that genuinely means "nothing here" says so
+        // with `etcd_range_response` carrying an empty `kvs`, and that still works.
+        //
+        // INTERNAL rather than UNAVAILABLE: nothing is saturated, so inviting a retry would
+        // be wrong.
+        if !answered {
+            drop(meta_lock);
+            Log::new(Some(&status_tx)).warn(
+                "etcd Range could not be answered: the handler produced no etcd_range_response \
+                 (decision=fail_closed_no_action). Replying grpc-status 13 (INTERNAL); \
+                 \"key not found\" is not being invented."
+                    .to_string(),
+            );
+            return Err(GrpcFailure::new(
+                GRPC_INTERNAL,
+                crate::utils::WireFailure::Unavailable.prefixed_text(),
+            ));
         }
 
         let response = RangeResponse {
@@ -893,16 +919,37 @@ impl EtcdServer {
         // Process LLM action results to build response
         let mut meta_lock = meta.lock().await;
         let mut deleted: i64 = 0;
+        let mut answered = false;
 
         for protocol_result in &execution_result.protocol_results {
             if let crate::llm::actions::protocol_trait::ActionResult::Custom { name, data } =
                 protocol_result
             {
                 if name == "etcd_delete_range_response" {
+                    answered = true;
                     // LLM provided delete response
                     deleted = data.get("deleted").and_then(|v| v.as_i64()).unwrap_or(0);
                 }
             }
+        }
+
+        // Same rule as Put and Range. An unanswered DeleteRange used to bump the revision and
+        // return `deleted: 0` under a fresh revision number - a client reads that as a delete
+        // that ran and matched nothing, which is a successful, committed operation. Refuse
+        // instead, and do not move the revision counter for something that did not happen.
+        if !answered {
+            drop(meta_lock);
+            Log::new(Some(&status_tx)).warn(
+                "etcd DeleteRange could not be answered: the handler produced no \
+                 etcd_delete_range_response (decision=fail_closed_no_action). Replying \
+                 grpc-status 13 (INTERNAL); no deletion is being reported.\
+                 "
+                .to_string(),
+            );
+            return Err(GrpcFailure::new(
+                GRPC_INTERNAL,
+                crate::utils::WireFailure::Unavailable.prefixed_text(),
+            ));
         }
 
         meta_lock.increment_revision();
