@@ -59,7 +59,28 @@ use std::path::{Path, PathBuf};
 ///   `ctx.startup_params` to the call was the whole fix. `server:nntp:send_first` was the last
 ///   entry and took this exit: NNTP's greeting is mandatory (RFC 3977 5.1), so the parameter
 ///   could never have been honoured in the `false` direction and declaring it was the bug.
-const DEAD_PARAM_BASELINE: &[&str] = &[];
+/// # These five did not appear because the code got worse — the check got stronger
+///
+/// The scan above used to treat a name appearing in `get_startup_examples()` as proof that
+/// something read it. It is the opposite: the examples exist to teach the model to *pass* the
+/// parameter, so they guarantee the name appears in the file whether or not anything consumes
+/// it. Excluding the examples body — September 2026 — immediately surfaced five parameters
+/// that had been dead the whole time and invisible for that exact reason.
+///
+/// **So this baseline is not new debt. It is old debt becoming visible**, and it may only
+/// shrink, like every other entry above did.
+const DEAD_PARAM_BASELINE: &[&str] = &[
+    // bitcoind's RPC is auth-mandatory and this client sets no `Authorization` header
+    // anywhere, so authenticated Bitcoin Core RPC cannot work at all.
+    "client:bitcoin:rpc_password",
+    "client:bitcoin:rpc_user",
+    // The printer path cannot be set; the client uses its own constant.
+    "client:ipp:printer_path",
+    // Passes `ctx.remote_addr` as the interface, so the declared knob is a dashboard field
+    // that does nothing. (`arp` looks identical but genuinely reads its own.)
+    "client:isis:interface",
+    "server:bluetooth_ble:auto_advertise",
+];
 
 fn strip_comments(src: &str) -> String {
     src.lines()
@@ -159,6 +180,28 @@ fn dead_params(root: &Path, role: &str) -> BTreeSet<String> {
             &actions_path,
             &mut elsewhere,
         );
+
+        // ...and *except* `get_startup_examples()`, which was the hole in this check.
+        //
+        // The conservative rule above exempts a parameter whose name appears anywhere else in
+        // the directory, so that a name read through a helper is not flagged. But
+        // `get_startup_examples()` puts every parameter name into a JSON example, in this same
+        // file. So the examples whose whole purpose is teaching the model to pass a parameter
+        // were what hid the fact that nothing reads it — the check was being defeated by the
+        // documentation of the thing it checks.
+        //
+        // `client/bitcoin` is the proof: it declares `rpc_user` and `rpc_password`, has no
+        // `Authorization` handling anywhere, and bitcoind's RPC is auth-mandatory, so
+        // authenticated Bitcoin Core RPC cannot work — and this test was silent about it
+        // because both names appear in a usage example.
+        if let Some(ex) = src.find("fn get_startup_examples") {
+            if let Some(ex_open) = src[ex..].find('{').map(|i| ex + i) {
+                if let Some(ex_close) = balanced(&src, ex_open) {
+                    let examples = &src[ex_open..ex_close];
+                    elsewhere = elsewhere.replace(examples, "");
+                }
+            }
+        }
 
         let mut from = 0usize;
         while let Some(rel) = body[from..].find("name:") {
