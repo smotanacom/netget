@@ -1164,6 +1164,17 @@ Read before assuming a subsystem is sound:
   real tables are depth 2), and the AMQP bound was verified by *removing* it and watching the
   test binary abort with `stack overflow`. **If a decoder can call itself, it needs a counter.**
 
+  **Six protocols have now had this, and bencode was the cheapest: ~1 KB on the wire.**
+  `serde_bencode` 0.2 has no depth limit anywhere, and one byte (`l` or `d`) opens a level —
+  measured at 1 000 levels to kill a 2 MiB tokio worker and 9 215 to kill the 8 MiB main
+  thread. The DHT server took those bytes from an **unauthenticated UDP socket**.
+
+  **A typed decode is no safer than a raw `Value`**, which is the part worth remembering:
+  serde's derive skips unknown fields through `IgnoredAny`, and that lands straight back in
+  `deserialize_any`. Deriving `Deserialize` onto a shallow struct does *not* bound nesting.
+  `src/utils/bencode.rs` walks the bytes iteratively before any decode, and is shared because
+  four call sites across three protocols under two Cargo features need it.
+
 - **Bound the *declared* size, not the remainder.** NATS's `HPUB` limit was applied to
   `total − header`, leaving `header` unbounded — and `header == total` passes every check with
   a zero-length body. `HPUB x 4000000000 4000000000` is thirty bytes on the wire and buffers
