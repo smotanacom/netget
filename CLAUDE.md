@@ -1179,12 +1179,27 @@ Read before assuming a subsystem is sound:
   `async-stomp` are unconditional and do run. When a rating depends on a third-party client,
   check whether that client is actually compiled where the gate runs.
 
-- **`nfsserve` 0.10.2 has a pre-auth remote DoS and we have not fixed it.** It resizes
-  buffers from a wire-supplied 31/32-bit length with no cap, so a **~40-byte unauthenticated**
-  `MOUNTPROC3_MNT` carrying a `dirpath` length of `0xFFFFFFFF` asks for 4 GiB and Rust aborts
-  the process on allocation failure. There is a second amplification path where MOUNT path
-  components drive LLM calls. Fixing it needs a listener-side guard or a patched crate — it was
-  documented rather than half-done. **Do not expose the `nfs` server to an untrusted network.**
+- **`nfsserve` 0.10.2 has a pre-auth remote DoS, and the fix is a guard on our side of the
+  socket.** It resizes buffers from a wire-supplied 31/32-bit length with no cap, so a
+  **~40-byte unauthenticated** `MOUNTPROC3_MNT` carrying a `dirpath` length of `0xFFFFFFFF`
+  asks for gigabytes. A second path amplifies: `path_to_id` calls `lookup()` per `/`-separated
+  component and every `lookup` here is one LLM round-trip, so two bytes on the wire buy a model
+  call.
+
+  `NFSTcpListener` owns its own `accept()` loop, so **there is no seam inside the crate** —
+  which is what made this look unfixable. NetGet now binds the public listener itself and runs
+  `nfsserve` on a loopback-only ephemeral port behind `src/server/nfs/guard.rs`, which decides
+  every RPC record from the length the peer *announced*, before anything is read or allocated
+  for it (2 MiB per fragment and per record, 64 fragments, 256 connections). `path_to_id` is
+  overridden with a 32-component bound. A refusal is answered in NFS's own vocabulary — an
+  accepted reply with `accept_stat = GARBAGE_ARGS` carrying the call's own xid — and logged
+  `decision=fail_closed_*`. **Not** a `WireFailure` string: the record layer has no free-text
+  field, so there is nothing to put one in.
+
+  Still exposed: the XDR decoder inside an admitted record is bounded rather than validated,
+  the loopback backend is reachable by other local processes, and there is no per-connection
+  idle timeout. `tests/server/nfs/dos_guard_test.rs` covers both paths from the wire, and both
+  bounds were verified by removing them.
 
 - **Fail-open defaults are the most dangerous pattern in this codebase.** When the LLM returns
   nothing usable, a protocol must not fall through to a permissive default. OAuth2 did: no

@@ -9,7 +9,7 @@ and `privilege_requirement` is correctly `None` — a declaration here could nev
 (`src/server/nfs/mod.rs`) implements its `NFSFileSystem` trait, and every trait method turns
 into one LLM round-trip.
 
-## Robustness: framing is `nfsserve`'s, and it is not bounded
+## Robustness: framing is `nfsserve`'s, and NetGet screens it
 
 `nfsserve` owning RPC, XDR and message framing is a real simplification, but it is **not** a
 safety guarantee, and the line above reads as though it were.
@@ -18,24 +18,65 @@ safety guarantee, and the line above reads as though it were.
 places: `rpcwire.rs` resizes its fragment buffer by the 31-bit fragment length, and `xdr.rs`
 resizes the `Vec<u8>` that a `dirpath`, a `filename`, a file handle and WRITE data each
 deserialise into by a 32-bit length field. A ~40-byte `MOUNTPROC3_MNT` whose `dirpath` length
-is `0xFFFFFFFF` therefore asks for a 4 GiB zeroed allocation **before any authentication**,
-and Rust aborts the process on allocation failure. A non-last fragment with the EOF bit clear
-appends into one buffer indefinitely. There is no read timeout, no connection cap, and a task
-is spawned per RPC message.
+is `0xFFFFFFFF` therefore asks for a multi-gigabyte zeroed allocation **before any
+authentication**. A non-last fragment with the EOF bit clear appends into one buffer
+indefinitely.
 
 The MOUNT path compounds it: `nfsserve`'s default `path_to_id` splits the dirpath on `/` and
 calls `lookup()` per component, and every `lookup` is one `consult_llm` round-trip. So an
 unauthenticated peer can turn one MOUNT call into an unbounded sequential chain of LLM calls,
 saturating `--llm-max-concurrent` for every other server in the process.
 
-Neither is fixed. The bounds belong in the framing layer, which means a guard around the
-listener or a patched `nfsserve`, and both are the first thing to address before this protocol
-is exposed to anything untrusted.
+### Both are now bounded, on NetGet's side of the socket
 
-Two related notes on the same layer: because `nfsserve` spawns a task per RPC message, several
-`consult_llm` calls can run concurrently for one peer — NetGet's per-connection
-Idle→Processing→Accumulating state machine is absent here — and this server calls
-`update_connection_stats` nowhere, so the rail shows no peers and no counters for it.
+`NFSTcpListener` owns its own `accept()` loop, so there is no seam inside the crate. **NetGet
+therefore binds the public listener itself** (`spawn_with_llm_actions`) and starts `nfsserve`
+on a loopback-only ephemeral port, relaying each connection through `guard::serve_screened`
+(`src/server/nfs/guard.rs`).
+
+The screen reads every four-byte record marker and decides the fragment **from the number the
+peer announced, before anything is read or allocated for it**:
+
+| bound | value | why |
+|---|---|---|
+| `MAX_FRAGMENT_BYTES` | 2 MiB | twice the 1 MiB `wtmax` the default `fsinfo` advertises |
+| `MAX_RECORD_BYTES` | 2 MiB | all fragments of one record, summed |
+| `MAX_FRAGMENTS_PER_RECORD` | 64 | zero-length non-last fragments otherwise loop forever |
+| `FRAGMENT_BODY_TIMEOUT` | 30s | an announced fragment that then stalls |
+| `MAX_CONCURRENT_CONNECTIONS` | 256 | what makes "bounded per connection" bounded overall |
+| `MAX_PATH_COMPONENTS` | 32 | MOUNT dirpath components, i.e. LLM calls |
+
+A refusal is **refuse, not truncate**, and it is answered in NFS's own vocabulary rather than
+dropped: an accepted reply carrying the call's own xid with `accept_stat = GARBAGE_ARGS`
+("procedure can't decode params"), then the connection closes. The xid is recovered by reading
+four bytes of the refused record and nothing else. It is deliberately *not* a
+`crate::utils::WireFailure` string — the record-marking layer has no free-text field, and
+inventing one would be the leak `WireFailure` exists to prevent. Every refusal logs a stable
+tag: `decision=fail_closed_oversize_fragment`, `_oversize_record`, `_fragment_flood`,
+`_fragment_stalled`, `_connection_cap`.
+
+`LlmNfsFileSystem::path_to_id` overrides the crate's default rather than wrapping it, and
+refuses an over-long path outright — resolving the first 32 components of a longer path would
+hand back a directory the client did not ask for. `mount_handlers` turns the `Err` into
+`MNT3ERR_NOENT`, so the peer gets a definite refusal and the reason is in the log under
+`decision=fail_closed_path_components`.
+
+`tests/server/nfs/dos_guard_test.rs` drives both from the wire.
+
+### What is still exposed
+
+- **The XDR decoder inside an admitted record is still the unchecked one.** Every length it
+  reads now lives inside a record the screen already sized, so the worst it can ask for is
+  `MAX_RECORD_BYTES` — bounded, not validated.
+- **The backend listener is reachable by any local process.** It binds `127.0.0.1:0`, so
+  nothing off-box can skip the screen, but a process on the same machine can. That is the
+  standard cost of a proxy and there is no way around it without patching the crate.
+- **No per-connection idle timeout.** A peer may hold an open connection indefinitely without
+  sending a record; only the concurrency cap bounds that.
+- Because `nfsserve` spawns a task per RPC message, several `consult_llm` calls can still run
+  concurrently for one peer — NetGet's per-connection Idle→Processing→Accumulating state
+  machine is absent here — and this server calls `update_connection_stats` nowhere, so the rail
+  shows no peers and no counters for it.
 
 ## No storage — and that is the whole design
 
@@ -240,6 +281,15 @@ mount a filesystem" and call for exactly that test; it exists.
 
 `llm_failure_test.rs` asserts SERVERFAULT on the wire when the backend fails, and that the
 reply carries no trailing bytes.
+
+`dos_guard_test.rs` — the two pre-auth denial-of-service paths. A record marker announcing
+2 GiB is answered with a well-formed `GARBAGE_ARGS` reply carrying the attacker's own xid, the
+connection is closed, and a fresh client still mounts afterwards (the control that would catch
+a process-wide abort). A 200-component MOUNT dirpath is answered `MNT3ERR_NOENT` with the
+lookup mock recording **zero** calls — the mock answers every lookup *successfully* on purpose,
+so nothing but the bound stops the walk. Both were verified by removing the bound: the first
+times out waiting for a reply that never comes, the second records 200 LLM calls and answers
+`MNT3_OK`.
 
 ## References
 

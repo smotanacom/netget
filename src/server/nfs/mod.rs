@@ -15,7 +15,15 @@
 //!   not carry raw bytes or base64. Outbound data is written verbatim; inbound writes go
 //!   through `String::from_utf8_lossy`, so a client writing binary hands the model U+FFFD.
 //!   Binary files cannot be served or received faithfully, and there is no encoded fallback.
+//!
+//! A third thing worth knowing before reading `spawn_with_llm_actions`: **NetGet owns the
+//! listening socket, not `nfsserve`.** The crate sizes buffers from a wire-supplied length
+//! with no cap, which made a forty-byte unauthenticated MOUNT a whole-process denial of
+//! service, and `NFSTcpListener` exposes no seam to fix that inside it. So `nfsserve` runs on
+//! a loopback-only ephemeral port and every connection is relayed to it through
+//! [`guard::serve_screened`], which refuses over-long RPC records before the crate sees them.
 pub mod actions;
+pub mod guard;
 
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
@@ -69,29 +77,50 @@ impl NfsServer {
             status_tx.clone(),
         );
 
-        // Bind NFS TCP listener with LLM filesystem
-        let nfs_listener = NFSTcpListener::bind(&listen_addr.to_string(), filesystem)
+        // The public listener is ours. `nfsserve` gets a loopback-only ephemeral port and
+        // never sees a byte that `guard` has not already sized - see `guard`'s module docs
+        // for what the crate does with an unchecked length, and why there is no way to fix
+        // it in place.
+        let public = tokio::net::TcpListener::bind(listen_addr)
             .await
-            .context("Failed to bind NFS TCP listener")?;
+            .with_context(|| format!("Failed to bind NFS listener on {}", listen_addr))?;
+        let actual_addr = public
+            .local_addr()
+            .context("Failed to read the NFS listener's address")?;
 
-        let actual_port = nfs_listener.get_listen_port();
-        let actual_addr = SocketAddr::new(listen_addr.ip(), actual_port);
+        let nfs_listener = NFSTcpListener::bind("127.0.0.1:0", filesystem)
+            .await
+            .context("Failed to bind the internal NFS backend listener")?;
+        let backend_addr: SocketAddr =
+            SocketAddr::from(([127, 0, 0, 1], nfs_listener.get_listen_port()));
 
-        Log::new(Some(&status_tx)).info(format!("NFS server listening on {}", actual_addr));
+        Log::new(Some(&status_tx)).info(format!(
+            "NFS server listening on {} (record screen in front of nfsserve on {})",
+            actual_addr, backend_addr
+        ));
 
         // Spawn server handler
-        let accept_handle = tokio::spawn(async move {
+        let backend_status_tx = status_tx.clone();
+        let backend_handle = tokio::spawn(async move {
             info!("NFS server handler started");
 
             // Handle connections forever (nfsserve manages connections internally)
             if let Err(e) = nfs_listener.handle_forever().await {
-                Log::new(Some(&status_tx)).error(format!("NFS server error: {}", e));
+                Log::new(Some(&backend_status_tx)).error(format!("NFS server error: {}", e));
             }
         });
 
-        // Register the accept loop so stop_server can abort it and release the port.
+        // Register the accept loops so stop_server can abort them and release the ports.
         app_state
-            .register_server_task(server_id, accept_handle)
+            .register_server_task(server_id, backend_handle)
+            .await;
+
+        let screen_state = app_state.clone();
+        let screen_handle = tokio::spawn(async move {
+            guard::serve_screened(public, backend_addr, screen_state, server_id, status_tx).await;
+        });
+        app_state
+            .register_server_task(server_id, screen_handle)
             .await;
 
         Ok(actual_addr)
@@ -322,6 +351,43 @@ impl NFSFileSystem for LlmNfsFileSystem {
     fn capabilities(&self) -> nfsserve::vfs::VFSCapabilities {
         // Enable all capabilities since LLM controls everything
         nfsserve::vfs::VFSCapabilities::ReadWrite
+    }
+
+    /// Resolve a MOUNT `dirpath` to a file id, bounded at [`guard::MAX_PATH_COMPONENTS`].
+    ///
+    /// The default implementation in `nfsserve`'s `NFSFileSystem` splits the path on `/` and
+    /// calls `lookup()` once per component, with no limit. In this server every `lookup` is
+    /// one LLM round-trip, so an **unauthenticated** `MOUNTPROC3_MNT` carrying
+    /// `a/a/a/a/...` — two bytes per component — turned one forty-byte call into a sequential
+    /// chain of thousands of model calls, saturating `--llm-max-concurrent` for every other
+    /// server in the process. That is the amplification half of the `nfsserve` denial of
+    /// service; the framing half lives in [`guard`].
+    ///
+    /// Refuse, do not truncate: resolving the first 32 components of a longer path would hand
+    /// back the id of a directory the client did not ask for. `mount_handlers` turns any `Err`
+    /// into `MNT3ERR_NOENT`, so the peer gets a definite refusal on the wire and the reason is
+    /// in the log under a `decision=` tag.
+    async fn path_to_id(&self, path: &[u8]) -> Result<fileid3, nfsstat3> {
+        let components: Vec<&[u8]> = path
+            .split(|&b| b == b'/')
+            .filter(|c| !c.is_empty())
+            .collect();
+
+        if components.len() > guard::MAX_PATH_COMPONENTS {
+            Log::new(Some(&self.status_tx)).error(format!(
+                "NFS path_to_id: refused a {}-component path decision=fail_closed_path_components \
+                 (limit {}) - each component is one LLM call",
+                components.len(),
+                guard::MAX_PATH_COMPONENTS
+            ));
+            return Err(nfsstat3::NFS3ERR_NAMETOOLONG);
+        }
+
+        let mut fid = self.root_dir();
+        for component in components {
+            fid = self.lookup(fid, &component.into()).await?;
+        }
+        Ok(fid)
     }
 
     async fn lookup(&self, dirid: fileid3, filename: &filename3) -> Result<fileid3, nfsstat3> {
