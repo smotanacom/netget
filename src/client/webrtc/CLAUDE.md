@@ -25,11 +25,23 @@ This implementation is well-suited for LLM control, enabling peer-to-peer messag
 > open_client webrtc ws://localhost:8080/alice "Send hello to bob"
 ```
 
-**How it works**:
+> **WebSocket signalling mode does not complete a connection. It is unfinished, not a
+> feature.** The client connects, registers, gathers ICE and then waits forever: the offer
+> is stored and never sent, because the only action that would send it — `send_offer` — has
+> no reachable sink (`connect_with_llm_actions` says so at the store site, and the command
+> loop refuses the action). It is additionally wire-incompatible with NetGet's own `webrtc`
+> *server*, whose first frame must be an `offer` while this client sends `register`.
+>
+> This section used to say "Automatically sends SDP offer and receives answer / No user
+> intervention required", while the same file admitted the gap 460 lines further down. Use
+> manual mode, or fix `send_offer`. Everything below describes the intended design, not a
+> path that runs.
+
+**How it is meant to work**:
 - Client connects to WebSocket signaling server
 - Registers with unique peer ID (from URL path)
-- Automatically sends SDP offer and receives answer
-- No user intervention required for connection setup
+- Sends SDP offer and receives answer *(not implemented — see above)*
+- No user intervention required for connection setup *(not implemented — see above)*
 
 **Events**:
 - `webrtc_signaling_connected` - Triggered when connected to signaling server
@@ -184,7 +196,12 @@ UDP
     - Provides peer_id and server_url
     - LLM can initiate offer to target peer
 
-4. **`webrtc_connected`** (DEPRECATED) - Use `webrtc_channel_opened` instead
+**`webrtc_connected` is gone, and was never deprecated — it was never emitted.** It was
+declared inline in `get_event_types()` and raised by nothing, so an operator could route on a
+pattern that could not fire. It escaped `event_emit_sites_test` because that scan looks for
+`&CONST` emit sites and this declaration was an inline `EventType::new`, invisible to it.
+`get_event_types()` now returns the same `LazyLock` statics the client actually emits, so the
+two cannot drift again. Use `webrtc_channel_opened`.
 
 ### Actions
 
@@ -259,20 +276,41 @@ UDP
 
 - **Idle**: No LLM processing in progress
 - **Processing**: LLM call active for current message
-- **Accumulating**: Messages queued while LLM processes
+There is deliberately **no third `Accumulating` state**. There was one, and it was only ever
+entered, never left: `queued_messages` was pushed to in two places and popped in none, and no
+arm processed the queue — so the first message to arrive during an LLM call latched the
+channel into `Accumulating` and every later message went onto a `Vec` nobody read, silently,
+for the life of the connection. This section claimed "No message loss during LLM processing";
+it was total message loss after the first overlap.
+
+**What happens now**: a message arriving during an in-flight LLM call is dropped with a WARN
+naming the count and the channel, and the channel returns to `Idle` and keeps working. Both
+counts are strictly better than before — the same messages were already lost, and they used
+to take the channel with them. A real drain belongs here (the *server* does it properly in
+`PeerCtx::handle_peer_event`) and needs the `on_message` closure's body extracted first.
 
 **Benefits**:
 - Independent state per channel
-- No message loss during LLM processing
 - Prevents concurrent LLM calls per channel
 
 ### Stored Data (protocol_data)
 
 - `sdp_offer`: Generated SDP offer (JSON)
 - `peer_connection_ptr`: Raw pointer to RTCPeerConnection (for lifecycle)
-- `signaling_mode`: "manual" or WebSocket config (mode, url, peer_id)
 
-**Safety Note**: Raw pointers are stored to maintain Arc references across async boundaries. Pointers are cleaned up when client is removed.
+**Safety note, and it is a real caveat rather than a reassurance.** This claimed "Pointers are
+cleaned up when client is removed". They are not, in the normal path: the only thing that
+reclaims the `Arc` is the 5-second polling task, and that task is registered with
+`register_client_task`, so `AppState::remove_client` **aborts it in the same write guard that
+removes the client**. It therefore never observes the removal. The `Arc` is never reclaimed,
+`peer_connection.close()` is never called, and webrtc-rs's internal ICE/DTLS tasks — which
+nothing in NetGet owns — keep running. Known and not yet fixed; the fix is to close the peer
+connection from the removal path rather than from a poller racing it.
+
+`signaling_mode` is **not** stored as a startup parameter any more. It was declared as one and
+read by nothing — the mode is derived solely from `remote_addr`'s scheme — so passing
+`signaling_mode: "websocket"` with a non-`ws://` address silently gave manual mode. The
+declaration is gone; the field on the client record still reflects the derived mode.
 
 ### Client Data (In-Memory)
 
@@ -309,14 +347,29 @@ UDP
 - Adds network dependency
 - Privacy considerations (signaling server sees SDP)
 
-**Compatibility**: Works with NetGet's WebRTC signaling server (`webrtc_signaling` protocol)
+**Compatibility**: untested against anything. The frame schema matches `webrtc_signaling`'s
+on paper, but no test connects the two and the offer is never sent in any case (see the banner
+at the top of this file). It is definitely **not** compatible with the `webrtc` *server*,
+which accepts only `offer` as a first frame and answers `register` with an error this client
+has no arm for. This line used to read "Works with NetGet's WebRTC signaling server".
 
 ## Limitations
 
 1. **No Media**: Audio/video not supported (data channels only)
 2. **Basic Signaling**: No ICE candidate trickling (waits for full ICE gathering)
 3. **No Renegotiation**: Connection parameters fixed at offer time
-4. **Basic ICE**: Only Google STUN, no custom TURN servers (configurable via startup params)
+4. **Basic ICE**: **no ICE server by default** — host candidates only, which is what a
+   loopback or LAN peer uses. Pass `ice_servers` for STUN or TURN. The default used to be
+   Google's public STUN server, so merely starting a client talked to a third party; the
+   *server* side was fixed for that reason and the client was left behind. (This item used to
+   say "Only Google STUN, no custom TURN servers (configurable via startup params)", which
+   contradicted itself inside one sentence — the parenthetical was the true half.)
+7. **`send_offer` does nothing**, so WebSocket signalling cannot complete a connection. See
+   the banner at the top of this file. The injected-command path returns `Rejected`, not
+   `Executed` — it used to report `Executed` with a detail string saying in as many words
+   that nothing was sent, and the *variant* is what callers branch on.
+8. **The peer connection is leaked on removal**, not closed. See the safety note under
+   "Stored Data".
 5. **Channel Lifecycle**: Channels created after connection established may have timing issues
 6. **No Channel Negotiation**: Target peer must be ready to receive channels
 

@@ -50,16 +50,22 @@ pub enum SignalingMode {
 }
 
 /// Connection state for LLM processing
+///
+/// Two states, not the usual three. `Accumulating` was the third and is gone: it
+/// was only ever *entered*, never left, because nothing drained the queue that
+/// justified it — see the comment where the state is reset after an LLM call.
 #[derive(Debug, Clone, PartialEq)]
 enum ConnectionState {
     Idle,
     Processing,
-    Accumulating,
 }
 
 /// Per-channel LLM state
 struct ChannelData {
     state: ConnectionState,
+    /// Messages that arrived while an LLM call was in flight. Cleared (with a
+    /// WARN) when the call finishes; see the reset site for why this is not a
+    /// real queue yet.
     queued_messages: Vec<(String, bool)>, // (message, is_binary)
     /// The live channel, used to send on it from outside the on_message closure
     /// (injected commands go through this).
@@ -146,9 +152,22 @@ impl WebRtcClient {
                     .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
                     .filter(|s| !s.is_empty())
                     .collect(),
-                None => vec!["stun:stun.l.google.com:19302".to_owned()],
+                None => Vec::new(),
             },
-            None => vec!["stun:stun.l.google.com:19302".to_owned()],
+            // No ICE server by default.
+            //
+            // This used to default to `stun:stun.l.google.com:19302`, so starting a
+            // WebRTC client — for any reason, including a loopback test — sent a
+            // binding request to Google. The *server* was fixed for exactly this
+            // reason (see `src/server/webrtc/CLAUDE.md`) and the client was left
+            // behind, which is why `tests/client/webrtc/command_channel_test.rs` has
+            // to pass `"ice_servers": []` explicitly to keep the repo's
+            // localhost-only rule.
+            //
+            // An empty list is correct for host candidates, which is what a
+            // loopback or LAN peer uses. Pass `ice_servers` to reach anything
+            // behind NAT — the operator chooses which third party to talk to.
+            None => Vec::new(),
         };
         let config = RTCConfiguration {
             ice_servers: ice_urls
@@ -863,14 +882,38 @@ impl WebRtcClient {
                             }
                         }
 
-                        // Reset state and process queued messages
+                        // Return to Idle, unconditionally.
+                        //
+                        // This used to latch into `Accumulating` whenever the queue
+                        // was non-empty — and **nothing ever drained that queue**.
+                        // `queued_messages` was pushed to in two places and popped in
+                        // none, and there was no `Accumulating` arm that processed
+                        // anything, so the first message to arrive during an LLM call
+                        // made the channel permanently deaf: every later message was
+                        // pushed onto a Vec nobody read, silently, for the life of
+                        // the connection. The client's own CLAUDE.md advertised "no
+                        // message loss during LLM processing".
+                        //
+                        // Overlapping messages are now dropped **loudly** and the
+                        // channel keeps working. That is strictly better than the
+                        // old behaviour on both counts: the same messages were
+                        // already lost, and they took the channel with them. A real
+                        // drain belongs here — the server does it properly in
+                        // `PeerCtx::handle_peer_event` — but it needs this closure's
+                        // body extracted first, and a silent permanent hang is not
+                        // something to leave standing while that waits.
                         let mut client_data_lock = client_data.lock().await;
                         if let Some(channel_data) = client_data_lock.channels.get_mut(&label) {
-                            if !channel_data.queued_messages.is_empty() {
-                                channel_data.state = ConnectionState::Accumulating;
-                            } else {
-                                channel_data.state = ConnectionState::Idle;
+                            let dropped = channel_data.queued_messages.len();
+                            if dropped > 0 {
+                                channel_data.queued_messages.clear();
+                                warn!(
+                                    "WebRTC client {} dropped {} message(s) that arrived on \
+                                     '{}' during an LLM call; the channel stays open",
+                                    client_id, dropped, label
+                                );
                             }
+                            channel_data.state = ConnectionState::Idle;
                         }
                     }
                     ConnectionState::Processing => {
@@ -880,124 +923,24 @@ impl WebRtcClient {
                             trace!("WebRTC client {} queued message on '{}' (already processing)", client_id, label);
                         }
                     }
-                    ConnectionState::Accumulating => {
-                        // Add to queue
-                        if let Some(channel_data) = client_data_lock.channels.get_mut(&label) {
-                            channel_data.queued_messages.push((message_text, is_binary));
-                        }
-                    }
                 }
             })
         }));
     }
 
-    /// Apply remote SDP answer to complete the connection (manual mode)
-    pub async fn apply_answer(
-        client_id: ClientId,
-        answer_json: String,
-        app_state: Arc<AppState>,
-    ) -> Result<()> {
-        info!("WebRTC client {} applying SDP answer", client_id);
-
-        // Get peer connection pointer
-        let pc_ptr = app_state
-            .with_client_mut(client_id, |client| {
-                client
-                    .get_protocol_field("peer_connection_ptr")
-                    .and_then(|v| v.as_u64())
-                    .map(|p| p as usize)
-            })
-            .await
-            .flatten()
-            .context("No peer connection found")?;
-
-        // Reconstruct Arc (temporarily)
-        let peer_connection = unsafe { Arc::from_raw(pc_ptr as *const RTCPeerConnection) };
-        let pc_clone = Arc::clone(&peer_connection);
-        // Prevent drop
-        let _ = Arc::into_raw(peer_connection);
-
-        // Parse answer
-        let answer: RTCSessionDescription =
-            serde_json::from_str(&answer_json).context("Failed to parse SDP answer JSON")?;
-
-        // Set remote description
-        pc_clone.set_remote_description(answer).await?;
-
-        info!(
-            "WebRTC client {} connection established (manual mode)",
-            client_id
-        );
-
-        Ok(())
-    }
-
-    /// Create a new data channel on an existing connection
-    pub async fn create_channel(
-        client_id: ClientId,
-        channel_label: String,
-        app_state: Arc<AppState>,
-        _status_tx: mpsc::UnboundedSender<String>,
-        _llm_client: OllamaClient,
-    ) -> Result<()> {
-        info!(
-            "WebRTC client {} creating channel '{}'",
-            client_id, channel_label
-        );
-
-        // Get peer connection pointer
-        let pc_ptr = app_state
-            .with_client_mut(client_id, |client| {
-                client
-                    .get_protocol_field("peer_connection_ptr")
-                    .and_then(|v| v.as_u64())
-                    .map(|p| p as usize)
-            })
-            .await
-            .flatten()
-            .context("No peer connection found")?;
-
-        // Reconstruct Arc (temporarily)
-        let peer_connection = unsafe { Arc::from_raw(pc_ptr as *const RTCPeerConnection) };
-        let pc_clone = Arc::clone(&peer_connection);
-        // Prevent drop
-        let _ = Arc::into_raw(peer_connection);
-
-        // Create new data channel
-        let _data_channel = pc_clone.create_data_channel(&channel_label, None).await?;
-        info!(
-            "WebRTC client {} created channel '{}'",
-            client_id, channel_label
-        );
-
-        // Get client data (stored somewhere - need to track this)
-        // For now, we'll create a new client data structure
-        // TODO: This should be stored in app_state or passed differently
-
-        Ok(())
-    }
-
-    /// Send message on a specific channel (with hex decoding for binary data)
-    pub async fn send_on_channel(
-        client_id: ClientId,
-        channel_label: String,
-        message: String,
-        is_hex: bool,
-        _app_state: Arc<AppState>,
-    ) -> Result<()> {
-        trace!(
-            "WebRTC client {} sending on '{}': {} (hex: {})",
-            client_id,
-            channel_label,
-            message,
-            is_hex
-        );
-
-        // TODO: Get channel from stored client data
-        // For now, this is a placeholder
-
-        Ok(())
-    }
+    // Three `pub async fn`s used to live here — `apply_answer`, `create_channel` and
+    // `send_on_channel` — and all three are gone. They had no callers anywhere in
+    // `src/` or `tests/`, and two of them resurrected an `RTCPeerConnection` from an
+    // integer read back out of `protocol_data`:
+    //
+    //     let pc = unsafe { Arc::from_raw(pc_ptr as *const RTCPeerConnection) };
+    //
+    // with no liveness check of any kind. The live paths for the first two are in
+    // `command_loop` below, which holds the real `Arc` and needs no `unsafe` at all;
+    // `send_on_channel` was a `// TODO: Get channel from stored client data`
+    // followed by `Ok(())`, i.e. a public function that reported success and sent
+    // nothing — the fail-open shape the root CLAUDE.md names as the most dangerous
+    // pattern in this codebase, sitting one function away from a live send path.
 
     /// Drain injected commands (the dashboard's \[ send \]) until the channel closes - the
     /// client was removed, or the peer connection failed - or an injected `disconnect` ends
@@ -1126,13 +1069,18 @@ impl WebRtcClient {
                             }),
                         }
                     }
-                    // Honest gap, not a silent no-op: the signaling WebSocket sink is owned
-                    // by `websocket_signaling`'s own task and is not reachable from here, and
-                    // in manual mode there is no signaling connection at all.
-                    "send_offer" => Ok(ClientSendOutcome::Executed {
-                        detail: "send_offer was NOT sent: the signaling WebSocket sink belongs \
-                                 to the signaling task and cannot be reached from an injected \
-                                 command"
+                    // Honest gap, and `Rejected` rather than `Executed` because that is
+                    // the variant callers branch on. The detail string said "was NOT
+                    // sent" in as many words while the outcome read as success, so the
+                    // dashboard drew a tick and any programmatic caller matching on
+                    // `Executed` concluded the offer had gone out. The signaling
+                    // WebSocket sink is owned by `websocket_signaling`'s own task and is
+                    // not reachable from here, and in manual mode there is no signaling
+                    // connection at all.
+                    "send_offer" => Ok(ClientSendOutcome::Rejected {
+                        error: "send_offer cannot be injected: the signaling WebSocket sink \
+                                belongs to the signaling task and is not reachable from a \
+                                command, and manual mode has no signaling connection at all"
                             .to_string(),
                     }),
                     other => Ok(ClientSendOutcome::Rejected {
