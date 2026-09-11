@@ -204,7 +204,11 @@ impl UsbKeyboardProtocol {
         });
 
         if let Some(id) = requested {
-            let connection_id = ConnectionId::new(id as u32);
+            // `id as u32` silently aliased: `connection_id: 4294967298` resolved to connection
+            // 2 and typed into somebody else's session.
+            let connection_id = u32::try_from(id).map(ConnectionId::new).map_err(|_| {
+                anyhow::anyhow!("connection_id {} is not a valid connection number", id)
+            })?;
             return handlers.get(&connection_id).cloned().ok_or_else(|| {
                 anyhow::anyhow!("No USB keyboard attached on connection {}", connection_id)
             });
@@ -434,7 +438,11 @@ impl Server for UsbKeyboardProtocol {
                 }
 
                 let count = reports.len();
-                let typing_speed_ms = action["typing_speed_ms"].as_u64().unwrap_or(0);
+                // Bounded: the pacing task below sleeps `typing_speed_ms` between every
+                // report and is not registered with `register_server_task`, so an
+                // unbounded value left a task alive long past the server it belongs to.
+                // 5 seconds a keystroke is already slower than any human.
+                let typing_speed_ms = action["typing_speed_ms"].as_u64().unwrap_or(0).min(5_000);
 
                 if count == 0 {
                     return Err(anyhow::anyhow!("type_text requires non-empty 'text'"));

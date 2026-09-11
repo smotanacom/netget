@@ -321,4 +321,47 @@ mod usb_keyboard_e2e {
         server.stop().await?;
         Ok(())
     }
+
+    /// A `connection_id` too large to be one must not silently become a different one.
+    ///
+    /// Every USB protocol resolved the model's `connection_id` with `ConnectionId::new(id as
+    /// u32)`. That wraps: `4294967298` is connection **2** after the cast, so an action naming
+    /// a nonsense connection would have been carried out against a real host's session -- and
+    /// on a keyboard that means keystrokes typed into somebody else's window. The value is now
+    /// read at its full width and refused if it is not a connection number.
+    #[tokio::test]
+    async fn an_out_of_range_connection_id_is_refused_rather_than_wrapped() {
+        use ::netget::llm::actions::Server;
+        use ::netget::server::usb::keyboard::UsbKeyboardProtocol;
+
+        let protocol = UsbKeyboardProtocol::new();
+
+        let err = protocol
+            .execute_action(serde_json::json!({
+                "type": "type_text", "text": "hello", "connection_id": 4_294_967_298u64
+            }))
+            .expect_err("a connection id past 32 bits must be refused");
+        let message = format!("{err}");
+        assert!(
+            message.contains("4294967298"),
+            "the refusal must quote the value the model sent, so its repair loop can see it: \
+             {message}"
+        );
+        assert!(
+            !message.contains("connection 2"),
+            "the id must not have been narrowed to a real connection: {message}"
+        );
+
+        // An in-range id that simply has no host attached is a different, ordinary error --
+        // otherwise the check above would be indistinguishable from refusing everything.
+        let err = protocol
+            .execute_action(serde_json::json!({
+                "type": "type_text", "text": "hello", "connection_id": 2
+            }))
+            .expect_err("no host is attached in this test");
+        assert!(
+            format!("{err}").contains("No USB keyboard attached"),
+            "an in-range id must reach handler lookup: {err}"
+        );
+    }
 }
