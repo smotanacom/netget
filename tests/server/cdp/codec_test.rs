@@ -638,4 +638,165 @@ mod tests {
             );
         }
     }
+
+    // =========================================================================================
+    // Control characters, and the 802.3 length field that stops being a length
+    // =========================================================================================
+    //
+    // Two separate defects with the same root: a value the model or a neighbour supplies was
+    // put on the wire, or into a log line, without a bound or a check.
+
+    /// A control character in a model-authored identifier is refused, not encoded.
+    ///
+    /// `CDP advertisement from {device_id} ({platform}) on {port_id}` is rendered by
+    /// `src/protocol/log_template.rs`, which quotes nothing, and the same three strings are what
+    /// `show cdp neighbors detail` prints. A newline in `device_id` forges a whole neighbour
+    /// entry in both.
+    #[test]
+    fn a_control_character_in_a_model_authored_identifier_is_refused() {
+        for field in ["device_id", "port_id", "platform"] {
+            let mut action = json!({
+                "type": "send_cdp_advertisement",
+                "device_id": "myswitch",
+            });
+            action[field] = json!("myswitch\nimpostor");
+
+            let ad = CdpAdvertisement::from_action(&action)
+                .expect("from_action does not encode, so it accepts the value");
+            let err = encode_payload(&ad)
+                .expect_err("encoding a control character into a neighbour table must be refused")
+                .to_string();
+            assert!(
+                err.contains(field) && err.contains("control character"),
+                "the error must name the field and say what is wrong, got: {err}"
+            );
+        }
+    }
+
+    /// **Software Version is exempt, and that is a decision, not an oversight.**
+    ///
+    /// A real IOS version banner is multi-line — the scapy Catalyst capture above contains
+    /// several `0x0a` bytes — and it is the single most useful thing a recon operator reads off
+    /// a CDP frame. It is interpolated into no log template, only into the JSON-escaped trace
+    /// line, so refusing its newlines would cost real information to close a hole that is not
+    /// there.
+    #[test]
+    fn a_newline_in_software_version_is_allowed_because_a_real_banner_has_one() {
+        let banner = "Cisco Internetwork Operating System Software\nIOS (tm) C2950 Software";
+        let ad = CdpAdvertisement::from_action(&json!({
+            "type": "send_cdp_advertisement",
+            "device_id": "myswitch",
+            "software_version": banner,
+        }))
+        .expect("valid");
+
+        let payload = encode_payload(&ad).expect("a real multi-line banner must encode");
+        let decoded = decode_payload(&payload).expect("decodes");
+        assert_eq!(
+            decoded.advertisement.software_version.as_deref(),
+            Some(banner),
+            "the banner must survive byte for byte, newlines included"
+        );
+    }
+
+    /// A hostile neighbour's Device ID, Port ID or Platform cannot forge a log line.
+    ///
+    /// The payload is built by hand, because the encoder now refuses these values — using it
+    /// would test nothing. These are octets a real attacker puts on the wire and CDP permits:
+    /// the TLV is length-prefixed, so a newline is legal framing. Only the rendering is wrong.
+    #[test]
+    fn a_neighbours_control_characters_cannot_forge_a_log_line() {
+        let mut payload: Vec<u8> = vec![2, 180, 0, 0];
+        let mut push = |type_code: u16, value: &[u8]| {
+            payload.extend_from_slice(&type_code.to_be_bytes());
+            payload.extend_from_slice(&((value.len() + 4) as u16).to_be_bytes());
+            payload.extend_from_slice(value);
+        };
+        push(0x0001, b"core-sw\n2026-09-11 CDP advertisement from attacker");
+        push(0x0003, b"Gi0/1\rforged");
+        push(0x0006, b"cisco WS-C2950-12\nimpostor");
+
+        let decoded = decode_payload(&payload).expect("a hostile payload is still well-formed CDP");
+        let ad = &decoded.advertisement;
+
+        for (field, text) in [
+            ("device_id", ad.device_id.as_deref().expect("present")),
+            ("port_id", ad.port_id.as_deref().expect("present")),
+            ("platform", ad.platform.as_deref().expect("present")),
+        ] {
+            assert!(
+                !text.chars().any(char::is_control),
+                "{field} reached the event still carrying a control character: {text:?}. It is \
+                 rendered unquoted into `CDP advertisement from {{device_id}} ({{platform}}) on \
+                 {{port_id}}`, so this forges a log line."
+            );
+        }
+
+        // Neutralised, not truncated: an operator still sees what the neighbour claimed.
+        assert!(ad.device_id.as_deref().unwrap().starts_with("core-sw "));
+        assert_eq!(ad.port_id.as_deref(), Some("Gi0/1 forged"));
+        assert_eq!(ad.platform.as_deref(), Some("cisco WS-C2950-12 impostor"));
+
+        // `summary()` goes to the status stream and the access log, so it must be one line.
+        assert!(
+            !ad.summary().chars().any(char::is_control),
+            "summary() is written to the status stream as one line: {:?}",
+            ad.summary()
+        );
+    }
+
+    /// An oversized advertisement is refused rather than silently ceasing to be an 802.3 frame.
+    ///
+    /// **This is the narrowing cast the bound exists for.** `u16::try_from(body_len)` alone
+    /// accepts everything up to 65535, but IEEE 802.3 reserves `0x0600` (1536) and above for
+    /// EtherType — so a frame whose length field lands there is read by every receiver as an
+    /// Ethernet II frame of that protocol and the CDP behind it is never parsed. The test
+    /// asserts both halves: that it is refused, *and* that the value it would have written is in
+    /// the EtherType range, so the bound cannot be deleted on the grounds that it never fires.
+    #[test]
+    fn an_oversized_frame_is_refused_rather_than_aliasing_an_ethertype() {
+        let payload = vec![0u8; 2000];
+        let body_len = LLC_SNAP_HEADER.len() + payload.len();
+        assert!(
+            body_len >= 0x0600,
+            "this test is only meaningful if the length field would land in the EtherType range"
+        );
+
+        let err = encode_frame([0x02, 0, 0, 0, 0, 1], &payload)
+            .expect_err("a frame whose length field is an EtherType must be refused")
+            .to_string();
+        assert!(
+            err.contains("1500") && err.contains("EtherType"),
+            "the error must say why 1500 is the bound, got: {err}"
+        );
+
+        // The largest frame that is still unambiguously a length is accepted, so the bound is
+        // exactly at the encapsulation boundary rather than somewhere convenient.
+        let largest = vec![0u8; codec::MAX_8023_LENGTH - LLC_SNAP_HEADER.len()];
+        let frame = encode_frame([0x02, 0, 0, 0, 0, 1], &largest).expect("1500 is a valid length");
+        assert_eq!(
+            u16::from_be_bytes([frame[12], frame[13]]) as usize,
+            codec::MAX_8023_LENGTH
+        );
+    }
+
+    /// Each text field is bounded on its own, so the error names the field.
+    ///
+    /// The binding constraint is the frame length above; this exists only so a model that sends
+    /// a 400-byte platform string is told *which* field was too long instead of being handed an
+    /// arithmetic complaint about the whole frame.
+    #[test]
+    fn an_overlong_identifier_is_refused_by_name() {
+        let ad = CdpAdvertisement::from_action(&json!({
+            "type": "send_cdp_advertisement",
+            "device_id": "x".repeat(codec::MAX_TEXT_TLV + 1),
+        }))
+        .expect("from_action does not encode");
+
+        let err = encode_payload(&ad).expect_err("an overlong device_id is refused").to_string();
+        assert!(
+            err.contains("device_id") && err.contains(&codec::MAX_TEXT_TLV.to_string()),
+            "the error must name the field and the bound, got: {err}"
+        );
+    }
 }

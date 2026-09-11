@@ -436,13 +436,13 @@ impl Lldpdu {
         push_tlv(&mut out, TLV_TIME_TO_LIVE, &self.ttl.to_be_bytes())?;
 
         if let Some(text) = &self.port_description {
-            push_text_tlv(&mut out, TLV_PORT_DESCRIPTION, "port_description", text)?;
+            push_text_tlv(&mut out, TLV_PORT_DESCRIPTION, "port_description", text, false)?;
         }
         if let Some(text) = &self.system_name {
-            push_text_tlv(&mut out, TLV_SYSTEM_NAME, "system_name", text)?;
+            push_text_tlv(&mut out, TLV_SYSTEM_NAME, "system_name", text, false)?;
         }
         if let Some(text) = &self.system_description {
-            push_text_tlv(&mut out, TLV_SYSTEM_DESCRIPTION, "system_description", text)?;
+            push_text_tlv(&mut out, TLV_SYSTEM_DESCRIPTION, "system_description", text, true)?;
         }
         if let Some((supported, enabled)) = self.capabilities {
             let mut value = Vec::with_capacity(4);
@@ -522,7 +522,10 @@ impl Lldpdu {
                     port_description.get_or_insert_with(|| text_of(value));
                 }
                 (_, TLV_SYSTEM_NAME) => {
-                    system_name.get_or_insert_with(|| text_of(value));
+                    // An identifier, and one that is logged unquoted — see
+                    // `identifier_text_of`. The two *description* TLVs above and below use
+                    // `text_of` because a real System Description is a multi-line banner.
+                    system_name.get_or_insert_with(|| identifier_text_of(value));
                 }
                 (_, TLV_SYSTEM_DESCRIPTION) => {
                     system_description.get_or_insert_with(|| text_of(value));
@@ -825,7 +828,23 @@ fn push_tlv(out: &mut Vec<u8>, tlv_type: u8, value: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn push_text_tlv(out: &mut Vec<u8>, tlv_type: u8, field: &str, text: &str) -> Result<()> {
+/// Push a text TLV, refusing a control character unless the field is one a real device sends
+/// multi-line.
+///
+/// `multiline_is_real` is true only for System Description, which is `sysDescr` — for IOS, a
+/// multi-line banner. Refusing a newline there would make the most realistic value the model can
+/// send unencodable, and that field is interpolated into no log line. Every other text TLV is an
+/// identifier or an `ifDescr` and is refused; see [`reject_control_characters`].
+fn push_text_tlv(
+    out: &mut Vec<u8>,
+    tlv_type: u8,
+    field: &str,
+    text: &str,
+    multiline_is_real: bool,
+) -> Result<()> {
+    if !multiline_is_real {
+        reject_control_characters(field, text)?;
+    }
     let bytes = text.as_bytes();
     if bytes.len() > MAX_STRING_TLV_VALUE {
         bail!(
@@ -834,6 +853,32 @@ fn push_text_tlv(out: &mut Vec<u8>, tlv_type: u8, field: &str, text: &str) -> Re
         );
     }
     push_tlv(out, tlv_type, bytes)
+}
+
+/// Refuse a control character in anything that becomes a text TLV.
+///
+/// **An LLDP text TLV is an entry in somebody's neighbour table.** A system name, port
+/// description or chassis ID is copied verbatim into `show lldp neighbors`, into an NMS's
+/// topology display and — on this side — into the `lldp_neighbor_advertisement` log line, none
+/// of which quote what they print. A newline in a `system_name` therefore does not merely look
+/// odd: it forges a *second* neighbour entry in every one of those displays, which is the whole
+/// point of impersonating a switch. Nothing in 802.1AB's text TLVs needs a control character,
+/// so refusing is free.
+///
+/// Refused rather than stripped, deliberately. On this side the model authored the string and
+/// can be told; silently rewriting its answer would make the frame disagree with the decision
+/// the log records. [`text_of`] takes the opposite exit for the same reason: a *neighbour*
+/// cannot be told, and dropping it would hide it.
+fn reject_control_characters(field: &str, text: &str) -> Result<()> {
+    if let Some((index, bad)) = text.char_indices().find(|(_, c)| c.is_control()) {
+        bail!(
+            "'{field}' contains a control character (U+{:04X}) at byte {index}. LLDP text is \
+             copied verbatim into a neighbour's topology table and into log lines, so a newline \
+             or NUL there forges a whole neighbour entry. Send printable text only.",
+            bad as u32
+        );
+    }
+    Ok(())
 }
 
 /// Encode a Chassis ID or Port ID value: the leading subtype octet, then the identifier in
@@ -874,6 +919,9 @@ fn encode_id_value(kind: IdKind, subtype: u8, value: &str) -> Result<Vec<u8>> {
         if value.is_empty() {
             bail!("{} must not be empty", kind.label());
         }
+        // Every remaining subtype carries free text, and a chassis or port ID is the key a
+        // neighbour's table is indexed on — the worst possible place for an embedded newline.
+        reject_control_characters(kind.label(), value)?;
         out.extend_from_slice(value.as_bytes());
     }
 
@@ -926,7 +974,9 @@ fn decode_id_value(kind: IdKind, value: &[u8]) -> Result<(u8, String)> {
             ),
         }
     } else {
-        text_of(body)
+        // A Chassis or Port ID is the key a neighbour table is indexed on, and both appear
+        // unquoted in this protocol's own log line.
+        identifier_text_of(body)
     };
 
     Ok((subtype, text))
@@ -934,10 +984,34 @@ fn decode_id_value(kind: IdKind, value: &[u8]) -> Result<(u8, String)> {
 
 /// TLV text is "not null terminated" ASCII/UTF-8 per 802.1AB. Lossy is right here: a neighbour
 /// that sends invalid UTF-8 should still be reported, not dropped.
+///
+/// Kept **verbatim** apart from the UTF-8 replacement. This is what the two description TLVs go
+/// through, and a real System Description is `sysDescr` — for IOS, a multi-line banner. Folding
+/// its newlines away would destroy the single most useful thing a recon operator reads off the
+/// wire, and neither description is interpolated into a log line (see [`identifier_text_of`]
+/// for the ones that are).
 fn text_of(value: &[u8]) -> String {
     String::from_utf8_lossy(value)
         .trim_end_matches('\0')
         .to_string()
+}
+
+/// [`text_of`], plus control characters replaced by a space — for the fields that are
+/// **identifiers**.
+///
+/// System Name, Chassis ID and Port ID come straight back out in
+/// `LLDP neighbour {system_name} ({chassis_id}) on port {port_id}`, and
+/// `src/protocol/log_template.rs` quotes nothing. A neighbour that puts a newline in its System
+/// Name would otherwise forge a whole extra log line — and a forged neighbour in a topology
+/// display is the entire point of impersonating a switch. 802.1AB's System Name is `sysName`,
+/// an administratively assigned node name, and a Chassis or Port ID is a table key; none of the
+/// three is ever legitimately multi-line, so nothing real is lost. A neighbour cannot be asked
+/// to resend, which is why this strips where [`reject_control_characters`] refuses.
+fn identifier_text_of(value: &[u8]) -> String {
+    text_of(value)
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 fn required_str(action: &Value, key: &str) -> Result<String> {

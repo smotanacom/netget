@@ -277,6 +277,15 @@ fn encode_auth_field(auth: Option<&str>) -> Result<[u8; AUTH_FIELD_LEN]> {
     let Some(auth) = auth else {
         return Ok(field);
     };
+    if let Some((index, bad)) = auth.char_indices().find(|(_, c)| c.is_control()) {
+        return Err(anyhow!(
+            "HSRP auth_data contains a control character (U+{:04X}) at byte {index}. The field \
+             is a plaintext group password that peers print back in their diagnostics and that \
+             this server's own event log renders unquoted, so a newline there forges a log \
+             line. Send printable text only.",
+            bad as u32
+        ));
+    }
     let bytes = auth.as_bytes();
     if bytes.len() > AUTH_FIELD_LEN {
         return Err(anyhow!(
@@ -299,7 +308,17 @@ fn decode_auth_field(field: &[u8]) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    Some(String::from_utf8_lossy(&trimmed).into_owned())
+    // Control characters become spaces. This string reaches the model and is rendered into
+    // `... auth={auth_data}, from={source_address}` by the event's own log template, which
+    // quotes nothing - so a neighbour putting a newline in these eight octets would otherwise
+    // forge a log line. Lossy on purpose: the field is a plaintext group password, never a
+    // control character, and a neighbour cannot be asked to resend.
+    Some(
+        String::from_utf8_lossy(&trimmed)
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect(),
+    )
 }
 
 fn u16_at(buf: &[u8], offset: usize) -> u16 {
@@ -368,13 +387,13 @@ fn encode_v1(message: &HsrpMessage) -> Result<Vec<u8>> {
     })?;
     let hellotime = u8::try_from(message.hellotime_secs).map_err(|_| {
         anyhow!(
-            "HSRPv1 hellotime is a single byte of seconds (1-255), got {}.",
+            "HSRPv1 hellotime is a single byte of seconds (0-255), got {}.",
             message.hellotime_secs
         )
     })?;
     let holdtime = u8::try_from(message.holdtime_secs).map_err(|_| {
         anyhow!(
-            "HSRPv1 holdtime is a single byte of seconds (1-255), got {}.",
+            "HSRPv1 holdtime is a single byte of seconds (0-255), got {}.",
             message.holdtime_secs
         )
     })?;
