@@ -122,14 +122,20 @@ impl Protocol for XmppClientProtocol {
             crate::llm::actions::ParameterDefinition {
                 name: "jid".to_string(),
                 type_hint: "string".to_string(),
-                description: "JID (Jabber ID) to connect as (e.g., user@example.com)".to_string(),
+                description: "JID (Jabber ID) to connect as, e.g. 'alice@example.com'. Supply \
+                              this together with 'password'. Without both, the only remaining \
+                              way to give credentials is to pack them into remote_addr as \
+                              'user@domain@password'."
+                    .to_string(),
                 required: false,
                 example: serde_json::json!("alice@example.com"),
             },
             crate::llm::actions::ParameterDefinition {
                 name: "password".to_string(),
                 type_hint: "string".to_string(),
-                description: "Password for authentication".to_string(),
+                description: "Password for SASL authentication. Supply this together with \
+                              'jid'."
+                    .to_string(),
                 required: false,
                 example: serde_json::json!("secret"),
             },
@@ -238,22 +244,15 @@ impl Protocol for XmppClientProtocol {
         "XMPP"
     }
     fn get_event_types(&self) -> Vec<EventType> {
+        // The three statics, not fresh copies. This used to build a second, parameterless set
+        // with the same ids whose example action was literally `{"type": "placeholder"}` - an
+        // action no executor has - so everything reading `get_event_types()` (the model's
+        // docs, the dashboard's routing editor) was shown a suggestion that cannot run and told
+        // the events carry no fields, while the events actually raised carry up to four.
         vec![
-            EventType::new(
-                "xmpp_connected",
-                "Triggered when XMPP client connects and authenticates",
-                json!({"type": "placeholder", "event_id": "xmpp_connected"}),
-            ),
-            EventType::new(
-                "xmpp_message_received",
-                "Triggered when XMPP message is received",
-                json!({"type": "placeholder", "event_id": "xmpp_message_received"}),
-            ),
-            EventType::new(
-                "xmpp_presence_received",
-                "Triggered when presence update is received",
-                json!({"type": "placeholder", "event_id": "xmpp_presence_received"}),
-            ),
+            XMPP_CLIENT_CONNECTED_EVENT.clone(),
+            XMPP_CLIENT_MESSAGE_RECEIVED_EVENT.clone(),
+            XMPP_CLIENT_PRESENCE_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
@@ -273,16 +272,32 @@ impl Protocol for XmppClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("tokio-xmpp library for async XMPP client")
+            .implementation(
+                "tokio-xmpp 5.0 over StartTLS, aimed at `remote_addr` explicitly \
+                 (`DnsConfig::Addr`/`NoSrv`). It does not do an SRV lookup on the JID's \
+                 domain: a client that cannot reach the host the operator named must fail \
+                 rather than offer the password somewhere else. `connect()` waits for \
+                 `Event::Online` before reporting success. IQ stanzas are received and \
+                 ignored; there is no roster, no MUC and no TLS configuration.",
+            )
             .llm_control("Send messages, presence updates, respond to incoming stanzas")
-            .e2e_testing("Local XMPP server (prosody/ejabberd) or public test server")
+            .e2e_testing(
+                "tests/client/xmpp/command_channel_test.rs (not ignored) covers command-channel \
+                 registration, action execution, the access-log entry and disconnect. It does \
+                 **not** cover a stanza reaching a peer: no XMPP server this suite can start \
+                 completes tokio-xmpp's STARTTLS/SASL negotiation, and NetGet's own XMPP server \
+                 implements neither. The three tests in e2e_test.rs that would cover it are \
+                 `#[ignore]`d and need a real prosody/ejabberd, so they are not evidence of \
+                 anything - which is why this stays Experimental.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
         "XMPP/Jabber client for instant messaging"
     }
     fn example_prompt(&self) -> &'static str {
-        "Connect to XMPP as user@example.com and respond to incoming messages"
+        "Connect to XMPP at xmpp.example.com:5222 as alice@example.com and respond to \
+         incoming messages"
     }
     fn group_name(&self) -> &'static str {
         "Application"
@@ -293,11 +308,20 @@ impl Protocol for XmppClientProtocol {
         use serde_json::json;
 
         StartupExamples::new(
-            // LLM mode: LLM controls XMPP messaging
+            // LLM mode: LLM controls XMPP messaging.
+            //
+            // `remote_addr` is the host to connect to and `jid`/`password` are startup
+            // parameters. Every example here used to give `remote_addr` alone, which cannot
+            // work - there were no credentials in it and the parameters were never read - so
+            // each one failed at connect with "Invalid XMPP address format".
             json!({
                 "type": "open_client",
                 "remote_addr": "xmpp.example.com:5222",
                 "base_stack": "xmpp",
+                "startup_params": {
+                    "jid": "alice@example.com",
+                    "password": "secret"
+                },
                 "instruction": "Send presence and auto-reply to all incoming messages"
             }),
             // Script mode: Code-based deterministic responses
@@ -305,6 +329,10 @@ impl Protocol for XmppClientProtocol {
                 "type": "open_client",
                 "remote_addr": "xmpp.example.com:5222",
                 "base_stack": "xmpp",
+                "startup_params": {
+                    "jid": "alice@example.com",
+                    "password": "secret"
+                },
                 "event_handlers": [{
                     "event_pattern": "xmpp_message_received",
                     "handler": {
@@ -319,6 +347,10 @@ impl Protocol for XmppClientProtocol {
                 "type": "open_client",
                 "remote_addr": "xmpp.example.com:5222",
                 "base_stack": "xmpp",
+                "startup_params": {
+                    "jid": "alice@example.com",
+                    "password": "secret"
+                },
                 "event_handlers": [
                     {
                         "event_pattern": "xmpp_connected",
@@ -362,6 +394,10 @@ impl Client for XmppClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                // Never passed until now, which is why the declared `jid` and `password`
+                // parameters were read by nothing and every documented startup example failed
+                // at connect.
+                ctx.startup_params,
             )
             .await
         })

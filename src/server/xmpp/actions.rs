@@ -22,6 +22,23 @@ pub const DEFAULT_XMPP_DOMAIN: &str = "localhost";
 /// apostrophe emitted a malformed stanza, and a real client's XML parser drops the whole
 /// stream on the first well-formedness error rather than skipping the stanza.
 ///
+/// **Escaping the five markup characters is not enough**, for the same reason. XML 1.0 §2.2
+/// permits only tab, LF, CR and `U+0020` upwards as `Char`, so a C0 control anywhere in a body
+/// - `U+0000`-`U+0008`, `U+000B`, `U+000C`, `U+000E`-`U+001F` - and the noncharacters
+/// `U+FFFE`/`U+FFFF` produce a document that is not well-formed *whatever* it is escaped to;
+/// `&#0;` is forbidden too, so there is no escape for them. A strict parser (rxml, which every
+/// tokio-xmpp client uses, and libexpat behind most others) then aborts the **whole stream**
+/// rather than the stanza, so one stray control byte in one model-composed message ends the
+/// session. Models produce these more often than one would hope - a `U+001B` copied out of a
+/// terminal transcript is enough.
+///
+/// They are dropped rather than rejected, which is the opposite call from IRC's CR/LF rule
+/// (`src/server/irc/wire.rs`) and deliberately so: there, a line break *changes the framing*
+/// and forges a second message, so the action must fail. Here the character carries no meaning
+/// at all - unrenderable in a chat window, and unable to alter the parse - so removing it loses
+/// nothing a reader would have seen, while refusing would drop a message a human is waiting
+/// for. Tab, LF and CR are kept; all three are legal and meaningful in a body.
+///
 /// `send_raw_xml` and `send_iq_result`'s `payload` are deliberately *not* escaped: they exist
 /// precisely so the model can emit markup, and both say so in their descriptions.
 pub(crate) fn xml_escape(text: &str) -> String {
@@ -33,10 +50,24 @@ pub(crate) fn xml_escape(text: &str) -> String {
             '>' => out.push_str("&gt;"),
             '\'' => out.push_str("&apos;"),
             '"' => out.push_str("&quot;"),
-            _ => out.push(c),
+            c if is_xml_char(c) => out.push(c),
+            // Not representable in XML 1.0 in any form; see above.
+            _ => {}
         }
     }
     out
+}
+
+/// Is `c` permitted by XML 1.0 §2.2's `Char` production?
+///
+/// Rust's `char` cannot hold a lone surrogate, so the `D800`-`DFFF` hole in that production is
+/// unreachable here and is not tested for.
+pub(crate) fn is_xml_char(c: char) -> bool {
+    matches!(c,
+        '\u{9}' | '\u{a}' | '\u{d}'
+        | '\u{20}'..='\u{d7ff}'
+        | '\u{e000}'..='\u{fffd}'
+        | '\u{10000}'..='\u{10ffff}')
 }
 
 /// XMPP protocol action handler
@@ -562,7 +593,10 @@ fn send_message_action() -> ActionDefinition {
             Parameter {
                 name: "message_type".to_string(),
                 type_hint: "string".to_string(),
-                description: "Message type: chat, groupchat, headline, normal".to_string(),
+                description: "Message type - one of chat, error, groupchat, headline or \
+                              normal (RFC 6121 §5.2.2; default chat). Any other value is \
+                              rejected, because a client rejects the stanza."
+                    .to_string(),
                 required: false,
             },
         ],

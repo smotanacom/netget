@@ -22,6 +22,7 @@ use crate::state::{ClientId, ClientStatus};
 
 use crate::console_error;
 use futures::StreamExt;
+use tokio_xmpp::connect::DnsConfig;
 use tokio_xmpp::jid::Jid;
 use tokio_xmpp::{Client as XmppClient, Event as XmppEvent};
 use xmpp_parsers::{
@@ -55,16 +56,27 @@ impl XmppClientConnection {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
-        // Parse JID and password from remote_addr or get from startup params
-        let (jid, password, _server_addr) =
-            Self::parse_connection_info(&remote_addr, &app_state, client_id).await?;
+        let (jid, password) = Self::credentials(&remote_addr, startup_params.as_ref())?;
+        let dns_config = Self::target(&remote_addr)?;
 
-        info!("XMPP client {} connecting as {}", client_id, jid);
-        let _ = status_tx.send(format!("[CLIENT] XMPP client {} connecting...", client_id));
+        info!(
+            "XMPP client {} connecting as {} to {}",
+            client_id, jid, dns_config
+        );
+        let _ = status_tx.send(format!(
+            "[CLIENT] XMPP client {client_id} connecting to {dns_config}..."
+        ));
 
-        // Create XMPP client
-        let mut xmpp_client = XmppClient::new(jid.clone(), password);
+        // `XmppClient::new` would ignore `dns_config` entirely and resolve
+        // `_xmpp-client._tcp.<jid domain>` instead - see `target`.
+        let mut xmpp_client = XmppClient::new_starttls(
+            jid.clone(),
+            password,
+            dns_config,
+            tokio_xmpp::xmlstream::Timeouts::default(),
+        );
 
         // Store JID in app state
         app_state
@@ -73,14 +85,22 @@ impl XmppClientConnection {
             })
             .await;
 
-        // Update status
-        app_state
-            .update_client_status(client_id, ClientStatus::Connected)
-            .await;
-        let _ = status_tx.send(format!(
-            "[CLIENT] XMPP client {} connected as {}",
-            client_id, jid
-        ));
+        // **`ClientStatus::Connected` is deliberately not set here.** It used to be, right at
+        // this point - and constructing an `XmppClient` performs no I/O whatsoever: no TCP
+        // connect, no STARTTLS, no SASL. So a client aimed at a dead host, a closed port, or a
+        // server that rejected its password sat in the rail as `Connected` for ever, and the
+        // rail had no way to distinguish it from a working one.
+        //
+        // `Event::Online` is the first point at which the stream is established, authenticated
+        // and bound, and the event loop sets the status when it sees it. The instance stays
+        // `Connecting` until then, which is what `client_startup` already created it as.
+        //
+        // Blocking here until Online would be the other way to make the status honest, and is
+        // the wrong one: `tokio_xmpp` reconnects by itself, so an unreachable host is a state
+        // to display rather than a reason to refuse - and blocking would hold up creation and
+        // leave nothing draining the stanza channel, which is exactly what the injected-command
+        // path needs. A target that cannot be *resolved* is different, and `target()` above
+        // does return `Err` for it, before any of this.
         let _ = status_tx.send("__UPDATE_UI__".to_string());
 
         // Initialize client data
@@ -98,6 +118,13 @@ impl XmppClientConnection {
 
         // Signals the event loop to shut the stream down cleanly (an injected `disconnect`).
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // The event loop signals the first `Online` here, carrying the JID the server actually
+        // bound (which may differ in resource from the one we asked for). The connected-event
+        // task waits on it, so `xmpp_connected` means "the stream is up" rather than "a value
+        // was constructed" - and reports the bound JID rather than the requested one.
+        let (online_tx, online_rx) = tokio::sync::oneshot::channel::<Jid>();
+        let mut online_tx = Some(online_tx);
 
         // Command channel for injected actions (the dashboard's [ send ]). Registered before
         // the connected-event LLM call is even started, because a manual `*` rule parks that
@@ -130,8 +157,19 @@ impl XmppClientConnection {
         let connect_protocol = protocol.clone();
         let connect_stanza_tx = stanza_tx.clone();
         let connect_data = client_data.clone();
-        let connect_jid = jid.to_string();
         let connect_task = tokio::spawn(async move {
+            // Wait for the stream to be up. Firing `xmpp_connected` before that told the model
+            // it was connected when nothing had been dialled yet, so any `send_message` it
+            // answered with was composed against a session that might never exist. If the
+            // stream never comes up this task simply never proceeds; it is registered with
+            // `register_client_task`, so `stop_client` aborts it.
+            let Ok(bound_jid) = online_rx.await else {
+                debug!(
+                    "XMPP client {} never came online; no xmpp_connected event",
+                    client_id
+                );
+                return;
+            };
             let Some(instruction) = connect_state.get_instruction_for_client(client_id).await
             else {
                 return;
@@ -139,7 +177,7 @@ impl XmppClientConnection {
             let event = Event::new(
                 &XMPP_CLIENT_CONNECTED_EVENT,
                 serde_json::json!({
-                    "jid": connect_jid,
+                    "jid": bound_jid.to_string(),
                 }),
             );
             let memory = { connect_data.lock().await.memory.clone() };
@@ -216,6 +254,63 @@ impl XmppClientConnection {
                     // Handle incoming events
                     Some(xmpp_event) = xmpp_client.next() => {
                 trace!("XMPP client {} received event: {:?}", client_id, xmpp_event);
+
+                // Stream lifecycle is handled here rather than in `handle_xmpp_event`,
+                // because it is not a stanza: it must reach the client's status immediately
+                // instead of queueing behind an LLM call, and neither event has anything to
+                // ask the model about.
+                match &xmpp_event {
+                    XmppEvent::Online { bound_jid, resumed } => {
+                        // The one point at which this client is genuinely usable: stream
+                        // established, SASL done, resource bound. `connect()` deliberately
+                        // does not claim `Connected` - constructing the client does no I/O -
+                        // so this is where the rail stops saying `Connecting`.
+                        info!(
+                            "XMPP client {} online as {} (resumed={})",
+                            client_id, bound_jid, resumed
+                        );
+                        app_state
+                            .with_client_mut(client_id, |client| {
+                                client.set_protocol_field(
+                                    "bound_jid".to_string(),
+                                    serde_json::json!(bound_jid.to_string()),
+                                );
+                            })
+                            .await;
+                        app_state
+                            .update_client_status(client_id, ClientStatus::Connected)
+                            .await;
+                        let _ = status_tx.send(format!(
+                            "[CLIENT] XMPP client {client_id} online as {bound_jid}"
+                        ));
+                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                        // Releases the connected-event task; a no-op on a reconnect, because
+                        // the sender is taken the first time.
+                        if let Some(tx) = online_tx.take() {
+                            let _ = tx.send(bound_jid.clone());
+                        }
+                        continue;
+                    }
+                    XmppEvent::Disconnected(e) => {
+                        // Not fatal - `tokio_xmpp` reconnects on its own - but the reason used
+                        // to be bound as `_e` and thrown away under a bare `warn!`, so nothing
+                        // recorded *why* a session dropped and the rail went on showing
+                        // `Connected` through the outage.
+                        warn!(
+                            "XMPP client {} stream dropped: {} (reconnecting)",
+                            client_id, e
+                        );
+                        app_state
+                            .update_client_status(client_id, ClientStatus::Connecting)
+                            .await;
+                        let _ = status_tx.send(format!(
+                            "[WARN] XMPP client {client_id} stream dropped, reconnecting: {e}"
+                        ));
+                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                        continue;
+                    }
+                    XmppEvent::Stanza(_) => {}
+                }
 
                 // Handle event with LLM
                 let mut client_data_lock = client_data.lock().await;
@@ -304,58 +399,118 @@ impl XmppClientConnection {
         Ok("0.0.0.0:0".parse().unwrap())
     }
 
-    /// Parse connection information from remote_addr and startup params
-    async fn parse_connection_info(
+    /// The JID and password to authenticate with.
+    ///
+    /// The declared `jid` / `password` startup parameters are the documented way in, and until
+    /// now they were **read by nothing**: `connect()` never passed `ctx.startup_params`, and
+    /// this function looked in `protocol_data`, which is `Value::Null` at connect time and only
+    /// ever written *after* it. So the only path that worked was the undocumented
+    /// `user@domain@password` packed into `remote_addr` - which no startup example uses, so
+    /// every documented way of starting this client failed at `connect()` with "Invalid XMPP
+    /// address format".
+    ///
+    /// Both forms work now, in that order. The packed form is kept because it is the only way
+    /// to supply credentials over an interface that has no startup parameters.
+    fn credentials(
         remote_addr: &str,
-        app_state: &Arc<AppState>,
-        client_id: ClientId,
-    ) -> Result<(Jid, String, String)> {
-        // Try to get from startup params first
-        let params = app_state
-            .with_client_mut(client_id, |client| {
-                let jid = client
-                    .get_protocol_field("jid")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let pass = client
-                    .get_protocol_field("password")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                (jid, pass)
-            })
-            .await;
+        startup_params: Option<&crate::protocol::StartupParams>,
+    ) -> Result<(Jid, String)> {
+        let declared_jid = startup_params
+            .map(|p| p.get_optional_string("jid"))
+            .transpose()?
+            .flatten();
+        let declared_password = startup_params
+            .map(|p| p.get_optional_string("password"))
+            .transpose()?
+            .flatten();
 
-        let (jid_str, password) = params.unwrap_or((None, None));
-
-        let (jid_str, password) = match (jid_str, password) {
+        let (jid_str, password) = match (declared_jid, declared_password) {
             (Some(j), Some(p)) => (j, p),
-            _ => {
-                // Parse from remote_addr: "user@domain@password"
+            (jid, password) => {
+                // `user@domain@password`, with the password allowed to contain '@'.
                 let parts: Vec<&str> = remote_addr.split('@').collect();
                 if parts.len() < 3 {
-                    return Err(anyhow::anyhow!(
-                        "Invalid XMPP address format. Expected: user@domain@password or set jid/password in startup params"
-                    ));
+                    let missing = match (jid.is_some(), password.is_some()) {
+                        (true, false) => "the 'password' startup parameter is missing",
+                        (false, true) => "the 'jid' startup parameter is missing",
+                        _ => "neither the 'jid' nor the 'password' startup parameter was given",
+                    };
+                    anyhow::bail!(
+                        "XMPP needs a JID and a password: {missing}, and remote_addr \
+                         {remote_addr:?} is not the packed 'user@domain@password' form either. \
+                         Pass startup_params {{\"jid\": \"alice@example.com\", \"password\": \"…\"}} \
+                         alongside remote_addr \"host:port\"."
+                    );
                 }
-                let user = parts[0];
-                let domain = parts[1];
-                let password = parts[2..].join("@"); // In case password contains @
-
-                (format!("{}@{}", user, domain), password)
+                (
+                    format!("{}@{}", parts[0], parts[1]),
+                    parts[2..].join("@"),
+                )
             }
         };
 
-        let jid: Jid = jid_str.parse().context("Invalid JID format")?;
+        let jid: Jid = jid_str
+            .parse()
+            .with_context(|| format!("Invalid JID {jid_str:?}"))?;
+        Ok((jid, password))
+    }
 
-        // Server address is typically the domain from JID
-        let server_addr = remote_addr
-            .split('@')
-            .nth(1)
-            .and_then(|s| s.split(':').next())
-            .unwrap_or("localhost")
-            .to_string();
+    /// Where to actually connect, derived from `remote_addr` and nothing else.
+    ///
+    /// **This is the defect that mattered most in this client.** `XmppClient::new` builds
+    /// `DnsConfig::srv_default_client(jid.domain())` internally, so it resolved
+    /// `_xmpp-client._tcp.<the JID's domain>` and connected *there* - `remote_addr` was parsed
+    /// only to pull credentials out of and was otherwise discarded (it was even bound as
+    /// `_server_addr`). An operator pointing this client at `127.0.0.1:5222` therefore got a
+    /// connection to whatever that domain publishes on the public internet, and the supplied
+    /// password was offered to it. That is the DynamoDB-client shape CLAUDE.md records: a
+    /// client that loses its target and lets a library's default decide where the traffic goes.
+    ///
+    /// So the target comes from `remote_addr`, and if `remote_addr` is not usable this returns
+    /// `Err` rather than falling back to SRV. `DnsConfig::Addr` when it is already an
+    /// `IP:port`, `NoSrv` when it is a hostname (resolved as a plain A/AAAA lookup - still no
+    /// SRV, because the operator named a host and meant it).
+    fn target(remote_addr: &str) -> Result<DnsConfig> {
+        // The packed credential form is `user@domain@password`; the connect target is then the
+        // JID's domain on the default C2S port, because no other host was named.
+        let addr = if remote_addr.split('@').count() >= 3 {
+            let domain = remote_addr.split('@').nth(1).unwrap_or_default();
+            if domain.is_empty() {
+                anyhow::bail!(
+                    "remote_addr {remote_addr:?} has no domain between the first two '@'"
+                );
+            }
+            return Ok(DnsConfig::NoSrv {
+                host: domain.to_string(),
+                port: 5222,
+            });
+        } else {
+            remote_addr.trim()
+        };
 
-        Ok((jid, password, server_addr))
+        if addr.parse::<SocketAddr>().is_ok() {
+            return Ok(DnsConfig::Addr {
+                addr: addr.to_string(),
+            });
+        }
+
+        let (host, port) = addr.rsplit_once(':').ok_or_else(|| {
+            anyhow::anyhow!(
+                "remote_addr {addr:?} must be \"host:port\" (e.g. \"127.0.0.1:5222\"). This \
+                 client refuses to guess a target: falling back to an SRV lookup on the JID's \
+                 domain would send the configured password to a host the operator did not name."
+            )
+        })?;
+        let port: u16 = port
+            .parse()
+            .with_context(|| format!("remote_addr {addr:?} has an unusable port {port:?}"))?;
+        if host.is_empty() {
+            anyhow::bail!("remote_addr {addr:?} has an empty host");
+        }
+        Ok(DnsConfig::NoSrv {
+            host: host.to_string(),
+            port,
+        })
     }
 
     /// Handle an XMPP event with LLM
@@ -370,14 +525,10 @@ impl XmppClientConnection {
         status_tx: &mpsc::UnboundedSender<String>,
     ) {
         let event_opt = match xmpp_event {
-            XmppEvent::Online { .. } => {
-                debug!("XMPP client {} online", client_id);
-                None // Already handled in connect
-            }
-            XmppEvent::Disconnected(_e) => {
-                warn!("XMPP client {} disconnected", client_id);
-                None
-            }
+            // Handled by the event loop before it gets here; see the `Online`/`Disconnected`
+            // arms there. Kept as an explicit no-op rather than a catch-all so a new variant
+            // in a future tokio-xmpp does not silently fall into it.
+            XmppEvent::Online { .. } | XmppEvent::Disconnected(_) => None,
             XmppEvent::Stanza(stanza) => {
                 // Match on stanza type to avoid clone
                 use tokio_xmpp::Stanza;
