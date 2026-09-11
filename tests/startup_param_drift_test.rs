@@ -79,7 +79,6 @@ const DEAD_PARAM_BASELINE: &[&str] = &[
     // Passes `ctx.remote_addr` as the interface, so the declared knob is a dashboard field
     // that does nothing. (`arp` looks identical but genuinely reads its own.)
     "client:isis:interface",
-    "server:bluetooth_ble:auto_advertise",
 ];
 
 fn strip_comments(src: &str) -> String {
