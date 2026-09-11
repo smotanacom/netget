@@ -748,6 +748,8 @@ impl SamlClient {
         reader.config_mut().trim_text(true);
 
         let mut status_code = "urn:oasis:names:tc:SAML:2.0:status:Unknown".to_string();
+        // The only value that means the IdP authenticated the subject (SAML 2.0 Core 3.2.2.2).
+        const STATUS_SUCCESS: &str = "urn:oasis:names:tc:SAML:2.0:status:Success";
         let mut subject = None;
         let mut attributes = serde_json::Map::new();
         let mut in_attribute = false;
@@ -757,8 +759,12 @@ impl SamlClient {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => {
-                    match e.name().as_ref() {
-                        b"saml:Attribute" | b"Attribute" => {
+                    // `local_name()` strips the namespace prefix. Matching the raw qualified
+                    // name only recognised the `saml:` prefix, so a document using `saml2:`
+                    // or `sa:` - both perfectly conforming, and `saml2:` is what ADFS and
+                    // Shibboleth emit - parsed as if it had no subject and no attributes.
+                    match e.local_name().as_ref() {
+                        b"Attribute" => {
                             in_attribute = true;
                             // Extract attribute name
                             for attr in e.attributes() {
@@ -773,7 +779,7 @@ impl SamlClient {
                                 }
                             }
                         }
-                        b"saml:NameID" | b"NameID" => {
+                        b"NameID" => {
                             // Read subject
                             if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
                                 if let Ok(text) = e.unescape() {
@@ -785,9 +791,7 @@ impl SamlClient {
                     }
                 }
                 Ok(Event::Empty(ref e)) => {
-                    if e.name().as_ref() == b"samlp:StatusCode"
-                        || e.name().as_ref() == b"StatusCode"
-                    {
+                    if e.local_name().as_ref() == b"StatusCode" {
                         // Extract status code
                         for attr in e.attributes() {
                             if let Ok(attr) = attr {
@@ -802,8 +806,8 @@ impl SamlClient {
                         }
                     }
                 }
-                Ok(Event::End(ref e)) => match e.name().as_ref() {
-                    b"saml:Attribute" | b"Attribute" => {
+                Ok(Event::End(ref e)) => match e.local_name().as_ref() {
+                    b"Attribute" => {
                         in_attribute = false;
                         current_attr_name = None;
                     }
@@ -826,7 +830,18 @@ impl SamlClient {
             buf.clear();
         }
 
-        let success = status_code.contains("Success");
+        // Exact match, not `status_code.contains("Success")`.
+        //
+        // The StatusCode Value is chosen by whoever sent the response - which on this path is
+        // an unauthenticated peer, since nothing here verifies a signature. `contains` is
+        // satisfied by `...:status:NotSuccess`, by `Success-denied`, by any string with those
+        // seven characters anywhere in it. The model reads `success` to decide whether to
+        // treat the subject as signed in, so a substring test on an attacker-controlled field
+        // was an affirmative default on the one field that matters.
+        //
+        // SAML 2.0 Core 3.2.2.2 defines exactly one success value; a nested second-level
+        // StatusCode never carries it.
+        let success = status_code == STATUS_SUCCESS;
 
         let assertion_data = if success {
             Some(serde_json::json!({
