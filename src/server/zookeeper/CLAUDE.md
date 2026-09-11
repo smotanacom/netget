@@ -1,6 +1,15 @@
 # ZooKeeper Server Implementation
 
-## Status: Experimental
+## Status: Beta
+
+`actions.rs` has declared `DevelopmentState::Beta` for some time; this file said
+`Experimental` and was the stale one. Beta is what the evidence supports:
+`tests/server/zookeeper/e2e_test.rs` drives **`zookeeper-async`**, a real independent client,
+through a completed session, `getData`, `getChildren` and a `NONODE` error — not `#[ignore]`d,
+with no skip-when-missing gate, and `zookeeper-async` is a plain optional dependency the
+`zookeeper` feature turns on rather than an `optional = true` dev-dependency the blocking CI
+job would never compile. Not Stable: that additionally wants spec compliance and scripting
+support reviewed, and neither has been.
 
 Real ZooKeeper clients complete a session against this server, read data and children, and
 receive error codes. It was `Incomplete` because they could not: `parse_request` read bytes

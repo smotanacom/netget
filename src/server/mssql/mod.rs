@@ -210,6 +210,17 @@ impl MssqlHandler {
     async fn run(self, mut stream: TcpStream) -> Result<()> {
         info!("MSSQL connection established");
 
+        // Set only by an `mssql_login_ack`. Nothing else in this loop may set it, so the
+        // admission decision has exactly one source.
+        //
+        // Without this flag the `mssql_login` decision was skippable: the loop dispatched
+        // packet types independently of one another, so a peer that simply never sent a
+        // LOGIN7 and opened with a SQL Batch (0x01) or an RPC (0x03) got its query answered
+        // and `mssql_login` never fired at all. An instruction like "only allow the user
+        // `reporting`" was then enforced against every client that asked to be checked and
+        // none that did not. Real drivers always log in; a hostile peer has no reason to.
+        let mut authenticated = false;
+
         // Handle TDS protocol negotiation and queries
         loop {
             // Read TDS packet header (8 bytes)
@@ -230,6 +241,22 @@ impl MssqlHandler {
             let data_len = header.length - 8;
             let mut data = vec![0u8; data_len as usize];
             stream.read_exact(&mut data).await?;
+
+            // Only the *sent* side was counted before, so every MSSQL connection in the
+            // dashboard rail showed a growing ↑ against a permanently zero ↓, and
+            // `last_activity` was never refreshed by an inbound packet.
+            if let Some(server_id) = self.server_id {
+                self.app_state
+                    .update_connection_stats(
+                        server_id,
+                        self.connection_id,
+                        Some(u64::from(header.length)),
+                        None,
+                        Some(1),
+                        None,
+                    )
+                    .await;
+            }
 
             trace!(
                 "TDS packet type: 0x{:02x}, length: {}",
@@ -252,6 +279,26 @@ impl MssqlHandler {
                         // continue a session whose login failed, so close.
                         break;
                     }
+                    authenticated = true;
+                }
+                0x01 | 0x03 if !authenticated => {
+                    // A statement before the session was admitted. Answer with the same 18456
+                    // an outright refusal produces and close, rather than serving the query:
+                    // the model was never asked about this peer, so nothing has admitted it.
+                    Log::new(Some(&self.status_tx)).warn(
+                        "MSSQL statement refused (decision=fail_closed_not_logged_in): the \
+                         client sent a batch or RPC before any LOGIN7"
+                            .to_string(),
+                    );
+                    self.send_error(
+                        &mut stream,
+                        LOGIN_FAILED_ERROR,
+                        "Login failed. The login is from an untrusted domain and cannot be \
+                         used with Windows authentication.",
+                        14,
+                    )
+                    .await?;
+                    break;
                 }
                 0x01 => {
                     // SQL Batch
@@ -583,16 +630,37 @@ impl MssqlHandler {
         Ok(String::from_utf16_lossy(&sql_u16).trim().to_string())
     }
 
-    /// Parse RPC Request packet to extract SQL query
+    /// Recover the SQL text from an RPC Request packet.
+    ///
+    /// RPC parameter marshalling is not decoded; the statement is found heuristically by
+    /// looking for a SQL keyword in the UTF-16LE payload. Two properties matter and both were
+    /// wrong before:
+    ///
+    /// * **One decode, not one per offset.** This used to slide a 2000-byte window forward two
+    ///   bytes at a time, decoding and upper-casing it at every position: ~32,000 windows for a
+    ///   maximum-size TDS packet, each allocating two strings and running eight substring
+    ///   searches, with no `.await` anywhere to yield the worker. A single 64 KB packet was
+    ///   seconds of CPU on a tokio worker thread, repeatable by one connection. Every window sat
+    ///   on the same UTF-16 code-unit grid (the step is 2 bytes and so is a code unit), so
+    ///   decoding the payload once covers exactly the same text.
+    /// * **`to_ascii_uppercase`, never `to_uppercase`.** The offset of the keyword was taken
+    ///   from the upper-cased string and then used to slice the *original* one. Unicode
+    ///   case mapping changes byte length - U+FB01 `ﬁ` upper-cases to the two bytes `FI`, U+0149
+    ///   `ŉ` to the three bytes `ʼN` - so a payload carrying one such character ahead of the
+    ///   keyword sliced the original mid-character and panicked. That is reachable from the
+    ///   wire, and the panic skipped `handle_connection`'s teardown, leaving the connection
+    ///   `Active` in the dashboard for the life of the process. ASCII case folding never
+    ///   changes a byte's width, so the offset stays valid in both strings.
     fn parse_rpc_request(&self, data: &[u8]) -> Result<String> {
-        // RPC format is complex - we'll try to extract any UTF-16 strings that look like SQL
-        // Most RPC calls are sp_executesql with the SQL as first parameter
+        /// Keywords a statement may open with, searched for case-insensitively.
+        const SQL_KEYWORDS: [&str; 7] = [
+            "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+        ];
 
         if data.len() < 10 {
             return Ok(String::new());
         }
 
-        // Debug: log first 200 bytes as hex
         let preview_len = std::cmp::min(data.len(), 200);
         let hex_preview: String = data[..preview_len]
             .iter()
@@ -604,67 +672,35 @@ impl MssqlHandler {
             preview_len, hex_preview
         );
 
-        // Try to find UTF-16 encoded SQL in the RPC data
-        // Look for common SQL keywords as markers
-        for start in (0..data.len().saturating_sub(10)).step_by(2) {
-            // Try to decode as UTF-16LE
-            let chunk_len = std::cmp::min(data.len() - start, 2000);
-            if chunk_len < 10 {
-                break; // Not enough data left
-            }
-            let chunk = &data[start..start + chunk_len];
+        let units: Vec<u16> = data
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let text = String::from_utf16_lossy(&units);
+        let upper = text.to_ascii_uppercase();
 
-            if chunk.len() % 2 != 0 {
-                continue;
-            }
+        // The earliest keyword anywhere in the payload, not the first keyword in list order:
+        // a packet mentioning DELETE in a parameter name before its actual SELECT should not
+        // have the SELECT truncated away.
+        let Some(pos) = SQL_KEYWORDS.iter().filter_map(|kw| upper.find(kw)).min() else {
+            return Ok(String::new());
+        };
 
-            let text_u16: Vec<u16> = chunk
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
-
-            let text = String::from_utf16_lossy(&text_u16);
-
-            // Check if this looks like SQL (contains SELECT, INSERT, UPDATE, DELETE, CREATE, etc.)
-            let text_upper = text.to_uppercase();
-            if text_upper.contains("SELECT ") ||
-               text_upper.contains("SELECT") || // Also check without space
-               text_upper.contains("INSERT ") ||
-               text_upper.contains("UPDATE ") ||
-               text_upper.contains("DELETE ") ||
-               text_upper.contains("CREATE ") ||
-               text_upper.contains("DROP ") ||
-               text_upper.contains("ALTER ")
-            {
-                // Found SQL - extract it by finding the SQL keyword and taking everything until null or non-printable chars
-                let sql_start_keywords = [
-                    "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
-                ];
-                for keyword in &sql_start_keywords {
-                    if let Some(pos) = text_upper.find(keyword) {
-                        let sql_part = &text[pos..];
-                        // Take only printable ASCII characters (SQL queries should be ASCII)
-                        let sql: String = sql_part
-                            .chars()
-                            .take_while(|c| {
-                                c.is_ascii()
-                                    && (*c == '\n'
-                                        || *c == '\r'
-                                        || *c == '\t'
-                                        || !c.is_ascii_control())
-                            })
-                            .collect();
-                        let sql = sql.trim().to_string();
-                        if !sql.is_empty() && sql.len() >= keyword.len() {
-                            debug!("Extracted SQL from RPC at offset {}: {}", start, sql);
-                            return Ok(sql);
-                        }
-                    }
-                }
-            }
+        // `upper` is ASCII-folded `text`, so byte lengths and char boundaries are identical
+        // and `pos` indexes the same character in both.
+        let sql: String = text[pos..]
+            .chars()
+            .take_while(|c| {
+                c.is_ascii() && (*c == '\n' || *c == '\r' || *c == '\t' || !c.is_ascii_control())
+            })
+            .collect();
+        let sql = sql.trim().to_string();
+        if sql.is_empty() {
+            return Ok(String::new());
         }
 
-        Ok(String::new())
+        debug!("Extracted SQL from RPC at offset {}: {}", pos, sql);
+        Ok(sql)
     }
 
     /// Handle SQL query with LLM.

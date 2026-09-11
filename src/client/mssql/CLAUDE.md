@@ -66,7 +66,21 @@ MSSQL client for connecting to Microsoft SQL Server databases using the `tiberiu
    - Get `rows_affected` for non-SELECT queries
 6. Create `MSSQL_CLIENT_QUERY_RESULT_EVENT` with columns/rows/rows_affected
 7. Call LLM with result event
-8. Execute any follow-up actions from LLM response
+8. Execute any follow-up actions from LLM response, **up to
+   `MAX_FOLLOWUP_DEPTH` (4)**
+
+Step 8 closes a real cycle: the follow-up action is another query, whose result
+raises another event, which the model may answer with another query. Nothing in
+that loop terminates on its own. It had no bound, so a model that answered every
+`mssql_query_result` with another `mssql_query` recursed for as long as the
+process lived — one boxed future and one `register_client_task` handle per step.
+A depth bound, not silence, is the fix the root `CLAUDE.md` prescribes for this
+shape; `src/client/etcd/` uses the same 4 for the identical cycle. Actions
+dropped at the limit are logged at WARN naming the count, so a plan that needed a
+fifth step is visibly cut off rather than silently ignored.
+
+An injected `[ send ]` command starts a fresh chain at depth 0 — it is the
+operator acting, not the model continuing.
 
 ### Result Processing
 

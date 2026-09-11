@@ -59,13 +59,38 @@ All action params are structured — no raw bytes/base64.
 
 ## Fail-closed behaviour
 
-- **SECCHK LLM outage** → refusal: `SECCHKRM` at severity ERROR, never an accept.
-  Distinguishable from a model denial (the outage path logs at `error!` as a
-  backend error; the denial path is the model's `db2_reject_connection`).
-- **No login decision produced** → refusal.
-- **Statement before authentication** → SQLCARD error `-30082` / SQLSTATE `08001`.
-- **Query LLM outage / no answer** → SQLCARD error `-901` / SQLSTATE `58004`
-  (system error), never a success SQLCA.
+Every outcome carries a stable `decision=` tag in the log, following
+`src/server/radius/`. That is not decoration here — it is the **only** place two
+of the three refusals can be told apart:
+
+| situation | wire | log tag |
+|---|---|---|
+| model accepts | `SECCHKRM` INFO / code `0x00` | `decision=model_accept` |
+| model denies | `SECCHKRM` ERROR / the model's code | `decision=model_reject` |
+| handler ran, produced neither verdict | `SECCHKRM` ERROR / `0x0F` | `decision=fail_closed_no_action` |
+| LLM call failed | `SECCHKRM` ERROR / `0x0F` | `decision=fail_closed_llm_error` |
+
+The last two are **byte-identical** on the wire, and differ from a model denial
+only by a code the model itself chose. DRDA's `SECCHKRM` has no field that could
+carry "netget could not reach a decision", and inventing one would be a worse
+answer than the log entry.
+
+The statement path is the same shape, for the same reason — the SQLCA extended
+group that would carry message text is sent NULL:
+
+| situation | wire | log tag |
+|---|---|---|
+| `db2_query_ok` | success or warning SQLCA | `decision=model_answer` |
+| `db2_query_error` | error SQLCA with the model's SQLCODE | `decision=model_reject` |
+| statement before an accepted SECCHK | SQLCODE `-30082` / SQLSTATE `08001` | `decision=fail_closed_not_authenticated` |
+| handler produced no result | SQLCODE `-901` / SQLSTATE `58004` | `decision=fail_closed_no_action` |
+| LLM call failed | SQLCODE `-901` / SQLSTATE `58004` | `decision=fail_closed_llm_error` |
+
+An LLM outage is therefore **never** an accept and never a success SQLCA. The
+backend error itself reaches the log and the status stream only — truncated with
+`truncate_for_log`, and never the wire, which for this protocol is structurally
+guaranteed: no reply DRDA builds here has a free-text field.
+
 - **Unknown DRDA command** → `CMDNSPRM` at severity ERROR (a real reply, never a
   hang).
 

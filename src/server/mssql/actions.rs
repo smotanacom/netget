@@ -86,9 +86,13 @@ impl Protocol for MssqlProtocol {
             .llm_control("Query responses (result sets, errors, completion)")
             .e2e_testing("tiberius client crate")
             .notes(
-                "No authentication and no TLS (pre-login advertises ENCRYPT_NOT_SUP). RPC \
-                 parameters are not decoded - the SQL text is recovered heuristically from the \
-                 packet, so parameterised queries arrive with their placeholders intact",
+                "No credential verification and no TLS (pre-login advertises ENCRYPT_NOT_SUP): \
+                 the LOGIN7 password is never checked, and is deliberately not parsed into the \
+                 mssql_login event. Admission is still a decision - it requires an explicit \
+                 mssql_login_ack, and silence, a model refusal and a backend failure all refuse \
+                 with 18456. RPC parameters are not decoded - the SQL text is recovered \
+                 heuristically from the packet, so parameterised queries arrive with their \
+                 placeholders intact",
             )
             .build()
     }

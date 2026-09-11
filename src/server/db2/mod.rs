@@ -22,7 +22,7 @@ use anyhow::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::actions::protocol_trait::ActionResult;
@@ -345,6 +345,7 @@ impl Db2Handler {
             Ok(result) => match first_custom(&result.protocol_results) {
                 Some(("db2_accept_connection", _)) => {
                     self.authenticated = true;
+                    info!("Db2 SECCHK decision=model_accept user={user_id} rdb={rdb_name}");
                     let _ = self
                         .status_tx
                         .send(format!("→ Db2 login accepted for {user_id}"));
@@ -356,24 +357,36 @@ impl Db2Handler {
                         Some("userid_missing") => drda::secchkcd::USERID_MISSING,
                         _ => drda::secchkcd::PASSWORD_INVALID,
                     };
+                    info!("Db2 SECCHK decision=model_reject user={user_id} secchkcd=0x{code:02X}");
                     let _ = self
                         .status_tx
                         .send("↩ Db2 login denied by model".to_string());
                     secchkrm(corr, drda::svrcod::ERROR, code)
                 }
                 _ => {
-                    // No usable decision → refuse (fail closed).
-                    warn!("Db2: no login decision produced; refusing");
+                    // The handler ran and produced neither verdict. Refuse: silence is not
+                    // consent for an authentication decision.
+                    warn!(
+                        "Db2 SECCHK decision=fail_closed_no_action user={user_id}: the handler \
+                         produced no db2_accept_connection; refusing"
+                    );
                     secchkrm(corr, drda::svrcod::ERROR, drda::secchkcd::PASSWORD_INVALID)
                 }
             },
             Err(e) => {
-                error!("Db2 SECCHK LLM error: {} — refusing login", e);
-                let _ = self
-                    .status_tx
-                    .send(format!("✗ Db2 auth backend error: {e}"));
-                // Fail closed: refuse. Distinct from a model denial (logged as a
-                // backend error) and never an accept.
+                // Fail closed, and never an accept. The SECCHKRM here is byte-identical to the
+                // no-action refusal above and differs from a model denial only in a code the
+                // model chose - DRDA has no field that could carry "netget could not reach a
+                // decision" - so the log is the only place the three can be told apart. That is
+                // the `radius` rule, and why these tags are stable strings rather than prose.
+                error!(
+                    "Db2 SECCHK decision=fail_closed_llm_error user={user_id}: LLM error: {:#}",
+                    e
+                );
+                let _ = self.status_tx.send(format!(
+                    "✗ Db2 auth backend error: {}",
+                    crate::utils::truncate_for_log(&e.to_string(), 200)
+                ));
                 secchkrm(corr, drda::svrcod::ERROR, drda::secchkcd::PASSWORD_INVALID)
             }
         }
@@ -401,7 +414,10 @@ impl Db2Handler {
     /// Handle a statement: emit db2_query, then reply SQLCARD with the model's SQLCA.
     async fn handle_query(&mut self, corr: u16, sql: String) -> Vec<u8> {
         if !self.authenticated {
-            warn!("Db2: statement before authentication; rejecting");
+            warn!(
+                "Db2 statement decision=fail_closed_not_authenticated: a statement arrived \
+                 before an accepted SECCHK; replying SQLCODE -30082"
+            );
             let card = drda::sqlcard_error(-30082, "08001");
             return drda::encode_dss(drda::DSSFMT_OBJDSS, false, corr, &card);
         }
@@ -428,6 +444,7 @@ impl Db2Handler {
                 let card = match first_custom(&result.protocol_results) {
                     Some(("db2_query_ok", data)) => {
                         let sqlcode = data.get("sqlcode").and_then(|v| v.as_i64()).unwrap_or(0);
+                        debug!("Db2 statement decision=model_answer sqlcode={sqlcode}");
                         if sqlcode == 0 {
                             drda::sqlcard_success()
                         } else if sqlcode > 0 {
@@ -444,22 +461,36 @@ impl Db2Handler {
                             .get("sqlstate")
                             .and_then(|v| v.as_str())
                             .unwrap_or("42601");
+                        debug!(
+                            "Db2 statement decision=model_reject sqlcode={sqlcode} \
+                             sqlstate={sqlstate}"
+                        );
                         drda::sqlcard_error(sqlcode, sqlstate)
                     }
                     _ => {
-                        // Fail closed: no usable answer → error SQLCA.
-                        warn!("Db2: no statement result produced; returning error SQLCA");
+                        // Fail closed: no usable answer -> error SQLCA, never a success. -901
+                        // is Db2's own "unexpected system error", which is what this is.
+                        warn!(
+                            "Db2 statement decision=fail_closed_no_action: the handler produced \
+                             no db2_query_ok or db2_query_error; returning SQLCODE -901"
+                        );
                         drda::sqlcard_error(-901, "58004")
                     }
                 };
                 drda::encode_dss(drda::DSSFMT_OBJDSS, false, corr, &card)
             }
             Err(e) => {
-                error!("Db2 query LLM error: {} — returning error SQLCA", e);
-                let _ = self
-                    .status_tx
-                    .send(format!("✗ Db2 query backend error: {e}"));
-                // Fail closed: system error SQLCA, never a success.
+                // The same SQLCA as the no-action path above, for the same reason as SECCHK:
+                // the SQLCA extended group that would carry message text is sent NULL, so the
+                // wire cannot carry the distinction and the log has to.
+                error!(
+                    "Db2 statement decision=fail_closed_llm_error: LLM error: {:#}",
+                    e
+                );
+                let _ = self.status_tx.send(format!(
+                    "✗ Db2 query backend error: {}",
+                    crate::utils::truncate_for_log(&e.to_string(), 200)
+                ));
                 let card = drda::sqlcard_error(-901, "58004");
                 drda::encode_dss(drda::DSSFMT_OBJDSS, false, corr, &card)
             }

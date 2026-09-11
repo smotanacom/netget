@@ -108,6 +108,37 @@ One consequence worth knowing: `connection_id` is minted per TCP connection, not
 gRPC multiplexes. Concurrent RPCs on one connection share it in the access log. The handlers
 pass `None` for `connection_id` to `call_llm` anyway.
 
+## Nothing the handler did not say
+
+Every KV method refuses when its handler ran and produced no response action:
+`Range`, `Put` and `DeleteRange` all reply `grpc-status 13 (INTERNAL)` with no
+message frame, logged `decision=fail_closed_no_action`. INTERNAL rather than
+UNAVAILABLE, because nothing is saturated and a retry would not help.
+
+The reason this matters more here than in most protocols is that etcd's
+"nothing" responses are **positive claims**, and so are indistinguishable from
+real answers:
+
+| method | what the old fall-through sent | how a client reads it |
+|---|---|---|
+| `Range` | `kvs: [], count: 0` | the key does not exist |
+| `DeleteRange` | `deleted: 0` under a **bumped** revision | the delete ran and committed |
+| `Put` | a `PutResponse` with a fresh revision | the write committed |
+
+`Put` was fixed first; `Range` and `DeleteRange` carried the same shape for
+longer. A handler that genuinely means "no such key" still says so — with
+`etcd_range_response` carrying an empty `kvs` — and that is a different thing
+from having produced no action at all.
+
+`Txn` is the one method that does not refuse, deliberately: it defaults
+`succeeded: false`, which is the safe direction (a compare that did not hold, so
+a distributed lock is not acquired) rather than a claim about the key space.
+
+`tests/server/etcd/unanswered_request_test.rs` drives `Range` and `DeleteRange`
+through a zero-action static handler — the shape that reaches the response
+builder with nothing and no backend error to blame — and asserts a non-zero
+status and an empty body.
+
 ## Robustness
 
 - **Body size is capped** at 1.5 MiB (`MAX_REQUEST_BYTES`, matching etcd's own
@@ -152,8 +183,12 @@ this module.
 
 ## Verified
 
+**State: Beta**, and the evidence holds up to the usual checks:
 `tests/server/etcd/e2e_test.rs` drives the real `etcd_client` crate (tonic-based) through
-put / get / range / delete against the mocked LLM, and passes. Not verified against `etcdctl`
+put / get / range / delete against the mocked LLM; it is not `#[ignore]`d, it does not skip
+when anything is missing, and `etcd-client` is a plain optional dependency the `etcd` feature
+turns on, so it compiles wherever the feature does — not an optional dev-dependency that the
+blocking CI job would never build. Not verified against `etcdctl`
 or any other Go client: the gRPC status is returned in the initial HEADERS rather than in
 HTTP/2 trailers, which tonic accepts and which grpc-go may not. Do not "fix" that without a Go
 client to test against — moving the status into trailers would change how tonic classifies the

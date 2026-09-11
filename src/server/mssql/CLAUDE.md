@@ -4,17 +4,21 @@ Microsoft SQL Server TDS 7.4 server. No Rust TDS *server* library exists
 (`tiberius` is a client), so pre-login, login, packet framing and every response
 token are built by hand. **There is no database** — the LLM answers every query.
 
-**State**: Experimental — LLM-authored, not human-reviewed. The pre-login/login
-handshake and the COLMETADATA/ROW/DONE token stream were decoded byte-by-byte
-against MS-TDS during review; no SQL Server client was available on the review
-machine, so `tiberius` interop rests on `tests/server/mssql/test.rs`.
+**State**: Beta — `actions.rs` says `DevelopmentState::Beta` and this file used
+to say `Experimental` two screens away from it. Beta is the correct one: five
+tests drive `tiberius`, a real independent TDS client, through login and queries,
+none `#[ignore]`d and none skipped when something is absent. Not Stable — that
+additionally wants spec compliance and scripting support reviewed, which has not
+been done. The pre-login/login handshake and the COLMETADATA/ROW/DONE token
+stream were separately decoded byte-by-byte against MS-TDS during review.
 **Port**: 1433 by default. **Privilege**: `None` (1433 > 1024).
 **Stack**: `ETH>IP>TCP>TDS>MSSQL`.
 
 ## What the model sees and controls
 
-**Event**: `mssql_query`, fired for SQL Batch (0x01) and for RPC (0x03) when SQL
-text could be recovered from the packet.
+**Events**: `mssql_login`, fired once per LOGIN7 (see "Not implemented"), and
+`mssql_query`, fired for SQL Batch (0x01) and for RPC (0x03) when SQL text could
+be recovered from the packet — but only once the session has been admitted.
 
 | Field | Notes |
 |---|---|
@@ -104,12 +108,28 @@ RPC, 0x0E bulk load (rejected), 0x07 attention (ends the connection).
 
 ### RPC parsing is heuristic
 
-`parse_rpc_request` does not decode the RPC header or its parameters. It scans
-the packet on 2-byte boundaries, decodes each window as UTF-16LE, and returns the
-first run that starts with `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`CREATE`/`DROP`/
-`ALTER`. A parameterised `sp_executesql` therefore reaches the model with its
-`@P1` placeholders intact and its parameter values missing, and an RPC whose SQL
-does not begin with one of those keywords yields an empty DONE.
+`parse_rpc_request` does not decode the RPC header or its parameters. It decodes
+the whole payload once as UTF-16LE and returns the text from the earliest
+occurrence of `SELECT`/`INSERT`/`UPDATE`/`DELETE`/`CREATE`/`DROP`/`ALTER` up to
+the first non-printable character. A parameterised `sp_executesql` therefore
+reaches the model with its `@P1` placeholders intact and its parameter values
+missing, and an RPC containing none of those keywords yields an empty DONE.
+
+Two things about it are load-bearing rather than incidental, and both were wrong:
+
+- **One decode, not one per offset.** It used to slide a 2000-byte window forward
+  two bytes at a time, decoding and upper-casing at every position — about 32,000
+  windows for a maximum-size TDS packet, each allocating two strings and running
+  eight substring searches, with nothing to yield the tokio worker. A single
+  64 KB packet was seconds of CPU, repeatable by one connection. Every window sat
+  on the same UTF-16 code-unit grid, so one decode covers identical text.
+- **ASCII case folding, never `to_uppercase`.** The keyword offset came from the
+  upper-cased copy and was used to slice the *original*. Unicode case mapping
+  changes byte length (U+FB01 `ﬁ` → the two bytes `FI`), so a payload with one
+  such character ahead of the keyword sliced mid-character and **panicked** — from
+  the wire, and the panic skipped `handle_connection`'s teardown, leaving the
+  connection `Active` in the dashboard for the life of the process.
+  `tests/server/mssql/hostile_input_test.rs` covers it.
 
 ## Architecture
 
@@ -118,11 +138,20 @@ does not begin with one of those keywords yields an empty DONE.
   `Error: Address already in use`) and registers the accept-loop `JoinHandle` via
   `AppState::register_server_task()` so `stop_server` releases the socket.
 - One task per connection. `handle_connection` wraps `run` so the connection is
-  always marked `Closed` in `AppState` on exit; outbound bytes/packets are
-  recorded per write.
-- Pre-login advertises version 16.0.0.0 and ENCRYPT_NOT_SUP. Login is accepted
-  unconditionally and answered with ENVCHANGE (database `master`, language
-  `us_english`, packet size 4096), an INFO token and DONE.
+  always marked `Closed` in `AppState` on exit. Both directions are recorded:
+  inbound per TDS packet read, outbound per packet written. Only the outbound
+  side used to be counted, so the rail's `↓` sat at zero for every connection.
+- Pre-login advertises version 16.0.0.0 and ENCRYPT_NOT_SUP. An **admitted**
+  login is answered with ENVCHANGE (database from `mssql_login_ack`, default
+  `master`; language `us_english`; packet size 4096), an INFO token and DONE —
+  see "Not implemented" below for who decides, and note that admission is not the
+  default.
+- **A SQL Batch (0x01) or RPC (0x03) before any LOGIN7 is refused** with 18456
+  severity 14, logged `decision=fail_closed_not_logged_in`, and the connection
+  closes. The dispatch loop used to treat packet types as independent, so a peer
+  that never sent a LOGIN7 had its statements answered and `mssql_login` never
+  fired — the admission decision was skippable by declining to ask for it. Real
+  drivers always log in; a hostile peer has no reason to.
 
 ## Not implemented
 
@@ -160,8 +189,20 @@ does not begin with one of those keywords yields an empty DONE.
 
 ## Testing
 
-`tests/server/mssql/test.rs` (note: `test.rs`, not `e2e_test.rs`), declared in
-`tests/server/mod.rs`.
+`tests/server/mssql/test.rs` (note: `test.rs`, not `e2e_test.rs`),
+`llm_failure_test.rs` and `hostile_input_test.rs`, all declared in
+`tests/server/mssql/mod.rs`.
+
+The first two drive `tiberius`, which is the Beta evidence: a real, independent
+TDS client completing login and queries, not `#[ignore]`d and not skipped when
+anything is missing (`tiberius` is a plain optional dependency the `mssql`
+feature turns on, so it compiles wherever the feature does).
+
+`hostile_input_test.rs` speaks raw TDS on purpose. Both defects it covers are
+*unreachable through `tiberius`* — a conforming driver always logs in and never
+emits a ligature — which is why a suite made entirely of real-client tests
+missed them. A real-client test proves interoperability; it proves nothing about
+what a peer that is not trying to interoperate can do.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features mssql \

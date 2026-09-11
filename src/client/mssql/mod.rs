@@ -22,7 +22,7 @@ use tiberius::{AuthMethod, Client as TiberiusClient, Config, QueryItem, Row};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::compat::TokioAsyncWriteCompatExt;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 /// The live tiberius connection. Named because it appears in five signatures.
 type MssqlConn = TiberiusClient<tokio_util::compat::Compat<TcpStream>>;
@@ -176,7 +176,9 @@ impl MssqlClient {
             .await
             {
                 Ok(result) => {
-                    // Execute actions from LLM response
+                    // Execute actions from LLM response. Depth 0: this is the first step of a
+                    // chain the model may extend by answering each query result with another
+                    // query.
                     for action in result.actions {
                         if let Err(e) = Self::execute_action_internal(
                             client_for_connected.clone(),
@@ -185,6 +187,7 @@ impl MssqlClient {
                             &llm_client,
                             &app_state,
                             &status_tx,
+                            0,
                         )
                         .await
                         {
@@ -207,7 +210,23 @@ impl MssqlClient {
         Ok(local_addr)
     }
 
+    /// How many queries deep this client keeps following the model's answers.
+    ///
+    /// The cycle is real and it is the point of the client: a query is run, its result is
+    /// reported to the model as an event, and the model may answer that event with another
+    /// query. Nothing in that loop terminates on its own, so a model that answers every
+    /// `mssql_query_result` with another `mssql_query` recursed for as long as the process
+    /// lived, growing the heap by one boxed future per step and holding a `register_client_task`
+    /// handle for each. The bound is the fix the root CLAUDE.md prescribes for this shape, and
+    /// 4 is what the etcd client uses for the identical cycle.
+    const MAX_FOLLOWUP_DEPTH: u8 = 4;
+
     /// Execute an action: run it against the connection, then tell the model what happened.
+    ///
+    /// Boxed rather than a plain `async fn` because the recursion is real - `follow_up` calls
+    /// back into this function - and a self-awaiting `async fn` has an infinitely-sized future.
+    /// `depth` is how many queries have already run in this chain.
+    #[allow(clippy::too_many_arguments)]
     fn execute_action_internal<'a>(
         client: Arc<Mutex<MssqlConn>>,
         action: serde_json::Value,
@@ -215,10 +234,14 @@ impl MssqlClient {
         llm_client: &'a OllamaClient,
         app_state: &'a Arc<AppState>,
         status_tx: &'a mpsc::UnboundedSender<String>,
+        depth: u8,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             let applied = Self::apply_action(&client, action, client_id).await?;
-            Self::follow_up(applied, client, client_id, llm_client, app_state, status_tx).await;
+            Self::follow_up(
+                applied, client, client_id, llm_client, app_state, status_tx, depth,
+            )
+            .await;
             Ok(())
         })
     }
@@ -266,6 +289,10 @@ impl MssqlClient {
     }
 
     /// Raise the event an applied action produced and execute whatever the handler answers.
+    ///
+    /// `depth` is how many queries have already run in this chain; see
+    /// [`Self::MAX_FOLLOWUP_DEPTH`].
+    #[allow(clippy::too_many_arguments)]
     async fn follow_up(
         applied: MssqlApplied,
         client: Arc<Mutex<MssqlConn>>,
@@ -273,6 +300,7 @@ impl MssqlClient {
         llm_client: &OllamaClient,
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
+        depth: u8,
     ) {
         let protocol = Arc::new(MssqlClientProtocol::new());
 
@@ -355,6 +383,22 @@ impl MssqlClient {
                 if let Some(mem) = memory_updates {
                     app_state.set_memory_for_client(client_id, mem).await;
                 }
+                // Say what is being dropped and why, rather than letting the chain stop
+                // silently - a model whose plan needed a fifth step should be able to see
+                // from the log that it was cut off, not that its action was ignored.
+                if depth + 1 >= Self::MAX_FOLLOWUP_DEPTH {
+                    if !actions.is_empty() {
+                        warn!(
+                            "MSSQL client {} reached the follow-up depth limit of {}; dropping \
+                             {} further action(s)",
+                            client_id,
+                            Self::MAX_FOLLOWUP_DEPTH,
+                            actions.len()
+                        );
+                    }
+                    return;
+                }
+
                 for follow_action in actions {
                     if let Err(e) = Self::execute_action_internal(
                         client.clone(),
@@ -363,6 +407,7 @@ impl MssqlClient {
                         llm_client,
                         app_state,
                         status_tx,
+                        depth + 1,
                     )
                     .await
                     {
@@ -480,7 +525,9 @@ impl MssqlClient {
                 let state = app_state.clone();
                 let tx = status_tx.clone();
                 let handle = tokio::spawn(async move {
-                    Self::follow_up(applied, client, client_id, &llm_client, &state, &tx).await;
+                    // An injected command is the operator starting a fresh chain, so it
+                    // begins at depth 0 rather than inheriting anything.
+                    Self::follow_up(applied, client, client_id, &llm_client, &state, &tx, 0).await;
                 });
                 app_state.register_client_task(client_id, handle).await;
             }
