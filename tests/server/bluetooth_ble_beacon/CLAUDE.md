@@ -13,7 +13,8 @@ So the suite is split by what is actually knowable:
 |---|---|---|
 | `payload_test.rs` | yes | The advertising octets are correct, against literal spec-derived bytes |
 | `e2e_test.rs` | yes | Registry wiring, startup parameters, and the non-Linux refusal |
-| `e2e_test.rs` (`#[ignore]`d Linux test) | no | That BlueZ accepts the advertisement — run by hand on hardware |
+| `llm_failure_test.rs` | yes | That a handler failure advertises **nothing**, says so, and keeps an overloaded backend distinguishable from a broken one |
+| `e2e_test.rs` + `llm_failure_test.rs` (`#[ignore]`d Linux tests) | no | That BlueZ accepts the advertisement, and that a handler failure leaves nothing registered — run by hand on hardware |
 
 **No LLM calls.** Nothing here starts the netget binary or a mock Ollama, so the budget is zero.
 That is a deliberate change: the previous version of this directory spawned the binary three
