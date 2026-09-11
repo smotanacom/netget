@@ -5,7 +5,13 @@ itself to the nearest-bridge group address, and every agent writes what it hears
 operator reads. There is no request, no response and no acknowledgement.
 
 **State**: `Experimental`, and the reason is specific — see [Maturity](#maturity-and-what-would-earn-beta).
-**Privilege**: `PrivilegeRequirement::RawSockets`.
+**Privilege**: `PrivilegeRequirement::PacketCapture`. **Not `RawSockets`** — this transport is
+libpcap capture and injection and never opens a `SOCK_RAW`. On Linux both come from
+`CAP_NET_RAW`, but on macOS a user in the ChmodBPF group has capture and not raw sockets, so
+declaring `RawSockets` would refuse a host that can in fact run it. That is the
+"don't claim more than you need" rule the root `CLAUDE.md` records for `ospf`, which declared
+`Root` when it wanted `CAP_NET_RAW`. `arp`, `datalink` and `isis` — the other pcap-based L2
+protocols — all declare `PacketCapture` too.
 **Connectionless**: declared, so the 10-second idle sweep reaps the per-neighbour entries.
 **Stack**: `ETH>LLDP`. EtherType `0x88CC`, destination `01:80:C2:00:00:0E`.
 **Spec**: [IEEE 802.1AB-2016](https://standards.ieee.org/standard/802_1AB-2016.html).
@@ -86,7 +92,8 @@ about the transport anyone actually uses.
 
 ## Startup parameters
 
-Four declared, four read, all in `LldpServer::spawn_with_llm_actions`.
+Four declared, four read, all in `LldpConfig::from_params` — *not* in
+`spawn_with_llm_actions`, which only calls it.
 
 | Parameter | Default | What reads it |
 |---|---|---|
@@ -160,8 +167,11 @@ tag, the way `src/server/radius/` separates its cases:
 | `decision=fail_closed_llm_error` | The call failed otherwise |
 
 The full error goes to `tracing::error!` and the status stream — both operator-facing, both
-local. `tests/server/lldp/e2e_test.rs` asserts each of these, including that **no datagram at
-all** follows a failure.
+local. `tests/server/lldp/e2e_test.rs` asserts four of the five, including that **no datagram
+at all** follows a failure. **`model_silent` is asserted by nothing** — it is the branch
+taken when the model answers with actions that are neither an advertisement nor an explicit
+`no_advertisement`, and no test constructs that. Worth closing; an unasserted branch in a
+fail-closed path is exactly where a regression hides.
 
 ### Default behaviour: listen, no LLM
 
@@ -204,6 +214,31 @@ fields exactly as the model wrote them, and `lldpd`'s own advertisements arrive 
 **This has not been run.** It needs root, which no agent here has. Do not claim it, and do not
 promote on the codec tests alone — that is the mistake `wireguard` made, and the correction is
 recorded in the root `CLAUDE.md`.
+
+## Text TLVs are screened, and asymmetrically
+
+An LLDP text TLV is an entry in somebody's neighbour table, copied verbatim into
+`show lldp neighbors`, into an NMS topology display and into this protocol's own
+`LLDP neighbour {system_name} ({chassis_id}) on port {port_id}` log line — which
+`src/protocol/log_template.rs` renders with no quoting. A newline there forges a whole extra
+neighbour entry in every one of those displays, which is exactly what impersonating a switch is
+for. The TLV is length-prefixed, so such a frame is *legal LLDP*; only the rendering is the
+problem, which is why `codec.rs` is where it is handled.
+
+| direction | behaviour |
+|---|---|
+| encode (model → wire) | **refuse**, naming the field — the model wrote the string and can be told, and silently rewriting its answer would make the frame disagree with the decision the log records |
+| decode (wire → event/log) | **replace with a space**, on the identifier TLVs only — a neighbour cannot be asked to resend, and dropping the advertisement would hide a device that is really there |
+
+Chassis ID and Port ID are screened on both sides too, through `encode_id_value` /
+`identifier_text_of` rather than `push_text_tlv`: they are a second code path and would have
+been a second hole.
+
+**System Description is exempt in both directions, deliberately.** It is `sysDescr`; for IOS it
+is a multi-line banner, it is the most useful single thing a recon operator reads off a link,
+and it is interpolated into no log template — only into the JSON-escaped trace line. Refusing
+its newlines would cost real information to close a hole that is not there. The exemption has
+its own test, so a later "simplification" that refuses everything cannot pass either.
 
 ## Not implemented
 

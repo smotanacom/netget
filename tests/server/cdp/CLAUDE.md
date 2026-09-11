@@ -5,10 +5,10 @@ allowed to claim.
 
 | File | Tests | What it proves |
 |---|---|---|
-| `codec_test.rs` | 19 | The wire format, against literal specification bytes and real captures. No server, no LLM, no socket. |
+| `codec_test.rs` | 24 | The wire format, against literal specification bytes and real captures. No server, no LLM, no socket. |
 | `e2e_test.rs` | 3 | Event → LLM → action → frame, end to end, over the declared UDP test transport. |
 
-**22 passing, 0 failing, 0 ignored** at
+**27 passing, 0 failing, 0 ignored** at
 `--no-default-features --features cdp --test-threads=100`.
 
 Nothing here is `#[ignore]`d and nothing skips. Root `CLAUDE.md` lists four
@@ -96,6 +96,17 @@ different** (`assert_ne!`). Without that, someone "simplifying" the padding to
 standard RFC 1071 padding could still pass, and the emitted frames would be
 rejected by every real Cisco device while the suite stayed green.
 
+That claim was not true of the `0x80` case until recently — it asserted only the
+expected value and no `assert_ne!`, so the guard this paragraph calls universal
+had its hole at exactly the contentious input. It now carries **two**: against
+RFC 1071's `0x1be1`, and against **scapy's `0x9b61`**. The second matters more.
+`0x80` is the only input on which the two references disagree, so it is the only
+place a silent switch to scapy's `byte <= 0x80` test would otherwise be
+invisible. All three values (`0x9c61` ours, `0x1be1` RFC 1071, `0x9b61` scapy)
+were recomputed by hand from the prose — RFC 1071's text, Wireshark's
+"Compensate off-by-one error" comment, scapy's `_check_len` — and **not** by
+running this codec, which would have made the assertion circular.
+
 The `0x80` case is the one value where Wireshark and scapy disagree
 (`byte & 0x80` vs `byte <= 0x80`). It is pinned so the choice is recorded as a
 decision. See `src/server/cdp/CLAUDE.md` for why Wireshark wins.
@@ -163,8 +174,13 @@ Six mocked calls total across the three tests — one startup call each, plus on
 event call each (the failure test's event call retries, hence `expect_at_least`).
 Well under the ~10 the root `CLAUDE.md` asks for.
 
-Every test finishes with `wait_for_mocks(30)` then `verify_mocks()`. Without the
-latter a test asserts nothing about LLM interaction at all.
+Every test finishes with `verify_mocks()` — without it a test asserts nothing
+about LLM interaction at all. Two of the three wait with `wait_for_mocks(30)`
+first; `test_cdp_emits_nothing_when_the_llm_fails` instead waits on
+`wait_for_any(["decision=fail_closed_llm_error", "no advertisement emitted"], 30)`,
+which is the right condition for that test — there is no mock response to wait
+for when the point is that the call failed. Both are condition waits, not
+sleeps.
 
 ## Environment requirement — it fails loudly rather than skipping
 
@@ -194,3 +210,40 @@ The path to closing the first two is in `src/server/cdp/CLAUDE.md`: this machine
 has the `feth` driver, so `sudo ifconfig feth0 create && sudo ifconfig feth1 peer
 feth0` gives a real Ethernet pair with no hardware, and Wireshark's own CDP
 dissector is the independent check. **Not done, and not claimed.**
+
+## Control characters and the 802.3 length field
+
+Five tests at the end of `codec_test.rs`, covering two defects with one root: a
+value the model or a neighbour supplied reached the wire, or a log line, with no
+bound and no check.
+
+**Text TLVs.** CDP is unauthenticated, so a neighbour's Device ID is copied
+verbatim into `show cdp neighbors detail` and into this protocol's own
+`CDP advertisement from {device_id} ({platform}) on {port_id}` log line, which
+`src/protocol/log_template.rs` renders unquoted. A newline forges a whole extra
+neighbour entry in both. The TLV is length-prefixed, so such a frame is legal
+CDP; only the rendering is wrong, which is why the codec is where it is fixed.
+Encode **refuses** and names the field (the model can be told); decode
+**replaces with a space** (a neighbour cannot be asked to resend, and dropping
+the advertisement would hide a device that is really there).
+
+**Software Version is exempt in both directions, and that is a decision.** A real
+IOS banner is multi-line — `CAPTURE_CATALYST_2950` above contains several `0x0a`
+bytes — it is the most useful single thing a recon operator reads off a CDP
+frame, and it appears in no log template.
+`a_newline_in_software_version_is_allowed_because_a_real_banner_has_one` pins it,
+so a later "simplification" that refuses everything cannot pass either.
+
+**The length field.** `encode_frame` narrowed with `u16::try_from` and no range
+check. IEEE 802.3 reserves `0x0600` (1536) and above for EtherType, so an
+advertisement past 1500 bytes did not merely become oversized: the length field
+aliased an EtherType, every receiver read the frame as Ethernet II, and the CDP
+behind it was never parsed. The model's text fields were unbounded, so it could
+produce one. `an_oversized_frame_is_refused_rather_than_aliasing_an_ethertype`
+asserts the refusal **and** that the value the cast would otherwise have written
+really is in the EtherType range — without that second half the guard could be
+deleted on the grounds that it never fires — **and** that a client-data length of
+exactly 1500 is still accepted, so the bound sits on the encapsulation boundary
+rather than somewhere convenient.
+
+Each of the four guard tests was verified to fail with its own guard removed.

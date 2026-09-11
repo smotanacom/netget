@@ -1,15 +1,35 @@
-# HSRP E2E Test Strategy
+# HSRP Test Strategy
 
-`e2e_test.rs`, three tests, one file. Run:
+Two files, six tests. Run:
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features hsrp \
     --test server -- server::hsrp --test-threads=100
 ```
 
-All three pass. Declared in `tests/server/hsrp/mod.rs`, which is declared in
+| File | Tests | What it proves |
+|---|---|---|
+| `codec_test.rs` | 3 | The plaintext authentication field, pure — no socket, no LLM. |
+| `e2e_test.rs` | 3 | Event → LLM → action → packet, over a real UDP socket. Port 1985 is unprivileged, so the transport genuinely executes rather than being mocked away. |
+
+All six pass. Both are declared in `tests/server/hsrp/mod.rs`, which is declared in
 `tests/server/mod.rs` — check with the `comm` one-liner in the root `CLAUDE.md` if you add a
 file here.
+
+## `codec_test.rs` — the authentication field
+
+The one place in HSRP where a string crosses between the wire, the model and a log line, so it
+is the one place the protocol can carry a control character into somewhere that does not quote
+it. The event's own log template renders `... auth={auth_data}, from={source_address}`.
+
+Encode **refuses** a control character in a model-authored `auth_data` (the model wrote it and
+can be told); decode **replaces it with a space** (a neighbour cannot be asked to resend). The
+third test pins the boundary the sanitiser could plausibly have broken: a NUL *is* a control
+character, so replacing before the NUL trim would turn an empty 8-byte field into eight spaces
+and make every packet look authenticated. All three were verified to fail with the guard
+removed.
+
+The rest of the file below concerns `e2e_test.rs`.
 
 > Note the invocation form: `--test server -- server::hsrp`. `--test server::hsrp::e2e_test`
 > names a test *target*, which does not exist — cargo lists the targets and exits.

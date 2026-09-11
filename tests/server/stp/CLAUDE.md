@@ -98,8 +98,12 @@ the code was right, which is the direction this file is supposed to fail in.
 * the STP LLC header (`42/42/03`) being required — a SNAP frame (`aa/aa/03`, which
   is CDP's encapsulation) and an Ethernet II frame (an EtherType where 802.3 has a
   length) are both refused with an error that names the reason;
-* truncated frames refused rather than read past, including a frame whose length
-  field claims more than arrived;
+* truncated frames refused rather than read past. Note what the over-claiming case
+  actually does, because "refused" would overstate it: `decode_frame` **accepts** a
+  frame whose length field claims more than arrived and trims the payload to what
+  turned up — a captured frame is routinely padded or snaplen-truncated, so
+  demanding agreement would reject real traffic — and `Bpdu::decode` is what then
+  errors on the short body. The bound is on the read, not on the declaration;
 * an unknown BPDU type reported rather than guessed, and a non-zero protocol
   identifier refused;
 * a 4-octet root path cost (200 000, the 802.1D-2004 cost of a 10 Mb/s link, which
@@ -112,9 +116,11 @@ bring the protocol up. **That cannot work here**, and the reason is worth knowin
 before you try:
 
 `server_startup`'s privilege gate is **per-protocol, not per-transport**. STP
-declares `PrivilegeRequirement::RawSockets`, and `requires_privileges` is
-`!privilege_met` for that variant, evaluated *before* the startup parameters are
-read. So an unprivileged `start_server` is refused even with `transport: "udp"`,
+declares `PrivilegeRequirement::PacketCapture` — **not `RawSockets`**; the
+transport is libpcap and never opens a `SOCK_RAW`, and macOS ChmodBPF grants
+capture without raw sockets, so the two are deliberately different requirements.
+`requires_privileges` is `!privilege_met` for that variant, evaluated *before* the
+startup parameters are read. So an unprivileged `start_server` is refused even with `transport: "udp"`,
 which needs no privilege at all. Declaring anything weaker would be a lie about
 the raw transport, which is the real one.
 

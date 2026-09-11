@@ -88,9 +88,11 @@ say-so.
 * **`CARP_ADVERTISEMENT`** — 36 octets of `struct carp_header`: `0x21`, vhid 1, advskew 0,
   authlen 7, demote 0, advbase 1, checksum `0xdef6`, zero counter, zero HMAC.
 
-The first three of those are re-declared in `e2e_test.rs` and sent over the socket, so what
+The first two and **the fourth** — `VRRP_V2_ADVERTISEMENT`, `VRRP_V2_RESIGNATION` and
+`CARP_ADVERTISEMENT` — are re-declared in `e2e_test.rs` and sent over the socket, so what
 crosses the wire in the e2e tests is independently pinned bytes rather than whatever the
-encoder produced that day.
+encoder produced that day. `VRRP_V3_ADVERTISEMENT` is **not** among them: the inbound literals
+in that suite are deliberately v2 and CARP, as "What the e2e suite does not cover" below says.
 
 ### The assertions worth keeping
 
@@ -148,8 +150,9 @@ protocol up. **That cannot work here**, and the reason is worth knowing before y
 `PrivilegeRequirement::RawSockets`, and `requires_privileges` is `!privilege_met` for that
 variant, evaluated *before* the startup parameters are read. So an unprivileged `start_server`
 is refused even with `transport: "udp"`, which needs no privilege at all. Declaring anything
-weaker would be a lie about the raw transport, which is the real one. `stp` has the same
-constraint for the same reason.
+weaker would be a lie about the raw transport, which is the real one. `stp` hits the same gate
+for the same reason — though its requirement is `PacketCapture`, not `RawSockets`: it uses
+libpcap and never opens a raw socket.
 
 So these tests build a `SpawnContext` by hand and call `Server::spawn(ctx)` directly. That
 still exercises everything this protocol owns — startup-parameter parsing, the bind, the
