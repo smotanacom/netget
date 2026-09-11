@@ -542,7 +542,13 @@ impl Server for UsbMscProtocol {
                     })
                     .collect::<Result<Vec<_>>>()?;
 
+                // `encode_label` already strips anything that is not ASCII graphic or space
+                // before the bytes reach the boot sector, so the *volume* is safe. The log
+                // line is not: it prints the model's raw string, and a label containing a
+                // newline forges a record of its own. Sanitise what is logged, and keep the
+                // raw value for the encoder, which has its own stricter filter.
                 let label = action["volume_label"].as_str().unwrap_or("NETGET");
+                let label_for_log = crate::utils::sanitize::line_field(label);
                 let total_sectors = super::fat16::DEFAULT_TOTAL_SECTORS;
 
                 // Build before touching the device: an unusable file name must not leave the
@@ -566,7 +572,7 @@ impl Server for UsbMscProtocol {
                      '{}' (write_protect={})",
                     specs.len(),
                     sectors,
-                    label,
+                    label_for_log,
                     write_protect
                 );
                 Ok(ActionResult::NoAction)
@@ -606,7 +612,7 @@ impl Server for UsbMscProtocol {
 
                 tracing::info!(
                     "USB MSC: Mounted disk '{}' ({} sectors, write_protect={})",
-                    disk_image_path,
+                    crate::utils::sanitize::line_field(disk_image_path),
                     sectors,
                     write_protect
                 );
