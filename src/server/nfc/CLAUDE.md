@@ -95,6 +95,17 @@ and every hex field (`atr_hex`, `data_hex`, `sw1`, `sw2`) is decoded where the a
 executed — a malformed value is an error, never something logged as if it had been accepted.
 `sw1`/`sw2` must each be exactly one byte.
 
+**`sw1` and `sw2` are required, and there is deliberately no default.** A tag is an
+access-control device, and the only status word a default could reasonably be is `9000` —
+success. That would make the most degenerate thing a model can emit, a bare
+`{"type": "respond_to_apdu"}`, an approval of a VERIFY: an omission granting access, which is
+the OAuth2 fail-open shape the root `CLAUDE.md` calls the most dangerous pattern here. Success
+has to be *named*, the way `eapol` gives `EAP-Success` its own eight literal octets rather
+than a boolean anything could flip. Both layers enforce it — `execute_action` refuses the
+action, and `decode_status_byte` refuses the normalised payload — so nothing between the
+model's answer and the wire can invent a status word. A `respond_to_apdu` without one is
+`decision=fail_closed_no_action` and `6F00`.
+
 ## Fail closed
 
 If the handler returns no `respond_to_apdu`, or returns one that cannot be decoded, the tag
@@ -111,9 +122,10 @@ recorded by the reader as a permanently broken card. Nothing derived from the er
 the wire — a response APDU has no free-text field, and the status word is a *category*. The
 error itself goes to the log and the TUI status stream only.
 
-It never falls through to `9000`. The model's own refusal (`6982`, `6A82`, `6D00`, …) is
-therefore structurally distinguishable from the model having said nothing — the OAuth2 failure
-mode in the root CLAUDE.md, avoided by construction.
+It never falls through to `9000` — not on an LLM error, not on silence, and not on a
+`respond_to_apdu` that forgot its status word. The model's own refusal (`6982`, `6A82`,
+`6D00`, …) is therefore structurally distinguishable from the model having said nothing — the
+OAuth2 failure mode in the root CLAUDE.md, avoided by construction.
 
 The five outcomes are tagged in the log so an operator can tell them apart, at WARN (the wire
 *is* answered, so none of them is fatal) except the first two, which are DEBUG:
@@ -171,14 +183,24 @@ storage implemented inside a protocol, which the root CLAUDE.md forbids.
   vpcd over TCP can.
 - **The pcscd path is untested.** `vpcd` in client mode *should* connect and work; nobody has
   run it against this server.
-- Frames are capped at 4096 bytes, so extended APDUs beyond that are rejected.
+- Frames are capped at 4096 bytes. `ApduCommand::parse` understands the whole extended form,
+  whose `Lc`/`Le` reach 65535, but a frame carrying one is refused well before that — an
+  extended APDU is usable here only up to ~4089 data bytes. The cap is the bound that stops a
+  hostile length prefix becoming an allocation, so it is the frame limit that is real and the
+  parser's range that is theoretical.
+- **`Le` is not enforced against the response.** The parser decodes it (including the
+  `00`-means-256 / `0000`-means-65536 conventions) and hands it to the handler, but nothing
+  truncates a body the handler made longer than the reader asked for, and nothing answers
+  `6Cxx` with the correct length the way a real card would. Respecting `Le` is the handler's
+  job; the event carries it for exactly that reason.
 - No T=0/T=1 transmission layer, no PPS, no anti-collision, no command chaining, no
   `GET RESPONSE` bookkeeping — the handler sees whatever the reader sent and answers it.
 - One handler call per APDU, so latency is one LLM round-trip per command unless a script or
   static handler is used. For anything chatty, use a script handler.
-- The `nfc` Cargo feature still pulls `pcsc` and `ndef-rs`. The **server** uses neither;
-  `nfc-client` is the real consumer of `pcsc`. Splitting the feature is a Cargo.toml change
-  outside this module.
+- The `nfc` Cargo feature is `nfc = []` — it pulls **nothing**. (This section previously said
+  it "still pulls `pcsc` and `ndef-rs`"; neither is true, and `ndef-rs` has never been in the
+  manifest at all. `pcsc` belongs to `nfc-client`, which is the only consumer. There is no
+  feature to split.)
 
 ## References
 

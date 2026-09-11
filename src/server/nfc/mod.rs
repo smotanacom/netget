@@ -59,8 +59,13 @@ use tracing::{debug, trace};
 pub use actions::NfcServerProtocol;
 
 /// Largest frame accepted from a reader. Bounds the read buffer so a hostile
-/// length prefix cannot make the server allocate; extended-length APDUs stay
-/// comfortably inside it.
+/// length prefix cannot make the server allocate.
+///
+/// `ApduCommand::parse` understands the whole extended form, whose `Lc` reaches
+/// 65535 — but a frame carrying one is refused here long before that, so the
+/// extended form is usable only up to ~4089 data bytes. The cap is what makes
+/// the allocation bounded, so it wins over the parser's theoretical range; a
+/// reader needing more would have to raise this, not the parser.
 const MAX_FRAME_LEN: usize = 4096;
 
 /// vpcd control codes (1-byte frames).
@@ -737,14 +742,24 @@ fn decode_apdu_response(data: &Value) -> Result<ApduResponse> {
         hex::decode(data_hex).map_err(|e| anyhow!("Invalid hex in data_hex ({data_hex}): {e}"))?
     };
 
-    let sw1 = decode_status_byte(data, "sw1", 0x90)?;
-    let sw2 = decode_status_byte(data, "sw2", 0x00)?;
+    let sw1 = decode_status_byte(data, "sw1")?;
+    let sw2 = decode_status_byte(data, "sw2")?;
     Ok(ApduResponse::new(body, sw1, sw2))
 }
 
-fn decode_status_byte(data: &Value, field: &str, default: u8) -> Result<u8> {
+/// Decode one status byte of a normalised `respond_to_apdu` payload.
+///
+/// **There is deliberately no default.** `execute_action` already refuses an action that
+/// names no status word; this is the second layer, so nothing between the model's answer and
+/// the wire can invent one and 9000 cannot be produced except by a handler that spelled it
+/// out. A missing field here is an error, which the caller logs as
+/// `decision=fail_closed_undecodable` and answers `6F00`.
+fn decode_status_byte(data: &Value, field: &str) -> Result<u8> {
     let Some(value) = data.get(field).and_then(|v| v.as_str()) else {
-        return Ok(default);
+        return Err(anyhow!(
+            "'{field}' is missing from the respond_to_apdu payload; a status word is never \
+             defaulted, because the default would be success"
+        ));
     };
     let bytes =
         hex::decode(value).map_err(|e| anyhow!("Invalid hex in '{field}' ({value}): {e}"))?;

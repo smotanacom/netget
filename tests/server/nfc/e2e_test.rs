@@ -51,8 +51,8 @@ mod tests {
 
     /// Full APDU exchange against the bound virtual tag.
     ///
-    /// LLM calls: 6 (startup instruction, nfc_server_started, nfc_tag_selected,
-    /// and three nfc_apdu_received).
+    /// LLM calls: 7 (startup instruction, nfc_server_started, nfc_tag_selected,
+    /// and four nfc_apdu_received).
     ///
     /// It covers every way the tag can answer:
     /// - the ATR the handler configured with `set_atr` reaches the wire,
@@ -60,6 +60,8 @@ mod tests {
     /// - `nfc_apdu_received` fires for other APDUs and its response body is sent,
     /// - a handler status word that refuses (`6982`) is passed through verbatim,
     /// - a handler that answers without `respond_to_apdu` fails **closed** (`6F00`),
+    /// - a `respond_to_apdu` that names **no status word** also fails closed (`6F00`)
+    ///   rather than being completed to `9000`,
     /// - a malformed APDU is rejected (`6700`) without reaching the handler.
     #[tokio::test]
     async fn test_nfc_virtual_tag_apdu_exchange() -> E2EResult<()> {
@@ -151,6 +153,20 @@ mod tests {
                         ]))
                         .expect_calls(1)
                         .and()
+                        // 7. INTERNAL AUTHENTICATE -> the handler answers with a body and
+                        //    *no status word at all*. A tag is an access-control device, so
+                        //    the missing byte must not be filled in with success: naming no
+                        //    status word is not approval.
+                        .on_event("nfc_apdu_received")
+                        .and_event_data_contains("ins", "88")
+                        .respond_with_actions(serde_json::json!([
+                            {
+                                "type": "respond_to_apdu",
+                                "data_text": "AUTH OK"
+                            }
+                        ]))
+                        .expect_calls(1)
+                        .and()
                 });
 
         let server = start_netget_server(server_config).await?;
@@ -215,6 +231,21 @@ mod tests {
             response,
             vec![0x6F, 0x00],
             "A handler that produces no respond_to_apdu must fail closed with 6F00 (got {})",
+            hex::encode_upper(&response)
+        );
+
+        // --- respond_to_apdu with no status word -> fail closed -------------
+        // 00 88 00 00 08  (INTERNAL AUTHENTICATE). The handler answered, and its answer
+        // carries a body but no sw1/sw2. Defaulting that to 9000 would mean an omission
+        // approves an authentication, so the tag must refuse and the body must not reach
+        // the reader either.
+        let internal_auth = [0x00, 0x88, 0x00, 0x00, 0x08];
+        let response = transceive(&mut reader, &internal_auth).await?;
+        assert_eq!(
+            response,
+            vec![0x6F, 0x00],
+            "a respond_to_apdu with no status word must fail closed with 6F00, never 9000 \
+             (got {})",
             hex::encode_upper(&response)
         );
 

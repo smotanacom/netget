@@ -21,6 +21,7 @@ status words the *server* must produce on its own.
 | READ BINARY | `00 B0 00 00 0F` | `nfc_apdu_received` fired; body is `"Hello NFC!"` then `9000` |
 | VERIFY | `00 20 00 00 06 "123456"` | the handler's refusal `6982` survives verbatim |
 | GET CHALLENGE | `00 84 00 00 08` | handler answers *without* `respond_to_apdu` → tag fails **closed** with `6F00`, never `9000` |
+| INTERNAL AUTHENTICATE | `00 88 00 00 08` | handler answers *with* `respond_to_apdu` but names **no status word** → still `6F00`, and the body does not reach the reader either |
 | truncated APDU | `00 A4 04` | `6700`, produced locally without reaching the handler |
 
 The ATR check is what proves `set_atr` is no longer write-only — the mock sets
@@ -30,12 +31,19 @@ The GET CHALLENGE case is the fail-open regression test. The mock returns a vali
 containing only `show_message`, i.e. the handler answered but produced no APDU response. If
 anyone ever adds a permissive default, that assertion turns red.
 
+**The INTERNAL AUTHENTICATE case is the sharper half of the same test, and it used to fail.**
+`sw1`/`sw2` were optional and defaulted to `"90"`/`"00"`, in `execute_action` *and* again in
+`decode_status_byte`, so `{"type": "respond_to_apdu", "data_text": "AUTH OK"}` — an answer
+naming no status word at all — reached the reader as `AUTH OK 90 00`. On an access-control
+device that means an omission approves an authentication. Both defaults are gone; the assertion
+pins that a status word is only ever one the handler spelled out.
+
 The truncated-APDU case is last on purpose: it must not reach the LLM, so it also pins the
 mock call counts below.
 
 ## LLM call budget
 
-**6 calls, one server, one test.**
+**7 calls, one server, one test.**
 
 1. top-level instruction → `open_server`
 2. `nfc_server_started` → `set_atr` + `set_ndef_message`
@@ -43,9 +51,13 @@ mock call counts below.
 4. `nfc_apdu_received` (READ BINARY)
 5. `nfc_apdu_received` (VERIFY)
 6. `nfc_apdu_received` (GET CHALLENGE)
+7. `nfc_apdu_received` (INTERNAL AUTHENTICATE)
 
 Each rule carries `.expect_calls(1)` and the test finishes with `server.verify_mocks()`, so an
-extra or missing call fails the test.
+extra or missing call fails the test. Note that an action `execute_action` rejects costs **no**
+extra call: `executor::execute_actions` records it as a failure and returns, and nothing in
+`call_llm` re-prompts the model over a failed action (the repair loop is for unparseable JSON
+and unknown action *names*). So case 7 stays at one call even though its action is refused.
 
 ## Mock rule ordering trap
 
@@ -58,8 +70,8 @@ This suite matches `on_instruction_containing("via NFC")`, a phrase that appears
 top-level prompt; the server instruction is `"Answer APDU commands as a Type 4 tag"`. Keep it
 that way when adding cases.
 
-The three `nfc_apdu_received` rules are disambiguated with
-`.and_event_data_contains("ins", "B0" | "20" | "84")`.
+The four `nfc_apdu_received` rules are disambiguated with
+`.and_event_data_contains("ins", "B0" | "20" | "84" | "88")`.
 
 ## Running
 
