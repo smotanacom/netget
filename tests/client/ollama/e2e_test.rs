@@ -3,7 +3,9 @@
 //! These tests verify Ollama client functionality by spawning the actual NetGet binary
 //! and testing client behavior as a black-box.
 //!
-//! **Note**: These tests require a running Ollama server on localhost:11434.
+//! **Note**: the mocked tests need nothing running — they point at dead loopback ports
+//! deliberately. Only the `#[ignore]`d `*_real` variants want an Ollama on
+//! localhost:11434, and each calls `require_ollama()` first.
 //! Tests will skip if Ollama is not available.
 
 #[cfg(all(test, feature = "ollama"))]
@@ -36,7 +38,7 @@ mod ollama_client_tests {
     async fn test_ollama_client_list_models() -> E2EResult<()> {
         // Create client that lists available models with mocks
         let client_config = NetGetConfig::new(
-            "Connect to Ollama at http://localhost:11434 and list all available models",
+            "Connect to Ollama at http://127.0.0.1:1 and list all available models",
         )
         .with_mock(|mock| {
             mock
@@ -46,12 +48,10 @@ mod ollama_client_tests {
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "open_client",
-                        "remote_addr": "localhost:11434",
+                        "remote_addr": "127.0.0.1:1",
                         "protocol": "Ollama",
                         "instruction": "List all available models",
-                        "startup_params": {
-                            "base_url": "http://localhost:11434"
-                        }
+                        "event_handlers": [{"event_pattern": "*", "handler": {"type": "static", "actions": []}}]
                     }
                 ]))
                 .expect_calls(1)
@@ -63,11 +63,14 @@ mod ollama_client_tests {
         // Give client time to initialize
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // Verify client output shows Ollama protocol
-        client.wait_for_any(&["Ollama", "ollama"], 30).await;
+        // The client's own readiness line, printed only after `connect()` stored the
+        // endpoint and registered the command channel. "Ollama" alone is not an assertion:
+        // it appears in the startup-parameter error too, which is how five tests in this
+        // file passed while creating no client at all.
+        client.wait_for_any(&["ready (endpoint:"], 30).await;
         assert!(
-            client.output_contains("Ollama").await || client.output_contains("ollama").await,
-            "Client should show Ollama protocol. Output: {:?}",
+            client.output_contains("ready (endpoint:").await,
+            "the Ollama client never reported itself ready. Output: {:?}",
             client.get_output().await
         );
 
@@ -146,7 +149,7 @@ mod ollama_client_tests {
     async fn test_ollama_client_generate() -> E2EResult<()> {
         // Create client that generates text with mocks
         let client_config = NetGetConfig::new(
-            "Connect to Ollama at http://localhost:11434 and generate text: \
+            "Connect to Ollama at http://127.0.0.1:1 and generate text: \
             'Say hello in exactly 2 words' using model qwen2.5-coder:0.5b",
         )
         .with_mock(|mock| {
@@ -157,13 +160,10 @@ mod ollama_client_tests {
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "open_client",
-                        "remote_addr": "localhost:11434",
+                        "remote_addr": "127.0.0.1:1",
                         "protocol": "Ollama",
                         "instruction": "Generate text: 'Say hello in exactly 2 words' using qwen2.5-coder:0.5b",
-                        "startup_params": {
-                            "base_url": "http://localhost:11434",
-                            "model": "qwen2.5-coder:0.5b"
-                        }
+                        "event_handlers": [{"event_pattern": "*", "handler": {"type": "static", "actions": []}}]
                     }
                 ]))
                 .expect_calls(1)
@@ -255,7 +255,7 @@ mod ollama_client_tests {
     async fn test_ollama_client_chat() -> E2EResult<()> {
         // Create client that sends chat request with mocks
         let client_config = NetGetConfig::new(
-            "Connect to Ollama at http://localhost:11434 and send a chat message: \
+            "Connect to Ollama at http://127.0.0.1:1 and send a chat message: \
             'What is 2+2?' using model qwen2.5-coder:0.5b",
         )
         .with_mock(|mock| {
@@ -266,13 +266,10 @@ mod ollama_client_tests {
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "open_client",
-                        "remote_addr": "localhost:11434",
+                        "remote_addr": "127.0.0.1:1",
                         "protocol": "Ollama",
                         "instruction": "Send chat message: 'What is 2+2?' using qwen2.5-coder:0.5b",
-                        "startup_params": {
-                            "base_url": "http://localhost:11434",
-                            "model": "qwen2.5-coder:0.5b"
-                        }
+                        "event_handlers": [{"event_pattern": "*", "handler": {"type": "static", "actions": []}}]
                     }
                 ]))
                 .expect_calls(1)
@@ -360,21 +357,19 @@ mod ollama_client_tests {
     async fn test_ollama_client_custom_endpoint() -> E2EResult<()> {
         // Test with explicit endpoint with mocks
         let client_config =
-            NetGetConfig::new("Connect to Ollama API at http://localhost:11434 and list models")
+            NetGetConfig::new("Connect to Ollama API at http://127.0.0.1:1 and list models")
                 .with_mock(|mock| {
                     mock
                         // Mock: Client startup with custom endpoint
                         .on_instruction_containing("Ollama")
-                        .and_instruction_containing("localhost:11434")
+                        .and_instruction_containing("127.0.0.1:1")
                         .respond_with_actions(serde_json::json!([
                             {
                                 "type": "open_client",
-                                "remote_addr": "localhost:11434",
+                                "remote_addr": "127.0.0.1:1",
                                 "protocol": "Ollama",
                                 "instruction": "List models",
-                                "startup_params": {
-                                    "base_url": "http://localhost:11434"
-                                }
+                                "event_handlers": [{"event_pattern": "*", "handler": {"type": "static", "actions": []}}]
                             }
                         ]))
                         .expect_calls(1)
@@ -386,14 +381,12 @@ mod ollama_client_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Verify client initialized
-        client
-            .wait_for_any(&["localhost:11434", "11434", "Ollama"], 30)
-            .await;
+        client.wait_for_any(&["ready (endpoint:"], 30).await;
         assert!(
-            client.output_contains("localhost:11434").await
-                || client.output_contains("11434").await
-                || client.output_contains("Ollama").await,
-            "Client should show connection to custom endpoint. Output: {:?}",
+            client
+                .output_contains("ready (endpoint: http://127.0.0.1:1")
+                .await,
+            "the endpoint must be used as given, not rewritten or defaulted. Output: {:?}",
             client.get_output().await
         );
 
@@ -470,9 +463,7 @@ mod ollama_client_tests {
                                 "remote_addr": "localhost:99999",
                                 "protocol": "Ollama",
                                 "instruction": "List models",
-                                "startup_params": {
-                                    "base_url": "http://localhost:99999"
-                                }
+                                "event_handlers": [{"event_pattern": "*", "handler": {"type": "static", "actions": []}}]
                             }
                         ]))
                         .expect_calls(1)
