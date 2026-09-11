@@ -769,7 +769,18 @@ async fn execute_single_task(
                 if let Some(protocol) =
                     crate::protocol::client_registry::CLIENT_REGISTRY.get(&protocol_name)
                 {
-                    protocol.as_ref().get_sync_actions()
+                    // Clients union; servers narrow. A client has one LLM entry point, so it
+                    // cannot express an async/sync narrowing and `get_sync_actions()` alone
+                    // hides most of its vocabulary - 81 of 99 client protocols, including
+                    // `disconnect` on nearly all of them, so a scheduled task could not tell
+                    // a client to hang up. This is the same defect `call_llm_for_client` and
+                    // `action_catalog_for_pattern` each had; `client_llm_action_set` is the
+                    // one place the rule lives.
+                    crate::llm::actions::client_trait::client_llm_action_set(
+                        protocol.as_ref(),
+                        &state,
+                        None,
+                    )
                 } else {
                     Vec::new()
                 }
