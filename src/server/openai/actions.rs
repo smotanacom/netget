@@ -319,7 +319,27 @@ impl OpenAiProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("server_error");
 
-        let status = action.get("status").and_then(|v| v.as_u64()).unwrap_or(500) as u16;
+        // `as u16` wraps: `status: 65736` is 200, and this action is the model's only way to
+        // return an OpenAI-shaped error. The client then reads a 200 whose body happens to
+        // carry an `error` object, which an OpenAI SDK treats as a successful completion with
+        // unexpected fields. Refuse, rather than clamp to something else it did not ask for.
+        let status = match action.get("status") {
+            None => 500,
+            Some(v) if v.is_null() => 500,
+            Some(v) => {
+                let raw = v.as_u64().ok_or_else(|| {
+                    anyhow::anyhow!("send_openai_error 'status' must be a number, got {v}")
+                })?;
+                if !(100..=599).contains(&raw) {
+                    return Err(anyhow::anyhow!(
+                        "send_openai_error 'status' {raw} is not an HTTP status code; use \
+                         100-599 (400 invalid request, 401 bad key, 429 rate limited, 500 \
+                         server error)"
+                    ));
+                }
+                raw as u16
+            }
+        };
 
         debug!("OpenAI error response: {} ({})", message, status);
 
