@@ -1,140 +1,53 @@
-# Bitcoin RPC Client E2E Tests
+# tests/client/bitcoin
 
-## Test Strategy
+Bitcoin RPC **client** (JSON-RPC over HTTP — not the P2P wire protocol, which is
+`src/server/bitcoin`). No `bitcoind` and no regtest node anywhere in this suite: the peer is
+either a NetGet HTTP server or a hand-written HTTP responder. That proves the client speaks
+JSON-RPC to *something*, not that Bitcoin Core would accept it, which is why
+`src/client/bitcoin` is `DevelopmentState::Experimental`.
 
-Black-box testing using NetGet binary with LLM instructions. Tests verify:
+## `e2e_test.rs` — two tests, **10 LLM calls**
 
-1. Client can connect to Bitcoin RPC endpoint (HTTP JSON-RPC)
-2. Client can execute RPC commands
-3. Client protocol is correctly identified
+Each test spawns two NetGet subprocesses (a server and a client), each with its own mock
+Ollama, and each with five `.expect_calls(1)` rules — 2 on the server, 3 on the client.
 
-## Test Scenarios
+| test | server rules | client rules |
+|---|---|---|
+| `test_bitcoin_client_connection` | startup, `http_request` (POST) → JSON-RPC body | startup, `bitcoin_connected` → `get_blockchain_info`, `bitcoin_response_received` → nothing |
+| `test_bitcoin_client_rpc_command` | same | same |
 
-### 1. Connection Test
+Both tests stand up a NetGet **HTTP** server as the RPC node (`"base_stack": "HTTP"`), because
+Bitcoin Core's RPC is JSON-RPC over HTTP and there is no Bitcoin *server* protocol to point at.
+`bitcoin = ["dep:bitcoin"]` pulls in no such thing, so `tests/client/bitcoin/mod.rs` gates this
+file on `all(feature = "bitcoin", feature = "http")`. At `--features bitcoin` alone it used to
+compile and then fail at runtime with `Protocol 'HTTP' exists but is not compiled into this
+build` — which reads exactly like the `target/` contention artefact the root CLAUDE.md warns
+about, and is not. **This is why the run command below needs both features.**
 
-**File:** `e2e_test.rs::test_bitcoin_client_connection`
+## `command_channel_test.rs` — one test, **0 LLM calls**
 
-**Setup:**
-
-- HTTP server mock (simulates Bitcoin Core RPC)
-- Server responds to POST with JSON-RPC format
-
-**Test:**
-
-- Client connects with RPC URL (http://user:pass@host:port)
-- LLM initiates blockchain info query
-- Verify client identifies as Bitcoin protocol
-
-**LLM Calls:** 2 (server startup, client connect)
-
-**Expected Runtime:** 1-2 seconds
-
-### 2. RPC Command Test
-
-**File:** `e2e_test.rs::test_bitcoin_client_rpc_command`
-
-**Setup:**
-
-- HTTP server mock logging POST requests
-
-**Test:**
-
-- Client connects to RPC endpoint
-- Client executes getblockchaininfo command
-- Verify protocol name is "Bitcoin"
-
-**LLM Calls:** 2 (server startup, client connect + command)
-
-**Expected Runtime:** 1-2 seconds
-
-## LLM Call Budget
-
-**Total LLM Calls:** 4 (2 tests × 2 calls each)
-
-**Breakdown:**
-
-- Server startup: 1 call per test
-- Client connection + initial RPC: 1 call per test
-
-**Why So Few:**
-
-- Black-box testing (verify connectivity, not full RPC functionality)
-- Mock server (no real Bitcoin Core node required)
-- Focus on client initialization and protocol identification
-
-## Test Limitations
-
-### No Real Bitcoin Core Node
-
-- Tests use HTTP server mock, not actual bitcoind
-- Cannot verify full RPC protocol compliance
-- Cannot test blockchain data parsing
-
-### No Transaction Testing
-
-- No wallet operations
-- No transaction submission
-- No mempool monitoring
-
-### Minimal RPC Coverage
-
-- Only tests connection and basic command execution
-- Full RPC method coverage would require Bitcoin Core
-
-## Running Tests
-
-```bash
-# Build with Bitcoin feature
-./cargo-isolated.sh build --no-default-features --features bitcoin
-
-# Run Bitcoin client E2E tests
-./cargo-isolated.sh test --no-default-features --features bitcoin --test client::bitcoin::e2e_test
-```
-
-## Known Issues
-
-None at this time.
-
-## Future Test Enhancements
-
-1. **Bitcoin Core Integration:**
-    - Use Bitcoin Core in regtest mode
-    - Test real blockchain queries
-    - Verify transaction submission
-
-2. **RPC Method Coverage:**
-    - Test getblock, getrawtransaction
-    - Test mempool queries
-    - Test peer info queries
-
-3. **Error Handling:**
-    - Test invalid RPC URLs
-    - Test authentication failures
-    - Test malformed JSON-RPC responses
-
-4. **LLM Follow-up Actions:**
-    - Test multi-step queries (get block hash → get block)
-    - Test mempool monitoring loop
-    - Test transaction analysis workflow
-
-## `command_channel_test.rs` — injected actions
-
-In-process, no NetGet subprocess and **zero LLM calls**: the client's LLM points at
-`http://127.0.0.1:1`, so its `bitcoin_connected` call fails and the connect path has to
-tolerate that — verifying it does is part of the test.
-
-There is no NetGet "Bitcoin RPC" *server* protocol (`src/server/bitcoin` speaks the P2P wire
-protocol, not JSON-RPC over HTTP), so the peer is a ~40-line HTTP/1.1 responder bound to
-127.0.0.1 that records the JSON-RPC bodies it receives.
+`injected_bitcoin_rpc_reaches_the_node`. In-process, no NetGet subprocess; the client's LLM
+points at `http://127.0.0.1:1`, so its `bitcoin_connected` call fails and the connect path has
+to tolerate that — verifying it does is part of the test. The peer is a ~40-line HTTP/1.1
+responder bound to 127.0.0.1 that records the JSON-RPC bodies it receives, so this file needs
+only `bitcoin`.
 
 What it pins:
 
-- `has_client_handle` is true **before** anything answers the connected event — the
-  regression guard for "register the channel first".
-- `get_blockchain_info` → `Executed { detail }` naming the method and HTTP status, and the
-  stub really received `getblockchaininfo`. Asserting `Executed` rather than `Sent` is
-  deliberate: reqwest reports no byte count, so a `Sent` here would be invented.
-- an unknown action → `Rejected`, not silence.
+- `has_client_handle` is true **before** anything answers the connected event — the regression
+  guard for "register the channel first".
+- `get_blockchain_info` → `Executed { detail }` naming the method and HTTP status, and the stub
+  really received `getblockchaininfo`. `Executed` rather than `Sent` is deliberate: reqwest
+  reports no byte count, so a `Sent` here would be invented.
+- An unknown action → `Rejected`, not silence.
 - `disconnect` → `Disconnected`, then status `Disconnected` and the handle gone.
 
-**LLM call budget: 0.**
+## Running
+
+```bash
+# both features: e2e_test needs the HTTP server protocol
+./cargo-isolated.sh test --no-default-features --features bitcoin,http \
+    --test client -- client::bitcoin --test-threads=100
+```
+
+All mocked; no Ollama required.
