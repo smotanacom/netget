@@ -18,7 +18,15 @@ use crate::logging::emit::Log;
 use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 use actions::TorrentTrackerProtocol;
+
+/// How long a connected peer may take to send its request line before it is hung up on.
+///
+/// An announce is one small GET, and every real client sends it in the first segment. There
+/// was no bound at all, so a peer that connected and said nothing held a task and a
+/// connection-map entry indefinitely — which is a slow-loris for free.
+const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// BitTorrent Tracker server
 pub struct TorrentTrackerServer;
@@ -131,8 +139,28 @@ impl TorrentTrackerServer {
         let (mut read_half, mut write_half) = tokio::io::split(stream);
         let mut buffer = vec![0u8; 8192];
 
-        // Read HTTP request
-        let n = read_half.read(&mut buffer).await?;
+        // Read HTTP request, bounded.
+        //
+        // There was no timeout here at all, so a peer that connected and then said nothing
+        // held this task — and its entry in the connection map — until it chose to hang up.
+        // Opening connections and never writing is the whole of a slow-loris, and it costs
+        // the other end nothing. An announce is one small GET that a real client sends in
+        // its first segment.
+        let n = match tokio::time::timeout(REQUEST_READ_TIMEOUT, read_half.read(&mut buffer)).await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                Log::new(Some(&status_tx)).warn(format!(
+                    "BitTorrent Tracker {} sent no request within {}s, closing \
+                     decision=fail_closed_read_timeout",
+                    peer_addr,
+                    REQUEST_READ_TIMEOUT.as_secs()
+                ));
+                let body = b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = write_half.write_all(body).await;
+                return Ok(());
+            }
+        };
         if n == 0 {
             Log::new(Some(&status_tx)).debug("BitTorrent Tracker connection closed by peer");
             return Ok(());
@@ -240,9 +268,19 @@ impl TorrentTrackerServer {
                     execution_result.protocol_results.len()
                 ));
 
+                // An explicit refusal by the model is a `failure reason` it asked for
+                // itself; keep it distinguishable in the log from our own fail-closed
+                // reply, which says nothing about what the model thought.
+                let model_rejected = execution_result
+                    .raw_actions
+                    .iter()
+                    .any(|a| a.get("type").and_then(|t| t.as_str()) == Some("send_error_response"));
+                let mut sent_any = false;
+
                 // Send responses
                 for protocol_result in execution_result.protocol_results {
                     if let Some(output_data) = protocol_result.get_all_output().first() {
+                        sent_any = true;
                         write_half.write_all(output_data).await?;
                         app_state
                             .update_connection_stats(
@@ -268,26 +306,117 @@ impl TorrentTrackerServer {
                         }
                     }
                 }
+
+                if sent_any {
+                    Log::new(Some(&status_tx)).debug(format!(
+                        "BitTorrent Tracker {} from {} decision={}",
+                        request_type,
+                        peer_addr,
+                        if model_rejected {
+                            "model_reject"
+                        } else {
+                            "model_answer"
+                        }
+                    ));
+                } else {
+                    // The model produced nothing that reaches the wire. An announce is a
+                    // request/response exchange, so silence leaves the client waiting out
+                    // its own timeout and then marking this tracker dead — answer with a
+                    // category instead.
+                    Log::new(Some(&status_tx)).warn(format!(
+                        "BitTorrent Tracker {} from {} decision=fail_closed_no_action",
+                        request_type, peer_addr
+                    ));
+                    Self::write_failure_response(
+                        &mut write_half,
+                        WireFailure::Unavailable,
+                        connection_id,
+                        server_id,
+                        &app_state,
+                    )
+                    .await?;
+                }
             }
             Err(e) => {
-                Log::new(Some(&status_tx)).warn(format!("BitTorrent Tracker LLM error: {}", e));
-
-                // Send error response
-                let error_response = b"HTTP/1.1 500 Internal Server Error\r\n\r\n";
-                write_half.write_all(error_response).await?;
-                app_state
-                    .update_connection_stats(
-                        server_id,
-                        connection_id,
-                        None,
-                        Some(error_response.len() as u64),
-                        None,
-                        Some(1),
-                    )
-                    .await;
+                // The error itself goes to the log and the status stream only. The client
+                // gets a status code and a fixed category string — never the backend URL,
+                // the model name or an `anyhow` context chain.
+                let failure = WireFailure::classify(&e);
+                Log::new(Some(&status_tx)).error(format!(
+                    "BitTorrent Tracker {} from {} decision=fail_closed_llm_error \
+                     category={:?}: {}",
+                    request_type, peer_addr, failure, e
+                ));
+                Self::write_failure_response(
+                    &mut write_half,
+                    failure,
+                    connection_id,
+                    server_id,
+                    &app_state,
+                )
+                .await?;
             }
         }
 
+        Ok(())
+    }
+
+    /// Answer a request netget cannot serve, with a category and nothing more.
+    ///
+    /// The two categories map onto different status codes so a client backs off rather than
+    /// recording a permanent fault: **503 + `Retry-After`** for a saturated backend, **500**
+    /// for everything else. This used to be a bare
+    /// `HTTP/1.1 500 Internal Server Error\r\n\r\n` for both — no `Content-Length`, no
+    /// `Connection: close`, and no way for a client to tell "come back later" from "this
+    /// tracker is broken".
+    ///
+    /// The body is a bencoded `failure reason`, because that is the one refusal BEP 3
+    /// defines and the only thing a BitTorrent client will actually display. Its text is
+    /// [`WireFailure::text`], a `&'static str`.
+    async fn write_failure_response(
+        write_half: &mut tokio::io::WriteHalf<tokio::net::TcpStream>,
+        failure: WireFailure,
+        connection_id: ConnectionId,
+        server_id: crate::state::ServerId,
+        app_state: &Arc<AppState>,
+    ) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+
+        let mut body_dict = std::collections::HashMap::new();
+        body_dict.insert(
+            b"failure reason".to_vec(),
+            serde_bencode::value::Value::Bytes(failure.text().as_bytes().to_vec()),
+        );
+        let body = serde_bencode::to_bytes(&serde_bencode::value::Value::Dict(body_dict))
+            .unwrap_or_default();
+
+        let head = if failure.is_overloaded() {
+            format!(
+                "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 30\r\nContent-Type: \
+                 text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+        } else {
+            format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: \
+                 text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+        };
+
+        let mut response = head.into_bytes();
+        response.extend_from_slice(&body);
+        write_half.write_all(&response).await?;
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                None,
+                Some(response.len() as u64),
+                None,
+                Some(1),
+            )
+            .await;
         Ok(())
     }
 
