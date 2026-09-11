@@ -9,33 +9,43 @@ get, create, and delete resources such as Pods, Deployments, and Services, and i
 
 ### Library Choice
 
-- **kube** (v0.96) - Official Rust Kubernetes client library (kube-rs)
-- **k8s-openapi** (v0.23) - Kubernetes API type definitions
-- Supports Kubernetes v1.30 API
+- **kube** (v0.99, features `client` + `rustls-tls`) - Official Rust Kubernetes client library
+- **k8s-openapi** (v0.24, feature `v1_30`) - Kubernetes API type definitions
 - Uses kubeconfig for authentication
 - Built on top of reqwest (HTTP/HTTPS)
+
+Derive the versions from `Cargo.toml` rather than trusting this list; it said 0.96/0.23 for a
+long time after the dependencies moved.
 
 ### Architecture
 
 ```
 ┌──────────────────────────────────────────────────┐
 │  KubernetesClient::connect_with_llm_actions      │
-│  - Load kubeconfig (default ~/.kube/config)      │
+│  - Install the rustls CryptoProvider             │
+│  - Load kubeconfig (param, else $KUBECONFIG)     │
 │  - Initialize kube::Client                       │
 │  - Store namespace in protocol_data              │
 │  - Mark as Connected                             │
 └──────────────────────────────────────────────────┘
          │
-         ├─► execute_operation() - Called per LLM action
-         │   - Parse operation (list, get, create, delete)
-         │   - Execute via kube API (list_pods, get_pod, etc.)
-         │   - Call LLM with response
-         │   - Update memory
+         ├─► command_loop (registered task)
+         │   - Drains injected actions until the channel closes
+         │   - Ends on an injected `disconnect`
          │
-         └─► Background Monitor Task
-             - Checks if client still exists
-             - Exits if client removed
+         ├─► connected-event task (registered)
+         │   - Raises k8s_connected with cluster_url + namespace
+         │   - Runs whatever the model answers, via run_operation_once
+         │
+         └─► execute_operation() - per action
+             - Parse operation (list, get, create, delete)
+             - Execute via kube API (list_pods, get_pod, etc.)
+             - Raise k8s_resource_received from its own task
+             - Update memory
 ```
+
+There is **no** background "has this client been removed yet" poll any more; the command
+channel closing is what ends the loop.
 
 ### Connection Model
 
@@ -73,9 +83,14 @@ Like HTTP, Kubernetes client is **request/response** based:
 
 **Events:**
 
-- `k8s_connected` - Fired when client connects to cluster
-- `k8s_resource_received` - Fired when Kubernetes operation completes
-    - Data includes: operation, resource_type, namespace, response
+- `k8s_connected` - Fired when the client connects, from its own registered task
+    - Data: `cluster_url`, `namespace`. It used to be raised with `{}` while declaring
+      `cluster_url` as required, so the model was told a field was there and then not given it.
+- `k8s_resource_received` - Fired when a Kubernetes operation completes
+    - Data: `operation`, `resource_type`, `namespace`, `response`
+
+`get_event_types()` returns the two `LazyLock` statics, cloned. It used to build a second copy
+of each by hand — different wording, no parameters — which is two declarations of one event.
 
 ### Structured Actions (CRITICAL)
 
@@ -155,6 +170,13 @@ LLMs can construct Kubernetes resource manifests and interpret cluster state.
   via `Config::from_custom_kubeconfig`; when it is not, the remote address must be `default`
   and `kube::Client::try_default()` reads `$KUBECONFIG`, else `~/.kube/config`. Anything
   else is refused with a message naming both ways in.
+
+**There is no host:port form, and the startup examples used to claim one.** All three said
+`"remote_addr": "kubernetes.local:6443"`, which `connect()` rejects — a bare cluster address
+carries no credentials and no CA, so there is nothing for `kube` to build a client from. They
+now say `"default"`. Refusing is the right behaviour (a client that loses its target must fail,
+never fall back to whatever the SDK's defaults resolve to), but advertising an address form that
+is always refused is a model-facing lie.
 
 ### Dual Logging
 
@@ -291,13 +313,23 @@ status_tx.send("[CLIENT] Kubernetes operation successful");                     
 
 ## Testing Strategy
 
-See `tests/client/kubernetes/CLAUDE.md` for E2E testing approach.
+See `tests/client/kubernetes/CLAUDE.md`.
 
-**Prerequisites**:
+**There is no test against a real cluster, and nothing here should imply there is.**
+`tests/client/kubernetes/e2e_test.rs` previously held three `#[ignore]`d tests gated on
+`kubectl cluster-info` that printed "Full E2E test implementation requires NetGet binary
+integration" and asserted nothing; they were removed. What remains is:
 
-- minikube or kind local cluster
-- kubectl configured
-- Valid kubeconfig at ~/.kube/config
+- `command_channel_test.rs` — the real wire coverage. `KUBECONFIG` points at a throwaway file
+  whose only cluster is a loopback HTTP stub, an injected `k8s_list_pods` is asserted to have
+  reached `/api/v1/namespaces/default/pods`, and the developer's own `~/.kube/config` is never
+  read.
+- `e2e_test.rs` — registry identity, that every advertised verb executes into a `k8s_operation`
+  the loop can run, that an unknown verb is refused, and that `get_event_types()` hands back the
+  statics that actually fire.
+
+This is why the client is `Experimental` and the **server** is not: the server's suite drives a
+real `kubectl`.
 
 ## Future Enhancements
 
@@ -347,24 +379,35 @@ The apiserver call itself is **awaited** in the loop, so the detail is a real re
 `k8s_resource_received` event is raised from its own registered task, so an event handler that
 parks for a human answer cannot wedge the command loop.
 
-### Known defect: rustls provider ambiguity in multi-protocol builds
+### rustls provider ambiguity — fixed, and the old write-up here was wrong
 
-`kube` builds a rustls `ClientConfig` even for an `http://` apiserver. rustls 0.23 **panics**
-at that point unless exactly one of its `ring` / `aws-lc-rs` features is enabled, or a
-process-wide `CryptoProvider` has been installed. Feature unification makes both features active
-whenever `kubernetes` is compiled alongside the AWS SDK protocols:
+`kube` builds a rustls `ClientConfig` even for an `http://` apiserver. rustls 0.23 **panics** at
+that point unless exactly one of its `ring` / `aws-lc-rs` features is enabled, or a process-wide
+`CryptoProvider` has been installed. Feature unification makes both active whenever `kubernetes`
+compiles alongside the AWS SDK protocols:
 
 ```bash
-cargo tree --no-default-features --features kubernetes           -e features -i rustls@0.23  # ring only
-cargo tree --no-default-features --features kubernetes,s3        -e features -i rustls@0.23  # ring + aws-lc-rs
+cargo tree --no-default-features --features kubernetes    -e features -i rustls@0.23  # ring only
+cargo tree --no-default-features --features kubernetes,s3 -e features -i rustls@0.23  # ring + aws-lc-rs
 ```
 
-So in an `all-protocols` binary — the one on `PATH` — `kube::Client::try_default()` panics and
-the Kubernetes client cannot start at all. This is pre-existing and **not fixed here**: the fix
-is a `CryptoProvider::install_default()` call at the top of `connect_with_llm_actions`, which
-needs `dep:rustls` added to the `kubernetes` feature in `Cargo.toml`.
-`tests/client/kubernetes/command_channel_test.rs` works around it test-side by installing the
-`ring` provider through `quinn`'s rustls re-export (a dev-dependency).
+This section used to say the `all-protocols` binary therefore panics and "the Kubernetes client
+cannot start at all", and that fixing it needed `dep:rustls` added to the `kubernetes` feature.
+**Both halves had gone stale.** `Cargo.toml` already reads
+`kubernetes = ["dep:kube", "dep:k8s-openapi", "dep:rustls"]`, and `src/bin/netget.rs` installs
+the `ring` provider up front under a `cfg(any(...))` that names `kubernetes` — with
+`tests/rustls_provider_gate_test.rs` deriving that list from `Cargo.toml` so it cannot fall
+behind. The shipped binary was never affected.
+
+What *was* missing is that `main` is not the only way in: an embedder, or any test that builds a
+client through `ClientForm`, goes straight past it. `connect_with_llm_actions` now installs the
+provider itself — `let _ = rustls::crypto::ring::default_provider().install_default();` — the
+same one-liner `dot`, `tls`, `dc` and `http3` carry, with `Err` (a provider is already set)
+being exactly the wanted outcome.
+
+The moral is the one the root `CLAUDE.md` draws about "current gaps" lists: a known-defect note
+that rots towards *understating* the code tells the next person to build around an absence that
+is not there.
 
 Test: `tests/client/kubernetes/command_channel_test.rs` (no LLM, no cluster — `KUBECONFIG` is
 pointed at a throwaway file whose only cluster is a loopback listener, which also keeps the
