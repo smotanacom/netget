@@ -1,5 +1,6 @@
 //! XML-RPC client implementation
 pub mod actions;
+pub mod response_guard;
 
 pub use actions::XmlRpcClientProtocol;
 
@@ -500,27 +501,64 @@ impl XmlRpcClient {
         let method_owned = method_name.to_string();
         let log_name = method_name.to_string();
 
-        // The `xmlrpc` crate is blocking, so the call runs on the blocking pool.
-        //
-        // `timeout_secs` is applied here, around the whole call, rather than on the HTTP
-        // client: `xmlrpc::Request::call_url` builds its own `reqwest::blocking::Client`
-        // internally and exposes no way to configure it, and the only alternative
-        // (`Request::call` with a transport) takes a `reqwest` **0.11** `RequestBuilder`,
-        // a different major version from the 0.12 this crate depends on.
-        //
-        // What that bounds and what it does not: the caller stops waiting after
-        // `timeout_secs` and gets an error, which is what the parameter promises. The
-        // blocking thread itself is not cancelled - `spawn_blocking` cannot be - so a
-        // server that never answers still holds a pool thread until its own TCP timeout.
-        let call = tokio::task::spawn_blocking(move || {
+        // NetGet does the HTTP itself rather than calling `Request::call_url`, and the reason
+        // is safety, not convenience. `call_url` owns the fetch *and* the parse, and the
+        // crate's parser recurses once per `<value>` with no depth counter and no cap on the
+        // body - a hostile server's first reply can stack-overflow the whole process. What
+        // gives us a seam is that `Request::call` accepts any `xmlrpc::Transport`, a public
+        // trait with an associated `Stream: Read`; the reqwest 0.11 `RequestBuilder` is one
+        // provided implementation of it, not the signature. So: serialise here, fetch here
+        // under a real per-request timeout, screen the bytes in `response_guard`, then let the
+        // crate parse what it is handed. See `response_guard`'s module docs.
+        let request_xml = {
             let mut request = xmlrpc::Request::new(&method_owned);
-            for param in xmlrpc_params {
-                request = request.arg(param);
+            for param in &xmlrpc_params {
+                request = request.arg(param.clone());
             }
-            request.call_url(&server_url)
-        });
-        let call = match tokio::time::timeout(timeout, call).await {
-            Ok(joined) => joined,
+            let mut buf = Vec::new();
+            request
+                .write_as_xml(&mut buf)
+                .context("Failed to serialise the XML-RPC request")?;
+            buf
+        };
+
+        let http = response_guard::http_client_for(&server_url, timeout).await;
+        let fetch = async {
+            let response = http
+                .post(&server_url)
+                .header(reqwest::header::USER_AGENT, "Rust xmlrpc")
+                .header(reqwest::header::CONTENT_TYPE, "text/xml; charset=utf-8")
+                .body(request_xml)
+                .send()
+                .await?;
+            response_guard::check_response(&response)?;
+            response_guard::read_body_capped(response).await
+        };
+
+        // `timeout_secs` bounds the whole exchange. Unlike the old arrangement it now also
+        // *cancels* it: the fetch is an ordinary future rather than a blocking-pool thread
+        // holding a socket until its own TCP timeout, and the parse that follows is bounded
+        // by `MAX_RESPONSE_BYTES` rather than by whatever the server chose to send.
+        let body = match tokio::time::timeout(timeout, fetch).await {
+            Ok(Ok(body)) => body,
+            Ok(Err(e)) => {
+                // A refusal is a decision, not a transport hiccup, and is logged as one.
+                if let Some(refusal) = e.downcast_ref::<response_guard::ResponseRefusal>() {
+                    Log::new(Some(status_tx)).error(format!(
+                        "XML-RPC client {} refused the reply to '{}' decision={} ({})",
+                        client_id,
+                        log_name,
+                        refusal.decision_tag(),
+                        refusal
+                    ));
+                } else {
+                    Log::new(Some(status_tx)).error(format!(
+                        "XML-RPC client {} call to {} failed: {}",
+                        client_id, log_name, e
+                    ));
+                }
+                return Err(e);
+            }
             Err(_) => {
                 Log::new(Some(status_tx)).error(format!(
                     "XML-RPC client {} call to {} timed out after {}s",
@@ -535,21 +573,59 @@ impl XmlRpcClient {
                 ));
             }
         };
-        match call {
-            Ok(Ok(response)) => {
+
+        // The scan and the crate's parser are both CPU-bound over at most
+        // `MAX_RESPONSE_BYTES`, so they run on the blocking pool together.
+        let scan_and_parse = tokio::task::spawn_blocking(move || {
+            response_guard::scan_depth(&body)?;
+            let mut request = xmlrpc::Request::new(&method_owned);
+            for param in xmlrpc_params {
+                request = request.arg(param);
+            }
+            Ok::<_, anyhow::Error>(request.call(response_guard::PrefetchedTransport::new(body)))
+        })
+        .await;
+
+        match scan_and_parse {
+            Ok(Ok(Ok(response))) => {
                 info!(
                     "XML-RPC client {} received response for {}",
                     client_id, log_name
                 );
                 Ok(CallOutcome::Result(Self::xmlrpc_value_to_json(&response)))
             }
-            Ok(Err(fault)) => {
-                let fault_msg = fault.to_string();
+            // The server answered with a `<fault>`: a real answer, reported as one.
+            Ok(Ok(Err(err))) if err.fault().is_some() => {
+                let fault_msg = err.to_string();
                 error!(
-                    "XML-RPC client {} error for {}: {}",
+                    "XML-RPC client {} fault for {}: {}",
                     client_id, log_name, fault_msg
                 );
                 Ok(CallOutcome::Fault(fault_msg))
+            }
+            // A parse failure is not a fault - the server said something unusable.
+            Ok(Ok(Err(err))) => {
+                Log::new(Some(status_tx)).error(format!(
+                    "XML-RPC client {} could not parse the reply to {}: {}",
+                    client_id, log_name, err
+                ));
+                Err(anyhow::anyhow!(
+                    "XML-RPC reply to '{}' could not be parsed: {}",
+                    log_name,
+                    err
+                ))
+            }
+            Ok(Err(refusal)) => {
+                if let Some(r) = refusal.downcast_ref::<response_guard::ResponseRefusal>() {
+                    Log::new(Some(status_tx)).error(format!(
+                        "XML-RPC client {} refused the reply to '{}' decision={} ({})",
+                        client_id,
+                        log_name,
+                        r.decision_tag(),
+                        r
+                    ));
+                }
+                Err(refusal)
             }
             Err(e) => {
                 Log::new(Some(status_tx))
@@ -702,18 +778,14 @@ impl XmlRpcClient {
     /// no counter is a stack overflow — `SIGSEGV` against the guard page, not a panic, so
     /// `tokio::spawn` cannot contain it and the whole NetGet process dies.
     ///
-    /// **The bound here closes NetGet's half of the problem and not the crate's.** `xmlrpc`
+    /// **This bound is NetGet's half of the problem, and it is not the whole of it.** `xmlrpc`
     /// 0.15's own `Parser::parse_value` → `parse_value_inner` → `parse_value` recurses with no
-    /// depth counter and no cap on the response body, so a malicious or compromised XML-RPC
-    /// server can overflow the stack *before* a single value reaches this function:
-    /// `<value><array><data>` is about twenty bytes per level. There is no way to bound it from
-    /// here — `Request::call_url` owns the HTTP fetch and the parse, and the only alternative
-    /// entry point (`Request::call` with a `Transport`) takes a `reqwest` **0.11**
-    /// `RequestBuilder`, a different major version from the 0.12 this crate depends on.
-    ///
-    /// So: **do not point this client at an untrusted XML-RPC server.** It is documented rather
-    /// than half-fixed, the way `nfsserve`'s pre-auth DoS is in the root CLAUDE.md. Fixing it
-    /// properly means replacing `xmlrpc`'s parser or the crate.
+    /// depth counter, so a deep enough reply overflows the stack *before* a single value
+    /// reaches this function. The crate's half is bounded in
+    /// [`response_guard`](super::response_guard), which screens the response bytes for size
+    /// and nesting depth before the parser is allowed to touch them. Both bounds are needed:
+    /// this one walks the values the parser produced, that one decides whether the parser gets
+    /// to run at all.
     fn xmlrpc_value_to_json(value: &xmlrpc::Value) -> serde_json::Value {
         Self::xmlrpc_value_to_json_at(value, 0)
     }

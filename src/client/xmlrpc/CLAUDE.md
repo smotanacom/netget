@@ -21,30 +21,66 @@ XML-RPC client implementation for calling remote procedure calls over HTTP using
 - `dxr_client`: More modern (Dec 2024), but repository archived and moved to Codeberg
 - `xml-rpc`: Less mature alternative
 
-### ⚠️ Do not point this client at an untrusted XML-RPC server
+### A hostile server's reply, and why NetGet does its own HTTP
 
 `xmlrpc` 0.15's `Parser::parse_value` → `parse_value_inner` → `parse_value` recurses **with no
-depth counter**, and nothing caps the response body it is fed. `<value><array><data>` is about
-twenty bytes per nesting level, so a malicious or compromised server can return a few megabytes
-that drive the parser tens of thousands of frames deep. A Rust stack overflow is a `SIGSEGV`
-against the guard page, not a panic: `spawn_blocking` cannot contain it and **the whole NetGet
-process dies**. It is pre-authentication as far as this client is concerned — the reply to the
-very first call is enough.
+depth counter**, and the crate caps neither the response body nor the nesting.
+`<value><array><data>` is about twenty bytes per nesting level, so a malicious or compromised
+server can return a megabyte that drives the parser tens of thousands of frames deep. A Rust
+stack overflow is a `SIGSEGV` against the guard page, not a panic: `spawn_blocking` cannot
+contain it, `catch_unwind` cannot see it, and **the whole NetGet process dies** — every other
+server and client in it. It is pre-authentication as far as this client is concerned: the reply
+to the very first call is enough.
 
-**This cannot be fixed from inside NetGet.** `Request::call_url` owns both the HTTP fetch and
-the parse, and the only other entry point — `Request::call` with a custom `Transport` — takes a
-`reqwest` **0.11** `RequestBuilder`, a different major version from the 0.12 this crate depends
-on (the same version wall that forces `timeout_secs` to be applied around the whole call). A
-real fix means replacing the crate or its parser.
+**The seam is `Transport`, and this file used to deny that it existed.** It said the fix was
+impossible because "`Request::call` with a custom `Transport` takes a `reqwest` 0.11
+`RequestBuilder`". That is one *provided* implementation of the trait, not its signature:
+`xmlrpc::Transport` is public, with an associated `Stream: Read`, and anything may implement
+it. Reading a provided impl as the interface is what left the bug open for months.
 
-It is recorded rather than half-fixed, the way `nfsserve`'s pre-auth DoS is in the root
-CLAUDE.md.
+So `perform_call` no longer calls `Request::call_url`. It:
 
-**What *is* bounded** is NetGet's own half: `xmlrpc_value_to_json` and `json_to_xmlrpc_value`
-are both recursive and both now carry `MAX_VALUE_DEPTH` (64). The first walks a value that came
-off the network, so without a counter it was a second, independent way for a deep reply to kill
-the process — it just needed the crate's parser to survive first. Anything deeper than 64 is
-reported to the model as `<nesting deeper than 64 levels was not decoded>` rather than walked.
+1. serialises the request with `Request::write_as_xml`,
+2. POSTs it with NetGet's own reqwest 0.12 client — built once per (host, timeout) on the
+   blocking pool and cached, with the literal-IP resolver bypass applied,
+3. reads the body through `response_guard::read_body_capped`, which refuses at
+   `MAX_RESPONSE_BYTES` (8 MiB) **as it streams**, so the cap is never exceeded even
+   transiently,
+4. measures element nesting with `response_guard::scan_depth` (quick-xml, already a dependency
+   of this feature) and refuses past `MAX_ELEMENT_DEPTH` (256 elements ≈ 64 XML-RPC value
+   levels, matching `MAX_VALUE_DEPTH`),
+5. hands the crate a `PrefetchedTransport` over the screened bytes, so `xmlrpc` still does the
+   parsing and fault handling, type coverage and error shapes are unchanged.
+
+Refuse, never truncate: a response cut off at the cap parses into something the model would be
+told the server said. Each refusal logs `decision=fail_closed_response_too_large`,
+`_too_deep` or `_unscannable`. A body quick-xml cannot scan at all is refused rather than
+passed through hopefully — a depth we could not measure is not a depth we can certify, and a
+response that is not well-formed XML would fail in the crate's parser anyway.
+
+`tests/client/xmlrpc/response_guard_test.rs` drives a hand-written hostile HTTP server that
+answers with 50 000 nesting levels. Remove `MAX_ELEMENT_DEPTH` and the test binary does not
+fail politely — it aborts with `fatal runtime error: stack overflow` (SIGABRT), which is how
+the bound was verified. Its second half points a client at a three-level reply and asserts it
+still parses, because a guard that refused everything would pass the first assertion.
+
+**Two things it does *not* bound.** Nesting between 64 and 256 elements is accepted by the scan
+and then rendered by `xmlrpc_value_to_json` as `<nesting deeper than 64 levels was not
+decoded>`; that is a truncated *rendering* to the model, not a truncated wire read, and it is
+the pre-existing `MAX_VALUE_DEPTH` behaviour. And a server that answers slowly but validly is
+bounded only by `timeout_secs`.
+
+**`timeout_secs` now actually cancels.** It is applied both on the reqwest client and around
+the whole exchange, and the fetch is an ordinary future rather than a `spawn_blocking` thread
+that cannot be cancelled — so an unresponsive server no longer holds a blocking-pool thread
+until its own TCP timeout. What remains on the blocking pool is the scan and parse, bounded by
+`MAX_RESPONSE_BYTES`.
+
+**NetGet's own half** stays bounded independently: `xmlrpc_value_to_json` and
+`json_to_xmlrpc_value` are both recursive and both carry `MAX_VALUE_DEPTH` (64). The first
+walks a value that came off the network, so without a counter it was a second, independent way
+for a deep reply to kill the process — it just needed the crate's parser to survive first.
+Neither bound replaces the other.
 
 **Entity expansion is *not* a way in.** `xmlrpc` parses through `xml-rs`, which does not process
 DTD internal subsets and rejects any entity outside the five predefined ones, so billion-laughs
@@ -144,28 +180,29 @@ LLM decides next action (another call, disconnect, etc.)
 
 ## Implementation Details
 
-### Blocking API Wrapper, and where `timeout_secs` bites
+### Async fetch, blocking parse, and where `timeout_secs` bites
 
-xmlrpc crate is synchronous, so we use:
+The `xmlrpc` crate is synchronous, but only its *parser* is now used from NetGet. The HTTP is
+ours and asynchronous:
 
 ```rust
-tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || {
-    request.call_url(&server_url)
-})).await
+let body = tokio::time::timeout(timeout, fetch_and_screen(&http, &url, request_xml)).await?;
+tokio::task::spawn_blocking(move || {
+    response_guard::scan_depth(&body)?;
+    request.call(response_guard::PrefetchedTransport::new(body))
+}).await
 ```
 
-This runs the blocking HTTP call on a dedicated thread pool without blocking the async runtime.
+See the warning near the top for why. What this changes about `timeout_secs` (default 30): it
+is applied both on the reqwest client and around the whole exchange, and because the fetch is
+an ordinary future rather than a `spawn_blocking` thread, it **cancels** — an unresponsive
+server no longer holds a blocking-pool thread until its own TCP timeout. The blocking work that
+remains is the depth scan and the parse, both bounded by `MAX_RESPONSE_BYTES` rather than by
+whatever the server chose to send.
 
-The `timeout_secs` startup parameter (default 30) is applied **around the whole call**, not on
-the HTTP client, and the reason is a version wall: `xmlrpc::Request::call_url` builds its own
-`reqwest::blocking::Client` internally with no way to configure it, and the only alternative —
-`Request::call` with a custom `Transport` — takes a `reqwest` **0.11** `RequestBuilder`, a
-different major version from the 0.12 this crate depends on.
-
-What that bounds and what it does not: the caller stops waiting after `timeout_secs` and gets
-an error, which is what the parameter promises. The blocking thread is **not** cancelled —
-`spawn_blocking` cannot be — so an unresponsive server still holds one blocking-pool thread
-until its own TCP timeout expires.
+A related correction: a transport or parse failure is now an `Err`, and only a real `<fault>`
+becomes `CallOutcome::Fault`, distinguished with `xmlrpc::Error::fault()`. Every `Err` used to
+be reported as a fault, so a refused connection looked to the model like the server saying no.
 
 ### Error Handling
 
@@ -208,14 +245,16 @@ handler branching on `event['fault']['code']` gets `None` every time.
 
 ## Limitations
 
-0. **No protection against a hostile server's reply** — see the warning at the top. This is the
-   one that matters.
-1. **Synchronous HTTP**: Each method call blocks a thread from the tokio blocking pool
+0. **A hostile server's reply is bounded, not made harmless.** See the warning at the top for
+   exactly what `response_guard` refuses and what it does not.
+1. **Blocking parse**: the fetch is async; the depth scan and the crate's parser run on the
+   tokio blocking pool, bounded by `MAX_RESPONSE_BYTES`
 2. **No streaming**: Cannot handle long-running methods with progress updates
-3. **No e2e test.** `tests/client/xmlrpc/` holds only `command_channel_test.rs`; there is no
-   `e2e_test.rs` and the directory is the only one in this family without one. The injected-
-   action path is covered; the LLM-driven `xmlrpc_connected` → call → `xmlrpc_response_received`
-   chain is not covered by anything.
+3. **No e2e test.** `tests/client/xmlrpc/` holds `command_channel_test.rs` and
+   `response_guard_test.rs`; there is no `e2e_test.rs` and the directory is the only one in
+   this family without one. The injected-action path is covered, as is a hostile reply; the
+   LLM-driven `xmlrpc_connected` → call → `xmlrpc_response_received` chain is not covered by
+   anything.
 3. **Type limitations**:
     - Null handling varies (converted to empty string for compatibility)
     - Binary data must use Base64 encoding

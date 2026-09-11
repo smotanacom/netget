@@ -2,7 +2,7 @@
 
 ## Test Overview
 
-Seven tests in `test.rs` plus one in `llm_failure_test.rs`, covering NFSv3 (RFC 1813) over ONC RPC (RFC 5531) on TCP. The server side is
+Seven tests in `test.rs`, one in `llm_failure_test.rs` and two in `dos_guard_test.rs`, covering NFSv3 (RFC 1813) over ONC RPC (RFC 5531) on TCP. The server side is
 `nfsserve`, which handles RPC/XDR framing and the MOUNT protocol; the LLM answers every filesystem
 operation through actions.
 
@@ -29,8 +29,10 @@ Only three procedures are needed: `NULL` (both programs), `MOUNTPROC3_MNT`, `NFS
 
 ## LLM Call Budget
 
-**Total: 10.** (9 below, plus 1 startup call in `llm_failure_test.rs`; every NFS
-operation in that test is deliberately answered with HTTP 500.)
+**Total: 12.** (9 below, 1 startup call in `llm_failure_test.rs` where every NFS operation is
+deliberately answered with HTTP 500, and 1 startup call each for the two tests in
+`dos_guard_test.rs` — both of which perform *zero* NFS operations against the model, which is
+the point of one of them.)
 
 Six lifecycle tests are 1 startup call each and perform no NFS operation.
 `test_nfs_mount_and_lookup` is 1 startup + `getattr` (`expect_at_least(1)`) + `lookup`
@@ -76,8 +78,24 @@ RPC layer.
    the RPC session survives. `MOUNTPROC3_MNT "/"` reaches no LLM call, so it still succeeds and
    serves as the control.
 
+9. **`test_nfs_refuses_oversize_rpc_record`** (`dos_guard_test.rs`) — a record marker of
+   `0xFFFFFFFF` (last-fragment bit plus the maximum 31-bit length) followed by a 40-byte
+   `MOUNTPROC3_MNT` whose `dirpath` length is also `0xFFFFFFFF`. `src/server/nfs/guard.rs` must
+   answer a 28-byte `GARBAGE_ARGS` accepted reply carrying the attacker's own xid, then close;
+   a fresh `RpcClient` must still mount afterwards, which is the control that would catch a
+   process-wide abort.
+10. **`test_nfs_refuses_a_mount_path_that_would_amplify_into_llm_calls`** (same file) — a
+    200-component MOUNT dirpath must answer `MNT3ERR_NOENT` with the `lookup` rule recording
+    `expect_calls(0)`. The mock answers every lookup **successfully** on purpose: that is what
+    makes the amplification real, so nothing but `MAX_PATH_COMPONENTS` stops the walk.
+
+Both were verified by removing the bound: the first then times out waiting for a reply that
+never comes (nfsserve sitting on a 2 GiB buffer), the second records 200 LLM calls and answers
+`MNT3_OK`.
+
 The RPC client is shared: `RpcClient`, `Xdr` and `xdr_opaque` are `pub` in `test.rs` and reused
-by `llm_failure_test.rs`. There is one RPC implementation in this directory, not two.
+by `llm_failure_test.rs` and `dos_guard_test.rs`. There is one RPC implementation in this
+directory, not three.
 
 ## Client Library
 
@@ -89,6 +107,8 @@ None for NFS — see above. `tokio::net::TcpStream` carries the hand-rolled RPC.
 
 ## Not Covered
 
+The framing screen's other bounds (`MAX_FRAGMENTS_PER_RECORD`, `FRAGMENT_BODY_TIMEOUT`,
+`MAX_CONCURRENT_CONNECTIONS`) — only the fragment/record size bound is driven from the wire;
 READ, WRITE, READDIR, CREATE, REMOVE, SETATTR; model-rejection error paths (`NFS3ERR_NOENT`,
 `NFS3ERR_ACCES` from an action carrying `"error"` — the *backend-failure* path is covered);
 AUTH_UNIX credentials; multi-fragment requests; UDP transport; script mode.
