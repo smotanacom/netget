@@ -1,6 +1,7 @@
 # WebRTC Server Implementation
 
-> **Status: `Experimental` — it works.** A real `RTCPeerConnection` is established with a
+> **Status: `Beta`** (`actions.rs` says `DevelopmentState::Beta`; this banner said
+> `Experimental` long after the code stopped agreeing). **It works.** A real `RTCPeerConnection` is established with a
 > real peer, a data channel opens, and messages cross it in both directions. This is
 > asserted end to end in `tests/server/webrtc/e2e_test.rs`, which uses webrtc-rs itself as
 > the peer.
@@ -141,15 +142,24 @@ handler takes the lock, copies what it needs, drops it in an inner scope, then a
 ## Peers, and their teardown
 
 Each peer holds an `RTCPeerConnection`, its data channel once open, and a `ConnectionId`
-registered with the `ServerInstance` (so it appears in the TUI and the access log).
+registered with the `ServerInstance` (so it appears in the TUI and the access log). The row
+carries the **signalling socket's** address: there is no single stable remote address for the
+ICE media path, and the signalling address is the one thing about a peer that is both stable
+and true. It used to be `0.0.0.0:0` under a comment saying the address "is recorded by the
+caller instead" — no caller did, and the row read all zeros for the life of every peer. Its
+`↓/↑` counters move now too; `record_traffic` is called on every data-channel message in
+either direction, and nothing called `update_connection_stats` before.
+
 `PeerCtx::teardown` is idempotent and removes the peer, closes the peer connection and drops
-the connection record. It is called from three places, whichever gets there first winning:
+the connection record. It is called from four places, whichever gets there first winning:
 the peer-connection state callback (`Failed`/`Closed`/`Disconnected`), the signalling
-socket's cleanup, and the `disconnect` action.
+socket's cleanup, the `disconnect` action, and the negotiation-failure path in
+`accept_offer`. (This said "three places" and listed the first three.)
 
 `spawn` registers the accept loop via `AppState::register_server_task`, so `stop_server`
 releases the socket. Per-connection tasks are untracked — the codebase-wide limitation, not
-specific to this protocol.
+specific to this protocol — so a `stop_server` releases the listener while established peer
+connections and their data channels keep running.
 
 ## Peer-controlled input
 
@@ -197,9 +207,22 @@ this code.
 5. **One data channel per peer** is tracked; a peer opening a second channel replaces the
    tracked one for outbound messages.
 6. **Binary is lossy** in both directions (see Messages).
-7. **No peer authentication beyond the model's decision.** `peer_id` is self-asserted; the
-   model is the only gate.
-8. **The server's local IPs appear in the SDP answer** — inherent to ICE.
+7. **No peer authentication beyond the model's decision.** `peer_id` is self-asserted free
+   text, there is no token, no `Origin` check, no path check and no `wss://` listener — so
+   admission is entirely whatever answers `webrtc_offer_received`. Fail-closed on an error,
+   a timeout or a decision-free reply, and dashboard-created servers default to `*` → manual
+   so a human answers; but note that this protocol's own shipped **static** startup example
+   admits everyone unconditionally (`{"type": "accept_offer"}` on `*`), and so does any model
+   told to "admit peers". `max_peers` (default 32) is the only non-model limit on *admitted*
+   peers.
+8. **Unauthenticated signalling sockets are bounded only by these.** `max_peers` gates
+   accepted offers, not connections, so it bounds neither the number of sockets sitting
+   pre-admission nor what they send. What does: a 10s handshake deadline, a 256 KiB WebSocket
+   message limit (tungstenite's default is **64 MiB**) and a 64-event cap on the per-peer
+   queue that fills while an LLM call is in flight. All three were absent until September
+   2026 — a socket that opened TCP and never upgraded parked a task forever, and one 64 MiB
+   frame per peer was free.
+9. **The server's local IPs appear in the SDP answer** — inherent to ICE.
 
 ## Example
 
