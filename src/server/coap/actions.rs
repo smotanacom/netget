@@ -322,6 +322,28 @@ fn decode_payload(action: &serde_json::Value) -> Result<Vec<u8>> {
         .and_then(|v| v.as_str())
         .unwrap_or("utf8");
 
+    let bytes = decode_with_encoding(&payload, encoding)?;
+
+    if bytes.len() > codec::MAX_PAYLOAD_LEN {
+        anyhow::bail!(
+            "send_coap_response 'payload' is {} bytes, over the {}-byte limit. CoAP has no \
+             fragmentation of its own and this server does not implement Block-wise transfer \
+             (RFC 7959), so a representation has to fit one datagram: RFC 7252 §4.6 puts the \
+             safe maximum at {} bytes when the path MTU is unknown. Return a smaller \
+             representation - a summary, fewer records, or a link to the detail - rather than \
+             a response no constrained client can receive.",
+            bytes.len(),
+            codec::MAX_PAYLOAD_LEN,
+            codec::MAX_PAYLOAD_LEN
+        );
+    }
+
+    Ok(bytes)
+}
+
+/// Turn the `payload` string into bytes according to `encoding`, with no size opinion.
+fn decode_with_encoding(payload: &str, encoding: &str) -> Result<Vec<u8>> {
+    let payload = payload.to_string();
     match encoding {
         "utf8" => Ok(payload.into_bytes()),
         "hex" => {

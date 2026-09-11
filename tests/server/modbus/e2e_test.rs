@@ -421,3 +421,104 @@ fn test_codec_rejects_malformed_requests() {
         })
     );
 }
+
+// ===========================================================================
+// The model's values are refused, never narrowed
+// ===========================================================================
+
+/// A register value or an exception code the model puts out of range must be **refused**,
+/// not cast into range.
+///
+/// This is the defect class the quality programme keeps finding, and Modbus is the
+/// protocol where it does physical damage: `65736 as u16` is `200`, so a narrowing cast
+/// would report a tank level of 200 cm to a client that would believe it, with no error
+/// anywhere. Every out-of-range value below is one a bare `as u16` / `as u8` would have
+/// silently accepted.
+#[test]
+fn test_out_of_range_model_values_are_refused_not_narrowed() {
+    use netget::llm::actions::protocol_trait::Server;
+    use netget::server::modbus::actions::ModbusProtocol;
+
+    let protocol = ModbusProtocol::new();
+
+    // 65536 is the first value that wraps: `65536 as u16` is 0.
+    let err = protocol
+        .execute_action(serde_json::json!({
+            "type": "send_modbus_registers",
+            "values": [1834, 65536]
+        }))
+        .expect_err("65536 does not fit a 16-bit register and must be refused");
+    assert!(
+        err.to_string().contains("65535"),
+        "the refusal should tell the model the real range, got: {err}"
+    );
+
+    // 65736 is the case worth naming: it wraps to 200, a plausible-looking reading.
+    assert!(protocol
+        .execute_action(serde_json::json!({
+            "type": "send_modbus_registers",
+            "values": [65736]
+        }))
+        .is_err());
+
+    // A negative value is not a register either, and `as u16` on the way through
+    // `as_u64()` would have dropped it silently.
+    assert!(protocol
+        .execute_action(serde_json::json!({
+            "type": "send_modbus_registers",
+            "values": [-1]
+        }))
+        .is_err());
+
+    // The whole legal range is still accepted, so this is a bound and not a blanket
+    // refusal.
+    assert!(protocol
+        .execute_action(serde_json::json!({
+            "type": "send_modbus_registers",
+            "values": [0, 65535]
+        }))
+        .is_ok());
+
+    // Exception codes are checked against the codes the specification defines, not
+    // against `u8`. 0x104 would have become 0x04 (server device failure) - a fail-closed
+    // answer manufactured out of a typo.
+    assert!(protocol
+        .execute_action(serde_json::json!({
+            "type": "send_modbus_exception",
+            "exception_code": 260
+        }))
+        .is_err());
+
+    // 7 and 9 are gaps in the spec's own table, so no client can interpret them.
+    for undefined in [0u64, 7, 9, 12, 255] {
+        assert!(
+            protocol
+                .execute_action(serde_json::json!({
+                    "type": "send_modbus_exception",
+                    "exception_code": undefined
+                }))
+                .is_err(),
+            "exception code {undefined} is not defined by the specification and must be \
+             refused"
+        );
+    }
+
+    // Every code the specification does define is still accepted, by number and by name.
+    for defined in [1u64, 2, 3, 4, 5, 6, 8, 10, 11] {
+        assert!(
+            protocol
+                .execute_action(serde_json::json!({
+                    "type": "send_modbus_exception",
+                    "exception_code": defined
+                }))
+                .is_ok(),
+            "exception code {defined} is defined by the specification and must be accepted"
+        );
+    }
+    assert!(protocol
+        .execute_action(serde_json::json!({
+            "type": "send_modbus_exception",
+            "exception_code": "illegal_data_address"
+        }))
+        .is_ok());
+}

@@ -236,12 +236,29 @@ pub fn decode_payload(action: &serde_json::Value) -> Result<Vec<u8>> {
         .and_then(|v| v.as_str())
         .unwrap_or("utf8")
         .to_ascii_lowercase();
-    match encoding.as_str() {
-        "utf8" | "utf-8" | "text" | "ascii" => Ok(payload.as_bytes().to_vec()),
+    let bytes = match encoding.as_str() {
+        "utf8" | "utf-8" | "text" | "ascii" => payload.as_bytes().to_vec(),
         "hex" => hex::decode(payload)
-            .with_context(|| format!("payload {payload:?} is declared hex but is not valid hex")),
+            .with_context(|| format!("payload {payload:?} is declared hex but is not valid hex"))?,
         other => bail!("encoding must be \"utf8\" or \"hex\", got {other:?}"),
+    };
+
+    // Bounded on the encode side too, not just on decode. `Parameter::write_into` writes the
+    // Parameter Length as a `u16`, so a user part this size or larger wrapped the field and
+    // produced a message no SS7 peer could parse — and nothing anywhere would have said so.
+    if bytes.len() > codec::MAX_USER_DATA_LEN {
+        bail!(
+            "payload is {} octets, over the {}-octet limit. M3UA's Parameter Length field is \
+             16 bits and has to cover the Protocol Data header as well, so a larger user part \
+             cannot be framed at all. For scale, a real SS7 MSU carries at most 272 octets of \
+             user part — a payload this size almost certainly means the field has been \
+             misunderstood.",
+            bytes.len(),
+            codec::MAX_USER_DATA_LEN
+        );
     }
+
+    Ok(bytes)
 }
 
 impl M3uaProtocol {

@@ -1,6 +1,6 @@
 # CAN bus tests — strategy
 
-**43 tests, all passing, no `#[ignore]`s.** 26 in `frame_test.rs`, 17 in `e2e_test.rs`.
+**43 tests, all passing, no `#[ignore]`s.** 28 in `frame_test.rs`, 15 in `e2e_test.rs`.
 **LLM budget: 2 calls**, both in `e2e_test.rs`.
 
 ## What can and cannot be tested here

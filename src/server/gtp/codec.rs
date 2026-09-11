@@ -30,6 +30,21 @@ pub const GTPC_PORT: u16 = 2123;
 /// GTP-U user-plane port (TS 29.060 §4.1). Above 1023.
 pub const GTPU_PORT: u16 = 2152;
 
+/// Largest sequence number a GTPv1 header can carry: the field is 16 bits (TS 29.060 §6).
+pub const V1_MAX_SEQUENCE: u32 = 0xFFFF;
+
+/// Largest sequence number a GTPv2 header can carry: the field is 24 bits (TS 29.274 §5.1).
+pub const V2_MAX_SEQUENCE: u32 = 0x00FF_FFFF;
+
+/// Largest T-PDU this server will put inside a G-PDU, in octets.
+///
+/// Two limits apply and the tighter one wins. The GTP-U Length field is 16 bits and covers
+/// the payload plus the four optional octets, so the wire format alone would allow 65531.
+/// But GTP-U rides on UDP, whose payload tops out at 65507, and a G-PDU header carrying a
+/// sequence number is 12 octets — so 65495 is the largest T-PDU that can actually be sent.
+/// Past it `send_to` fails with `EMSGSIZE` and the peer hears nothing at all.
+pub const MAX_GPDU_PAYLOAD_LEN: usize = 65_495;
+
 // ===========================================================================
 // Message types
 // ===========================================================================
@@ -307,6 +322,22 @@ impl GtpVersion {
         match self {
             GtpVersion::V1 => 1,
             GtpVersion::V2 => 2,
+        }
+    }
+
+    /// Width of this version's header sequence-number field, in bits.
+    pub fn sequence_bits(self) -> u8 {
+        match self {
+            GtpVersion::V1 => 16,
+            GtpVersion::V2 => 24,
+        }
+    }
+
+    /// Largest sequence number this version's header can carry.
+    pub fn max_sequence(self) -> u32 {
+        match self {
+            GtpVersion::V1 => V1_MAX_SEQUENCE,
+            GtpVersion::V2 => V2_MAX_SEQUENCE,
         }
     }
 }

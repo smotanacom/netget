@@ -464,4 +464,62 @@ mod m3ua_codec_test {
         assert_eq!(codec::padding_for(4), 0);
         assert_eq!(codec::padding_for(19), 1);
     }
+
+    /// A user part too large to frame must be **refused at the action**, not wrapped.
+    ///
+    /// `Parameter::write_into` writes `declared_len()` as a `u16`, and `MAX_MESSAGE_LEN`
+    /// guards only the decode side — where a hostile peer chooses the number. On the encode
+    /// side, where the model chooses it, there was no bound at all: a user part of 65520
+    /// octets or more wrapped the Parameter Length field and produced a message no SS7 peer
+    /// could parse, with nothing anywhere saying so.
+    ///
+    /// The limit counts decoded octets, so declaring `hex` must not buy twice the budget.
+    #[test]
+    fn a_user_part_too_large_to_frame_is_refused_rather_than_wrapped() {
+        use netget::llm::actions::protocol_trait::Server;
+        use netget::server::m3ua::actions::M3uaProtocol;
+
+        let protocol = M3uaProtocol::new();
+        let send = |payload: String, encoding: &str| {
+            protocol.execute_action(serde_json::json!({
+                "type": "send_m3ua_data",
+                "opc": 1,
+                "dpc": 2,
+                "si": 3,
+                "payload": payload,
+                "encoding": encoding,
+            }))
+        };
+
+        // Exactly at the limit is still legal. Without this the over-limit assertion below
+        // would pass just as happily against a guard that refused everything.
+        assert!(
+            send("x".repeat(codec::MAX_USER_DATA_LEN), "utf8").is_ok(),
+            "exactly MAX_USER_DATA_LEN octets fits the Parameter Length field and must be \
+             accepted"
+        );
+
+        let err = send("x".repeat(codec::MAX_USER_DATA_LEN + 1), "utf8")
+            .expect_err("one octet over the limit must be refused");
+        let err = err.to_string();
+        assert!(
+            err.contains(&codec::MAX_USER_DATA_LEN.to_string()),
+            "the refusal must name the real limit so the model can act on it, got: {err}"
+        );
+
+        // The bound is on decoded octets: two hex digits per octet.
+        assert!(send("41".repeat(codec::MAX_USER_DATA_LEN), "hex").is_ok());
+        assert!(
+            send("41".repeat(codec::MAX_USER_DATA_LEN + 1), "hex").is_err(),
+            "a hex-declared payload must not get twice the budget"
+        );
+
+        // The limit is derived from the format, not picked: common header + parameter header
+        // + Protocol Data's fixed fields must exactly account for the difference.
+        assert_eq!(
+            codec::MAX_USER_DATA_LEN + codec::HEADER_LEN + 4 + 12,
+            codec::MAX_MESSAGE_LEN,
+            "MAX_USER_DATA_LEN must leave room for exactly the headers it is documented to"
+        );
+    }
 }
