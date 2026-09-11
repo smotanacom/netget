@@ -24,6 +24,36 @@ This file previously described the module as "Beta - Production-ready exit relay
 **Protocol Compliance**: partial, against tor-spec.txt
 **Version**: targets OR protocol v4 cell framing (link handshake absent)
 
+## The exit is open, and that is deliberate — say it out loud
+
+The destination of every RELAY/BEGIN is whatever the peer wrote in the cell. There is **no exit
+policy, allow-list, deny-list or network restriction of any kind**, so loopback, link-local
+(including `169.254.169.254`, the cloud instance-metadata endpoint) and every RFC 1918 range are
+reachable. Anyone who completes a circuit reaches whatever this host reaches: an SSRF pivot into
+the operator's private network, and an exit someone else's traffic can be laundered through.
+`proxy` and `socks5` reached the same conclusion and `metadata().notes` now states this in the
+same terms.
+
+It is worse than those two in one respect: **the model is not consulted at all.** BEGIN, DATA,
+END, SENDME and exit target selection are decided in Rust. There is no `filter_mode` here, not
+even in the weak form socks5 has.
+
+Two bounds do apply, and both are on *resources*, never on destination:
+
+- **A BEGIN's connect is abandoned after 10s** (`stream::TARGET_CONNECT_TIMEOUT`).
+  `handle_begin_cell` is awaited inline in the cell loop, so until it returns the session reads
+  no further cells and writes none of the ones its forwarder tasks have queued. Unbounded, that
+  was the OS connect timeout — around 75s on macOS — against an address the peer chose, so one
+  BEGIN to a blackholed address froze the whole connection.
+- **A circuit may hold at most 64 streams** (`stream::MAX_STREAMS_PER_CIRCUIT`). The stream id
+  is 16 bits, so without a cap one circuit could ask for 65,535 outbound TCP connections:
+  file-descriptor exhaustion here, and pointed at one victim an outbound connection flood.
+  Past the cap the peer gets `END`/`RESOURCE_LIMIT` for that stream and the circuit survives —
+  propagating the error would take the connection down through the DESTROY path, handing a peer
+  that opens too many streams a way to kill everything else on the same circuit.
+
+**Do not expose this to an untrusted network.**
+
 ## Library Choices
 
 ### Cryptography Stack
@@ -32,7 +62,9 @@ This file previously described the module as "Beta - Production-ready exit relay
 - **ed25519-dalek** (v2.1) - Ed25519 identity keys and signing
 - **sha2** (v0.10) - SHA-256 for digests and key derivation
 - **hmac** (v0.12) - HMAC-SHA256 for ntor authentication
-- **hkdf** (v0.12) - HKDF-SHA256 for key expansion (72-byte key material)
+- **hkdf** (v0.12) - HKDF-SHA256 for key expansion (**92**-byte key material: Df 20 + Db 20 +
+  Kf 16 + Kb 16 + KH 20. This file said 72 for a long time, which is the pre-fix figure and is
+  contradicted by `circuit.rs`'s own `let mut okm = [0u8; 92];`)
 - **aes** (v0.8) - AES-128 cipher for relay cell encryption
 - **ctr** (v0.9) - CTR mode for stream cipher (AES-128-CTR)
 
@@ -41,18 +73,24 @@ handshake is proven secure.
 
 ### Protocol Implementation
 
-- **tor-cell** (v0.34) - Cell encoding/decoding, command types, relay commands
 - **tokio-rustls** (v0.26) - TLS 1.3 for OR protocol connections (required by Tor)
-- **rcgen** (v0.13) - Self-signed certificate generation for relay identity
+- **rcgen** (v0.14) - Self-signed certificate generation for relay identity
 
-**Rationale**: `tor-cell` handles low-level cell format details. `tokio-rustls` provides async TLS with proper security.
+**`tor-cell` is NOT used.** It is a declared dependency of the `tor` feature (at 0.36, not the
+0.34 this file claimed) and `grep -rn "tor_cell::" src/` returns nothing. Every cell is framed
+and parsed by this module's own `take_cell` and `parse_tor_cell`. That is worth knowing before
+reasoning about spec conformance: nothing here inherits any correctness from the Tor project's
+own crate.
+
+**Rationale**: `tokio-rustls` provides async TLS with proper security.
 
 ### Manual Implementation
 
 - **Circuit crypto state** - Custom implementation of AES-CTR cipher state per circuit
 - **Stream manager** - Custom HashMap-based stream multiplexing
 - **Flow control** - Custom SENDME window tracking (circuit + stream level)
-- **Cell encryption** - Custom encrypt/decrypt with digest computation
+- **Cell encryption** - Custom AES-CTR encrypt/decrypt. **No digest computation** - see the
+  known non-conformance below; the running digests exist but nothing consumes them.
 
 **Rationale**: No existing library combines circuit crypto + stream management + flow control. Manual implementation
 allows exact spec compliance and LLM integration points.
@@ -65,14 +103,16 @@ allows exact spec compliance and LLM integration points.
 
 - Client sends: CREATE2 with X (32-byte Curve25519 public key)
 - Server generates ephemeral keypair Y, computes shared secret
-- Derives 72 bytes of key material using HKDF-SHA256
+- Derives 92 bytes of key material using HKDF-SHA256
 - Returns: CREATED2 with Y (32 bytes) + AUTH (32 bytes)
 - Both sides derive: Kf (forward key), Kb (backward key), Df (forward digest), Db (backward digest)
 
 **Relay Cell Encryption** (tor-spec.txt section 6.1):
 
 - AES-128-CTR with separate forward/backward keys
-- Digest computation before/after encryption using SHA-256
+- **No digest**, and this is a KNOWN NON-CONFORMANCE (`circuit.rs` says so at the call site):
+  tor-spec wants a running SHA-1 over relay cells, outbound digest fields ship as zero and
+  inbound digests are never checked. A peer that validates them rejects every cell.
 - Zero IV for CTR mode (standard for Tor)
 - 509-byte payload per cell
 
@@ -83,7 +123,7 @@ allows exact spec compliance and LLM integration points.
 - Package window prevents sending too many cells
 - Deliver window tracks received cells
 
-### 2. Circuit Management (circuit.rs - 663 lines)
+### 2. Circuit Management (circuit.rs)
 
 **Per-Circuit State**:
 
@@ -103,7 +143,7 @@ allows exact spec compliance and LLM integration points.
 4. RELAY/END → close stream
 5. DESTROY → tear down circuit
 
-### 3. Stream Management (stream.rs - 320 lines)
+### 3. Stream Management (stream.rs)
 
 **Per-Stream State**:
 
@@ -192,12 +232,16 @@ bandwidth-weights ...
 directory-signature ...
 ```
 
-**Status**:
+**Status**. The ✅ marks this section used to carry had no evidence behind them: nothing in
+`tests/server/tor_relay/` exercises BEGIN_DIR or the consensus at all (`grep -i begin_dir
+tests/server/tor_relay/` finds only this file). The code exists - `handle_begin_dir_cell`,
+`handle_directory_data`, `generate_test_consensus`, `send_directory_response` - and has never
+been shown to work.
+
 - ⚠️ Consensus content is hardcoded in Rust, not LLM-supplied
-- ✅ BEGIN_DIR cell handling works
-- ✅ Circuit creation successful
-- ✅ HTTP request parsing works
-- ✅ Consensus served correctly
+- ❓ BEGIN_DIR handling, HTTP request parsing and consensus serving are **implemented and
+  untested**
+- ✅ Circuit creation succeeds - this one *is* covered, by `e2e_test.rs`
 - ❌ Arti bootstrap still fails (likely signature validation)
 
 **Arti Integration**:
@@ -291,8 +335,9 @@ events after the fact and can log, tear down a circuit, or hang up.
 2. `tor_relay_relay_cell` - a RELAY command the relay does not implement (EXTEND, TRUNCATE,
    RESOLVE, DROP, unknown). BEGIN, BEGIN_DIR, DATA, END and SENDME never reach the model.
 
-**Actions**: `detect_relay_cell` (log only), `send_destroy` (needs `circuit_id`; emits a real
-514-byte DESTROY cell), `close_connection`.
+**Actions**: `detect_relay_cell` (log only), `tor_relay_log` (log only, writes nothing to the
+wire), `send_destroy` (needs `circuit_id`; emits a real 514-byte DESTROY cell),
+`close_connection`. Four, not three.
 
 **No async actions.** Seven were declared - `set_relay_type`, `configure_exit_policy`,
 `list_active_circuits`, `disconnect_circuit`, `list_active_streams`, `close_stream`,
@@ -389,23 +434,9 @@ a circuit can open a TCP stream to anything this host can reach.
 Start a Tor exit relay on port 9001 that allows connections to localhost
 ```
 
-### List active circuits
-
-```
-Show me all active circuits with their statistics
-```
-
-### Close a specific circuit
-
-```
-Close circuit 0x00000005
-```
-
-### Get relay statistics
-
-```
-Show me relay statistics including total bytes transferred
-```
+The three prompts that used to follow - "show me all active circuits", "close circuit
+0x00000005", "show me relay statistics" - asked for the seven async actions this same file
+records as deleted. The model cannot do any of them, and there is no verb that would let it.
 
 ## References
 
@@ -414,7 +445,6 @@ Show me relay statistics including total bytes transferred
 - [Relay Cells](https://spec.torproject.org/tor-spec/relay-cells.html)
 - [Flow Control](https://spec.torproject.org/tor-spec/flow-control.html)
 - [Arti Project](https://gitlab.torproject.org/tpo/core/arti) (Rust Tor client reference)
-- TOR_RELAY_PHASE3_COMPLETE.md - Phase 3 completion report with full implementation details
 
 ## Testing
 
