@@ -55,6 +55,96 @@ struct ScrapeResponse {
 /// the recursion possible, so it is bounded rather than avoided by staying silent.
 const MAX_FOLLOWUP_DEPTH: u8 = 6;
 
+/// Ceiling on a tracker reply before it is refused, applied while the body streams in.
+///
+/// A tracker answer is a small bencoded dictionary — a compact peer list of a thousand peers
+/// is six kilobytes. `bytes()` would have read whatever the far end chose to send, with no
+/// cap at all, so a hostile or broken tracker could hand this client gigabytes and the first
+/// sign of it would be the allocator.
+const MAX_TRACKER_BODY_BYTES: usize = 1024 * 1024;
+
+/// Wall-clock bound on one announce or scrape.
+///
+/// `reqwest::get` applies no timeout of any kind, so a tracker that accepts the connection
+/// and then says nothing parks the action — and with it whatever injected `[ send ]` is
+/// waiting on its outcome — for as long as the peer cares to hold it open.
+const TRACKER_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// One `reqwest::Client` per tracker URL, built once and reused.
+///
+/// Two reasons, both recorded in the root `CLAUDE.md` as costing real debugging time.
+/// Building a client is *blocking* — it loads the platform root store, which on macOS reads
+/// the keychain through Security.framework — so doing it per request parks a tokio worker.
+/// And `reqwest` hands even a dotted quad to `getaddrinfo`, which serialises through
+/// mDNSResponder on macOS and was measured at 8.25s under load;
+/// [`client_for_endpoint_with_timeout`] installs the literal-IP bypass, and it needs the URL
+/// to decide whether to, which is why this is keyed by URL rather than a single global.
+fn tracker_http_client(tracker_url: &str) -> reqwest::Client {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+
+    static CLIENTS: LazyLock<Mutex<HashMap<String, reqwest::Client>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let mut cache = match CLIENTS.lock() {
+        Ok(guard) => guard,
+        // A poisoned mutex here means another thread panicked mid-insert; the map is still
+        // structurally sound and a fresh client is always correct, so do not propagate.
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    cache
+        .entry(tracker_url.to_string())
+        .or_insert_with(|| {
+            crate::llm::ollama_client::client_for_endpoint_with_timeout(
+                tracker_url,
+                TRACKER_REQUEST_TIMEOUT,
+            )
+        })
+        .clone()
+}
+
+/// GET `url` and return at most [`MAX_TRACKER_BODY_BYTES`] of body, refusing anything longer
+/// *while it arrives* rather than after it has all been buffered.
+async fn fetch_tracker_body(tracker_url: &str, url: &str) -> Result<Vec<u8>> {
+    let mut response = tracker_http_client(tracker_url).get(url).send().await?;
+
+    // Content-Length is a hint, not a promise — it may be absent, or a lie — so it is used
+    // only to refuse early, and the streaming check below is what actually holds.
+    if let Some(len) = response.content_length() {
+        if len > MAX_TRACKER_BODY_BYTES as u64 {
+            return Err(anyhow::anyhow!(
+                "tracker declared a {} byte reply, over the {} byte limit",
+                len,
+                MAX_TRACKER_BODY_BYTES
+            ));
+        }
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > MAX_TRACKER_BODY_BYTES {
+            return Err(anyhow::anyhow!(
+                "tracker reply exceeded the {} byte limit",
+                MAX_TRACKER_BODY_BYTES
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// Refuse a bencoded tracker reply whose nesting would recurse `serde_bencode` off the stack.
+///
+/// `serde_bencode` counts no depth, and a derived struct is no safer than a raw `Value`
+/// because serde skips unknown fields through `IgnoredAny`, which lands back in
+/// `deserialize_any`. A reply body of `l` bytes therefore recurses once per byte; a stack
+/// overflow is `SIGSEGV`, so it aborts the whole netget process rather than failing this one
+/// action. The tracker is whatever address the operator or the model pointed this client at.
+fn screen_tracker_body(body: &[u8]) -> Result<()> {
+    crate::utils::bencode::check_bencode_structure(body)
+        .map_err(|e| anyhow::anyhow!("tracker reply refused before decoding: {}", e))
+}
+
 /// BitTorrent Tracker client
 pub struct TorrentTrackerClient;
 
@@ -503,9 +593,15 @@ impl TorrentTrackerClient {
                         announce_url
                     );
 
-                    // Make HTTP GET request
-                    let response = reqwest::get(&announce_url).await?;
-                    let body = response.bytes().await?;
+                    // Bounded fetch: a shared client with a timeout, a body cap applied as
+                    // the bytes arrive, and a nesting screen before serde_bencode sees them.
+                    let body = fetch_tracker_body(tracker_url, &announce_url).await?;
+                    if let Err(e) = screen_tracker_body(&body) {
+                        warn!("Tracker client {} refused announce reply: {}", client_id, e);
+                        return Ok(Applied::Executed(format!(
+                            "tracker_announce sent; the tracker's reply was refused: {e}"
+                        )));
+                    }
 
                     // Parse bencode response
                     match serde_bencode::from_bytes::<TrackerResponse>(&body) {
@@ -551,9 +647,14 @@ impl TorrentTrackerClient {
 
                     trace!("Tracker client {} scraping: {}", client_id, scrape_url);
 
-                    // Make HTTP GET request
-                    let response = reqwest::get(&scrape_url).await?;
-                    let body = response.bytes().await?;
+                    // Same bounded fetch and nesting screen as the announce path above.
+                    let body = fetch_tracker_body(tracker_url, &scrape_url).await?;
+                    if let Err(e) = screen_tracker_body(&body) {
+                        warn!("Tracker client {} refused scrape reply: {}", client_id, e);
+                        return Ok(Applied::Executed(format!(
+                            "tracker_scrape sent; the tracker's reply was refused: {e}"
+                        )));
+                    }
 
                     // Parse bencode response
                     match serde_bencode::from_bytes::<ScrapeResponse>(&body) {

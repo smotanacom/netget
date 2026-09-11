@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::torrent_dht::actions::DHT_RESPONSE_EVENT;
@@ -105,6 +105,24 @@ impl TorrentDhtClient {
                             len,
                             peer
                         );
+
+                        // Bound the nesting before serde_bencode sees it. A typed decode is
+                        // no protection: serde's derive skips unknown fields with
+                        // `IgnoredAny`, which serde_bencode forwards to `deserialize_any`,
+                        // so `DhtMessage` reaches the same uncounted recursion as a raw
+                        // `Value` would. One 65 KB datagram of `l` bytes overflows the
+                        // stack, and a stack overflow is SIGSEGV — it takes the whole
+                        // process with it, not just this task. The socket is unconnected,
+                        // so any host that can reach the port can send it.
+                        if let Err(e) =
+                            crate::utils::bencode::check_bencode_structure(&buf[..len])
+                        {
+                            warn!(
+                                "DHT client {} rejected {} byte datagram from {}: {}",
+                                client_id, len, peer, e
+                            );
+                            continue;
+                        }
 
                         // Parse bencode response
                         match serde_bencode::from_bytes::<DhtMessage>(&buf[..len]) {

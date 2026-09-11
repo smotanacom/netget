@@ -1,5 +1,6 @@
 //! Utility modules
 
+pub mod bencode;
 pub mod save_load;
 pub mod shutdown;
 pub mod truncate;
