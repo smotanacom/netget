@@ -8,6 +8,7 @@
 //! Supports ISO14443 A/B cards, MIFARE, NFC tags via APDU commands and NDEF messages.
 
 pub mod actions;
+pub mod ndef;
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::nfc::actions::*;
@@ -37,6 +38,14 @@ pub use actions::NfcClientProtocol;
 /// select-then-read conversation a smartcard requires, so it must be possible, and
 /// bounded rather than forbidden.
 const MAX_FOLLOWUP_DEPTH: u8 = 6;
+
+/// Largest `Le` a short-form READ BINARY can ask for. `Le` of `00` means 256, but asking for
+/// 255 keeps the request unambiguous and inside every tag's `MLe`.
+const MAX_SHORT_READ: usize = 255;
+
+/// Largest data field one short-form UPDATE BINARY carries. `Lc` reaches 255, and the margin
+/// keeps the whole command inside the 261-byte short-APDU envelope some readers enforce.
+const MAX_SHORT_WRITE: usize = 249;
 
 pub enum NfcApplied {
     /// This many APDU bytes reached the card; the response APDU is attached so
@@ -153,27 +162,38 @@ impl NfcClient {
                     return;
                 }
                 // PC/SC is a blocking C API, so the probe runs on the blocking pool.
+                //
+                // `status2_owned` rather than `get_attribute(AtrString)`: it returns the ATR
+                // *and* the negotiated transmission protocol in one call, and `protocol` is
+                // declared on nfc_card_detected. It used to be declared and never emitted.
                 let probe_ctx = watch_ctx.clone();
                 let probe_reader = watch_reader.clone();
-                let atr = tokio::task::spawn_blocking(move || -> Option<String> {
+                let probe = tokio::task::spawn_blocking(move || -> Option<(String, String)> {
                     let card = probe_ctx
                         .connect(&probe_reader, pcsc::ShareMode::Shared, pcsc::Protocols::ANY)
                         .ok()?;
-                    let mut buf = [0u8; pcsc::MAX_ATR_SIZE];
-                    card.get_attribute(pcsc::Attribute::AtrString, &mut buf)
-                        .ok()
-                        .map(hex::encode_upper)
+                    let status = card.status2_owned().ok()?;
+                    let protocol = match status.protocol2() {
+                        Some(pcsc::Protocol::T0) => "T0",
+                        Some(pcsc::Protocol::T1) => "T1",
+                        Some(pcsc::Protocol::RAW) => "RAW",
+                        None => "undefined",
+                    };
+                    Some((hex::encode_upper(status.atr()), protocol.to_string()))
                 })
                 .await
                 .unwrap_or(None);
 
-                match (present, atr) {
-                    (false, Some(atr)) => {
+                match (present, probe) {
+                    (false, Some((atr, protocol))) => {
                         present = true;
-                        info!("NFC client {} card detected (ATR {})", client_id, atr);
+                        info!(
+                            "NFC client {} card detected (ATR {}, protocol {})",
+                            client_id, atr, protocol
+                        );
                         Self::raise_card_event(
                             &NFC_CARD_DETECTED_EVENT,
-                            serde_json::json!({ "atr": atr }),
+                            serde_json::json!({ "atr": atr, "protocol": protocol }),
                             &watch_ctx,
                             &watch_reader,
                             0,
@@ -457,10 +477,14 @@ impl NfcClient {
     /// Read the NDEF message from an NFC Forum Type 4 tag.
     ///
     /// The sequence is fixed by NFC Forum Type 4 Tag Operation: SELECT the NDEF
-    /// application by AID D2760000850101, SELECT the NDEF file by its ID from the
-    /// Capability Container, then READ BINARY -- first the two-byte NLEN, then that many
-    /// bytes. It is expressed here as ordinary APDUs so it rides the same PC/SC transmit
-    /// path `send_apdu` uses.
+    /// application by AID D2760000850101, SELECT the NDEF file by `file_id`, then READ
+    /// BINARY -- first the two-byte NLEN, then that many bytes. It is expressed here as
+    /// ordinary APDUs so it rides the same PC/SC transmit path `send_apdu` uses.
+    ///
+    /// **It does not read the Capability Container**, though this comment used to say it
+    /// took the file ID from there. `file_id` is a parameter defaulting to E104, which is
+    /// what nearly every tag's CC points at; the CC's `MLe`/`MLc` read and write limits are
+    /// ignored too, so a tag that answers fewer bytes than asked is the case below.
     ///
     /// Untested against real hardware: this machine has no PC/SC reader. The byte
     /// sequences are taken from the specification rather than observed, which is what
@@ -502,16 +526,54 @@ impl NfcClient {
         let mut message = Vec::with_capacity(nlen);
         let mut offset = 2usize;
         while message.len() < nlen {
-            let want = std::cmp::min(0xFF, nlen - message.len()) as u8;
-            let apdu = vec![0x00, 0xB0, (offset >> 8) as u8, (offset & 0xFF) as u8, want];
+            // `Le` is a maximum, not a promise: a tag may answer fewer bytes than asked,
+            // and its CC's MLe may be well under 255. So the offset advances by what came
+            // *back*, not by what was requested - advancing by the request skipped every
+            // byte the tag withheld, and a tag answering zero data bytes made this loop
+            // run forever, hammering the card.
+            let want = std::cmp::min(MAX_SHORT_READ, nlen - message.len());
+            let offset_bytes = Self::read_binary_offset(offset)?;
+            let apdu = vec![
+                0x00,
+                0xB0,
+                offset_bytes[0],
+                offset_bytes[1],
+                // Bounded by MAX_SHORT_READ (255) immediately above.
+                want as u8,
+            ];
             let r = Self::transmit_apdu(ctx, reader, apdu).await?;
             if !Self::apdu_ok(&r) {
                 anyhow::bail!("READ BINARY failed (SW {})", hex::encode_upper(&r));
             }
-            message.extend_from_slice(&r[..r.len() - 2]);
-            offset += want as usize;
+            let got = &r[..r.len() - 2];
+            if got.is_empty() {
+                anyhow::bail!(
+                    "READ BINARY returned 9000 with no data at offset {offset} while {} of {} \
+                     byte(s) are still outstanding; the tag is not making progress",
+                    nlen - message.len(),
+                    nlen
+                );
+            }
+            message.extend_from_slice(got);
+            offset += got.len();
         }
+        message.truncate(nlen);
         Ok(message)
+    }
+
+    /// P1 P2 of a READ/UPDATE BINARY, refusing an offset the two bytes cannot hold.
+    ///
+    /// `(offset >> 8) as u8` wraps silently past 65535, and a wrapped offset is not a failed
+    /// command: it is a *successful* read or write of the wrong part of the file.
+    fn read_binary_offset(offset: usize) -> Result<[u8; 2]> {
+        let offset = u16::try_from(offset).map_err(|_| {
+            anyhow!(
+                "offset {offset} does not fit the two P1 P2 bytes of a short-form \
+                 READ/UPDATE BINARY (max {})",
+                u16::MAX
+            )
+        })?;
+        Ok(offset.to_be_bytes())
     }
 
     /// Write an NDEF message to an NFC Forum Type 4 tag.
@@ -527,6 +589,18 @@ impl NfcClient {
         file_id: [u8; 2],
         message: &[u8],
     ) -> Result<()> {
+        // Checked before anything is written, and before the `as u16` that publishes NLEN
+        // below. A 70 000-byte message would otherwise write NLEN = 4464 over wrapped
+        // offsets: a tag left holding a body that describes itself wrongly, which no
+        // reader can recover from and nothing on this side would have reported.
+        if message.len() > ndef::MAX_MESSAGE_LEN {
+            anyhow::bail!(
+                "NDEF message is {} bytes; a Type 4 tag's two-byte NLEN describes at most {}",
+                message.len(),
+                ndef::MAX_MESSAGE_LEN
+            );
+        }
+
         let select_app = vec![
             0x00, 0xA4, 0x04, 0x00, 0x07, 0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, 0x01, 0x00,
         ];
@@ -555,13 +629,15 @@ impl NfcClient {
 
         let mut written = 0usize;
         while written < message.len() {
-            let chunk = std::cmp::min(0xFF - 6, message.len() - written);
+            let chunk = std::cmp::min(MAX_SHORT_WRITE, message.len() - written);
             let offset = 2 + written;
+            let offset_bytes = Self::read_binary_offset(offset)?;
             let mut apdu = vec![
                 0x00,
                 0xD6,
-                (offset >> 8) as u8,
-                (offset & 0xFF) as u8,
+                offset_bytes[0],
+                offset_bytes[1],
+                // Bounded by MAX_SHORT_WRITE immediately above.
                 chunk as u8,
             ];
             apdu.extend_from_slice(&message[written..written + chunk]);
@@ -572,7 +648,8 @@ impl NfcClient {
             written += chunk;
         }
 
-        // Publish the real length last.
+        // Publish the real length last. Range-checked at the top of this function, so the
+        // cast is the safe one it looks like.
         let nlen = (message.len() as u16).to_be_bytes();
         let r = Self::transmit_apdu(
             ctx,
@@ -762,30 +839,39 @@ impl NfcClient {
                 }
                 ClientActionResult::Custom { name, data } if name == "write_ndef" => {
                     let file_id = Self::ndef_file_id(&data);
-                    // Accept either a hex payload or plain text, and say which was used --
-                    // never guess, since "48656C6C6F" is both valid hex and valid text.
-                    let (bytes, how) = match data.get("message_hex").and_then(|v| v.as_str()) {
-                        Some(h) => match hex::decode(h.trim()) {
-                            Ok(b) => (b, "message_hex"),
-                            Err(e) => {
-                                return Ok(NfcApplied::Executed(format!(
-                                    "write_ndef: message_hex is not valid hexadecimal: {e}"
-                                )))
-                            }
-                        },
-                        None => match data.get("message").and_then(|v| v.as_str()) {
-                            Some(t) => (t.as_bytes().to_vec(), "message"),
-                            None => {
-                                return Ok(NfcApplied::Executed(
-                                    "write_ndef needs message_hex or message".to_string(),
-                                ))
-                            }
-                        },
-                    };
+                    // `execute_action` encoded the model's typed records into NDEF bytes and
+                    // put them here. Before that existed this arm read `message_hex` or
+                    // `message`, which the action declared nowhere and `execute_action`
+                    // never produced - so every write_ndef ended in "write_ndef needs
+                    // message_hex or message" and the verb could not write anything at all.
+                    let record_count = data
+                        .get("records")
+                        .and_then(|v| v.as_array())
+                        .map(|r| r.len())
+                        .unwrap_or(0);
+                    let bytes =
+                        match data.get("message_hex").and_then(|v| v.as_str()) {
+                            Some(h) => match hex::decode(h.trim()) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    return Ok(NfcApplied::Executed(format!(
+                                        "write_ndef: encoded message is not valid hexadecimal: {e}"
+                                    )))
+                                }
+                            },
+                            None => return Ok(NfcApplied::Executed(
+                                "write_ndef: no encoded message; 'records' must be a non-empty \
+                                 array of typed NDEF records"
+                                    .to_string(),
+                            )),
+                        };
                     match Self::write_ndef(ctx, reader, file_id, &bytes).await {
                         Ok(()) => Ok(NfcApplied::Sent {
                             bytes_sent: bytes.len(),
-                            response_hex: format!("write_ndef ok ({} from {})", bytes.len(), how),
+                            response_hex: format!(
+                                "write_ndef ok ({record_count} record(s), {} NDEF byte(s))",
+                                bytes.len()
+                            ),
                         }),
                         Err(e) => Ok(NfcApplied::Executed(format!("write_ndef failed: {e:#}"))),
                     }
@@ -835,13 +921,18 @@ impl NfcClient {
         let Some(instruction) = app_state.get_instruction_for_client(client_id).await else {
             return;
         };
+        // `records` is what the event declares and what the model is told to expect; it was
+        // declared and never emitted, because nothing decoded NDEF. `ndef::decode_message`
+        // walks the records iteratively and never descends into a nested payload, so a
+        // hostile tag cannot stack-overflow the process here.
+        let records = ndef::decode_message(message).unwrap_or_default();
         let event = Event::new(
             &NFC_NDEF_READ_EVENT,
             json!({
+                "records": records,
                 "length": message.len(),
+                // The hex stays authoritative: `records` is a best-effort decode of it.
                 "message_hex": hex::encode_upper(message),
-                // Best-effort text view. NDEF records are typed and this is not a parse,
-                // so the hex above stays the authoritative field.
                 "message_text": String::from_utf8_lossy(message).to_string(),
             }),
         );
