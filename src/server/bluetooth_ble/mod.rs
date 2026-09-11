@@ -37,6 +37,11 @@ use ble_peripheral_rust::{Peripheral, PeripheralImpl};
 #[cfg(feature = "bluetooth-ble")]
 use uuid::Uuid;
 
+/// The longest LocalName that fits an AD structure inside a 31-octet legacy advertisement,
+/// after its length and type bytes. A name past this is refused by the radio rather than
+/// shortened, so NetGet shortens it first.
+const MAX_LOCAL_NAME_CHARS: usize = 29;
+
 /// Per-characteristic data for tracking pending requests
 #[derive(Debug)]
 struct CharacteristicData {
@@ -798,7 +803,17 @@ impl BluetoothBle {
         action: serde_json::Value,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
-        let name = action["device_name"].as_str().unwrap_or(device_name);
+        // The advertised LocalName is model-supplied and goes straight onto the air, into the
+        // status channel, and into whatever scanner UI displays it. A control character there
+        // is a forged line in someone else's log or a forged screen in someone else's
+        // terminal, so it is stripped here rather than trusted. 29 characters is what fits an
+        // AD structure in a 31-octet legacy advertisement once its length and type bytes are
+        // accounted for; a longer name would be refused by the radio, not truncated politely.
+        let name = crate::utils::sanitize::token(
+            action["device_name"].as_str().unwrap_or(device_name),
+            MAX_LOCAL_NAME_CHARS,
+        );
+        let name = name.as_str();
 
         // Parse service UUIDs if provided
         let service_uuids: Vec<Uuid> = action["service_uuids"]
