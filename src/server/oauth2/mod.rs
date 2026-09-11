@@ -32,6 +32,78 @@ use crate::server::oauth2::actions::{
 };
 use crate::state::app_state::AppState;
 
+/// Largest request body this server will buffer.
+///
+/// Every endpoint here is reachable **before** any credential is checked, and the body is
+/// parsed and handed to the model as prompt text, so an unbounded `collect()` let one
+/// anonymous POST grow the process without limit. An OAuth2 form body is a handful of short
+/// parameters; 64 KiB is far past anything a conforming client sends.
+const MAX_REQUEST_BYTES: usize = 64 * 1024;
+
+/// Buffer a request body, refusing anything over [`MAX_REQUEST_BYTES`].
+///
+/// Refusing is the point: continuing with a truncated body would hand the model a
+/// well-formed request whose credentials had been cut off, and it would be answered as one.
+async fn read_body_limited(body: Incoming) -> Result<Bytes, ()> {
+    match http_body_util::Limited::new(body, MAX_REQUEST_BYTES)
+        .collect()
+        .await
+    {
+        Ok(collected) => Ok(collected.to_bytes()),
+        Err(e) => {
+            warn!("OAuth2: rejecting request body over {MAX_REQUEST_BYTES} bytes: {e}");
+            Err(())
+        }
+    }
+}
+
+/// The form parameters that are safe to put in a log line or on the status stream.
+///
+/// `client_secret`, `password`, `token`, `code` and `refresh_token` are credentials. They
+/// still reach the *model*, because deciding whether they are valid is the whole job, but a
+/// `{:?}` of the whole parameter map used to copy them into `netget.log` and onto the TUI
+/// status stream, where they outlive the request and are read by anyone with the file.
+fn redact_params(params: &HashMap<String, String>) -> Vec<(&str, &str)> {
+    const SECRET: &[&str] = &[
+        "client_secret",
+        "password",
+        "token",
+        "code",
+        "refresh_token",
+        "assertion",
+    ];
+    let mut pairs: Vec<(&str, &str)> = params
+        .iter()
+        .map(|(k, v)| {
+            if SECRET.contains(&k.as_str()) {
+                (k.as_str(), if v.is_empty() { "" } else { "<redacted>" })
+            } else {
+                (k.as_str(), v.as_str())
+            }
+        })
+        .collect();
+    pairs.sort_unstable();
+    pairs
+}
+
+/// Narrow a model-supplied HTTP status to `u16` without wrapping.
+///
+/// `status as u16` on a `u64` truncates, and the truncation is the dangerous direction:
+/// `65736` becomes `200`, turning a nonsense error status into a success the client
+/// believes. Anything that is not a real status falls back to the RFC default.
+fn status_or(value: Option<&serde_json::Value>, default: u16) -> u16 {
+    match value.and_then(|v| v.as_u64()) {
+        Some(raw) => u16::try_from(raw)
+            .ok()
+            .filter(|s| (100..=599).contains(s))
+            .unwrap_or_else(|| {
+                warn!("OAuth2: ignoring out-of-range status_code {raw}, using {default}");
+                default
+            }),
+        None => default,
+    }
+}
+
 /// Build a response from parts that came from the model or from the request, without ever
 /// panicking.
 ///
@@ -372,17 +444,27 @@ async fn handle_authorize_request(
         parse_query_params(uri.query().unwrap_or(""))
     } else {
         // Read body for POST
-        match req.into_body().collect().await {
-            Ok(body) => {
-                let body_bytes = body.to_bytes();
-                let body_str = String::from_utf8_lossy(&body_bytes);
-                parse_query_params(&body_str)
+        match read_body_limited(req.into_body()).await {
+            Ok(body_bytes) => parse_query_params(&String::from_utf8_lossy(&body_bytes)),
+            // Fail closed: an empty parameter map would reach the model as an authorization
+            // request with no client_id at all.
+            Err(()) => {
+                return Ok(json_response(
+                    413,
+                    json!({
+                        "error": "invalid_request",
+                        "error_description": "request body too large"
+                    })
+                    .to_string(),
+                ));
             }
-            Err(_) => HashMap::new(),
         }
     };
 
-    Log::new(Some(&status_tx)).debug(format!("OAuth2 authorize request: {:?}", params));
+    Log::new(Some(&status_tx)).debug(format!(
+        "OAuth2 authorize request: {:?}",
+        redact_params(&params)
+    ));
 
     // Create LLM event
     let event = Event::new(
@@ -539,14 +621,14 @@ async fn handle_token_request(
     protocol: Arc<OAuth2Protocol>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     // Parse form body
-    let body_bytes = match req.into_body().collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(_) => {
+    let body_bytes = match read_body_limited(req.into_body()).await {
+        Ok(bytes) => bytes,
+        Err(()) => {
             return Ok(json_response(
-                400,
+                413,
                 json!({
                     "error": "invalid_request",
-                    "error_description": "Failed to read request body"
+                    "error_description": "request body too large"
                 })
                 .to_string(),
             ));
@@ -556,7 +638,10 @@ async fn handle_token_request(
     let body_str = String::from_utf8_lossy(&body_bytes);
     let params = parse_query_params(&body_str);
 
-    Log::new(Some(&status_tx)).debug(format!("OAuth2 token request: {:?}", params));
+    Log::new(Some(&status_tx)).debug(format!(
+        "OAuth2 token request: {:?}",
+        redact_params(&params)
+    ));
 
     // Create LLM event
     let event = Event::new(
@@ -595,10 +680,7 @@ async fn handle_token_request(
             // invalid_client); the old code returned the error body with 200, so a
             // conforming client parsed a refusal as a successful token response.
             Some((kind, mut payload)) if kind == "error" => {
-                let status = payload
-                    .get("status_code")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(400) as u16;
+                let status = status_or(payload.get("status_code"), 400);
                 strip_envelope(&mut payload);
                 warn!("OAuth2 token request denied ({status})");
                 Ok(json_response(status, payload.to_string()))
@@ -663,17 +745,30 @@ async fn handle_introspect_request(
     protocol: Arc<OAuth2Protocol>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     // Parse form body
-    let body_bytes = match req.into_body().collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(_) => {
-            return Ok(json_response(400, json!({"active": false}).to_string()));
+    let body_bytes = match read_body_limited(req.into_body()).await {
+        Ok(bytes) => bytes,
+        // Not `{"active": false}`: that is a statement about the token, and nobody looked at
+        // it. 413 says only that the request was refused.
+        Err(()) => {
+            return Ok(json_response(
+                413,
+                json!({
+                    "error": "invalid_request",
+                    "error_description": "request body too large"
+                })
+                .to_string(),
+            ));
         }
     };
 
     let body_str = String::from_utf8_lossy(&body_bytes);
     let params = parse_query_params(&body_str);
 
-    debug!("OAuth2 introspect request: token={:?}", params.get("token"));
+    debug!(
+        "OAuth2 introspect request: token_present={} hint={:?}",
+        params.contains_key("token"),
+        params.get("token_type_hint")
+    );
 
     // Create LLM event
     let event = Event::new(
@@ -702,10 +797,7 @@ async fn handle_introspect_request(
                 Ok(json_response(200, payload.to_string()))
             }
             Some((kind, mut payload)) if kind == "error" => {
-                let status = payload
-                    .get("status_code")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(400) as u16;
+                let status = status_or(payload.get("status_code"), 400);
                 strip_envelope(&mut payload);
                 Ok(json_response(status, payload.to_string()))
             }
@@ -757,17 +849,31 @@ async fn handle_revoke_request(
     protocol: Arc<OAuth2Protocol>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     // Parse form body
-    let body_bytes = match req.into_body().collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(_) => {
-            return Ok(build_safe_response(200, [], String::new()));
+    let body_bytes = match read_body_limited(req.into_body()).await {
+        Ok(bytes) => bytes,
+        // RFC 7009 §2.2's blanket 200 is for a token the server *processed* and could not
+        // find. This request was never processed, and a 200 would tell the client the token
+        // is gone when nothing revoked it.
+        Err(()) => {
+            return Ok(json_response(
+                413,
+                json!({
+                    "error": "invalid_request",
+                    "error_description": "request body too large"
+                })
+                .to_string(),
+            ));
         }
     };
 
     let body_str = String::from_utf8_lossy(&body_bytes);
     let params = parse_query_params(&body_str);
 
-    debug!("OAuth2 revoke request: token={:?}", params.get("token"));
+    debug!(
+        "OAuth2 revoke request: token_present={} hint={:?}",
+        params.contains_key("token"),
+        params.get("token_type_hint")
+    );
 
     // Create LLM event
     let event = Event::new(

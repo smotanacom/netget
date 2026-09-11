@@ -79,6 +79,29 @@ header value containing CR/LF — panicked inside the connection task instead of
 Local copy of `http_common::handler::build_safe_response`, which the `saml-sp` feature cannot
 reach because `http_common` is gated on `feature = "http"`.
 
+## Hostile input
+
+Two bounds, both covered by `tests/server/saml_sp/hardening_test.rs`. For an SP the
+"affirmative default" class is the vulnerability rather than a cosmetic problem: a `2xx` is the
+only thing a browser reads as a completed sign-in.
+
+- **`MAX_REQUEST_BYTES` = 256 KiB.** `/acs` takes an anonymous POST and the body reaches the
+  model verbatim as prompt text, so the previous unbounded `req.collect()` let one request grow
+  the process without limit and drive an LLM call with megabytes of attacker-chosen prompt.
+  Over the limit is `413` and a refusal — never a truncated body, which would arrive at the
+  model as a well-formed request whose assertion happened to end early.
+- **`status_or` narrows a model-supplied status with `u16::try_from`.** `65736 as u16` is
+  `200`. `send_error_response` — the model's only way to refuse an assertion — therefore
+  arrived as the status that admits the user. Both `mod.rs` and the executor now refuse the
+  wrap; the executor additionally pins `send_error_response` to 400–599.
+
+**No XML is parsed here.** The `SAMLResponse` is passed to the model as text and NetGet never
+builds a tree, so the entity-expansion (billion-laughs) and unbounded-nesting classes do not
+arise on this path — the absence of a parser is, on this one axis, the safe choice. It is also
+why no signature can be checked: see the warning at the top of this file. (A non-UTF-8 body is
+reported to the model as `<N bytes of non-UTF-8 data…>`; it used to be base64-encoded into the
+event, which the project rule forbids and which no model can decode.)
+
 ## Storage
 
 None, per the project rule. There is no session table: `process_assertion` sets a cookie and

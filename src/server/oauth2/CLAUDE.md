@@ -74,6 +74,27 @@ Three rules follow, and they are why the endpoints look the way they do:
 If you add an endpoint, tag its payload and add a `match` arm. An untagged payload falls into
 the fail-closed branch, which is the safe direction.
 
+## Hostile input
+
+Three bounds, each of which was absent and each of which turned an attack into a *success*
+rather than a refusal. `tests/server/oauth2/hardening_test.rs` covers the first two.
+
+- **`MAX_REQUEST_BYTES` = 64 KiB.** Every endpoint is reachable before any credential is
+  checked, and the body is parsed and handed to the model as prompt text, so the previous
+  unbounded `req.into_body().collect()` let one anonymous POST grow the process without limit
+  and drive an LLM call with megabytes of attacker-chosen prompt. Over the limit is `413`, and
+  it is a refusal on every endpoint — including `/revoke`, whose RFC 7009 §2.2 blanket `200` is
+  for a token the server *processed*, not one it never read.
+- **`status_or` narrows a model-supplied `status_code` with `u16::try_from`.** `65736 as u16`
+  is `200`, so the old `as u16` turned a refusal into the one status a client reads as "here
+  is your token" — the OCI-registry truncation defect in a protocol whose success is a
+  credential. Anything outside 100–599 falls back to the RFC 6749 §5.2 default.
+- **`redact_params` before logging.** `client_secret`, `password`, `token`, `code` and
+  `refresh_token` still reach the *model* — deciding whether they are valid is the whole job —
+  but a `{:?}` of the parameter map used to copy them into `netget.log` and onto the TUI status
+  stream, where they outlive the request. `/introspect` and `/revoke` now log
+  `token_present=<bool>` instead of the bearer token.
+
 ## Parsing
 
 `parse_query_params` handles `application/x-www-form-urlencoded` for both the query string and

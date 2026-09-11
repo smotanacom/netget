@@ -1,195 +1,60 @@
-# OpenID Connect Client E2E Tests
+# openidconnect client tests
 
-## Test Strategy
-
-The OpenID Connect client tests follow a **limited black-box approach** due to the complexity of running a full OIDC
-provider. Tests focus on:
-
-1. **Client Initialization**: Verify the client can be created and configured
-2. **Discovery**: Test OIDC provider discovery (`.well-known/openid-configuration`)
-3. **LLM Interpretation**: Verify the LLM understands OIDC-specific instructions
-4. **Error Handling**: Ensure graceful failure with invalid providers
-5. **Lifecycle**: Test clean connection and disconnection
-
-## LLM Call Budget
-
-**Total Budget**: < 6 LLM calls
-
-### Test Breakdown
-
-1. `test_oidc_client_initialization` - **1 LLM call**
-    - Client connection with discovery
-    - Verifies discovery attempt (may fail on auth but discovery succeeds)
-
-2. `test_oidc_client_with_parameters` - **1 LLM call**
-    - Client connection with startup parameters
-    - Verifies parameter parsing
-
-3. `test_oidc_client_flow_interpretation` - **1 LLM call**
-    - Client connection with flow instruction
-    - Verifies LLM understands flow types (device code, password, etc.)
-
-4. `test_oidc_client_invalid_provider` - **1 LLM call**
-    - Client connection to invalid provider
-    - Verifies error handling
-
-5. `test_oidc_client_disconnect` - **1 LLM call**
-    - Client connection and disconnect
-    - Verifies lifecycle management
-
-**Efficiency Strategy**:
-
-- No server required (connects to public OIDC providers)
-- Quick tests (1-2 seconds each)
-- Focus on initialization and LLM interpretation, not full auth flows
-- Use well-known providers (Google, Microsoft) for discovery tests
-
-## Expected Runtime
-
-**Total Runtime**: ~10-15 seconds
-
-- Each test runs in 1-2 seconds
-- No waiting for complex authentication flows
-- Network latency for discovery (1-2 seconds per test)
-- Minimal setup/teardown
-
-## Testing Limitations
-
-### What We Can Test
-
-✅ Client initialization and configuration
-✅ OIDC provider discovery (`.well-known/openid-configuration`)
-✅ LLM instruction interpretation
-✅ Error handling for invalid providers
-✅ Client lifecycle (connect/disconnect)
-✅ Parameter parsing and validation
-
-### What We Cannot Test (Without Full Provider)
-
-❌ **Token Exchange**: Requires valid credentials
-❌ **Password Flow**: Needs real username/password
-❌ **Device Code Flow**: Requires polling and user interaction
-❌ **Client Credentials Flow**: Needs client secret
-❌ **UserInfo Endpoint**: Requires valid access token
-❌ **Token Refresh**: Requires valid refresh token
-
-### Why These Limitations?
-
-1. **No Test Provider**: Running a full OIDC provider (Keycloak, Auth0) is complex
-2. **Credentials Required**: Real authentication needs valid credentials
-3. **Interactive Flows**: Device code flow requires user browser interaction
-4. **Network Dependency**: Tests rely on external providers (Google, etc.)
-
-## Alternative Testing Approaches
-
-### Option 1: Mock HTTP Server (Future)
-
-Create a mock OIDC provider that:
-
-- Serves `.well-known/openid-configuration`
-- Returns fake tokens for testing
-- Implements minimal OIDC endpoints
-
-**Pros**: Full flow testing without real credentials
-**Cons**: Significant implementation effort, doesn't test real providers
-
-### Option 2: Local Keycloak (Future)
-
-Run Keycloak in Docker for tests:
+Two tests, both against a provider served **in-process**, neither `#[ignore]`d, neither
+needing Ollama or a network.
 
 ```bash
-docker run -p 8080:8080 -e KEYCLOAK_USER=admin -e KEYCLOAK_PASSWORD=admin quay.io/keycloak/keycloak:latest
+./cargo-isolated.sh test --no-default-features --features openidconnect \
+    --test client -- openidconnect --test-threads=100
 ```
 
-**Pros**: Real OIDC provider, full flow testing
-**Cons**: Requires Docker, slower tests, complex setup
+`--test` names a *target* (`client`); the module path after `--` is a filter.
 
-### Option 3: Public Test Providers (Current)
+| File | Test | Covers |
+|---|---|---|
+| `command_channel_test.rs` | `injected_oidc_exchange_reaches_the_provider_and_never_invents_a_token` | The dashboard's inject path: discovery document + JWKS + token endpoint served by a hand-rolled HTTP/1.1 listener on an ephemeral port; a real `client_credentials` exchange goes on the wire; only the provider's own token is stored; an unknown action is `Rejected`; `disconnect` ends the command loop |
+| `e2e_test.rs` | `oidc_client_with_an_unreachable_provider_invents_nothing` | The same client pointed at a closed port: every flow fails, and `access_token` / `id_token` / `refresh_token` are all absent afterwards |
 
-Use public providers for discovery only:
+Zero LLM calls in both: the client's LLM points at `http://127.0.0.1:1`, so its connect-time
+calls fail and the loop tolerates it. That is deliberate — these tests are about what reaches
+the *provider*, not about prompting.
 
-- Google: `https://accounts.google.com`
-- Microsoft: `https://login.microsoftonline.com/common/v2.0`
+## What this file used to describe, and why it is gone
 
-**Pros**: No setup, real discovery testing
-**Cons**: Cannot test full auth flows, network dependency
+This document previously recommended "Option 3: Public Test Providers (Current)" and listed
+`https://accounts.google.com`. `e2e_test.rs` held five tests built that way, every one
+`#[ignore]`d with the reason in the attribute: no `.with_mock()`, hits real
+`accounts.google.com`, needs `--use-ollama`.
 
-## Known Issues
+So the suite was in the worst of both states — it proved nothing on any runner, and the only
+way to make it run was to send live traffic to Google with whatever ambient configuration the
+machine had. That is the client-side shape of the defect the root `CLAUDE.md` records for the
+DynamoDB client: *a client that loses its target must fail, never fall back to the real
+service*. Here it was the test rather than the code pointing at production, which is not
+better — a test is the thing people run without reading.
 
-1. **Network Dependency**: Tests require internet access for discovery
-    - May fail in offline environments
-    - Rate limiting possible with public providers
+The five are deleted. Everything they claimed to cover is covered for real by
+`command_channel_test.rs`, which drives discovery *and* a token exchange against a provider
+the test itself serves.
 
-2. **Discovery Failures**: Public providers may change metadata
-    - Tests verify client handles errors gracefully
-    - Not testing exact discovery response content
+**Do not reintroduce a test that names a public provider.** The in-process provider in
+`command_channel_test.rs::start_provider` is ~50 lines of `tokio::net::TcpListener` and needs
+no extra feature; copy it.
 
-3. **No Full Auth**: Cannot test complete authentication flows
-    - Tests verify initialization only
-    - Manual testing required for full flows
+## What is still not covered
 
-4. **LLM Interpretation Variance**: LLM may interpret instructions differently
-    - Tests verify protocol recognition, not exact actions
-    - Prompts designed to be clear and unambiguous
+- **ID token verification, because there is none to test.** The `openidconnect` crate can
+  check a JWT's signature, issuer, audience and nonce through `id_token.claims(..)`; this
+  client never calls it and stores the token as an opaque string. A test asserting a forged
+  `id_token` is rejected would fail, correctly — write it when the verification is written,
+  not before. `src/client/openidconnect/actions.rs`'s `metadata().notes` states the gap.
+- **Authorization-code and device flows.** Both spawn their own tasks and a callback
+  listener; the injected path covers `client_credentials` only.
+- **Token refresh against a provider that rotates refresh tokens.**
 
-## Running the Tests
+## Secrets in events
 
-```bash
-# Run all OpenID Connect client tests
-./cargo-isolated.sh test --no-default-features --features openidconnect --test client::openidconnect::e2e_test
-
-# Run with output
-./cargo-isolated.sh test --no-default-features --features openidconnect --test client::openidconnect::e2e_test -- --nocapture
-
-# Run specific test
-./cargo-isolated.sh test --no-default-features --features openidconnect --test client::openidconnect::e2e_test test_oidc_client_initialization
-```
-
-## Test Requirements
-
-- **Internet Connection**: Required for OIDC provider discovery
-- **Ollama Running**: LLM must be available
-- **No Credentials**: Tests don't require real OIDC credentials
-
-## Future Enhancements
-
-1. **Mock Provider**: Implement minimal OIDC mock server
-2. **Integration Tests**: Add tests with local Keycloak
-3. **Token Validation**: Test JWT parsing and validation
-4. **Full Flows**: Test complete auth flows with test credentials
-5. **Multiple Providers**: Test Google, Microsoft, Auth0 compatibility
-6. **Offline Mode**: Add tests that don't require network
-
-## Manual Testing
-
-For full authentication flow testing, use NetGet interactively:
-
-```bash
-# Test password flow
-./cargo-isolated.sh run --no-default-features --features openidconnect
-# In NetGet:
-# Connect to https://your-oidc-provider.com as OpenID Connect client with client_id=YOUR_CLIENT_ID
-# Exchange username YOUR_USERNAME and password YOUR_PASSWORD for tokens
-# Fetch user information
-
-# Test client credentials flow
-./cargo-isolated.sh run --no-default-features --features openidconnect
-# In NetGet:
-# Connect to https://your-oidc-provider.com as OpenID Connect client with client_id=YOUR_CLIENT_ID and client_secret=YOUR_SECRET
-# Exchange client credentials for access token
-```
-
-## Success Criteria
-
-Tests pass if:
-
-1. Client initializes without panics
-2. Discovery attempts are made (even if they fail on auth)
-3. LLM recognizes OIDC-specific instructions
-4. Errors are handled gracefully
-5. No resource leaks (clean disconnection)
-
-**Total LLM Budget**: < 6 calls ✅
-**Total Runtime**: ~10-15 seconds ✅
-**Network Required**: Yes (for discovery) ⚠️
-**Credentials Required**: No ✅
+`oidc_token_received` reports `access_token` / `id_token` / `refresh_token` as `"[REDACTED]"`
+(or `""` when absent), matching the sibling `oauth2` client. The values live in
+`protocol_data` and every action that needs one reads it back, so no test should assert on a
+token value *in an event* — assert on `protocol_data`, as `command_channel_test.rs` does.

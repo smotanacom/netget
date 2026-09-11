@@ -1,223 +1,118 @@
-//! E2E tests for OpenID Connect client
+//! What happens when the configured provider is not there.
 //!
-//! These tests verify OpenID Connect client functionality by spawning the actual NetGet binary
-//! and testing client behavior as a black-box.
+//! # This file used to hold five tests that ran nowhere and named production
 //!
-//! Note: OIDC tests are limited because we cannot easily run a full OIDC provider.
-//! We test initialization, discovery, and basic LLM interpretation.
+//! Each was `#[ignore]`d with the reason written into the attribute: "No `.with_mock()`
+//! configured: hits real accounts.google.com / example.com and requires `--use-ollama`." So
+//! they proved nothing on any runner, and the one way to make them run was to send live
+//! traffic to Google. That is the client-side shape of the defect this repo already knows
+//! from the DynamoDB client — *a client that loses its target must fail, never fall back to
+//! the real service* — except here it was the test, not the code, pointing at production.
+//!
+//! They are gone. What they claimed to cover (discovery against a provider, a real token
+//! exchange, the tokens that come back) is covered for real by `command_channel_test.rs`,
+//! which serves a discovery document, a JWKS and a token endpoint in-process and asserts
+//! that only the provider's own token is stored.
+//!
+//! What is left here is the case that suite cannot show, because it always has a provider:
+//! with **no** provider reachable, nothing may be invented. The `openidconnect` crate is an
+//! SDK, and an SDK that cannot reach its configured endpoint is exactly where a fallback
+//! would hide.
+//!
+//! Zero LLM calls: the client's LLM points at an unreachable URL, so its connect-time calls
+//! fail and the loop tolerates it.
+//!
+//! Run with:
+//!   ./cargo-isolated.sh test --no-default-features --features openidconnect \
+//!       --test client -- openidconnect --test-threads=100
 
-#[cfg(all(test, feature = "openidconnect"))]
-mod openid_connect_client_tests {
-    use crate::helpers::*;
-    use std::time::Duration;
+#![cfg(feature = "openidconnect")]
 
-    /// Test OpenID Connect client initialization and discovery
-    /// LLM calls: 1 (client connection with discovery)
-    ///
-    /// This test verifies that the OIDC client can:
-    /// 1. Initialize with a provider URL
-    /// 2. Attempt discovery (will fail with public providers without credentials)
-    /// 3. Handle errors gracefully
-    #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real accounts.google.com /
-              // example.com and requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and this
-              // assertion never passes.
-    async fn test_oidc_client_initialization() -> E2EResult<()> {
-        // Try to connect to a well-known OIDC provider (Google)
-        // This will fail authentication but should succeed in discovery
-        let client_config = NetGetConfig::new(
-            "Connect to https://accounts.google.com as OpenID Connect client. Discover the provider configuration."
-        );
+use std::time::Duration;
 
-        let mut client = start_netget_client(client_config).await?;
+use netget::cli::management::ClientForm;
+use netget::state::app_state::AppState;
+use netget::state::client_handles::ClientSendOutcome;
+use netget::state::ClientId;
+use tokio::sync::mpsc;
 
-        // Give client time to initialize and discover
-        tokio::time::sleep(Duration::from_secs(2)).await;
+async fn new_state() -> AppState {
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
+    state
+        .set_llm_client(netget::llm::OllamaClient::new(
+            "http://127.0.0.1:1".to_string(),
+        ))
+        .await;
+    state
+}
 
-        // Verify client output shows OIDC protocol or discovery attempt
-        let output = client.get_output().await;
-        assert!(
-            output.iter().any(|l| l.contains("OpenID"))
-                || output.iter().any(|l| l.contains("OIDC"))
-                || output.iter().any(|l| l.contains("discovered")),
-            "Client should show OpenID Connect protocol or discovery message. Output: {:?}",
-            output
-        );
+async fn wait_for_client_handle(state: &AppState, id: ClientId) {
+    for _ in 0..1_000 {
+        if state.has_client_handle(id).await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    panic!(
+        "OIDC client #{} never registered a command handle",
+        id.as_u32()
+    );
+}
 
-        println!("✅ OpenID Connect client initialized and attempted discovery");
+/// A closed port is a provider that is not there. Every flow must fail loudly and store
+/// nothing — no token, from anywhere.
+#[tokio::test]
+async fn oidc_client_with_an_unreachable_provider_invents_nothing() {
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
 
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(30).await;
-        client.verify_mocks().await?;
-        client.stop().await?;
+    // Port 1 on loopback: nothing listens, and nothing in the test contacts the network.
+    let client_id = ClientForm {
+        protocol: "OpenIDConnect".to_string(),
+        remote_addr: Some("http://127.0.0.1:1".to_string()),
+        instruction: Some("test client".to_string()),
+        startup_params: Some(serde_json::json!({
+            "client_id": "marker-client",
+            "client_secret": "marker-secret",
+        })),
+        ..Default::default()
+    }
+    .create(
+        &state,
+        netget::llm::OllamaClient::new("http://127.0.0.1:1".to_string()),
+        tx.clone(),
+    )
+    .await
+    .expect("create openidconnect client");
 
-        Ok(())
+    wait_for_client_handle(&state, client_id).await;
+
+    for action in [
+        serde_json::json!({"type": "exchange_client_credentials", "scopes": "marker.scope"}),
+        serde_json::json!({"type": "discover_configuration"}),
+        serde_json::json!({"type": "fetch_userinfo"}),
+    ] {
+        let name = action["type"].as_str().unwrap_or_default().to_string();
+        let outcome = state
+            .send_to_client(client_id, action, Duration::from_secs(15))
+            .await;
+        match outcome {
+            // An error, or a Rejected, is the correct answer.
+            Err(_) | Ok(ClientSendOutcome::Rejected { .. }) => {}
+            Ok(other) => panic!(
+                "{name} against a dead provider must fail rather than report success: {other:?}"
+            ),
+        }
     }
 
-    /// Test OpenID Connect client can be configured with parameters
-    /// LLM calls: 1 (client connection)
-    #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real accounts.google.com /
-              // example.com and requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and this
-              // assertion never passes.
-    async fn test_oidc_client_with_parameters() -> E2EResult<()> {
-        // Connect with explicit client credentials
-        let client_config = NetGetConfig::new(
-            "Connect to https://accounts.google.com as OpenID Connect client with client_id=test-app-id"
-        );
-
-        let mut client = start_netget_client(client_config).await?;
-
-        // Give client time to initialize
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        // Verify the client is OpenIDConnect protocol
+    // The load-bearing assertion: no credential exists. A fallback to a provider's default
+    // endpoint, or a fabricated token on the failure path, would both show up here.
+    let client = state.get_client(client_id).await.expect("client");
+    for field in ["access_token", "id_token", "refresh_token"] {
         assert!(
-            client.protocol == "OpenIDConnect" || client.protocol.contains("OpenID"),
-            "Client should be OpenIDConnect protocol, got: {}",
-            client.protocol
+            client.protocol_data.get(field).is_none(),
+            "no provider answered, so {field} must not exist: {:?}",
+            client.protocol_data.get(field)
         );
-
-        println!("✅ OpenID Connect client configured with parameters");
-
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(30).await;
-        client.verify_mocks().await?;
-        client.stop().await?;
-
-        Ok(())
-    }
-
-    /// Test OpenID Connect client LLM flow interpretation
-    /// LLM calls: 1 (client connection)
-    ///
-    /// This test verifies the LLM can interpret different OIDC flow instructions
-    #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real accounts.google.com /
-              // example.com and requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and this
-              // assertion never passes.
-    async fn test_oidc_client_flow_interpretation() -> E2EResult<()> {
-        // Client instructed to use device code flow
-        let client_config = NetGetConfig::new(
-            "Connect to https://example.com as OpenID Connect client. Use device code flow for authentication."
-        );
-
-        let mut client = start_netget_client(client_config).await?;
-
-        // Give client time to process instruction
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        // Verify client recognized OIDC instruction
-        let output = client.get_output().await;
-        assert!(
-            output.iter().any(|l| l.contains("OpenID"))
-                || output.iter().any(|l| l.contains("device"))
-                || output.iter().any(|l| l.contains("flow")),
-            "Client should recognize OIDC flow instruction. Output: {:?}",
-            output
-        );
-
-        println!("✅ OpenID Connect client interpreted flow instruction");
-
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(30).await;
-        client.verify_mocks().await?;
-        client.stop().await?;
-
-        Ok(())
-    }
-
-    /// Test OpenID Connect client handles invalid provider URLs
-    /// LLM calls: 1 (client connection)
-    #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real accounts.google.com /
-              // example.com and requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and this
-              // assertion never passes.
-    async fn test_oidc_client_invalid_provider() -> E2EResult<()> {
-        // Try to connect to an invalid provider
-        let client_config = NetGetConfig::new(
-            "Connect to http://invalid-oidc-provider.local as OpenID Connect client",
-        );
-
-        let mut client = start_netget_client(client_config).await?;
-
-        // Give client time to fail gracefully
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        // Verify client shows error or handles gracefully
-        let output = client.get_output().await;
-        assert!(
-            output.iter().any(|l| l.contains("ERROR"))
-                || output.iter().any(|l| l.contains("Failed"))
-                || output.iter().any(|l| l.contains("error")),
-            "Client should show error for invalid provider. Output: {:?}",
-            output
-        );
-
-        println!("✅ OpenID Connect client handled invalid provider gracefully");
-
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(30).await;
-        client.verify_mocks().await?;
-        client.stop().await?;
-
-        Ok(())
-    }
-
-    /// Test OpenID Connect client can disconnect cleanly
-    /// LLM calls: 1 (client connection)
-    #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real accounts.google.com /
-              // example.com and requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and this
-              // assertion never passes.
-    async fn test_oidc_client_disconnect() -> E2EResult<()> {
-        let client_config = NetGetConfig::new(
-            "Connect to https://accounts.google.com as OpenID Connect client. Then disconnect.",
-        );
-
-        let mut client = start_netget_client(client_config).await?;
-
-        // Give client time to connect and disconnect
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        // Verify client process is still running or stopped cleanly
-        // (The exact behavior depends on whether LLM executes disconnect action)
-        let output = client.get_output().await;
-        assert!(
-            output.iter().any(|l| l.contains("OpenID"))
-                || output.iter().any(|l| l.contains("connect"))
-                || output.iter().any(|l| l.contains("disconnect")),
-            "Client should show OIDC connection activity. Output: {:?}",
-            output
-        );
-
-        println!("✅ OpenID Connect client handled disconnect instruction");
-
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(30).await;
-        client.verify_mocks().await?;
-        client.stop().await?;
-
-        Ok(())
     }
 }

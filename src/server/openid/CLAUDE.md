@@ -120,13 +120,47 @@ into the redirect URL; `redirect_uri` itself is used as given.
 `scope=openid+profile` body used to reach the model as `openid+profile`) and skips pairs with
 invalid percent-encoding rather than collapsing them to an empty-string key.
 
-## Startup parameters
+## Startup parameters and `configure_provider`
 
-`issuer` (string) and `supported_scopes` (array). Both are stored in `OpenIdState` and, at
-present, are **only informational** — `handle_openid_request` takes `_openid_state` and does
-not read it, so neither value reaches the model or the responses. The model must be told the
-issuer through the instruction. Either wire `OpenIdState` into the event data or drop the
-parameters; do not assume they are in effect.
+`issuer` (string) and `supported_scopes` (array), both stored in `OpenIdState`. They reach the
+model as `configured_issuer` / `configured_scopes` on **every** `openid_request`, so a
+discovery document and the `iss` claims in later tokens can agree without the instruction
+repeating the issuer.
+
+They were dead until this was wired: `handle_openid_request` took the state as
+`_openid_state`, so both were advertised knobs that did nothing when turned. That is what
+`tests/server/openid/configuration_test.rs` pins — its mock rule matches on
+`configured_issuer`, so if the value stops reaching the model the rule stops matching and the
+request falls through to an unmocked LLM call.
+
+`configure_provider` sets the same two values at runtime. It is a **sync** action, offered on
+`openid_request`. It used to be an async action and could never take effect from there: an
+async action's `ActionResult` never reaches `handle_llm_response`, and `execute_action` is a
+`&self` method on a unit struct with no access to `OpenIdState`, so the issuer it "set" was
+discarded. It produces no HTTP response of its own — deliberately, so a request answered with
+*only* a `configure_provider` still falls into the fail-closed 500 below rather than an empty
+200. Pair it with the action that answers the request.
+
+`get_async_actions()` is consequently empty, which is correct for a request/response server
+(`oauth2` is the same).
+
+## Hostile input
+
+- **`MAX_REQUEST_BYTES` = 64 KiB.** Every endpoint is reachable before any credential is
+  checked and the body is handed to the model as prompt text, so the previous unbounded
+  `req.into_body().collect()` let one anonymous POST grow the process without limit and drive
+  an LLM call with megabytes of attacker-chosen prompt. Over the limit is `413` — and a
+  refusal, not an empty body: substituting `Bytes::new()` on failure, as the old code did,
+  turned an over-limit POST into a well-formed request with no parameters at all, which the
+  model then answered as one.
+- **`status_or` narrows a model-supplied `status_code` with `u16::try_from`.** `65736 as u16`
+  is `200`, so a `send_error_response` the model meant as a refusal arrived at the relying
+  party as the status it reads as success. Anything outside 100–599 falls back to 400.
+- **`send_authorization_response` must carry a verdict.** Only `redirect_uri` is required, so
+  an action with no `code`, `error`, `id_token` or `access_token` used to produce a bare 302
+  to the client's callback — which set `redirect_location` and therefore *passed* the
+  fail-closed check below while saying nothing at all. Such an action is now skipped and
+  logged `decision=fail_closed_empty_authorization`, so the request falls through to the 500.
 
 ## Storage
 

@@ -64,22 +64,33 @@ pub static OIDC_CLIENT_TOKEN_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new
         }),
     )
     .with_parameters(vec![
+        // The three secrets are reported as `[REDACTED]` (or `""` when absent), never
+        // verbatim: the client stores them in `protocol_data` and every action that needs one
+        // reads it back, so the model has no use for the value and putting it here copied a
+        // live bearer token into the LLM prompt, the log file and the status stream.
         Parameter {
             name: "access_token".to_string(),
             type_hint: "string".to_string(),
-            description: "OAuth access token".to_string(),
+            description: "\"[REDACTED]\" - an access token was received. The value is held by \
+                          the client; name it in an action (fetch_userinfo, validate_token) \
+                          rather than trying to repeat it."
+                .to_string(),
             required: true,
         },
         Parameter {
             name: "id_token".to_string(),
             type_hint: "string".to_string(),
-            description: "OpenID Connect ID token (JWT)".to_string(),
+            description: "\"[REDACTED]\" if the provider returned an ID token, \"\" if not. \
+                          NetGet does not verify its signature, issuer, audience or nonce."
+                .to_string(),
             required: false,
         },
         Parameter {
             name: "refresh_token".to_string(),
             type_hint: "string".to_string(),
-            description: "OAuth refresh token".to_string(),
+            description: "\"[REDACTED]\" if a refresh token was received, \"\" if not. Use the \
+                          refresh_token action; the value itself is held by the client."
+                .to_string(),
             required: false,
         },
         Parameter {
@@ -355,11 +366,27 @@ impl Protocol for OpenIdConnectClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-                .state(DevelopmentState::Experimental)
-                .implementation("openidconnect crate with full OAuth2/OIDC flows")
-                .llm_control("Full control over authentication flows (device code, password, client credentials)")
-                .e2e_testing("Local OIDC provider or public test providers")
-                .build()
+            .state(DevelopmentState::Experimental)
+            .implementation(
+                "openidconnect 3.5. Discovery, authorization-code, device-code, password \
+                     and client-credentials flows are driven; tokens are stored opaquely and \
+                     nothing about them is verified.",
+            )
+            .llm_control("Which flow to run, when to refresh, and what to do with the result")
+            .e2e_testing(
+                "tests/client/openidconnect/command_channel_test.rs drives the \
+                     injected-action path with no provider. The five tests in e2e_test.rs are \
+                     #[ignore]d because they point at the real accounts.google.com and need \
+                     --use-ollama, so they run nowhere and prove nothing.",
+            )
+            .notes(
+                "No ID token is verified. The openidconnect crate can check a JWT's \
+                     signature, issuer, audience and nonce through id_token.claims(..); this \
+                     client never calls it and stores the token as an opaque string, so a \
+                     forged or expired id_token is accepted exactly as readily as a genuine \
+                     one. Access, refresh and ID tokens reach the model only as \"[REDACTED]\".",
+            )
+            .build()
     }
     fn description(&self) -> &'static str {
         "OpenID Connect client for OAuth2/OIDC authentication"

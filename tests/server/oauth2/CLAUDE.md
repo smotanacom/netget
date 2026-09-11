@@ -16,12 +16,26 @@ client credentials) and token management (introspection, revocation) using HTTP 
 
 ### Test Coverage
 
-4 tests covering main OAuth2 functionality:
+**10 tests across three files.** `e2e_test.rs` covers the happy paths, and the other two cover
+the ways this protocol has failed *open* — which is what it is actually known for.
+
+`e2e_test.rs` (4):
 
 1. **Authorization Code Flow** - Full authorization + token exchange flow
 2. **Client Credentials Flow** - Service-to-service authentication
 3. **Token Introspection** - Token validation (RFC 7662)
 4. **Token Revocation** - Token invalidation (RFC 7009)
+
+`llm_failure_test.rs` (4): with no routing rule for any `oauth2_*` event, every endpoint's LLM
+call fails. Each test asserts the endpoint answers a 5xx with an RFC 6749 §5.2 code and issues
+nothing — and specifically that `/token` does **not** say `invalid_grant` (which makes a
+conforming client discard its refresh token, so an outage would sign every session out
+permanently) and `/introspect` does **not** say `{"active": false}` (a statement about the
+token, when nobody looked at it).
+
+`hardening_test.rs` (2): a 1 MiB `/token` body is refused `413` before any LLM call, and a
+model-supplied `status_code` of `65736` does not wrap into a `200`. Both were live defects;
+`65736 as u16 == 200` meant a refusal arrived as the status a client reads as success.
 
 ### LLM Call Budget
 
@@ -132,7 +146,9 @@ client credentials) and token management (introspection, revocation) using HTTP 
 
 ## Known Issues
 
-None currently.
+Nothing outstanding in the tests. What the suite does **not** cover, and could: PKCE, scope
+enforcement, and the `/authorize` redirect-URI escaping (`authorize_redirect` percent-encodes
+every value, but no test drives a `state` containing `&`).
 
 ## Test Execution
 
@@ -140,15 +156,19 @@ None currently.
 
 ```bash
 # Run all OAuth2 tests
-./cargo-isolated.sh test --no-default-features --features oauth2 --test server::oauth2::e2e_test
+# `--test` names a target, not a module: the target is `server`, the module is a filter.
+./cargo-isolated.sh test --no-default-features --features oauth2 \
+    --test server -- server::oauth2 --test-threads=100
 
 # Run specific test
-./cargo-isolated.sh test --no-default-features --features oauth2 --test server::oauth2::e2e_test test_oauth2_authorization_code_flow
+./cargo-isolated.sh test --no-default-features --features oauth2 \
+    --test server -- server::oauth2::e2e_test::test_oauth2_authorization_code_flow
 ```
 
 ### Prerequisites
 
-- Ollama running with qwen3-coder:30b model (or configured model)
+- **No Ollama.** Every test here runs against the in-process mock
+  (`tests/helpers/mock_ollama.rs`); `--use-ollama` is opt-in, not required.
 - Isolated cargo build environment (`./cargo-isolated.sh`)
 
 ### Test Output

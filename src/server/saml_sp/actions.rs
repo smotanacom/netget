@@ -296,10 +296,14 @@ impl SamlSpProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("Authorization failed");
 
+        // `as u16` truncates: 65736 becomes 200, and a 2xx is the only thing that reads as a
+        // completed sign-in. Refuse the wrap and keep the refusal a refusal.
         let status_code = action
             .get("status_code")
             .and_then(|v| v.as_u64())
-            .unwrap_or(403) as u16;
+            .and_then(|raw| u16::try_from(raw).ok())
+            .filter(|s| (400..=599).contains(s))
+            .unwrap_or(403);
 
         let error_html = format!(
             "<html><body><h1>Authorization Error</h1><p>{}</p></body></html>",

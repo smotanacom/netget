@@ -30,6 +30,32 @@ use crate::server::connection::ConnectionId;
 use crate::server::openid::actions::OpenIdProtocol;
 use crate::state::app_state::AppState;
 
+/// Largest request body this server will buffer.
+///
+/// Every endpoint here is reachable before any credential is checked, and the body is parsed
+/// and handed to the model as prompt text, so the previous unbounded `collect()` let one
+/// anonymous POST grow the process without limit. An OIDC form body is a handful of short
+/// parameters; 64 KiB is far past anything a conforming relying party sends.
+const MAX_REQUEST_BYTES: usize = 64 * 1024;
+
+/// Narrow a model-supplied HTTP status to `u16` without wrapping.
+///
+/// `status as u16` on a `u64` truncates, and the truncation is the dangerous direction:
+/// `65736` becomes `200`, so a `send_error_response` the model meant as a refusal arrives at
+/// the relying party as the status it reads as success.
+fn status_or(value: Option<&serde_json::Value>, default: u16) -> u16 {
+    match value.and_then(|v| v.as_u64()) {
+        Some(raw) => u16::try_from(raw)
+            .ok()
+            .filter(|s| (100..=599).contains(s))
+            .unwrap_or_else(|| {
+                warn!("OpenID: ignoring out-of-range status_code {raw}, using {default}");
+                default
+            }),
+        None => default,
+    }
+}
+
 /// OpenID Connect provider state
 pub struct OpenIdState {
     /// Issuer URL
@@ -131,6 +157,7 @@ async fn handle_llm_response(
     status_tx: mpsc::UnboundedSender<String>,
     method: String,
     path: String,
+    openid_state: Arc<RwLock<OpenIdState>>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     debug!("LLM OpenID response received");
 
@@ -187,6 +214,21 @@ async fn handle_llm_response(
                         status_code = 200;
                     }
                     "send_authorization_response" => {
+                        // A redirect carrying neither a grant nor an error is not an answer.
+                        // Falling through with an empty parameter list produced a bare 302 to
+                        // the client's callback, which set `redirect_location` and so passed
+                        // the fail-closed check below while saying nothing at all.
+                        if !["code", "error", "id_token", "access_token"]
+                            .iter()
+                            .any(|k| data.get(*k).and_then(|v| v.as_str()).is_some())
+                        {
+                            Log::new(Some(&status_tx)).warn(format!(
+                                "OpenID {} {} decision=fail_closed_empty_authorization: \
+                                 send_authorization_response carried no code, error or token",
+                                method, path
+                            ));
+                            continue;
+                        }
                         // Build redirect URL with query parameters
                         let redirect_uri = data["redirect_uri"].as_str().unwrap_or("");
                         let mut redirect_url = redirect_uri.to_string();
@@ -309,10 +351,34 @@ async fn handle_llm_response(
                         response_body = error_response.to_string();
                         response_headers
                             .insert("content-type".to_string(), "application/json".to_string());
-                        status_code = data
-                            .get("status_code")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(400) as u16;
+                        status_code = status_or(data.get("status_code"), 400);
+                    }
+                    // The model reconfiguring the provider mid-flight. This used to fall into
+                    // the `_` arm below: `configure_provider` was advertised, executed, and
+                    // then discarded, so the issuer it set was never seen again. It produces
+                    // no HTTP response of its own — deliberately, so a request answered with
+                    // *only* a configure_provider still falls through to the fail-closed 500
+                    // rather than an empty 200.
+                    "configure_provider" => {
+                        let mut state = openid_state.write().await;
+                        if let Some(issuer) = data.get("issuer").and_then(|v| v.as_str()) {
+                            Log::new(Some(&status_tx))
+                                .info(format!("OpenID issuer set to {issuer}"));
+                            state.issuer = Some(issuer.to_string());
+                        }
+                        if let Some(scopes) =
+                            data.get("supported_scopes").and_then(|v| v.as_array())
+                        {
+                            let scopes: Vec<String> = scopes
+                                .iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect();
+                            if !scopes.is_empty() {
+                                Log::new(Some(&status_tx))
+                                    .info(format!("OpenID scopes set to {scopes:?}"));
+                                state.supported_scopes = scopes;
+                            }
+                        }
                     }
                     _ => {
                         debug!("Unknown custom action: {}", name);
@@ -528,7 +594,7 @@ async fn handle_openid_request(
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<OpenIdProtocol>,
-    _openid_state: Arc<RwLock<OpenIdState>>,
+    openid_state: Arc<RwLock<OpenIdState>>,
     server_id: crate::state::ServerId,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     // Extract request details (before consuming body)
@@ -548,11 +614,28 @@ async fn handle_openid_request(
     }
 
     // Read body
-    let body_bytes = match req.into_body().collect().await {
+    // Capped at MAX_REQUEST_BYTES, and refused rather than silently emptied: substituting an
+    // empty body used to turn an over-limit POST into a well-formed request with no
+    // parameters at all, which the model then answered as one.
+    let body_bytes = match http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            error!("Failed to read request body: {}", e);
-            Bytes::new()
+            Log::new(Some(&status_tx)).warn(format!(
+                "OpenID {} {} decision=fail_closed_body_rejected (limit {} bytes): {}",
+                method, path, MAX_REQUEST_BYTES, e
+            ));
+            return Ok(build_safe_response(
+                413,
+                [("content-type".to_string(), "application/json".to_string())],
+                json!({
+                    "error": "invalid_request",
+                    "error_description": "request body too large"
+                })
+                .to_string(),
+            ));
         }
     };
     let body_text = String::from_utf8_lossy(&body_bytes).to_string();
@@ -600,6 +683,15 @@ async fn handle_openid_request(
         trace!("OpenID form data: {:?}", form_data);
     }
 
+    // The `issuer` / `supported_scopes` startup parameters, and anything a later
+    // `configure_provider` set, are reported to the model here. Until this existed they were
+    // parsed into `OpenIdState` and then never read by anything — the handler took the state
+    // as `_openid_state` — so both were advertised knobs that did nothing when turned.
+    let (configured_issuer, configured_scopes) = {
+        let state = openid_state.read().await;
+        (state.issuer.clone(), state.supported_scopes.clone())
+    };
+
     // Create event for LLM
     let event = Event::new(
         &*crate::server::openid::actions::OPENID_REQUEST_EVENT,
@@ -611,6 +703,8 @@ async fn handle_openid_request(
             "body": if body_text.is_empty() { "" } else { &body_text },
             "form_data": form_data,
             "endpoint_type": endpoint_type,
+            "configured_issuer": configured_issuer,
+            "configured_scopes": configured_scopes,
         }),
     );
 
@@ -626,7 +720,7 @@ async fn handle_openid_request(
     .await
     {
         Ok(execution_result) => {
-            handle_llm_response(execution_result, status_tx, method, path).await
+            handle_llm_response(execution_result, status_tx, method, path, openid_state).await
         }
         Err(e) => {
             // OpenID Connect inherits OAuth2's error codes (RFC 6749 5.2):

@@ -3,3 +3,4 @@
 #![cfg(all(test, feature = "saml-sp"))]
 
 pub mod e2e_test;
+pub mod hardening_test;

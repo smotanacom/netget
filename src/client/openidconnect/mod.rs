@@ -911,12 +911,19 @@ impl OpenIdConnectClient {
         // Call LLM with token received event. This helper is only reached from the device
         // and authorization-code flows' own spawned tasks, which are already off any
         // command loop's critical path, so the event is raised inline there.
+        // The tokens are stored above and every action that needs one
+        // (`fetch_userinfo`, `refresh_token`, `validate_token`) reads it back out of
+        // `protocol_data`. The model therefore never needs the secret itself, and putting it
+        // in the event copied a live bearer token, a refresh token and an id_token into the
+        // LLM prompt — which goes to whatever backend is configured, is written to
+        // `netget.log`, and is echoed onto the status stream. The sibling `oauth2` client has
+        // always redacted these; this one did not. Report presence and metadata instead.
         let event = Event::new(
             &OIDC_CLIENT_TOKEN_RECEIVED_EVENT,
             serde_json::json!({
-                "access_token": access_token,
-                "id_token": id_token,
-                "refresh_token": refresh_token,
+                "access_token": "[REDACTED]",
+                "id_token": if id_token.is_some() { "[REDACTED]" } else { "" },
+                "refresh_token": if refresh_token.is_some() { "[REDACTED]" } else { "" },
                 "expires_in": expires_in,
                 "token_type": token_type,
             }),
@@ -1599,13 +1606,20 @@ impl OpenIdConnectClient {
             })
             .await;
 
-        // Call LLM with token received event
+        // Call LLM with token received event.
+        // The tokens are stored above and every action that needs one
+        // (`fetch_userinfo`, `refresh_token`, `validate_token`) reads it back out of
+        // `protocol_data`. The model therefore never needs the secret itself, and putting it
+        // in the event copied a live bearer token, a refresh token and an id_token into the
+        // LLM prompt — which goes to whatever backend is configured, is written to
+        // `netget.log`, and is echoed onto the status stream. The sibling `oauth2` client has
+        // always redacted these; this one did not. Report presence and metadata instead.
         let event = Event::new(
             &OIDC_CLIENT_TOKEN_RECEIVED_EVENT,
             serde_json::json!({
-                "access_token": access_token,
-                "id_token": id_token,
-                "refresh_token": refresh_token,
+                "access_token": "[REDACTED]",
+                "id_token": if id_token.is_some() { "[REDACTED]" } else { "" },
+                "refresh_token": if refresh_token.is_some() { "[REDACTED]" } else { "" },
                 "expires_in": expires_in,
                 "token_type": token_type,
             }),
