@@ -114,8 +114,7 @@ impl TorrentDhtClient {
                         // stack, and a stack overflow is SIGSEGV — it takes the whole
                         // process with it, not just this task. The socket is unconnected,
                         // so any host that can reach the port can send it.
-                        if let Err(e) =
-                            crate::utils::bencode::check_bencode_structure(&buf[..len])
+                        if let Err(e) = crate::utils::bencode::check_bencode_structure(&buf[..len])
                         {
                             warn!(
                                 "DHT client {} rejected {} byte datagram from {}: {}",
