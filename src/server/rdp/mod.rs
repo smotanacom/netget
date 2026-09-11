@@ -24,7 +24,8 @@ use crate::state::server::{ConnectionState, ConnectionStatus, ProtocolConnection
 use crate::{console_debug, console_info, console_warn};
 use actions::{
     build_negotiation_failure, protocol_value_to_names, RdpProtocol, DEFAULT_FAILURE_CODE,
-    RDP_CONNECTION_REQUEST_EVENT, TYPE_RDP_NEG_REQ, X224_TPDU_CONNECTION_REQUEST,
+    RDP_CONNECTION_REQUEST_EVENT, TYPE_RDP_NEG_FAILURE, TYPE_RDP_NEG_REQ, TYPE_RDP_NEG_RSP,
+    X224_TPDU_CONNECTION_REQUEST,
 };
 use anyhow::{anyhow, Result};
 use std::net::SocketAddr;
@@ -275,26 +276,68 @@ impl RdpServer {
                     }
                 }
                 match chosen {
-                    Some(bytes) => bytes,
+                    Some(bytes) => {
+                        // `decision=` matters most here, because the wire cannot carry the
+                        // distinction: a model that deliberately answers
+                        // `reject_rdp_connection` with SSL_REQUIRED_BY_SERVER produces bytes
+                        // identical to the fail-closed default below. `model_accept` vs
+                        // `model_reject` is read off the RDP_NEG type octet of the message the
+                        // executor actually built, not off what the model was asked for.
+                        let decision = match negotiation_kind(&bytes) {
+                            Some(TYPE_RDP_NEG_RSP) => "model_accept",
+                            Some(TYPE_RDP_NEG_FAILURE) => "model_reject",
+                            _ => "model_other",
+                        };
+                        debug!(
+                            "RDP {} decision={} ({} bytes)",
+                            connection_id,
+                            decision,
+                            bytes.len()
+                        );
+                        console_debug!(status_tx, "RDP {} decision={}", connection_id, decision);
+                        bytes
+                    }
                     None => {
                         // Fail closed: no usable action came back. Do NOT fall through to a
                         // permissive default (e.g. silently accepting standard RDP). Send an
-                        // explicit negotiation failure and close — structurally distinct from the
-                        // model deliberately rejecting, which carries the model's chosen code.
+                        // explicit negotiation failure and close — indistinguishable on the
+                        // wire from the model deliberately rejecting with the same code, which
+                        // is exactly why the tag below is the only record that separates them.
+                        let tag = if execution.failures.is_empty() {
+                            "fail_closed_model_silent"
+                        } else {
+                            "fail_closed_action_error"
+                        };
+                        warn!(
+                            "RDP {} decision={}: no usable negotiation action; \
+                             answering SSL_REQUIRED_BY_SERVER",
+                            connection_id, tag
+                        );
                         console_warn!(
                             status_tx,
-                            "RDP {} got no usable negotiation action; failing closed (SSL_REQUIRED_BY_SERVER)",
-                            connection_id
+                            "RDP {} decision={}: no usable negotiation action, failing closed (SSL_REQUIRED_BY_SERVER)",
+                            connection_id,
+                            tag
                         );
                         build_negotiation_failure(DEFAULT_FAILURE_CODE)
                     }
                 }
             }
             Err(e) => {
-                warn!("RDP negotiation not answered for {}: {}", connection_id, e);
+                // The peer gets the same RDP_NEG_FAILURE whatever went wrong — there is no
+                // free-text field in an X.224 Connection Confirm in which a `WireFailure`
+                // category could be carried, and inventing a failureCode to encode "the
+                // backend is busy" would be telling the client something [MS-RDPBCGR] does not
+                // mean. So the category stays in the log, next to the error.
+                warn!(
+                    "RDP {} decision=fail_closed_llm_error ({:?}): {}",
+                    connection_id,
+                    crate::utils::WireFailure::classify(&e),
+                    e
+                );
                 console_warn!(
                     status_tx,
-                    "RDP {} negotiation LLM error; failing closed (SSL_REQUIRED_BY_SERVER): {}",
+                    "RDP {} decision=fail_closed_llm_error, failing closed (SSL_REQUIRED_BY_SERVER): {}",
                     connection_id,
                     e
                 );
@@ -333,6 +376,16 @@ impl RdpServer {
         debug!("RDP negotiation complete for {}, closing", connection_id);
         Ok(())
     }
+}
+
+/// The RDP_NEG_* type octet of an encoded Connection Confirm, if it carries one.
+///
+/// Layout ([MS-RDPBCGR] 2.2.1.2): TPKT(4) + LI(1) + code(1) + dstRef(2) + srcRef(2) + class(1),
+/// then the 8-byte RDP_NEG_* structure at offset 11. Reading it back is what lets the log say
+/// whether the model accepted or refused without trusting the action name — the executor is
+/// what decides, and only the bytes it produced know.
+fn negotiation_kind(confirm: &[u8]) -> Option<u8> {
+    confirm.get(11).copied()
 }
 
 /// Read one TPKT-framed X.224 Connection Request and parse its RDP negotiation fields.

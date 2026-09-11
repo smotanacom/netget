@@ -111,6 +111,26 @@ that is the OAuth2 fail-open shape. Instead:
 
 A silent "accept anything" was never an option.
 
+### …and the wire cannot tell the two apart, so the log must
+
+`build_negotiation_failure(SSL_REQUIRED_BY_SERVER)` produces **byte-identical** output whether
+the model chose it or netget fell back to it. There is no free-text field in an X.224 Connection
+Confirm — no place a `WireFailure` category could go — and inventing a `failureCode` to mean "the
+backend is busy" would tell the client something [MS-RDPBCGR] does not define. So every outcome
+carries a `decision=` tag, the shape `src/server/radius/` establishes for exactly this case:
+
+| Outcome | `decision=` |
+|---|---|
+| Model selected a protocol (RDP_NEG_RSP on the wire) | `model_accept` |
+| Model refused (RDP_NEG_FAILURE on the wire) | `model_reject` |
+| Model answered with no usable action | `fail_closed_model_silent` |
+| An action came back and the executor refused it | `fail_closed_action_error` |
+| Backend failure | `fail_closed_llm_error` (with the `WireFailure` category alongside) |
+
+Accept vs reject is read off the **RDP_NEG type octet of the bytes the executor produced**
+(`negotiation_kind`, offset 11), not off the action name the model used: the executor is what
+decides what goes on the wire, and only its output knows what that was.
+
 ## Input safety
 
 - The TPKT length field is client-controlled; it is bounded (`11..=MAX_X224_LEN`, 2 KiB) **before**
