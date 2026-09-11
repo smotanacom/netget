@@ -15,7 +15,9 @@
 
 pub mod actions;
 mod discovery;
-mod table;
+/// `Table` rendering. Public so its cell derivation can be tested directly against the kinds of
+/// object a model actually returns, without standing a server up first.
+pub mod table;
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -63,6 +65,32 @@ impl Default for KubernetesConfig {
 
 /// Version claimed by `GET /version` when `kubernetes_version` is not supplied.
 pub const DEFAULT_KUBERNETES_VERSION: &str = "v1.29.4";
+
+/// Largest request body this server will buffer, in bytes.
+///
+/// The same 3 MiB a real `kube-apiserver` enforces (`maxRequestBodyBytes` in
+/// `k8s.io/apiserver`), and for the same reason: hyper's `Incoming` has no limit of its own, so
+/// `collect()` on it buffers whatever the peer chose to send. This server performs no
+/// authentication, so that was one unauthenticated `POST` away from exhausting the process —
+/// and the body is then embedded whole in an LLM prompt, so there is no legitimate large one
+/// either. `Limited` errors as soon as the cap is passed rather than after buffering it.
+pub const MAX_REQUEST_BODY_BYTES: usize = 3 * 1024 * 1024;
+
+/// Turn a model-supplied HTTP status code into a `u16`, or `None` when it is not one.
+///
+/// **The range check has to happen before the cast, not after.** `as u16` on a `u64` truncates
+/// silently, and truncation lands on plausible values: `65736 as u16 == 200`, so an
+/// out-of-range code the executor somehow let through would become a `200 OK` — a refusal
+/// turned into an answer, which is the LDAP `result_code as u8` defect in a different protocol.
+/// `execute_status` and `execute_object_response` already bound `code` to 100..600; this is the
+/// second lock on the same door, and it fails closed instead of narrowing.
+pub fn model_status_code(raw: Option<u64>, default: u16) -> Option<u16> {
+    match raw {
+        None => Some(default),
+        Some(code) if (100..600).contains(&code) => Some(code as u16),
+        Some(_) => None,
+    }
+}
 
 /// Kubernetes API server.
 pub struct KubernetesServer;
@@ -563,12 +591,34 @@ async fn handle_request(req: Request<Incoming>, ctx: RequestContext) -> Response
         );
     }
 
-    let body_bytes = match body.collect().await {
+    // Bounded, and an unreadable body must never fall through as an empty one: the model would
+    // then be shown a create carrying no object and could admit it as though the client had
+    // sent none. Over the cap is `RequestEntityTooLarge`, the reason a real apiserver uses and
+    // the one `client-go` surfaces without retrying.
+    let body_bytes = match http_body_util::Limited::new(body, MAX_REQUEST_BODY_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
             // The transport error names hyper internals; the peer gets the category only.
-            error!("Failed to read Kubernetes request body: {}", e);
-            return status_response(400, "BadRequest", "failed to read the request body", None);
+            error!(
+                "Kubernetes {} {}: decision=fail_closed_body_rejected (limit {} bytes): {}",
+                method, path, MAX_REQUEST_BODY_BYTES, e
+            );
+            console_error!(
+                ctx.status_tx,
+                "Kubernetes {} {} -> refusing request body (limit {} bytes)",
+                method,
+                path,
+                MAX_REQUEST_BODY_BYTES
+            );
+            return status_response(
+                413,
+                "RequestEntityTooLarge",
+                "the request body is larger than this server accepts",
+                Some(json!({"limitBytes": MAX_REQUEST_BODY_BYTES})),
+            );
         }
     };
 
@@ -826,19 +876,23 @@ fn build_response(
             if object.get("apiVersion").is_none() {
                 object["apiVersion"] = json!(route.group_version());
             }
-            let code = data
-                .get("status_code")
-                .and_then(Value::as_u64)
-                .unwrap_or(200) as u16;
-            let Ok(status) = StatusCode::from_u16(code) else {
-                error!("Kubernetes: k8s_object_response carried an unusable status_code {code}");
-                return Some(status_response(
-                    500,
-                    "InternalError",
-                    "the handler returned an unusable status code",
-                    None,
-                ));
-            };
+            let raw_code = data.get("status_code").and_then(Value::as_u64);
+            let status =
+                match model_status_code(raw_code, 200).and_then(|c| StatusCode::from_u16(c).ok()) {
+                    Some(status) => status,
+                    None => {
+                        error!(
+                            "Kubernetes: decision=fail_closed_bad_status (k8s_object_response \
+                         status_code {raw_code:?} is not an HTTP status)"
+                        );
+                        return Some(status_response(
+                            500,
+                            "InternalError",
+                            "the handler returned an unusable status code",
+                            None,
+                        ));
+                    }
+                };
             if as_table {
                 let kind = object
                     .get("kind")
@@ -853,7 +907,16 @@ fn build_response(
             Some(json_response(status, &object))
         }
         "k8s_status" => {
-            let code = data.get("code").and_then(Value::as_u64).unwrap_or(500) as u16;
+            let raw_code = data.get("code").and_then(Value::as_u64);
+            // No usable code means netget refusing on the model's behalf, which is 500 — never
+            // a narrowed value that could land inside 2xx and read as success.
+            let code = model_status_code(raw_code, 500).unwrap_or_else(|| {
+                error!(
+                    "Kubernetes: decision=fail_closed_bad_status (k8s_status code {raw_code:?} \
+                     is not an HTTP status)"
+                );
+                500
+            });
             let reason = data
                 .get("reason")
                 .and_then(Value::as_str)
