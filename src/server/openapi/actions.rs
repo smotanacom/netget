@@ -79,6 +79,29 @@ pub static OPENAPI_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     ])
 });
 
+/// Read a model-supplied HTTP status, refusing anything that is not one.
+///
+/// This was `as_i64()? as u16`, which narrows in silence in both directions: `65736` is
+/// `200` and `-1` is `65535`. `send_validation_error` is how the model reports that a request
+/// failed schema validation, so the one field carrying that refusal could arrive as the
+/// success it was refusing. Refusing beats clamping — a clamp to 599 is not what the model
+/// asked for either, and the message is what the repair loop reads.
+fn required_status(action: &serde_json::Value, action_name: &str) -> Result<u16> {
+    let value = action
+        .get("status_code")
+        .ok_or_else(|| anyhow!("Missing status_code parameter for {action_name}"))?;
+    let raw = value
+        .as_i64()
+        .ok_or_else(|| anyhow!("{action_name} status_code must be a number, got {value}"))?;
+    if !(100..=599).contains(&raw) {
+        return Err(anyhow!(
+            "{action_name} status_code {raw} is not an HTTP status code; use 100-599 \
+             (400 for a bad request, 404 for an unmatched route, 500 for a server fault)"
+        ));
+    }
+    Ok(raw as u16)
+}
+
 /// OpenAPI protocol implementation
 #[derive(Clone)]
 pub struct OpenApiProtocol;
@@ -380,10 +403,7 @@ impl Server for OpenApiProtocol {
                 })
             }
             "send_openapi_response" => {
-                let status_code = action["status_code"]
-                    .as_i64()
-                    .ok_or_else(|| anyhow!("Missing status_code parameter"))?
-                    as u16;
+                let status_code = required_status(&action, "send_openapi_response")?;
 
                 let headers = action["headers"].as_object().cloned().unwrap_or_default();
 
@@ -414,10 +434,7 @@ impl Server for OpenApiProtocol {
                 })
             }
             "send_validation_error" => {
-                let status_code = action["status_code"]
-                    .as_i64()
-                    .ok_or_else(|| anyhow!("Missing status_code parameter"))?
-                    as u16;
+                let status_code = required_status(&action, "send_validation_error")?;
 
                 let message = action["message"]
                     .as_str()
