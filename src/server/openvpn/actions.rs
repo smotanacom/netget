@@ -58,11 +58,15 @@ pub static OPENVPN_PEER_RESET_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         }),
     )
     .with_actions(vec![accept_peer_action(), reject_peer_action()])
+    // `{peer_addr}`, not `{client_ip}`: `client_ip` is filled from a connection registered in
+    // AppState, and at reset time there is none - the connection is added only once
+    // `accept_peer` answers, which is the decision this event exists to ask for. A missing
+    // placeholder renders empty, so this line named nobody.
     .with_log_template(
         LogTemplate::new()
-            .with_info("{client_ip} OpenVPN reset (session {client_session_id})")
+            .with_info("{peer_addr} OpenVPN reset (session {client_session_id})")
             .with_debug(
-                "OpenVPN {reset_type} from {client_ip}, session {client_session_id}, \
+                "OpenVPN {reset_type} from {peer_addr}, session {client_session_id}, \
                  key_id {key_id}",
             )
             .with_trace("OpenVPN peer reset: {json_pretty(.)}"),

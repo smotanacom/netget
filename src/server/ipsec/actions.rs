@@ -40,10 +40,15 @@ pub static IPSEC_HANDSHAKE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         accept_connection_action(),
         reject_connection_action(),
     ])
+    // `{peer_addr}`, not `{client_ip}`: the enrichment that fills `client_ip` reads the
+    // remote address off a registered connection, and this honeypot registers none - IKE
+    // here is connectionless and `call_llm` is passed `connection_id: None`. A missing
+    // placeholder renders as the empty string, so the one INFO line the honeypot exists to
+    // produce did not say who sent the packet.
     .with_log_template(
         LogTemplate::new()
-            .with_info("{client_ip} IKE {exchange_type} ({duration_ms}ms)")
-            .with_debug("IKE handshake from {client_ip}: {ike_version} {exchange_type}")
+            .with_info("{peer_addr} IKE {exchange_type} ({duration_ms}ms)")
+            .with_debug("IKE handshake from {peer_addr}: {ike_version} {exchange_type}")
             .with_trace("IKE handshake: {json_pretty(.)}"),
     )
 });
