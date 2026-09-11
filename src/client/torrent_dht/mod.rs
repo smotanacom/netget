@@ -39,6 +39,45 @@ struct DhtMessage {
     error: Option<serde_bencode::value::Value>,
 }
 
+/// Decode a KRPC field the model was told is hex, and say plainly when it is not.
+///
+/// The model sees "20 bytes hex" in the parameter description, so the error has to name the
+/// field and what was wrong with it — a bare `hex::decode` failure gives it nothing to
+/// correct. `expect_len` is the decoded length BEP 5 fixes for that field, where it fixes one.
+fn decode_krpc_hex(field: &str, value: &str, expect_len: Option<usize>) -> Result<Vec<u8>> {
+    let bytes = hex::decode(value).map_err(|e| {
+        anyhow::anyhow!(
+            "'{}' must be hex-encoded ({} characters for {} bytes): {}",
+            field,
+            expect_len.map(|n| n * 2).unwrap_or(0),
+            expect_len.unwrap_or(0),
+            e
+        )
+    })?;
+    if let Some(expected) = expect_len {
+        if bytes.len() != expected {
+            return Err(anyhow::anyhow!(
+                "'{}' decoded to {} bytes; BEP 5 requires exactly {}",
+                field,
+                bytes.len(),
+                expected
+            ));
+        }
+    }
+    Ok(bytes)
+}
+
+/// A fresh two-byte KRPC transaction id.
+///
+/// A counter rather than a random value: it is only ever compared for equality against the
+/// reply, and a monotonic one makes a packet capture readable. Two bytes is what BEP 5's own
+/// examples use and what every client in the wild sends.
+fn next_transaction_id() -> [u8; 2] {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT: AtomicU16 = AtomicU16::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed).to_be_bytes()
+}
+
 /// BitTorrent DHT client
 pub struct TorrentDhtClient;
 
@@ -346,6 +385,7 @@ impl TorrentDhtClient {
                         },
                         Applied::Sent(bytes_sent) => ClientSendOutcome::Sent { bytes_sent },
                         Applied::Nothing(detail) => ClientSendOutcome::Executed { detail },
+                        Applied::Refused(error) => ClientSendOutcome::Rejected { error },
                     }),
             };
 
@@ -412,49 +452,79 @@ impl TorrentDhtClient {
     ) -> Result<Applied> {
         match result {
             ClientActionResult::Custom { name, data } if name == "dht_query" => {
+                use serde_bencode::value::Value as Bencode;
+
                 let query_type = data
                     .get("query_type")
                     .and_then(|v| v.as_str())
                     .context("Missing query_type")?;
-                let transaction_id = data
-                    .get("transaction_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("aa");
                 let node_id = data
                     .get("node_id")
                     .and_then(|v| v.as_str())
                     .context("Missing node_id")?;
 
-                // Build DHT query message
-                let mut args = serde_json::Map::new();
+                // Every query used to carry the literal transaction id "aa", so a node's
+                // replies could not be matched to the query that provoked them and two
+                // queries in flight were indistinguishable. `t` is the only correlation key
+                // KRPC has.
+                // A field the caller got wrong is `Refused`, not `Err`: nothing is broken,
+                // the request was simply not answerable, and the model needs to be told
+                // which field and why rather than seeing a transport failure.
+                macro_rules! decode_or_refuse {
+                    ($field:expr, $value:expr, $len:expr) => {
+                        match decode_krpc_hex($field, $value, $len) {
+                            Ok(bytes) => bytes,
+                            Err(e) => return Ok(Applied::Refused(e.to_string())),
+                        }
+                    };
+                }
+
+                let transaction_id = match data.get("transaction_id").and_then(|v| v.as_str()) {
+                    Some(hex_id) => decode_or_refuse!("transaction_id", hex_id, None),
+                    None => next_transaction_id().to_vec(),
+                };
+
+                // Build DHT query message.
+                //
+                // `id`, `target` and `info_hash` are declared to the model as "20 bytes hex"
+                // and are now decoded as such. They used to be placed as JSON strings and
+                // bencoded as their own UTF-8 bytes, so a model that obeyed the description
+                // put **40** bytes on the wire where BEP 5 requires 20 — the `send_tcp_data`
+                // defect shape, documented as hex and never decoded. It also meant this
+                // client could not talk to NetGet's own DHT *server*, which hex-decodes all
+                // three. The examples were the only part that matched the old behaviour, and
+                // they were not even valid hex ("abcdefghij…" contains g-j).
+                let mut args = std::collections::HashMap::new();
                 args.insert(
-                    "id".to_string(),
-                    serde_json::Value::String(node_id.to_string()),
+                    b"id".to_vec(),
+                    Bencode::Bytes(decode_or_refuse!("node_id", node_id, Some(20))),
                 );
 
                 if let Some(target) = data.get("target").and_then(|v| v.as_str()) {
                     args.insert(
-                        "target".to_string(),
-                        serde_json::Value::String(target.to_string()),
+                        b"target".to_vec(),
+                        Bencode::Bytes(decode_or_refuse!("target", target, Some(20))),
                     );
                 }
 
                 if let Some(info_hash) = data.get("info_hash").and_then(|v| v.as_str()) {
                     args.insert(
-                        "info_hash".to_string(),
-                        serde_json::Value::String(info_hash.to_string()),
+                        b"info_hash".to_vec(),
+                        Bencode::Bytes(decode_or_refuse!("info_hash", info_hash, Some(20))),
                     );
                 }
 
-                let message = serde_json::json!({
-                    "t": transaction_id,
-                    "y": "q",
-                    "q": query_type,
-                    "a": args,
-                });
+                let mut message = std::collections::HashMap::new();
+                message.insert(b"t".to_vec(), Bencode::Bytes(transaction_id));
+                message.insert(b"y".to_vec(), Bencode::Bytes(b"q".to_vec()));
+                message.insert(
+                    b"q".to_vec(),
+                    Bencode::Bytes(query_type.as_bytes().to_vec()),
+                );
+                message.insert(b"a".to_vec(), Bencode::Dict(args));
 
                 // Encode as bencode
-                let encoded = serde_bencode::to_bytes(&message)?;
+                let encoded = serde_bencode::to_bytes(&Bencode::Dict(message))?;
 
                 // Send query
                 let sent = socket.send_to(&encoded, remote_addr).await?;
@@ -483,6 +553,12 @@ enum Applied {
     Sent(usize),
     /// Ran, but produced no datagram; the string says why.
     Nothing(String),
+    /// The action's own parameters were wrong -- a `node_id` that is not hex, an
+    /// `info_hash` of the wrong length. Nothing was written and nothing is broken; the
+    /// caller simply asked for something impossible, exactly as when it names a verb the
+    /// protocol does not have. It therefore comes back as `Rejected`, not as a transport
+    /// error, so the dashboard shows the model what to correct.
+    Refused(String),
     /// The session should end.
     Disconnect,
 }

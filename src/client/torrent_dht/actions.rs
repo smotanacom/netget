@@ -16,7 +16,16 @@ pub static DHT_RESPONSE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "dht_response",
         "Received response from DHT node",
-        json!({"type": "placeholder", "event_id": "dht_response"}),
+        // Not a placeholder. `{"type": "placeholder", ...}` is what this carried, and
+        // `execute_action` rejects it outright as `Unknown DHT client action: placeholder` --
+        // so a model copying the one example it was shown got a hard error. A follow-up query
+        // is the realistic answer to a response; `wait_for_more` and `disconnect` are the
+        // other two.
+        json!({
+            "type": "dht_find_node",
+            "node_id": "0123456789abcdef0123456789abcdef01234567",
+            "target": "fedcba9876543210fedcba9876543210fedcba98"
+        }),
     )
     .with_parameters(vec![
         Parameter {
@@ -72,20 +81,20 @@ impl Protocol for TorrentDhtClientProtocol {
                     Parameter {
                         name: "node_id".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Our node ID (20 bytes hex)".to_string(),
+                        description: "Our node ID: exactly 40 hex characters (20 bytes). Not text -- \"abcdefghij0123456789\" is rejected.".to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "transaction_id".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Transaction ID".to_string(),
+                        description: "Transaction ID, hex-encoded (KRPC uses 2 bytes, so 4 hex characters). Omit it and a fresh one is generated; the reply echoes it back.".to_string(),
                         required: false,
                     },
                 ],
                 example: json!({
                     "type": "dht_ping",
-                    "node_id": "abcdefghij0123456789",
-                    "transaction_id": "aa"
+                    "node_id": "0123456789abcdef0123456789abcdef01234567",
+                    "transaction_id": "0001"
                 }),
                 log_template: None,
             },
@@ -96,27 +105,27 @@ impl Protocol for TorrentDhtClientProtocol {
                     Parameter {
                         name: "node_id".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Our node ID (20 bytes hex)".to_string(),
+                        description: "Our node ID: exactly 40 hex characters (20 bytes). Not text -- \"abcdefghij0123456789\" is rejected.".to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "target".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Target node ID to find (20 bytes hex)".to_string(),
+                        description: "Target node ID to find: exactly 40 hex characters (20 bytes).".to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "transaction_id".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Transaction ID".to_string(),
+                        description: "Transaction ID, hex-encoded (KRPC uses 2 bytes, so 4 hex characters). Omit it and a fresh one is generated; the reply echoes it back.".to_string(),
                         required: false,
                     },
                 ],
                 example: json!({
                     "type": "dht_find_node",
-                    "node_id": "abcdefghij0123456789",
-                    "target": "mnopqrstuv0123456789",
-                    "transaction_id": "aa"
+                    "node_id": "0123456789abcdef0123456789abcdef01234567",
+                    "target": "fedcba9876543210fedcba9876543210fedcba98",
+                    "transaction_id": "0002"
                 }),
                 log_template: None,
             },
@@ -127,27 +136,27 @@ impl Protocol for TorrentDhtClientProtocol {
                     Parameter {
                         name: "node_id".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Our node ID (20 bytes hex)".to_string(),
+                        description: "Our node ID: exactly 40 hex characters (20 bytes). Not text -- \"abcdefghij0123456789\" is rejected.".to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "info_hash".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Info hash to query (20 bytes hex)".to_string(),
+                        description: "Info hash to query: exactly 40 hex characters (20 bytes).".to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "transaction_id".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Transaction ID".to_string(),
+                        description: "Transaction ID, hex-encoded (KRPC uses 2 bytes, so 4 hex characters). Omit it and a fresh one is generated; the reply echoes it back.".to_string(),
                         required: false,
                     },
                 ],
                 example: json!({
                     "type": "dht_get_peers",
-                    "node_id": "abcdefghij0123456789",
-                    "info_hash": "0123456789abcdefghij",
-                    "transaction_id": "aa"
+                    "node_id": "0123456789abcdef0123456789abcdef01234567",
+                    "info_hash": "1111111111111111111111111111111111111111",
+                    "transaction_id": "0003"
                 }),
                 log_template: None,
             },
@@ -158,27 +167,27 @@ impl Protocol for TorrentDhtClientProtocol {
                     Parameter {
                         name: "node_id".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Our node ID (20 bytes hex)".to_string(),
+                        description: "Our node ID: exactly 40 hex characters (20 bytes). Not text -- \"abcdefghij0123456789\" is rejected.".to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "info_hash".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Info hash to announce (20 bytes hex)".to_string(),
+                        description: "Info hash to announce: exactly 40 hex characters (20 bytes).".to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "transaction_id".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Transaction ID".to_string(),
+                        description: "Transaction ID, hex-encoded (KRPC uses 2 bytes, so 4 hex characters). Omit it and a fresh one is generated; the reply echoes it back.".to_string(),
                         required: false,
                     },
                 ],
                 example: json!({
                     "type": "dht_announce_peer",
-                    "node_id": "abcdefghij0123456789",
-                    "info_hash": "0123456789abcdefghij",
-                    "transaction_id": "aa"
+                    "node_id": "0123456789abcdef0123456789abcdef01234567",
+                    "info_hash": "1111111111111111111111111111111111111111",
+                    "transaction_id": "0004"
                 }),
                 log_template: None,
             },
@@ -199,12 +208,15 @@ impl Protocol for TorrentDhtClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "BitTorrent DHT"
     }
+    /// Clone the static the client actually emits, rather than rebuilding it.
+    ///
+    /// This used to construct a second, parameterless `dht_response` with a `"placeholder"`
+    /// example. That is the copy the model is shown -- `DHT_RESPONSE_EVENT` is only ever used
+    /// at the emit site -- so every field the event carries was invisible to it and the single
+    /// example it was given is one `execute_action` refuses. Two definitions of one event
+    /// drift; one cannot.
     fn get_event_types(&self) -> Vec<EventType> {
-        vec![EventType::new(
-            "dht_response",
-            "Received response from DHT node",
-            json!({"type": "placeholder", "event_id": "dht_response"}),
-        )]
+        vec![DHT_RESPONSE_EVENT.clone()]
     }
     fn stack_name(&self) -> &'static str {
         "ETH>IP>UDP>BitTorrent-DHT"
