@@ -56,8 +56,8 @@ impl Protocol for TorrentTrackerProtocol {
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation("HTTP server with bencode response encoding (serde_bencode)")
             .llm_control("Peer list generation, announce/scrape responses")
-            .e2e_testing("Real BitTorrent clients (transmission, aria2)")
-            .notes("Bencode<->JSON conversion, compact peer format")
+            .e2e_testing("tests/server/torrent_tracker/{e2e_test,llm_failure_test}.rs, 6 LLM calls, none #[ignore]d. NO third-party BitTorrent client is involved: every request is an HTTP/1.1 GET written by hand onto a raw TcpStream and every reply is decoded with serde_bencode, which is an independent *reading* of BEP 3 rather than an independent implementation. This field claimed 'Real BitTorrent clients (transmission, aria2)' and nothing in the tree has ever referenced either binary. Covered: announce and scrape round trips, a send_error_response refusal, connection stats, and the LLM-failure reply (503/500 + bencoded `failure reason`, asserted to leak nothing from netget's internals). Not tested: any real client, compact vs dictionary peer selection against one, IPv6/BEP 7, multi-info_hash scrape.")
+            .notes("Bencode<->JSON conversion, compact peer format. Stores nothing: peers, swarm counts and scrape statistics all come from the model, so successive announces are not correlated unless the model correlates them.")
             .build()
     }
     fn description(&self) -> &'static str {
