@@ -38,6 +38,76 @@ use rcgen::{Certificate, CertificateParams, KeyPair};
 use regex::Regex;
 use serde_json::json;
 
+/// Largest upstream response `forward_http_request` will buffer before truncating.
+const MAX_UPSTREAM_RESPONSE: usize = 8 * 1024 * 1024;
+
+/// Largest client request head the proxy will read before giving up on it.
+const MAX_REQUEST_BYTES: usize = 64 * 1024;
+
+/// How long a client has to send its request line and headers after connecting.
+const REQUEST_READ_TIMEOUT_SECS: u64 = 30;
+
+/// Re-assemble `host` and `port` into something `TcpStream::connect` accepts, re-bracketing an
+/// IPv6 literal that the CONNECT parser stripped.
+pub(crate) fn connect_authority(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{}]:{}", host, port)
+    } else {
+        format!("{}:{}", host, port)
+    }
+}
+
+/// Read an HTTP request head (through the blank line) plus whatever body bytes arrived with
+/// it, bounded by `MAX_REQUEST_BYTES`.
+///
+/// Returns as soon as `\r\n\r\n` is seen; a peer that stops mid-head simply stops the future,
+/// which the caller wraps in a timeout.
+async fn read_request_head(stream: &mut tokio::net::TcpStream) -> Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let mut buf = Vec::with_capacity(8192);
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            // EOF: hand back whatever we have and let the caller decide.
+            return Ok(buf);
+        }
+        buf.extend_from_slice(&chunk[..n]);
+
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            return Ok(buf);
+        }
+        if buf.len() >= MAX_REQUEST_BYTES {
+            anyhow::bail!("request head exceeded {MAX_REQUEST_BYTES} bytes without terminating");
+        }
+    }
+}
+
+/// Relay a CONNECT tunnel until both directions are finished, and report the byte counts.
+///
+/// This is `copy_bidirectional`, not two `tokio::io::copy` futures under `join!`, and the
+/// difference is a connection leak rather than a style point. `tokio::io::copy` returns on EOF
+/// without shutting down the write half it was feeding, so when the client half-closed its
+/// side the destination never saw a FIN. A keep-alive upstream then held the socket open
+/// indefinitely, the other `copy` never completed, `join!` never returned, and the connection
+/// task -- plus its dashboard entry -- lived until the operating system gave up.
+/// `copy_bidirectional` shuts down the opposite write half on EOF, which is what RFC 9110
+/// tunnelling requires.
+async fn tunnel_bidirectional(
+    client_stream: &mut tokio::net::TcpStream,
+    dest_stream: &mut tokio::net::TcpStream,
+) -> (u64, u64) {
+    match tokio::io::copy_bidirectional(client_stream, dest_stream).await {
+        Ok((up, down)) => (up, down),
+        Err(e) => {
+            // A reset mid-tunnel is ordinary; the byte counts are lost with it.
+            debug!("Proxy tunnel ended with an I/O error: {}", e);
+            (0, 0)
+        }
+    }
+}
+
 /// HTTP/HTTPS Proxy server that intercepts and forwards requests via LLM
 pub struct ProxyServer;
 
@@ -335,20 +405,41 @@ impl ProxyServer {
         status_tx: mpsc::UnboundedSender<String>,
         protocol: Arc<ProxyProtocol>,
     ) -> Result<()> {
-        use tokio::io::AsyncReadExt;
+        use tokio::io::AsyncWriteExt;
 
         Log::new(Some(&status_tx)).info(format!(
             "Proxy: handling connection {} from {}",
             connection_id, peer_addr
         ));
 
-        // Read the initial HTTP request
-        let mut buffer = vec![0u8; 8192];
-
-        let n = stream
-            .read(&mut buffer)
-            .await
-            .context("Failed to read initial request")?;
+        // Read the initial HTTP request, bounded in both size and time.
+        //
+        // A single `read()` with no deadline was two problems at once. A peer that connected
+        // and then said nothing parked this task forever -- unauthenticated, so any number of
+        // them -- and a request head split across TCP segments (any client that writes the
+        // request line and the headers separately, and any head over the MTU) was parsed from
+        // whatever the first segment happened to contain. Read until the head is complete,
+        // stop at `MAX_REQUEST_BYTES`, and give up after `REQUEST_READ_TIMEOUT_SECS`.
+        let buffer = match tokio::time::timeout(
+            std::time::Duration::from_secs(REQUEST_READ_TIMEOUT_SECS),
+            read_request_head(&mut stream),
+        )
+        .await
+        {
+            Ok(Ok(b)) => b,
+            Ok(Err(e)) => return Err(e).context("Failed to read initial request"),
+            Err(_) => {
+                debug!(
+                    "Proxy connection {} timed out waiting for a request head",
+                    connection_id
+                );
+                let _ = stream
+                    .write_all(b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+                return Ok(());
+            }
+        };
+        let n = buffer.len();
 
         Log::new(Some(&status_tx)).debug(format!(
             "Proxy connection {} received {} bytes",
@@ -449,14 +540,23 @@ impl ProxyServer {
 
         let start_time = std::time::Instant::now();
 
-        // Parse host:port from CONNECT uri
-        let parts: Vec<&str> = uri.split(':').collect();
-        if parts.len() != 2 {
-            return Err(anyhow::anyhow!("Invalid CONNECT uri: {}", uri));
+        // Parse host:port from CONNECT uri.
+        //
+        // Split on the *last* colon and strip the brackets an IPv6 literal is required to
+        // carry (RFC 9110 authority-form, RFC 3986 section 3.2.2). Splitting on every colon
+        // and demanding exactly two pieces rejected `[::1]:443` outright, so no client could
+        // CONNECT to an IPv6 destination through this proxy.
+        let (dest_host, port_str) = uri
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("Invalid CONNECT uri (no port): {}", uri))?;
+        let dest_host = dest_host
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(dest_host);
+        if dest_host.is_empty() {
+            return Err(anyhow::anyhow!("Invalid CONNECT uri (empty host): {}", uri));
         }
-
-        let dest_host = parts[0];
-        let dest_port: u16 = parts[1]
+        let dest_port: u16 = port_str
             .parse()
             .context("Invalid port in CONNECT request")?;
 
@@ -565,7 +665,7 @@ impl ProxyServer {
                         .info(format!("Allowed HTTPS to {}:{}", dest_host, dest_port));
 
                     // Establish connection to destination
-                    let dest_addr = format!("{}:{}", dest_host, dest_port);
+                    let dest_addr = connect_authority(dest_host, dest_port);
                     let mut dest_stream = tokio::net::TcpStream::connect(&dest_addr)
                         .await
                         .context("Failed to connect to destination")?;
@@ -576,17 +676,21 @@ impl ProxyServer {
                         .await?;
 
                     // Bidirectional copy between client and destination
-                    let (mut client_read, mut client_write) = client_stream.split();
-                    let (mut dest_read, mut dest_write) = dest_stream.split();
-
-                    let client_to_dest = tokio::io::copy(&mut client_read, &mut dest_write);
-                    let dest_to_client = tokio::io::copy(&mut dest_read, &mut client_write);
-
-                    // Run both directions concurrently
-                    let (up_bytes, down_bytes) = tokio::join!(client_to_dest, dest_to_client);
-                    let up_bytes = up_bytes.unwrap_or(0);
-                    let down_bytes = down_bytes.unwrap_or(0);
+                    let (up_bytes, down_bytes) =
+                        tunnel_bidirectional(&mut client_stream, &mut dest_stream).await;
                     let total_bytes = up_bytes + down_bytes;
+                    // Without this the rail's ↓/↑ counters stay at zero for a tunnel that may
+                    // have carried gigabytes.
+                    app_state
+                        .update_connection_stats(
+                            server_id,
+                            connection_id,
+                            Some(up_bytes),
+                            Some(down_bytes),
+                            None,
+                            None,
+                        )
+                        .await;
 
                     let duration = start_time.elapsed();
 
@@ -644,7 +748,7 @@ impl ProxyServer {
             );
 
             // Establish connection to destination
-            let dest_addr = format!("{}:{}", dest_host, dest_port);
+            let dest_addr = connect_authority(dest_host, dest_port);
             let mut dest_stream = tokio::net::TcpStream::connect(&dest_addr)
                 .await
                 .context("Failed to connect to destination")?;
@@ -655,16 +759,19 @@ impl ProxyServer {
                 .await?;
 
             // Bidirectional copy
-            let (mut client_read, mut client_write) = client_stream.split();
-            let (mut dest_read, mut dest_write) = dest_stream.split();
-
-            let client_to_dest = tokio::io::copy(&mut client_read, &mut dest_write);
-            let dest_to_client = tokio::io::copy(&mut dest_read, &mut client_write);
-
-            let (up_bytes, down_bytes) = tokio::join!(client_to_dest, dest_to_client);
-            let up_bytes = up_bytes.unwrap_or(0);
-            let down_bytes = down_bytes.unwrap_or(0);
+            let (up_bytes, down_bytes) =
+                tunnel_bidirectional(&mut client_stream, &mut dest_stream).await;
             let total_bytes = up_bytes + down_bytes;
+            app_state
+                .update_connection_stats(
+                    server_id,
+                    connection_id,
+                    Some(up_bytes),
+                    Some(down_bytes),
+                    None,
+                    None,
+                )
+                .await;
 
             let duration = start_time.elapsed();
 
@@ -952,7 +1059,10 @@ impl ProxyServer {
         dest_stream.write_all(&forwarded).await?;
         trace!("Sent {} bytes to upstream {}", forwarded.len(), dest_addr);
 
-        // Read response from destination
+        // Read response from destination, bounded. The whole response is buffered here before
+        // any of it reaches the client, so without a cap a destination -- which the *peer*
+        // chose, not the operator -- decides how much memory this process allocates. On
+        // loopback that is gigabytes inside the 5s read window.
         let mut response_buffer = Vec::new();
         let mut temp_buffer = [0u8; 8192];
         let mut content_length: Option<usize> = None;
@@ -969,6 +1079,15 @@ impl ProxyServer {
                 Ok(Ok(0)) => break, // EOF
                 Ok(Ok(n)) => {
                     response_buffer.extend_from_slice(&temp_buffer[..n]);
+
+                    if response_buffer.len() > MAX_UPSTREAM_RESPONSE {
+                        Log::new(Some(&status_tx)).warn(format!(
+                            "Proxy upstream {} sent more than {} bytes; truncating the response",
+                            dest_addr, MAX_UPSTREAM_RESPONSE
+                        ));
+                        response_buffer.truncate(MAX_UPSTREAM_RESPONSE);
+                        break;
+                    }
 
                     // Parse Content-Length if we haven't yet
                     if !headers_complete && response_buffer.len() > 4 {

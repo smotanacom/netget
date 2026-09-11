@@ -140,12 +140,19 @@ impl Socks5Client {
         );
 
         if let Some(instruction) = app_state.get_instruction_for_client(client_id).await {
+            // Copy the memory out under its own guard. Passing
+            // `&client_data.lock().await.memory` straight into the call would keep the guard
+            // alive for the whole `match` -- temporaries in a match scrutinee live until the
+            // match ends -- and the `Ok` arm below locks the same mutex again to store the
+            // model's memory update. `tokio::sync::Mutex` is not reentrant, so that is a
+            // permanent deadlock, reached only when the model happens to return memory.
+            let memory = { client_data.lock().await.memory.clone() };
             match call_llm_for_client(
                 &llm_client,
                 &app_state,
                 client_id.to_string(),
                 &instruction,
-                &client_data.lock().await.memory,
+                &memory,
                 Some(&connected_event),
                 protocol.as_ref(),
                 &status_tx,
@@ -170,12 +177,24 @@ impl Socks5Client {
                                     bytes,
                                 ),
                             ) => {
-                                if let Ok(_) = write_half_arc.lock().await.write_all(&bytes).await {
-                                    trace!(
+                                // The `Err` half used to be discarded outright, so a failed
+                                // write to the tunnel produced no log line at any level, no
+                                // status message and no state change -- the client reported
+                                // success having put nothing on the wire. The protocol's own
+                                // CLAUDE.md claimed these were "logged but not fatal"; only
+                                // the second half was true.
+                                match write_half_arc.lock().await.write_all(&bytes).await {
+                                    Ok(()) => trace!(
                                         "SOCKS5 client {} sent {} bytes through tunnel",
                                         client_id,
                                         bytes.len()
-                                    );
+                                    ),
+                                    Err(e) => error!(
+                                        "SOCKS5 client {} failed to write {} bytes to the tunnel: {}",
+                                        client_id,
+                                        bytes.len(),
+                                        e
+                                    ),
                                 }
                             }
                             Ok(
@@ -278,12 +297,15 @@ impl Socks5Client {
                                         }),
                                     );
 
+                                    // Same reasoning as the connected-event call above: the
+                                    // guard must not survive into the match arms.
+                                    let memory = { client_data.lock().await.memory.clone() };
                                     match call_llm_for_client(
                                         &llm_client,
                                         &app_state,
                                         client_id.to_string(),
                                         &instruction,
-                                        &client_data.lock().await.memory,
+                                        &memory,
                                         Some(&event),
                                         protocol.as_ref(),
                                         &status_tx,
@@ -304,8 +326,9 @@ impl Socks5Client {
                                                 use crate::llm::actions::client_trait::Client;
                                                 match protocol.as_ref().execute_action(action) {
                                                     Ok(crate::llm::actions::client_trait::ClientActionResult::SendData(bytes)) => {
-                                                        if let Ok(_) = write_half_arc.lock().await.write_all(&bytes).await {
-                                                            trace!("SOCKS5 client {} sent {} bytes", client_id, bytes.len());
+                                                        match write_half_arc.lock().await.write_all(&bytes).await {
+                                                            Ok(()) => trace!("SOCKS5 client {} sent {} bytes", client_id, bytes.len()),
+                                                            Err(e) => error!("SOCKS5 client {} failed to write {} bytes to the tunnel: {}", client_id, bytes.len(), e),
                                                         }
                                                     }
                                                     Ok(crate::llm::actions::client_trait::ClientActionResult::Disconnect) => {

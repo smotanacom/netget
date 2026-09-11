@@ -60,8 +60,34 @@ impl Protocol for Socks5Protocol {
             .state(DevelopmentState::Experimental)
             .implementation("Manual SOCKS5 protocol (RFC 1928)")
             .llm_control("Auth allow/deny, connection allow/deny, MITM data forward/modify/close")
-            .e2e_testing("curl --socks5 / SOCKS5 clients")
-            .notes("CONNECT only (no BIND/UDP ASSOCIATE); a connect/auth event with no explicit allow action is denied; MITM inspection costs one LLM call per data chunk in each direction")
+            // Not "curl --socks5", which this claimed and which no test does. The peer in
+            // tests/server/socks5/test.rs is a SOCKS5 client hand-written inside the test
+            // over a raw TcpStream -- an independent reading of RFC 1928, not an independent
+            // implementation, so it does not clear the bar for Beta.
+            .e2e_testing(
+                "A SOCKS5 client hand-written in tests/server/socks5/test.rs (raw TcpStream, \
+                 RFC 1928/1929 by hand): no-auth and username/password handshakes, CONNECT by \
+                 IPv4 and by domain, a refusal, and an HTTP exchange through a MITM tunnel. No \
+                 third-party SOCKS5 client has been run against it.",
+            )
+            .notes(
+                "OPEN RELAY BY DESIGN, AND UNRESTRICTED: the destination of every connection is \
+                 chosen by the peer, and there is no allow-list, deny-list or network \
+                 restriction of any kind. Loopback, link-local (including 169.254.169.254, the \
+                 cloud instance-metadata endpoint), and every RFC 1918 range are all reachable, \
+                 so anyone who can reach this port can reach whatever this host can -- an SSRF \
+                 pivot into the operator's private network, and a relay someone else's traffic \
+                 can be laundered through. The only gate is the model: `filter_mode` decides \
+                 whether it is consulted at all, and `allow_all` or a `selective` filter whose \
+                 patterns miss (with `default_action: allow`) connects with no consultation \
+                 whatsoever. `target_host_patterns` and `target_port_ranges` select what the \
+                 model is ASKED about; they do not restrict anything on their own. Do not \
+                 expose this to an untrusted network. \
+                 CONNECT only (no BIND/UDP ASSOCIATE); a connect/auth event with no explicit \
+                 allow action is denied; MITM inspection costs one LLM call per data chunk in \
+                 each direction; the handshake reads time out after 30s but the number of \
+                 concurrent connections is unbounded.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {

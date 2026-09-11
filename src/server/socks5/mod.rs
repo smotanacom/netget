@@ -47,8 +47,17 @@ const REPLY_CONNECTION_NOT_ALLOWED: u8 = 0x02;
 const REPLY_NETWORK_UNREACHABLE: u8 = 0x03;
 const REPLY_HOST_UNREACHABLE: u8 = 0x04;
 const REPLY_CONNECTION_REFUSED: u8 = 0x05;
+
 const _REPLY_COMMAND_NOT_SUPPORTED: u8 = 0x07;
 const _REPLY_ADDRESS_TYPE_NOT_SUPPORTED: u8 = 0x08;
+
+/// How long a peer has to complete each read of the SOCKS5 handshake.
+///
+/// Every handshake read is a `read_exact`, and until this existed none of them had a deadline:
+/// a peer that connected and sent one byte held a connection task, a `ServerInstance` entry and
+/// a socket for as long as the process lived. No authentication happens before any of it, so
+/// the cost of holding one was a single `connect()`.
+const HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 
 /// Render relayed bytes for the LLM: printable payloads as text, everything else
 /// as hex. Returns the string and the encoding label to put on the event so the
@@ -316,8 +325,12 @@ impl Socks5Server {
         // Phase 1: Handshake - negotiate auth method
         Log::new(Some(&status_tx)).debug(format!("SOCKS5 {} phase 1: handshake", connection_id));
 
-        let selected_method =
-            Self::negotiate_auth(&mut client_stream, &config, connection_id, &status_tx).await?;
+        let selected_method = tokio::time::timeout(
+            std::time::Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
+            Self::negotiate_auth(&mut client_stream, &config, connection_id, &status_tx),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for the SOCKS5 greeting"))??;
 
         Log::new(Some(&status_tx)).debug(format!(
             "SOCKS5 {} selected auth method: 0x{:02x}",
@@ -349,8 +362,12 @@ impl Socks5Server {
         Log::new(Some(&status_tx))
             .debug(format!("SOCKS5 {} phase 3: CONNECT request", connection_id));
 
-        let target_addr =
-            Self::parse_connect_request(&mut client_stream, connection_id, &status_tx).await?;
+        let target_addr = tokio::time::timeout(
+            std::time::Duration::from_secs(HANDSHAKE_TIMEOUT_SECS),
+            Self::parse_connect_request(&mut client_stream, connection_id, &status_tx),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out waiting for the SOCKS5 CONNECT request"))??;
 
         Log::new(Some(&status_tx)).info(format!(
             "SOCKS5 {} CONNECT to {}",
@@ -398,9 +415,13 @@ impl Socks5Server {
                 {
                     Ok(decision) => decision,
                     Err(e) => {
+                        // `decision=` tags follow src/server/radius/: the wire carries only
+                        // "not allowed" (REPLY_CONNECTION_NOT_ALLOWED is the single refusal
+                        // code SOCKS5 has), so the log is the only place a backend outage can
+                        // be told apart from the model deliberately refusing.
                         Log::new(Some(&status_tx)).warn(format!(
-                            "SOCKS5 {} decision failed: {} - denying",
-                            connection_id, e
+                            "SOCKS5 {} decision=fail_closed_llm_error target={} - denying: {}",
+                            connection_id, target_addr, e
                         ));
                         (false, false)
                     }
@@ -414,7 +435,10 @@ impl Socks5Server {
         };
 
         if !should_allow {
-            Log::new(Some(&status_tx)).warn(format!("SOCKS5 {} connection denied", connection_id));
+            Log::new(Some(&status_tx)).warn(format!(
+                "SOCKS5 {} decision=deny target={} connection denied",
+                connection_id, target_addr
+            ));
 
             // Send SOCKS5 reply: connection not allowed
             Self::send_connect_reply(
@@ -483,6 +507,18 @@ impl Socks5Server {
                         "SOCKS5 {} relay complete: {}↑ {}↓",
                         connection_id, client_to_target_bytes, target_to_client_bytes
                     ));
+                    // Without this the rail's ↓/↑ counters sit at zero for the whole life of
+                    // a connection that may have relayed gigabytes.
+                    app_state
+                        .update_connection_stats(
+                            server_id,
+                            connection_id,
+                            Some(client_to_target_bytes),
+                            Some(target_to_client_bytes),
+                            None,
+                            None,
+                        )
+                        .await;
                 }
                 Err(e) => {
                     Log::new(Some(&status_tx))
@@ -795,8 +831,8 @@ impl Socks5Server {
             Ok(result) => result,
             Err(e) => {
                 Log::new(Some(status_tx)).warn(format!(
-                    "SOCKS5 {} auth decision failed: {} - rejecting",
-                    connection_id, e
+                    "SOCKS5 {} decision=fail_closed_llm_error user={} auth rejected: {}",
+                    connection_id, username, e
                 ));
                 let _ = stream.write_all(&[0x01, 0x01]).await;
                 let _ = stream.flush().await;
@@ -828,6 +864,15 @@ impl Socks5Server {
         stream.flush().await?;
 
         if !auth_allowed {
+            let decision = if denied_action {
+                "model_reject"
+            } else {
+                "model_silent"
+            };
+            Log::new(Some(status_tx)).warn(format!(
+                "SOCKS5 {} decision={} user={} auth rejected",
+                connection_id, decision, username
+            ));
             bail!("Authentication failed for user: {}", username);
         }
 
@@ -1057,9 +1102,19 @@ impl Socks5Server {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
-        Log::new(Some(status_tx)).debug(format!(
-            "SOCKS5 {} decision: allowed={}, mitm={}",
-            connection_id, allowed, mitm_enabled
+        // Distinguish the three outcomes the wire cannot: the model refused, the model said
+        // nothing usable, or the model allowed it. Only the first two look identical to the
+        // peer (REPLY_CONNECTION_NOT_ALLOWED either way).
+        let decision = if denied {
+            "model_reject"
+        } else if allow_action.is_some() {
+            "model_allow"
+        } else {
+            "model_silent"
+        };
+        Log::new(Some(status_tx)).info(format!(
+            "SOCKS5 {} decision={} target={} allowed={} mitm={}",
+            connection_id, decision, target_addr, allowed, mitm_enabled
         ));
 
         Ok((allowed, mitm_enabled))

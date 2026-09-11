@@ -286,13 +286,19 @@ impl Protocol for WebDavProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            // Experimental: LLM-authored, one human pass, verified against a real WebDAV
-            // client (reqwest_dav) rather than only against status codes. Not Beta — the
-            // property model is fixed (no PROPPATCH dead properties), and locks are accepted
-            // but never enforced.
-            // Beta: exercised against a real, independent client — reqwest_dav —
-            // covering PROPFIND/PUT/GET/DELETE driven by a real WebDAV client. Not Stable: Stable additionally wants spec
-            // compliance and scripting support reviewed, which has not been done here.
+            // Beta: exercised against `reqwest_dav`, a real and independent WebDAV client,
+            // in a test that is neither `#[ignore]`d nor gated on an external binary —
+            // PROPFIND parsed into typed entries, a PUT/GET round-trip, MKCOL, and a
+            // refusal. That is the evidence Beta asks for.
+            //
+            // Not Stable: the property model is fixed (no PROPPATCH dead-property storage),
+            // locks are accepted and never enforced, and neither spec compliance nor
+            // scripting support has been reviewed.
+            //
+            // This block previously stacked two contradictory paragraphs — one arguing
+            // "Not Beta", one arguing "Beta" — immediately above `.state(Beta)`, and
+            // `CLAUDE.md` had copied the first. That is the shape the root CLAUDE.md warns
+            // about for `ssh`; keep one argument here, for the rating actually declared.
             .state(DevelopmentState::Beta)
             .implementation(
                 "hyper v1.0 HTTP/1.1 with WebDAV methods answered directly; DAV:multistatus \

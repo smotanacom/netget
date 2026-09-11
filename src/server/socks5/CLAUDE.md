@@ -8,6 +8,37 @@ authentication.
 
 **Compliance**: RFC 1928 (SOCKS5), RFC 1929 (Username/Password Authentication)
 
+## Security: this is an unrestricted open relay (read this first)
+
+The destination of every connection is chosen by the **peer**, and there is no
+allow-list, deny-list or network restriction of any kind in this protocol.
+Loopback, link-local — including `169.254.169.254`, the cloud instance-metadata
+endpoint — and every RFC 1918 range are reachable. Anyone who can reach this port
+can reach whatever this host can:
+
+- **SSRF pivot** into the operator's private network.
+- **Open relay** someone else's traffic can be laundered through, attributed to
+  this machine.
+
+That may be exactly what you want from a honeypot. It is written down here because
+nothing in the code refuses it.
+
+**The filter configuration does not change this.** `target_host_patterns` and
+`target_port_ranges` decide what the model is *asked* about; they restrict nothing
+on their own. `filter_mode: allow_all` connects with no consultation at all, and
+`selective` with `default_action: "allow"` does the same for every target the
+patterns miss. The model is the only gate, and only when it is consulted.
+
+Two more things the wire does not carry:
+
+- SOCKS5 has exactly one refusal code (`0x02`, connection not allowed), so a peer
+  cannot tell "the model refused you" from "the backend was down". The log can:
+  `decision=model_reject` / `model_silent` / `model_allow` /
+  `fail_closed_llm_error`, following `src/server/radius/`.
+- The handshake reads time out after 30s (`HANDSHAKE_TIMEOUT_SECS`), so a peer
+  that connects and stalls no longer holds a task forever. The number of
+  concurrent connections is still unbounded.
+
 ## Library Choices
 
 **Manual Implementation** - Complete SOCKS5 protocol implemented from scratch
@@ -219,17 +250,12 @@ unrecoverable and unmodifiable.
 
 ## Connection and State Management
 
-**Per-Connection State** (`ProtocolConnectionInfo::Socks5`):
-
-```rust
-Socks5 {
-    target_addr: Option<String>,       // e.g., "example.com:443"
-    username: Option<String>,          // If authenticated
-    mitm_enabled: bool,                // Whether MITM inspection active
-    state: ProtocolState,              // Idle, Processing, Accumulating
-    queued_data: Vec<Vec<u8>>,         // Data queued during LLM processing
-}
-```
+**Per-Connection State**: not in `ProtocolConnectionInfo`. That type is a generic
+`serde_json::Value` wrapper (`src/state/server.rs`), not an enum, and SOCKS5
+registers `ProtocolConnectionInfo::empty()` — there is no `Socks5` variant. The
+target address and username are pushed into the connection entry by
+`AppState::update_socks5_target`; the Idle/Processing/Accumulating machine and any
+queued data live in the module's own private types.
 
 **Connection Lifecycle**:
 
@@ -244,8 +270,9 @@ Socks5 {
 6. Phase 4: Relay data (pass-through or MITM)
 7. Connection closes → Mark as closed
 
-**Concurrent Connections**: Each connection handled in separate tokio task. No limit enforced (production should add
-rate limiting).
+**Concurrent Connections**: Each connection handled in a separate tokio task. No
+limit is enforced. Handshake reads time out after 30s, which bounds how long a
+silent peer can hold one, but not how many peers can arrive.
 
 ## MITM Inspection Mode
 
@@ -393,8 +420,9 @@ Listen on port 1080 using SOCKS5 stack. Accept all connections but log full deta
 
 ## Performance Considerations
 
-**Pass-Through Mode**: Near-zero CPU overhead after connection establishment. Memory usage: 2x16KB buffers per
-connection.
+**Pass-Through Mode**: Near-zero CPU overhead after connection establishment; the
+relay is `tokio::io::copy_bidirectional`, so no per-connection buffers are held
+here at all. MITM mode allocates 2 × 8 KiB per connection.
 
 **Selective Filtering**: Regex pattern matching adds ~10-50μs per connection.
 

@@ -4,8 +4,11 @@ pub mod actions;
 pub use actions::WebdavClientProtocol;
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
@@ -20,6 +23,47 @@ use crate::protocol::Event;
 use crate::state::app_state::AppState;
 use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
+
+/// One `reqwest::Client` per base URL, built once and reused.
+///
+/// `Client::builder().build()` is a *blocking* operation: it sets up the rustls stack and
+/// loads the platform root store, which on macOS reads the keychain through
+/// Security.framework, synchronously and serialised across processes. It used to run inside
+/// `perform_request` -- on the async runtime, once per WebDAV request -- parking a tokio
+/// worker every time, and a second one was built at connect and dropped unused. It also
+/// bypassed `client_for_endpoint_with_timeout`, so a base URL that is a literal IP still went
+/// through `getaddrinfo`; that has been measured at 8.25s under concurrency on macOS.
+static HTTP_CLIENTS: OnceLock<tokio::sync::Mutex<HashMap<String, reqwest::Client>>> =
+    OnceLock::new();
+
+/// How long a single WebDAV request may take.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Return the shared client for `base_url`, building it off the runtime the first time.
+async fn http_client_for(base_url: &str) -> reqwest::Client {
+    let clients = HTTP_CLIENTS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+
+    // Scoped so the guard is dropped before the `spawn_blocking` await below; a guard held
+    // across an await that does work is the deadlock shape this tree keeps rediscovering.
+    let existing = { clients.lock().await.get(base_url).cloned() };
+    if let Some(client) = existing {
+        return client;
+    }
+
+    let owned = base_url.to_string();
+    let built = tokio::task::spawn_blocking(move || {
+        crate::llm::ollama_client::client_for_endpoint_with_timeout(&owned, REQUEST_TIMEOUT)
+    })
+    .await
+    .unwrap_or_else(|_| reqwest::Client::new());
+
+    clients
+        .lock()
+        .await
+        .entry(base_url.to_string())
+        .or_insert(built)
+        .clone()
+}
 
 /// WebDAV client that makes requests to remote WebDAV servers
 pub struct WebdavClient;
@@ -42,11 +86,10 @@ impl WebdavClient {
             client_id, remote_addr
         );
 
-        // Build reqwest client with basic auth support if credentials provided
-        let _http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .context("Failed to build HTTP client")?;
+        // No client is built here. `perform_request` asks `http_client_for` for the one
+        // belonging to this base URL, which builds it once, off the runtime. The client that
+        // used to be built on this line was bound to `_http_client` and dropped immediately,
+        // so it cost a synchronous keychain read at connect and served nothing.
 
         // `default_headers` and `auth` were both declared and both unread: headers promised
         // on every request never reached the wire, and a `username:password` handed to
@@ -632,9 +675,7 @@ impl WebdavClient {
         );
 
         // Build request with custom method support for WebDAV
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
+        let http_client = http_client_for(&base_url).await;
 
         let method_upper = method.to_uppercase();
         let request_method = match method_upper.as_str() {

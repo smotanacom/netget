@@ -138,6 +138,19 @@ Actions return `ClientActionResult`:
 
 The `tokio-socks` library handles all handshake details. LLM only sees application-layer data.
 
+## Command channel (dashboard `[ send ]`)
+
+The client registers a command channel (`command_support::register_command_channel`,
+`src/client/socks5/mod.rs`), so `AppState::send_to_client` can execute an action inside the
+running connection loop without the model. `tests/client/socks5/command_channel_test.rs` is
+the evidence: an injected `send_socks5_data` carrying hex `48656c6c6f` arrives as `b"Hello"`
+on a minimal in-test proxy, an unknown action comes back `Rejected`, and `disconnect` returns
+`Disconnected` and drops the handle. Zero LLM calls.
+
+The three tests in `tests/client/socks5/e2e_test.rs` are all `#[ignore]`d and use a real
+Ollama endpoint rather than the mock harness, so they contribute nothing to CI and call
+neither `wait_for_mocks` nor `verify_mocks`.
+
 ## Error Handling
 
 **Connection Errors:**
@@ -149,7 +162,9 @@ The `tokio-socks` library handles all handshake details. LLM only sees applicati
 **Runtime Errors:**
 
 - Read errors → Close connection, update status to `Error`
-- Write errors → Logged but not fatal (continue reading)
+- Write errors → logged at ERROR and not fatal (the read loop continues). They used to be
+  discarded entirely: the `Err` half of `if let Ok(_) = ... write_all(..)` produced no log
+  line at any level, so the client reported success having put nothing on the wire.
 - LLM errors → Logged, connection remains open
 
 ## Dual Logging
@@ -298,7 +313,8 @@ tokio-socks = "0.5"
 
 **Dependency Justification:**
 
-- Mature library with 2M+ downloads
-- Actively maintained (last updated 2023)
+- The pinned version is `tokio-socks = "0.5"` (`Cargo.toml`). Download counts and
+  last-updated dates are not checkable from this tree and are deliberately not asserted here;
+  the previous text claimed "2M+ downloads" and "last updated 2023" as current fact.
 - Clean async API with tokio integration
 - Handles all SOCKS5 protocol complexity
