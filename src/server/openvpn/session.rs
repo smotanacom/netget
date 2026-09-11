@@ -30,6 +30,21 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 
+/// Most control-channel plaintext held while waiting for the rest of a message.
+///
+/// The control channel is a byte stream, so a message can span TLS records and
+/// several `P_CONTROL_V1` packets and a prefix has to be buffered. Nothing else
+/// bounds that buffer: a peer that completes the TLS handshake - which needs no
+/// client certificate, so anyone can - could then stream indefinitely and this
+/// server would hold every byte, because after the key exchange the buffer is only
+/// drained at a NUL and a stream without one never drains.
+///
+/// A key-method-2 message is ~200 bytes and its longest field is capped at 4 KiB
+/// by `keymethod::MAX_STRING_LEN`; the control messages that follow it
+/// (`PUSH_REQUEST`, `RESTART`, ...) are a couple of dozen bytes. 64 KiB is far more
+/// than any of them and small enough that a hundred peers cannot matter.
+const MAX_PLAINTEXT_BUFFER: usize = 64 * 1024;
+
 /// Something that happened on a peer's control channel and that the server loop
 /// has to act on outside the session lock.
 #[derive(Debug)]
@@ -214,6 +229,18 @@ impl ControlSession {
         }
 
         events.extend(self.consume_plaintext());
+
+        // `consume_plaintext` has taken everything it could parse; whatever is left is an
+        // incomplete message. Past this size it is not one.
+        if self.plaintext.len() > MAX_PLAINTEXT_BUFFER {
+            self.tls_dead = true;
+            let held = self.plaintext.len();
+            self.plaintext.clear();
+            events.push(SessionEvent::TlsFailed(format!(
+                "peer sent {held} bytes of control-channel data without a complete message                  (limit {MAX_PLAINTEXT_BUFFER}); dropping the session rather than buffering                  without bound"
+            )));
+        }
+
         events
     }
 

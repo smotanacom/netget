@@ -313,6 +313,19 @@ impl WireguardClient {
                 if let Some(new_memory) = result.memory_updates {
                     app_state.set_memory_for_client(client_id, new_memory).await;
                 }
+                // ...and carry out what it decided. This used to log the response and
+                // execute none of it, which is the "asks the model and throws the answer
+                // away" defect: a client told to check the tunnel and hang up if it is not
+                // established did neither.
+                Self::apply_llm_actions(
+                    result.actions,
+                    &client,
+                    client_id,
+                    &app_state,
+                    &status_tx,
+                    "wireguard_connected",
+                )
+                .await;
             }
             Err(e) => {
                 error!("Failed to call LLM for connected event: {}", e);
@@ -469,6 +482,52 @@ impl WireguardClient {
         }
     }
 
+    /// Run every action the model answered an event with against the live interface.
+    ///
+    /// The verbs a WireGuard client has read interface state or tear the tunnel down, so
+    /// this is short - but running it at all is the point. Both event paths used to log the
+    /// response and execute nothing, so `disconnect` in reply to `wireguard_disconnected`
+    /// left the interface up.
+    async fn apply_llm_actions(
+        actions: Vec<serde_json::Value>,
+        client: &Arc<WireguardClient>,
+        client_id: ClientId,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+        event_id: &str,
+    ) {
+        for action in actions {
+            let described = action.get("type").and_then(|t| t.as_str()).unwrap_or("?").to_string();
+            match Self::apply_wireguard_action(client, action, client_id, app_state, status_tx)
+                .await
+            {
+                Ok(WireguardApplied::Executed(detail)) => {
+                    info!(
+                        "WireGuard client {} {} -> {}: {}",
+                        client_id, event_id, described, detail
+                    );
+                }
+                Ok(WireguardApplied::Disconnected) => {
+                    info!(
+                        "WireGuard client {} {} -> {}: interface torn down",
+                        client_id, event_id, described
+                    );
+                    return;
+                }
+                Err(e) => {
+                    warn!(
+                        "WireGuard client {} could not run '{}' from {}: {}",
+                        client_id, described, event_id, e
+                    );
+                    let _ = status_tx.send(format!(
+                        "[CLIENT] WireGuard client {} rejected '{}': {}",
+                        client_id, described, e
+                    ));
+                }
+            }
+        }
+    }
+
     /// Monitoring loop to track connection status and handle commands
     async fn monitoring_loop(
         client_id: ClientId,
@@ -575,7 +634,7 @@ impl WireguardClient {
                             let protocol =
                                 Arc::new(crate::client::wireguard::WireguardClientProtocol::new());
 
-                            if let Ok(result) = call_llm_for_client(
+                            match call_llm_for_client(
                                 &llm_client,
                                 &app_state,
                                 client_id.to_string(),
@@ -587,8 +646,30 @@ impl WireguardClient {
                             )
                             .await
                             {
-                                if let Some(new_memory) = result.memory_updates {
-                                    app_state.set_memory_for_client(client_id, new_memory).await;
+                                Ok(result) => {
+                                    if let Some(new_memory) = result.memory_updates {
+                                        app_state
+                                            .set_memory_for_client(client_id, new_memory)
+                                            .await;
+                                    }
+                                    // Same as the connected event: the answer is acted on,
+                                    // not just counted.
+                                    Self::apply_llm_actions(
+                                        result.actions,
+                                        &client,
+                                        client_id,
+                                        &app_state,
+                                        &status_tx,
+                                        "wireguard_disconnected",
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "WireGuard client {} LLM call for the disconnected \
+                                         event failed: {}",
+                                        client_id, e
+                                    );
                                 }
                             }
 

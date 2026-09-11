@@ -194,7 +194,8 @@ pub struct WireguardClientParams {
 ### Requires Elevated Privileges
 
 - **Linux/FreeBSD**: Root or `CAP_NET_ADMIN` capability
-- **macOS**: Uses wireguard-go userspace (no special privileges)
+- **macOS**: root, plus an external `wireguard-go` binary on `PATH` (see System Dependencies) - the userspace backend
+  is not privilege-free and is not bundled
 - **Windows**: Administrator privileges
 
 ### Network Configuration
@@ -314,20 +315,21 @@ sudo wg set netget_wg0 peer abc123... allowed-ips 10.20.30.2/32
 
 ### macOS Setup
 
-**Good News**: WireGuard on macOS requires **NO system dependencies**.
+**Building** needs nothing special. **Running** needs an external binary, and this section used to claim the opposite
+("NO system dependencies ... included in the Rust library itself"), which is false.
 
-The `defguard_wireguard_rs` library uses the userspace `wireguard-go` implementation on macOS, which is included in the
-Rust library itself. No native libraries, kernel modules, or special tools are required.
-
-**To build WireGuard client on macOS**:
+`defguard_wireguard_rs`'s macOS backend is a *driver* for the userspace implementation, not the implementation:
+`wgapi_userspace.rs` runs `Command::new("wireguard-go")` and then talks to it over
+`/var/run/wireguard/<iface>.sock`. That binary is not bundled, and nothing installs it as part of the build. Without it
+on `PATH` - and without root - `connect()` fails at interface creation.
 
 ```bash
-# No special setup needed - just build it
+# Build (no system dependency)
 ./cargo-isolated.sh build --no-default-features --features wireguard
 
-# Run with:
-netget
-# Then in the LLM prompt: "connect to WireGuard VPN at..."
+# Run: needs wireguard-go present, and elevation
+brew install wireguard-go
+sudo netget
 ```
 
 ### Linux Setup
@@ -404,9 +406,17 @@ against the `Arc<WireguardClient>`. The channel is registered **before** the
 `wireguard_connected` LLM call and dropped when the interface is torn down or the monitoring
 loop exits.
 
-This closed a real gap on the LLM side too: `connect_with_llm_actions` logged the model's
-response to `wireguard_connected` and executed none of its actions, so before this nothing in
-the process could apply a WireGuard client action at all.
+The LLM side goes through the same function. Both event paths - `wireguard_connected` in
+`connect_with_llm_actions` and `wireguard_disconnected` in the monitoring loop - used to log
+the model's response and execute **none** of its actions, so a client told to check the tunnel
+and hang up if it was not established did neither. `apply_llm_actions` now runs each answer
+through `apply_wireguard_action`, the same path an injected action takes, and logs what each
+one did.
+
+**Neither path is covered by a test here**, for the same reason the injection path is not:
+`connect()` creates a real network interface, so it cannot succeed without root and, on macOS,
+`wireguard-go`. Nothing is mocked to manufacture a pass - that is what cost this protocol its
+Stable rating.
 
 Outcomes:
 

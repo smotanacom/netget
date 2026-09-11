@@ -144,7 +144,7 @@ Two encoding details that a wrong implementation gets past the type checker and 
 
 The answer mirrors the client's options string with `tls-client` flipped to `tls-server`, so the client's OCC comparison
 warns about nothing. The key material we send is fresh random bytes and **nothing is derived from it** — the data
-channel that would consume it does not exist, and `crypto.rs` stays unwired for that reason.
+channel that would consume it does not exist.
 
 `parse_client_key_method_2` distinguishes *incomplete* (`Ok(None)`) from *invalid* (`Err`). The control channel is a
 byte stream across several `P_CONTROL_V1` packets, so a prefix means "wait", and treating it as an error would kill
@@ -220,6 +220,17 @@ lives in `session.rs` instead.
 closes their connection in `AppState`, so a scan cannot pin every slot indefinitely. A session whose packets go
 unacknowledged through all 8 retransmissions is dropped by the retransmission loop.
 
+`metadata()` deliberately does **not** declare `.connectionless()`, even though this is a UDP protocol. That flag drives
+`AppState::cleanup_old_connections`, which evicts any connection idle for ten seconds — and an OpenVPN peer is the
+opposite of connectionless: it holds a reliability window, a TLS session and a key-exchange state machine, and every
+packet has to be read in the light of its last one. Ten seconds is less than one `accept_peer` decision, so the flag
+deleted live handshakes out from under themselves. Expiring idle peers is this server's own job, at 120s, and it closes
+the `AppState` connection when it does. This is the TFTP trap in the root `CLAUDE.md`: "UDP" is not the test,
+"has no connection concept" is.
+
+Control payloads also call `update_connection_stats`, so the rail's `↓` counter and `last_activity` reflect the
+handshake rather than sitting at zero.
+
 ## Storage
 
 None. Peer and session state is in-memory transport state — no database, no filesystem, no persistence. The key material
@@ -236,14 +247,12 @@ dropped with the session.
 
 ### Declared dependencies that are not used
 
-The `openvpn` feature in `Cargo.toml` still declares more than the code needs. Cargo.toml is shared, so this is recorded
-rather than edited:
+The `openvpn` feature declares `rustls`, `tokio-rustls`, `rcgen` and `sha2`. Of those only
+**`tokio-rustls` is unreferenced**: the control channel drives `rustls` synchronously, because the records arrive inside
+UDP packets and there is no async stream to wrap. Cargo.toml is shared, so this is recorded rather than edited.
 
-- `tokio-rustls` — not referenced. The control channel needs `rustls` synchronously, not an async stream wrapper.
-- `hmac` — not referenced; `crypto.rs` uses `hkdf` + `sha2` only.
-- `tun` — not referenced (still used by `src/server/wireguard/`, so the dependency itself is live).
-- `aes-gcm`, `chacha20poly1305`, `hkdf` — used by `crypto.rs`, which is compiled but not wired into the server, because
-  no data-channel keys are derived.
+(This list used to name `hmac`, `tun`, `aes-gcm`, `chacha20poly1305` and `hkdf` as well, attributing three of them to a
+`crypto.rs` in this directory. That module was deleted and the feature no longer declares any of them — see below.)
 
 ## Robustness
 
@@ -254,13 +263,25 @@ uses `unwrap()` on input-derived data; a panic in the receive loop would be sile
 A TLS session that fails takes down only that peer: the alert rustls produced is still transmitted, the session stops
 being fed, and the idle sweep collects it.
 
+**The decrypted side is bounded too.** The control channel is a byte stream, so an incomplete message has to be
+buffered — and after the key exchange that buffer is only drained at a NUL, so a stream without one never drains. Since
+no client certificate is requested, any peer that can complete a TLS handshake could have streamed indefinitely into it.
+`session.rs::MAX_PLAINTEXT_BUFFER` (64 KiB) caps it and drops the session with a `TlsFailed` naming the reason; a real
+key-method-2 message is ~200 bytes and the control messages after it are a couple of dozen. This bound is reviewed, not
+covered by a test: provoking it needs a TLS peer under the test's control, and the real-client tests drive the `openvpn`
+binary, which will not send junk on request.
+
 ## Future work
 
 Making this a real VPN still needs, in order: `PUSH_REQUEST`/`PUSH_REPLY`, data-channel key derivation from the
 exchanged key sources (TLS-PRF over `pre_master`/`random1`/`random2` from both sides), the `P_DATA_V2` AEAD path, and a
-TUN device with the privilege declaration that implies. `crypto.rs` is the piece the third step would plug into — **do
-not call `derive_data_keys` with constants**, which is what an earlier version of this protocol did, giving every peer
-on every installation the same key.
+TUN device with the privilege declaration that implies.
+
+**There is no `crypto.rs` to plug into, and that is deliberate.** A module of that name existed here with AES-256-GCM
+and ChaCha20-Poly1305 wrappers and a `derive_data_keys`; it was deleted rather than kept, because it was not OpenVPN's
+key derivation — it used HKDF-SHA256 with an invented label, so no real client could ever have decrypted anything it
+produced — and nothing in `src/` or `tests/` called it. Step two starts from the PRF in RFC 5246 §5 and the key-method-2
+material this server already parses, not from a resurrected version of that file.
 
 ## References
 

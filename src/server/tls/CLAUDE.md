@@ -234,6 +234,16 @@ I/O driver. 15 of 16 clients that wrote at handshake completion had their reques
 no response and no log line. The banner task is now spawned only when `send_first` is set;
 `tests/connection_map_race_test.rs` pins it.
 
+### Connection statistics
+
+Every read and every successful write calls `AppState::update_connection_stats`, which is what
+feeds the dashboard rail's `↓/↑` counters and the connection's `last_activity`. Nothing else
+updates them for TLS: until this was added, every TLS connection was drawn as `0B / 0B` no
+matter how much it carried.
+
+A read error now closes the connection in `AppState` as well as dropping the `connections` map
+entry. Dropping only the map entry left the peer drawn as Active for the life of the server.
+
 ### State Management
 
 - Each connection has independent state (Idle/Processing/Accumulating)

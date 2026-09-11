@@ -3,17 +3,17 @@
 ## Overview
 
 A WireGuard VPN server that stands up a real tunnel by delegating **entirely** to `defguard_wireguard_rs`. This is the
-closest thing NetGet has to a working VPN - OpenVPN (`src/server/openvpn/`) has a stubbed control channel and is marked
-`Incomplete`, and IPSec (`src/server/ipsec/`) is a parse-and-log honeypot - but read the honesty note below before
-treating it as a reference implementation.
+closest thing NetGet has to a working VPN - OpenVPN (`src/server/openvpn/`) runs a real control channel but carries no
+traffic, and IPSec (`src/server/ipsec/`) is a parse-and-log honeypot - but read the honesty note below before treating
+it as a reference implementation.
 
-**Status**: `DevelopmentState::Beta` (demoted from Stable - see below)
+**Status**: `DevelopmentState::Experimental` (was Stable, then Beta - see below)
 **Privileges**: `PrivilegeRequirement::Root` (interface creation needs root / CAP_NET_ADMIN, and on macOS the external
 `wireguard-go` binary in PATH)
 **Protocol Spec**: [WireGuard White Paper](https://www.wireguard.com/papers/wireguard.pdf)
 **Port**: UDP 51820 (default)
 
-### Honesty note: this is a thin wrapper, and Beta not Stable
+### Honesty note: this is a thin wrapper, and Experimental - not Beta, and certainly not Stable
 
 NetGet implements **none** of the WireGuard protocol itself - no Noise_IK handshake, no ChaCha20-Poly1305, no packet
 parsing. All of it lives in the platform backend that `defguard_wireguard_rs` drives: the kernel module on
@@ -25,6 +25,13 @@ It was demoted from `Stable` to `Beta` because the project's rule for `Stable` i
 against a real client**", and this protocol has **never** been validated end-to-end against any real WireGuard client.
 It cannot be, in CI or unprivileged: creating the interface needs root, and on macOS also `wireguard-go` installed.
 That is the same defect that got `tor_relay` and `openvpn` demoted - claiming a rating the evidence doesn't support.
+
+**That demotion undershot, and it is now `Experimental`.** "Never validated against a real client" is also precisely
+what rules out **Beta** ("human-reviewed, works against real clients"), so the same evidence that took Stable away
+took Beta with it, and nobody noticed for months. The Stable rating had additionally rested on a test that mocked a
+`wireguard_packet_received` event and a `log_packet` action **that do not exist in this protocol**, all `#[ignore]`d
+behind root so the mismatch never surfaced. When you demote for missing evidence, check which ratings that evidence
+actually supports rather than stepping down one notch by reflex.
 
 **Design defect (addressed): the reactive-only authorization model was backwards for WireGuard.** A WireGuard
 responder decrypts the initiator's static public key from the handshake and **drops the handshake if that key is not
@@ -40,13 +47,13 @@ handle registered in `spawn` (the same live-instance pattern `usb-fido2` uses; s
 Fail-closed: with no `wireguard_add_peer` call, no peer is configured and the handshake is dropped by the backend - the
 existing safe default is unchanged, this is not accept-all.
 
-**Still unverified (why this stays Beta, not Stable).** The pre-add path's config mutation and executor wiring are
+**Still unverified (why this stays Experimental).** The pre-add path's config mutation and executor wiring are
 unit-tested without a backend (`build_peer_config`, the `wireguard_add_peer` executor). What has NOT been run here - no
 root, and macOS lacks the external `wireguard-go` binary - is a real client actually completing a handshake against a
 pre-added key, `wireguard_peer_connected` firing for it, and the event's exact timing relative to config-vs-handshake
 (defguard may surface a configured-but-not-yet-handshaked peer). Earning `Stable` requires proving that end to end
-(a `boringtun` in-process initiator is the recommended driver) plus a transport-packet exchange. See
-`tests/server/wireguard/`.
+(a `boringtun` in-process initiator was evaluated as that driver and deliberately not adopted; see
+`tests/server/wireguard/e2e_test.rs`) plus a transport-packet exchange.
 
 ## Library Choices
 
@@ -192,13 +199,13 @@ Peers detected when they appear in `interface_data.peers` after successful hands
 
 ```rust
 for (pub_key, peer) in interface_data.peers.iter() {
-    if !peers.contains_key(&peer_key) {
-        // New peer - add to tracking
-        let connection_id = ConnectionId::new();
-        peers.insert(peer_key.clone(), connection_id);
-
-        // Add to server state with stats
-        app_state.add_connection_to_server(server_id, conn_state).await;
+    // The `peers` guard is taken and dropped around each lookup, never held across the
+    // LLM call or a WireGuard API call below - add_peer/remove_peer take the same locks.
+    if !known {
+        let connection_id = ConnectionId::new(app_state.get_next_unified_id().await);
+        // ... insert, then add_connection_to_server(server_id, conn_state)
+    } else {
+        app_state.update_connection_stats(server_id, connection_id, rx, tx, None, None).await;
     }
 }
 ```
@@ -242,21 +249,19 @@ pub struct WireguardServer {
 
 ### Protocol Connection Info
 
-```rust
-ProtocolConnectionInfo::Wireguard {
-    public_key: String,           // Peer's public key
-    endpoint: Option<String>,     // Client UDP endpoint
-    allowed_ips: Vec<String>,     // VPN IPs assigned to peer
-    last_handshake: Option<SystemTime>,  // Last successful handshake
-}
-```
+`ProtocolConnectionInfo` is a generic `serde_json::Value` wrapper (`src/state/server.rs`), not an enum with a
+per-protocol variant, and this server stores `ProtocolConnectionInfo::empty()` for a peer - the peer's public key,
+endpoint and allowed IPs reach the model through the `wireguard_peer_connected` event instead. (This section used to
+show a `ProtocolConnectionInfo::Wireguard { .. }` variant; no such variant has ever existed.)
 
 ## Limitations
 
 ### Requires Elevated Privileges
 
 - **Linux/FreeBSD**: Root or `CAP_NET_ADMIN` capability
-- **macOS**: Requires wireguard-go userspace (automatically used)
+- **macOS**: root **and** an external `wireguard-go` binary on `PATH` - defguard's userspace backend shells out to it
+  (`Command::new("wireguard-go")`) and talks to it over `/var/run/wireguard/<iface>.sock`. It is not bundled with the
+  Rust library and nothing installs it for you; without it the server cannot start at all
 - **Windows**: Administrator privileges
 
 ### Network Configuration

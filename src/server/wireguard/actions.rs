@@ -163,9 +163,10 @@ impl Protocol for WireguardProtocol {
                  root-gated #[ignore]d harness only.",
             )
             .notes(
-                "Real data plane (via the platform backend), but Beta because it has never \
-                 been validated against a real client and cannot be in CI: creating the \
+                "Real data plane (via the platform backend), but EXPERIMENTAL because it has \
+                 never been validated against a real client and cannot be in CI: creating the \
                  interface needs root, and on macOS also the external wireguard-go binary. \
+                 That is also the definition of Beta, which is why this is not Beta either. \
                  Caveat (1) - the reactive-only authorize flow being unreachable for a \
                  genuinely new peer - is now ADDRESSED: wireguard_add_peer lets the operator/LLM \
                  pre-authorize a peer's public key before it handshakes, which is what a \

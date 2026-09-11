@@ -714,16 +714,32 @@ impl OpenvpnServer {
             }
         };
 
-        let first_control = self
+        let (first_control, connection_id) = self
             .peer_manager
             .update_peer_returning(&peer_addr, |p| {
                 p.record_received(payload_len as u64);
                 let first = !p.saw_control_payload;
                 p.saw_control_payload = true;
-                first
+                (first, Some(p.connection_id))
             })
             .await
-            .unwrap_or(false);
+            .unwrap_or((false, None));
+
+        // Keep the rail's counters and `last_activity` moving for as long as the peer is
+        // really there. Nothing else updated them, so an accepted peer was drawn as 0B in
+        // both directions for its whole handshake.
+        if let Some(connection_id) = connection_id {
+            app_state
+                .update_connection_stats(
+                    server_id,
+                    connection_id,
+                    Some(payload_len as u64),
+                    None,
+                    Some(1),
+                    None,
+                )
+                .await;
+        }
 
         if first_control && payload_len > 0 {
             Log::new(Some(&status_tx)).info(format!(
