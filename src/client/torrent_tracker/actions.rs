@@ -85,13 +85,19 @@ impl Protocol for TorrentTrackerClientProtocol {
                     Parameter {
                         name: "info_hash".to_string(),
                         type_hint: "string".to_string(),
-                        description: "URL-encoded info_hash (20 bytes)".to_string(),
+                        description: "The torrent's 20-byte info_hash. Percent-encoding is \
+                                      applied for you, so send it however you have it \
+                                      (40 hex characters is the usual form); a value that \
+                                      is already percent-encoded is also accepted."
+                            .to_string(),
                         required: true,
                     },
                     Parameter {
                         name: "peer_id".to_string(),
                         type_hint: "string".to_string(),
-                        description: "URL-encoded peer_id (20 bytes)".to_string(),
+                        description: "Our 20-byte peer id, e.g. \"-NG0001-abcdefghijkl\". \
+                                      Percent-encoding is applied for you."
+                            .to_string(),
                         required: true,
                     },
                     Parameter {
@@ -115,7 +121,11 @@ impl Protocol for TorrentTrackerClientProtocol {
                     Parameter {
                         name: "left".to_string(),
                         type_hint: "number".to_string(),
-                        description: "Bytes left to download".to_string(),
+                        description: "Bytes still to download. BEP 3 reads 0 as \"I have the \
+                                      complete torrent\", which is what makes a tracker \
+                                      treat us as a seeder -- so send a real figure. Omit \
+                                      it and no completeness is claimed."
+                            .to_string(),
                         required: false,
                     },
                     Parameter {
@@ -143,7 +153,9 @@ impl Protocol for TorrentTrackerClientProtocol {
                 parameters: vec![Parameter {
                     name: "info_hash".to_string(),
                     type_hint: "string".to_string(),
-                    description: "URL-encoded info_hash to scrape".to_string(),
+                    description: "The torrent's 20-byte info_hash to scrape. \
+                                  Percent-encoding is applied for you."
+                        .to_string(),
                     required: true,
                 }],
                 example: json!({

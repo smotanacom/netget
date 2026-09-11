@@ -133,6 +133,78 @@ async fn fetch_tracker_body(tracker_url: &str, url: &str) -> Result<Vec<u8>> {
     Ok(body)
 }
 
+/// Percent-encode bytes for a query-parameter value, escaping everything but RFC 3986's
+/// unreserved set.
+fn percent_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 3);
+    for byte in bytes {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            other => out.push_str(&format!("%{:02X}", other)),
+        }
+    }
+    out
+}
+
+/// Undo percent-encoding. A stray `%` that is not followed by two hex digits is kept as a
+/// literal `%`, which is what every lenient decoder does and what re-encoding then escapes.
+/// Works on bytes throughout rather than slicing the `&str`: `&value[i + 1..i + 3]` would
+/// panic if a `%` were followed by a multi-byte UTF-8 character, and this value comes from
+/// the model. That is the byte-index-slicing defect `crate::utils::truncate` exists for.
+fn percent_decode(value: &str) -> Vec<u8> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Normalise a model-supplied `info_hash` or `peer_id` into the percent-encoded form BEP 3
+/// carries in the query string.
+///
+/// These are twenty raw bytes, and their value comes from the model. They used to be
+/// interpolated into the URL with `format!` and nothing else, so an `&` or a `#` in one
+/// inserted **extra query parameters** into the announce: a model told to announce one
+/// info_hash could append its own `&event=completed`, overwrite `port`, or truncate the whole
+/// query with a fragment. The parameter description told the model to send the value already
+/// URL-encoded — which is not a thing to leave to the component being constrained.
+///
+/// Three input spellings are accepted because all three are what a model actually produces,
+/// and each is reduced to the same twenty bytes before being encoded exactly once:
+///
+/// * 40 hex characters — the form NetGet's own tracker *server* reports an inbound
+///   `info_hash`/`peer_id` in, so it is what a model echoing an event will send.
+/// * already percent-encoded (`%12%34…`) — decoded and re-encoded, which normalises it and
+///   strips any separator that was sitting in it unescaped.
+/// * anything else — raw text, e.g. a literal peer id like `-TR2940-abcdefghijkl`.
+///
+/// Blind escaping would have been wrong for the second case: `%12` would become `%2512` and
+/// the tracker would read the three characters `%12` rather than the byte `0x12`.
+fn encode_binary_query_value(value: &str) -> String {
+    let bytes = if value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        hex::decode(value).unwrap_or_else(|_| value.as_bytes().to_vec())
+    } else if value.contains('%') {
+        percent_decode(value)
+    } else {
+        value.as_bytes().to_vec()
+    };
+    percent_encode(&bytes)
+}
+
 /// Refuse a bencoded tracker reply whose nesting would recurse `serde_bencode` off the stack.
 ///
 /// `serde_bencode` counts no depth, and a derived struct is no safer than a raw `Value`
@@ -575,16 +647,38 @@ impl TorrentTrackerClient {
                         .context("Missing port")? as u16;
                     let uploaded = data.get("uploaded").and_then(|v| v.as_u64()).unwrap_or(0);
                     let downloaded = data.get("downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let left = data.get("left").and_then(|v| v.as_u64()).unwrap_or(0);
+                    // `left` is not a neutral counter: BEP 3 defines `left=0` as "I have the
+                    // complete torrent", and trackers use it to decide who is a seeder. A
+                    // model that says nothing about it should not be announcing itself as
+                    // having everything, so the default is the opposite claim. An explicit 0
+                    // still means seeder, which is the point.
+                    let left = data
+                        .get("left")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(u64::MAX);
                     let event_type = data
                         .get("event")
                         .and_then(|v| v.as_str())
                         .unwrap_or("started");
 
-                    // Build announce URL
+                    // Build announce URL.
+                    //
+                    // `info_hash`, `peer_id` and `event` come from the model and are
+                    // percent-encoded rather than interpolated raw: an `&` in any of them
+                    // used to insert extra query parameters into the announce, so a model
+                    // told to announce one info_hash could append its own `event=completed`
+                    // or overwrite `port`. The numeric fields are `u64` already and cannot
+                    // carry a separator.
                     let announce_url = format!(
                         "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&event={}",
-                        tracker_url, info_hash, peer_id, port, uploaded, downloaded, left, event_type
+                        tracker_url,
+                        encode_binary_query_value(info_hash),
+                        encode_binary_query_value(peer_id),
+                        port,
+                        uploaded,
+                        downloaded,
+                        left,
+                        percent_encode(event_type.as_bytes())
                     );
 
                     trace!(
@@ -642,8 +736,13 @@ impl TorrentTrackerClient {
                         .and_then(|v| v.as_str())
                         .context("Missing info_hash")?;
 
-                    // Build scrape URL
-                    let scrape_url = format!("{}?info_hash={}", tracker_url, info_hash);
+                    // Build scrape URL. Percent-encoded for the same reason as the announce
+                    // above: an `&` in a model-supplied info_hash is otherwise a separator.
+                    let scrape_url = format!(
+                        "{}?info_hash={}",
+                        tracker_url,
+                        encode_binary_query_value(info_hash)
+                    );
 
                     trace!("Tracker client {} scraping: {}", client_id, scrape_url);
 
