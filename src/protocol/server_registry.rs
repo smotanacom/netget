@@ -877,6 +877,19 @@ impl ServerRegistry {
         // and over each other deterministically — the general loop below iterates a
         // HashMap and would otherwise let hash order decide "act as an S3 bucket over
         // http" between S3 and HTTP. Each check is a no-op if the feature is not compiled.
+        // MQTT before the AWS block. MQTT stands for "Message Queuing Telemetry Transport"
+        // and advertises "message queue telemetry"; SQS advertises the plain two-word
+        // "message queue" deliberately. SQS is checked below, so without this the shorter and
+        // *less* specific keyword won and "message queue telemetry transport" started an SQS
+        // server. Note the general loop further down already resolves this correctly - it
+        // takes the longest matching keyword - so it is these priority blocks, not the
+        // matching rule, that create the collision they exist to prevent.
+        if let Some(stack) =
+            self.match_protocol_by_any_keyword_with_boundaries(&input_lower, "MQTT")
+        {
+            return Some(stack);
+        }
+
         for aws_service in ["S3", "SQS", "DynamoDB"] {
             if let Some(stack) =
                 self.match_protocol_by_any_keyword_with_boundaries(&input_lower, aws_service)
