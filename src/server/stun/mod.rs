@@ -107,8 +107,11 @@ impl StunServer {
                                 Self::parse_stun_header(&data);
 
                             if !is_valid {
-                                Log::new(Some(&status_clone))
-                                    .debug(format!("STUN invalid message from {}", peer_addr));
+                                Log::new(Some(&status_clone)).debug(format!(
+                                    "STUN dropped an unservable {} message from {} — only \
+                                     Binding requests are answered (see parse_stun_header)",
+                                    message_type, peer_addr
+                                ));
                                 return;
                             }
 
@@ -257,17 +260,37 @@ impl StunServer {
         Ok(local_addr)
     }
 
-    /// Parse STUN message header to extract transaction ID and message type
-    /// Returns (transaction_id, message_type_string, is_valid)
+    /// Parse STUN message header to extract transaction ID and message type.
+    ///
+    /// Returns `(transaction_id, message_type_string, servable)`. `servable` is
+    /// **not** "this parsed" — it is "this server may answer it". Everything
+    /// else is dropped without a byte leaving the socket, because on UDP a reply
+    /// goes to whatever source address the datagram claimed.
     fn parse_stun_header(data: &[u8]) -> (Option<Vec<u8>>, String, bool) {
         // STUN message header is 20 bytes minimum
         if data.len() < 20 {
             return (None, "invalid".to_string(), false);
         }
 
+        // RFC 8489 section 5: the two most significant bits of a STUN message
+        // type are always zero. Anything else is not STUN — 0b01 there is a TURN
+        // ChannelData frame — and must not be answered.
+        if u16::from_be_bytes([data[0], data[1]]) & 0xC000 != 0 {
+            return (None, "invalid".to_string(), false);
+        }
+
         // Check magic cookie (bytes 4-7 should be 0x2112A442)
         let magic_cookie = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
         if magic_cookie != 0x2112A442 {
+            return (None, "invalid".to_string(), false);
+        }
+
+        // RFC 8489 section 5: the message length counts the attributes only and
+        // is always a multiple of 4. A header whose declared length overruns the
+        // datagram is malformed, and answering it would mean answering a source
+        // address on the strength of a header we already know is lying.
+        let declared_length = u16::from_be_bytes([data[2], data[3]]) as usize;
+        if declared_length % 4 != 0 || 20usize.saturating_add(declared_length) > data.len() {
             return (None, "invalid".to_string(), false);
         }
 
@@ -303,7 +326,21 @@ impl StunServer {
         // Extract transaction ID (12 bytes, from byte 8 to 19)
         let transaction_id = data[8..20].to_vec();
 
-        (Some(transaction_id), message_type.to_string(), true)
+        // Only a Binding *Request* is served. That is RFC 8489 — section 6.3.2
+        // discards an indication without replying, and a server never receives a
+        // response for a transaction it did not start — and it is also what keeps
+        // this server from being a reflector.
+        //
+        // Until now any message carrying the magic cookie was answered, a Binding
+        // *Response* included. One spoofed datagram naming a second NetGet STUN
+        // server as its source therefore set the two answering each other's
+        // answers, with nothing in either to stop it. Aimed at any other UDP
+        // listener the same spoof makes this a ~2.4x amplifier (a 20-byte request
+        // produces a 48-byte reply) for as long as the attacker keeps sending.
+        // Dropping every class but Request costs nothing a real client does.
+        let servable = class == 0 && method == 1;
+
+        (Some(transaction_id), message_type.to_string(), servable)
     }
 }
 
