@@ -1065,6 +1065,19 @@ impl RawIpServer {
                     match state.emit(destination, ttl, &payload, peer).await {
                         Ok((n, where_to)) => {
                             packets_sent += 1;
+                            // `record_connection` seeds `bytes_received` at creation and
+                            // nothing updated `bytes_sent`, so the rail's `up` counter stayed
+                            // at zero for the life of the server however much it emitted.
+                            app_state
+                                .update_connection_stats(
+                                    server_id,
+                                    connection_id,
+                                    None,
+                                    Some(n as u64),
+                                    None,
+                                    Some(1),
+                                )
+                                .await;
                             Log::new(Some(&status_tx))
                                 .debug(format!("rawip sent {n} payload bytes to {where_to}"));
                             Log::new(Some(&status_tx)).trace(format!(

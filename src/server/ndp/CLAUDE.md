@@ -101,9 +101,16 @@ codec tests. `encode_without_checksum` exists so the raw path can be honest abou
 
 ### `transport: "raw"` (default)
 
-A raw ICMPv6 socket via socket2, hop limits set to 255 in both directions (RFC 4861 §11.2 — a
-receiver discards an NDP message that arrives with less, and that is the protocol's entire
-defence against an off-link attacker, since a router decrements).
+A raw ICMPv6 socket via socket2, with the **unicast and multicast** hop limits both set to 255
+— which is two *outbound* settings, not one in each direction. RFC 4861 §11.2 makes the hop
+limit NDP's entire defence against an off-link attacker (a router decrements, so 255 on arrival
+proves one hop), and this implements only the sending half of it: nothing inspects the hop limit
+of a message that *arrives*. Doing so needs `IPV6_RECVHOPLIMIT` and a cmsg read, which is the
+same gap as the `IPV6_RECVPKTINFO` one listed below.
+
+This paragraph read "hop limits set to 255 in both directions" until this pass, which says the
+receiver check is implemented. It never was, and it is the half that does the defending — worth
+recording because the wording was persuasive enough to survive several readings.
 
 **Never executed anywhere.** It compiles, and it is written to the same shape as `icmp` and
 `lldp`, including the parts those learned the hard way:
@@ -130,6 +137,10 @@ Known limitations of this path, all unexercised:
   mean the checksum code is exercised end to end only on the UDP transport.
 - **No ICMP6_FILTER.** The socket receives every ICMPv6 message on the host; anything that is not
   one of the five types is dropped at `NdpMessage::decode` with a `trace!`.
+- **The inbound Hop Limit is not checked.** RFC 4861 §11.2 requires a receiver to discard an NDP
+  message that did not arrive with 255, and that check is the protocol's only defence against an
+  off-link attacker. It needs `IPV6_RECVHOPLIMIT` plus a cmsg read, which this socket does not
+  request — the same gap as `IPV6_RECVPKTINFO` above, and a more consequential one.
 
 ### `transport: "udp"` (testing)
 

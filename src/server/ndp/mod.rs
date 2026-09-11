@@ -728,6 +728,11 @@ impl NdpServer {
                 }
 
                 let mut sent = 0usize;
+                // Failures on netget's side of the answer: an unbuildable request, an encoder
+                // error, a failed transmit. Counted separately from `sent` so the decision tag
+                // below can tell "the model said nothing" from "the model answered and we
+                // could not deliver it".
+                let mut netget_failures = 0usize;
                 for protocol_result in &result.protocol_results {
                     let crate::llm::actions::protocol_trait::ActionResult::Custom { name, data } =
                         protocol_result
@@ -748,6 +753,7 @@ impl NdpServer {
                     let request = match codec::SendRequest::from_action(action) {
                         Ok(request) => request.with_default_link_layer(ctx.link_layer_address),
                         Err(e) => {
+                            netget_failures += 1;
                             console_error!(ctx.status_tx, "NDP cannot build message: {:#}", e);
                             continue;
                         }
@@ -761,6 +767,7 @@ impl NdpServer {
                     let bytes = match request.message.encode(source, destination) {
                         Ok(bytes) => bytes,
                         Err(e) => {
+                            netget_failures += 1;
                             console_error!(ctx.status_tx, "NDP cannot encode message: {:#}", e);
                             continue;
                         }
@@ -769,6 +776,20 @@ impl NdpServer {
                     match sink.send(source, destination, &bytes).await {
                         Ok(n) => {
                             sent += 1;
+                            // Without this the rail's `up` counter for every NDP peer stays at
+                            // zero for the life of the server, whatever it advertises.
+                            if let Some(connection_id) = connection_id {
+                                ctx.app_state
+                                    .update_connection_stats(
+                                        ctx.server_id,
+                                        connection_id,
+                                        None,
+                                        Some(n as u64),
+                                        None,
+                                        Some(1),
+                                    )
+                                    .await;
+                            }
                             console_debug!(
                                 ctx.status_tx,
                                 "NDP sent {} to {} ({} octets on the wire)",
@@ -778,6 +799,7 @@ impl NdpServer {
                             );
                         }
                         Err(e) => {
+                            netget_failures += 1;
                             console_error!(ctx.status_tx, "NDP transmit failed: {:#}", e);
                         }
                     }
@@ -785,12 +807,25 @@ impl NdpServer {
 
                 if sent == 0 {
                     // Nothing went out. On the wire that is indistinguishable from a passive
-                    // observer, so the tag is the only place the difference survives.
+                    // observer, so the tag is the only place the difference survives — which
+                    // makes attributing it correctly the whole job.
+                    //
+                    // `model_silent` used to cover netget's own failures too: an unbuildable
+                    // request, an encoder error or a failed transmit all left `sent` at 0 and
+                    // were logged as the model having said nothing. It is the opposite — the
+                    // model answered and netget could not deliver it — and an operator
+                    // grepping `decision=fail_closed_` saw nothing at all. `src/server/rawip/`,
+                    // written to the same rubric, gets this right by consulting its own
+                    // failure counts; this now does the same.
                     let rejected = result.raw_actions.iter().any(|a| {
                         a.get("type").and_then(|t| t.as_str()) == Some(NO_RESPONSE_ACTION)
                     });
                     let decision = if rejected {
                         "model_reject"
+                    } else if netget_failures > 0 {
+                        "fail_closed_send_error"
+                    } else if !result.failures.is_empty() {
+                        "fail_closed_action_error"
                     } else {
                         "model_silent"
                     };
