@@ -97,6 +97,35 @@ the executor agree, in both directions.
 Hex is a deliberate choice over base64: models handle short hex well, and it maps one-to-one
 onto the byte layouts printed in the SIG specifications.
 
+## Reading a characteristic: what the startup examples do, and why
+
+Two things about the `bluetooth_read_request` examples are easy to get wrong, and both were
+wrong here.
+
+**A Python script handler must read stdin and print its answer.** `python3 -c <code>` is run
+unwrapped (`src/scripting/executor.rs`), and the executor requires stdout to be exactly one JSON
+value. Every script example in the BLE profiles used to be `actions = [{...}]`, which assigns a
+local, prints nothing and exits 0 — so the handler was recorded as having failed and the event
+**fell back to the LLM**, the opposite of what the comment above it promised. The shape that
+works is:
+
+```python
+import json,sys
+e=json.load(sys.stdin)['event']
+v={'<characteristic-uuid>':'<hex>'}.get(str(e.get('characteristic_uuid','')).lower())
+print(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))
+```
+
+**A `static` handler cannot tell one characteristic from another.** A fixed
+`respond_to_read` answers *every* readable characteristic with the same bytes, which on a
+multi-characteristic service hands the central the wrong value under the right field's units —
+invisible until real hardware reads it. A script can see `characteristic_uuid`, costs no LLM
+call either, and answering an unrecognised characteristic with `[]` is a real answer:
+`read_decision` maps it to `ReadDecision::UseStored`, so the base serves that characteristic's
+own `initial_value`.
+
+`tests/server/bluetooth_ble_data_stream/gatt_examples_test.rs` pins both rules.
+
 ## No storage
 
 This protocol stores nothing. The base keeps the last written/notified value per characteristic
@@ -161,10 +190,17 @@ of the *wiring* and **no coverage of the profile**: nothing in it builds the cus
 on the wire, or reads one back. It also claims the machine's Bluetooth adapter, so it needs one
 present and powered — it is not adapter-free, it simply is not `#[ignore]`d.
 
-There is no `gatt_examples_test.rs` here, and that is deliberate rather than an omission: this
-profile's startup examples use **custom** UUIDs with no Bluetooth SIG layout behind them, so
-there is no independent spec to assert the bytes against and such a test would only restate the
-literals back to themselves. The profiles with SIG-assigned characteristics (battery, heart_rate, thermometer, environmental, weight_scale, cycling, running, presenter) do have one.
+**What `gatt_examples_test.rs` proves.** Not value bytes: this profile's startup examples use
+**custom** UUIDs with no Bluetooth SIG layout behind them, so there is no independent
+specification to check them against and a test restating them would assert only that the
+literals equal themselves. What it checks instead is the example's internal coherence — that
+every event it routes can actually be raised by the service it builds, and that a static
+`respond_to_read` is not answering several readable characteristics with one set of bytes. That
+caught a real defect: the file-transfer example routed `bluetooth_read_request` while both its
+characteristics were write/notify, so the handler validated at startup and then never matched,
+sitting in the example a model copies as though it worked. The profiles with SIG-assigned
+characteristics (battery, heart_rate, thermometer, environmental, weight_scale, cycling,
+running, presenter) additionally pin every value byte against the published layout.
 
 **Neither test is evidence for a rating above `Experimental`.** Meaningful coverage of the
 profile needs a real adapter and a real BLE central (nRF Connect, `btleplug`) completing a read

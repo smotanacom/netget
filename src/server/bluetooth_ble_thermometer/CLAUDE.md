@@ -98,6 +98,35 @@ the executor agree, in both directions.
 Hex is a deliberate choice over base64: models handle short hex well, and it maps one-to-one
 onto the byte layouts printed in the SIG specifications.
 
+## Reading a characteristic: what the startup examples do, and why
+
+Two things about the `bluetooth_read_request` examples are easy to get wrong, and both were
+wrong here.
+
+**A Python script handler must read stdin and print its answer.** `python3 -c <code>` is run
+unwrapped (`src/scripting/executor.rs`), and the executor requires stdout to be exactly one JSON
+value. Every script example in the BLE profiles used to be `actions = [{...}]`, which assigns a
+local, prints nothing and exits 0 — so the handler was recorded as having failed and the event
+**fell back to the LLM**, the opposite of what the comment above it promised. The shape that
+works is:
+
+```python
+import json,sys
+e=json.load(sys.stdin)['event']
+v={'<characteristic-uuid>':'<hex>'}.get(str(e.get('characteristic_uuid','')).lower())
+print(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))
+```
+
+**A `static` handler cannot tell one characteristic from another.** A fixed
+`respond_to_read` answers *every* readable characteristic with the same bytes, which on a
+multi-characteristic service hands the central the wrong value under the right field's units —
+invisible until real hardware reads it. A script can see `characteristic_uuid`, costs no LLM
+call either, and answering an unrecognised characteristic with `[]` is a real answer:
+`read_decision` maps it to `ReadDecision::UseStored`, so the base serves that characteristic's
+own `initial_value`.
+
+`tests/server/bluetooth_ble_thermometer/gatt_examples_test.rs` pins both rules.
+
 ## No storage
 
 This protocol stores nothing. The base keeps the last written/notified value per characteristic
