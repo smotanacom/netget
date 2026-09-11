@@ -11,8 +11,8 @@
 
 #![cfg(all(test, feature = "http_proxy"))]
 
-use netget::llm::actions::client_trait::{Client, ClientActionResult};
 use netget::client::http_proxy::actions::HttpProxyClientProtocol;
+use netget::llm::actions::client_trait::{Client, ClientActionResult};
 use serde_json::json;
 
 /// The `Custom` payload the executor built, or `None` if it refused the action.
@@ -48,8 +48,8 @@ fn an_out_of_range_target_port_is_refused_not_wrapped() {
     // The refusal must not cost the legitimate call: both ends of the range still work and
     // reach the tunnel unchanged.
     for good in [1u64, 80, 443, 8443, 65535] {
-        let data = run(tunnel_to(json!(good)))
-            .unwrap_or_else(|| panic!("{good} is a real TCP port"));
+        let data =
+            run(tunnel_to(json!(good))).unwrap_or_else(|| panic!("{good} is a real TCP port"));
         assert_eq!(
             data["target_port"].as_u64(),
             Some(good),

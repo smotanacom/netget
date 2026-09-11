@@ -76,7 +76,7 @@ fn response_modify_status_is_optional_but_still_checked() {
         "handle_response_modify: status 65736 wraps to 200 under `as u16` and must be refused"
     );
 
-    let ok =
-        run(json!({"type": "handle_response_modify", "status": 404})).expect("404 is a real status");
+    let ok = run(json!({"type": "handle_response_modify", "status": 404}))
+        .expect("404 is a real status");
     assert_eq!(ok["status"].as_u64(), Some(404));
 }

@@ -24,7 +24,8 @@ fn run(action: serde_json::Value) -> Option<serde_json::Value> {
 
 #[test]
 fn out_of_range_status_code_is_refused_not_wrapped() {
-    let with = |status: u64| json!({"type": "npm_error", "error": "not found", "status_code": status});
+    let with =
+        |status: u64| json!({"type": "npm_error", "error": "not found", "status_code": status});
 
     assert!(
         run(with(65736)).is_none(),

@@ -47,7 +47,15 @@ fn a_code_that_does_not_fit_i32_is_refused() {
 
     // The refusal must not have become a refusal of everything: the standard codes and an
     // application code still pass through unchanged.
-    for good in [-32700i64, -32601, -32603, -32000, 1, 2147483647, -2147483648] {
+    for good in [
+        -32700i64,
+        -32601,
+        -32603,
+        -32000,
+        1,
+        2147483647,
+        -2147483648,
+    ] {
         let data = run(error_with(json!(good)))
             .unwrap_or_else(|| panic!("{good} fits a 32-bit JSON-RPC code"));
         assert_eq!(
