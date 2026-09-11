@@ -250,6 +250,33 @@ The flexible-binding `mac_address` field means the same thing as `source_mac` an
 is honoured; an explicit `source_mac` wins because it is the more specific
 request.
 
+## Text TLVs are screened, and asymmetrically
+
+A CDP text TLV is an entry in somebody's device table, copied verbatim into
+`show cdp neighbors detail` and into this protocol's own
+`CDP advertisement from {device_id} ({platform}) on {port_id}` log line — which
+`src/protocol/log_template.rs` renders with no quoting. A newline in `device_id` forges a whole
+extra neighbour entry in both. The TLV is length-prefixed, so such a frame is *legal CDP*; only
+the rendering is the problem, which is why `codec.rs` is where it is handled.
+
+Encode **refuses** a control character in `device_id` / `port_id` / `platform` and names the
+field; decode **replaces it with a space**. The asymmetry is deliberate: on the encode side the
+model wrote the string and can be told, while a neighbour cannot be asked to resend and dropping
+its advertisement would hide a device that is really there.
+
+**Software Version is exempt in both directions, deliberately.** A real IOS banner is
+multi-line — the scapy Catalyst capture in the tests contains several `0x0a` bytes — it is the
+most useful single thing a recon operator reads off a CDP frame, and it appears in no log
+template. The exemption has its own test, so a later "simplification" that refuses everything
+cannot pass either.
+
+Separately, the 802.3 length field is bounded at 1500 in `encode_frame`. It is not an MTU
+preference: IEEE 802.3 reserves `0x0600` (1536) and above for EtherType, so a longer frame does
+not become oversized, it stops being an 802.3 frame — every receiver reads it as Ethernet II and
+the CDP behind it is never parsed. The model's text fields were unbounded, so it could produce
+one. `MAX_TEXT_TLV` (255) bounds each field individually as well, purely so the error names the
+offending field rather than complaining about the whole frame.
+
 ## Not implemented
 
 - **No periodic advertisement timer.** Real CDP announces every 60s

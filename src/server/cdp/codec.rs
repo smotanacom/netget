@@ -70,6 +70,25 @@ pub const CDP_PAYLOAD_OFFSET: usize = ETHERNET_HEADER_LEN + LLC_SNAP_HEADER_LEN;
 /// version + ttl + checksum.
 pub const CDP_HEADER_LEN: usize = 4;
 
+/// The largest value the 802.3 length field can carry **as a length**.
+///
+/// This is not an MTU preference, it is the boundary of the encapsulation. IEEE 802.3 reserves
+/// every value from `0x0600` (1536) upwards for EtherType, so a frame whose length field is
+/// 1536 or more is read by every receiver as an Ethernet II frame of that protocol rather than
+/// as an 802.3 LLC/SNAP one — the CDP payload behind it is never looked at. 1500 is the largest
+/// length that is unambiguously a length. `src/server/stp/codec.rs` rejects the same thing in
+/// the decode direction for the same reason.
+pub const MAX_8023_LENGTH: usize = 1500;
+
+/// Cap on any single text field the model authors.
+///
+/// CDP has no published specification and its TLV length field is 16 bits, so this is not a
+/// spec limit — it is the point past which the value stops being a device identifier. The
+/// binding constraint is [`MAX_8023_LENGTH`]: the whole advertisement must fit one frame. This
+/// smaller, per-field bound exists only so the error names the offending field instead of
+/// reporting a frame that came out 400 bytes too long.
+pub const MAX_TEXT_TLV: usize = 255;
+
 // ---------------------------------------------------------------------------------------------
 // TLV type codes
 // ---------------------------------------------------------------------------------------------
@@ -399,6 +418,61 @@ impl DecodedCdp {
 // Encoding
 // ---------------------------------------------------------------------------------------------
 
+/// Check a model-authored text field before it becomes a TLV.
+///
+/// **A CDP text TLV is an entry in somebody's neighbour table.** `show cdp neighbors detail`,
+/// an NMS topology view and this server's own
+/// `CDP advertisement from {device_id} ({platform}) on {port_id}` log line all print these
+/// verbatim, none of them quoting. A newline in `device_id` therefore forges a second
+/// neighbour in every one of those displays — which is precisely what impersonating a Cisco
+/// device is for. Nothing a real device puts in these fields is a control character.
+///
+/// Refused rather than stripped: on this side the model wrote the string and can be told, and
+/// silently rewriting its answer would make the frame disagree with the decision the log
+/// records. [`sanitize_wire_text`] takes the opposite exit for a *neighbour's* text.
+fn check_text_field(field: &str, text: &str) -> Result<()> {
+    if let Some((index, bad)) = text.char_indices().find(|(_, c)| c.is_control()) {
+        bail!(
+            "'{}' contains a control character (U+{:04X}) at byte {}. CDP text is copied \
+             verbatim into a neighbour's device table and into log lines, so a newline or NUL \
+             there forges a whole neighbour entry. Send printable text only.",
+            field,
+            bad as u32,
+            index
+        );
+    }
+    if text.len() > MAX_TEXT_TLV {
+        bail!(
+            "'{}' is {} bytes; CDP identifiers are capped at {} here so the advertisement still \
+             fits one Ethernet frame",
+            field,
+            text.len(),
+            MAX_TEXT_TLV
+        );
+    }
+    Ok(())
+}
+
+/// Read an **identifier** TLV off the wire, with control characters replaced by a space.
+///
+/// Device ID, Port ID and Platform come straight back out in
+/// `CDP advertisement from {device_id} ({platform}) on {port_id}`, and
+/// `src/protocol/log_template.rs` quotes nothing — so a neighbour that puts a newline in its
+/// Device ID forges a whole extra log line, which is the entire point of impersonating a Cisco
+/// device. None of the three is ever legitimately multi-line, so nothing real is lost. A
+/// neighbour cannot be asked to resend, which is why this strips where [`check_text_field`]
+/// refuses.
+///
+/// **Software Version deliberately does not go through this.** A real IOS version banner *is*
+/// multi-line, it is the single most useful thing a recon operator reads off a CDP frame, and
+/// it appears in no log template — only in the JSON-escaped trace line and in the event.
+fn identifier_text(value: &[u8]) -> String {
+    String::from_utf8_lossy(value)
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 fn push_tlv(out: &mut Vec<u8>, type_code: u16, value: &[u8]) -> Result<()> {
     let len = value
         .len()
@@ -462,6 +536,7 @@ pub fn encode_payload(ad: &CdpAdvertisement) -> Result<Vec<u8>> {
     out.extend_from_slice(&[0, 0]); // checksum placeholder
 
     if let Some(id) = &ad.device_id {
+        check_text_field("device_id", id)?;
         push_tlv(&mut out, TLV_DEVICE_ID, id.as_bytes())?;
     }
     if !ad.addresses.is_empty() {
@@ -469,15 +544,21 @@ pub fn encode_payload(ad: &CdpAdvertisement) -> Result<Vec<u8>> {
         push_tlv(&mut out, TLV_ADDRESSES, &body)?;
     }
     if let Some(port) = &ad.port_id {
+        check_text_field("port_id", port)?;
         push_tlv(&mut out, TLV_PORT_ID, port.as_bytes())?;
     }
     if let Some(caps) = ad.capabilities {
         push_tlv(&mut out, TLV_CAPABILITIES, &caps.to_be_bytes())?;
     }
     if let Some(version) = &ad.software_version {
+        // Not `check_text_field`: a real IOS banner is multi-line, and refusing a newline here
+        // would make the most realistic value the model can send unencodable. It carries no
+        // control character into a log line (see `identifier_text`), so only the length matters
+        // — and MAX_8023_LENGTH in `encode_frame` is the real bound on a banner this long.
         push_tlv(&mut out, TLV_SOFTWARE_VERSION, version.as_bytes())?;
     }
     if let Some(platform) = &ad.platform {
+        check_text_field("platform", platform)?;
         push_tlv(&mut out, TLV_PLATFORM, platform.as_bytes())?;
     }
     if let Some(vlan) = ad.native_vlan {
@@ -505,6 +586,19 @@ pub fn encode_payload(ad: &CdpAdvertisement) -> Result<Vec<u8>> {
 /// assert.
 pub fn encode_frame(source_mac: [u8; 6], payload: &[u8]) -> Result<Vec<u8>> {
     let body_len = LLC_SNAP_HEADER_LEN + payload.len();
+    // Bound the number BEFORE narrowing it. `u16::try_from` alone accepts everything up to
+    // 65535, and any value from 1536 up is an EtherType rather than a length (see
+    // MAX_8023_LENGTH) — so a long advertisement would not merely be oversized, it would
+    // silently stop being an 802.3 frame and no receiver would ever look at the CDP behind it.
+    if body_len > MAX_8023_LENGTH {
+        bail!(
+            "CDP frame body is {} bytes; the 802.3 length field only carries a length up to {} \
+             (0x0600 and above are EtherTypes, so a longer frame is read as Ethernet II and the \
+             CDP payload is never parsed)",
+            body_len,
+            MAX_8023_LENGTH
+        );
+    }
     let length_field = u16::try_from(body_len)
         .map_err(|_| anyhow!("CDP frame body is {} bytes, too long for 802.3", body_len))?;
 
@@ -653,9 +747,12 @@ pub fn decode_payload(payload: &[u8]) -> Result<DecodedCdp> {
         let value = &payload[offset + 4..end];
 
         match type_code {
-            TLV_DEVICE_ID => ad.device_id = Some(String::from_utf8_lossy(value).into_owned()),
-            TLV_PORT_ID => ad.port_id = Some(String::from_utf8_lossy(value).into_owned()),
-            TLV_PLATFORM => ad.platform = Some(String::from_utf8_lossy(value).into_owned()),
+            // The three identifier TLVs are interpolated unquoted into this protocol's own
+            // log line, so they go through `identifier_text`; Software Version does not,
+            // and is legitimately a multi-line banner.
+            TLV_DEVICE_ID => ad.device_id = Some(identifier_text(value)),
+            TLV_PORT_ID => ad.port_id = Some(identifier_text(value)),
+            TLV_PLATFORM => ad.platform = Some(identifier_text(value)),
             TLV_SOFTWARE_VERSION => {
                 ad.software_version = Some(String::from_utf8_lossy(value).into_owned())
             }

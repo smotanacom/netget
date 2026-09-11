@@ -157,7 +157,18 @@ All three carry the same fields, because the packet is the same for all three op
 `auth_data`, `identifier`, `md5_auth`, `source_address`, `configured_version`.
 
 Structured only — no raw bytes, no base64. States and opcodes are names; addresses are dotted
-quads; `auth_data` is the string with trailing NULs stripped (`None` if the field was empty).
+quads; `auth_data` is the field read up to its **first** NUL (`None` if it was empty), with
+every control character replaced by a space.
+
+That substitution is not cosmetic. The event's own log template renders
+`... auth={auth_data}, from={source_address}`, and `src/protocol/log_template.rs` quotes
+nothing — so eight bytes a neighbour chose would otherwise forge a log line. It is lossy on
+purpose: the field is a plaintext group password, never a control character, and a neighbour
+cannot be asked to resend. The encode side takes the opposite exit and **refuses** a
+model-authored `auth_data` containing one, because the model can be told. Both directions are
+pinned in `tests/server/hsrp/codec_test.rs`, including the case that makes the NUL trim and the
+substitution order matter: a NUL is itself a control character, so substituting first would turn
+an empty field into eight spaces and make every packet look authenticated.
 
 ### Actions
 

@@ -227,13 +227,21 @@ is "the master just stood down and the election is open **right now**". Routing 
 to the wrong event would make an operator's handler for it never match, and a resignation is
 precisely the moment a takeover succeeds.
 
-Both carry the decoded packet as structured fields — `variant`, `version`, `vrid`, `priority`,
-`advert_interval` (in seconds, already converted from whichever unit the version uses),
-`addresses` as dotted quads, `source_address`, `checksum_valid`, `checksum_scope`,
-`auth_type`, `is_address_owner`, `is_resignation`, and for CARP `advskew`, `advbase`,
-`demote`, `counter`, `hmac_valid` — plus a `local_*` block holding this server's own
-configured group, so the model can compare what arrived against what it is configured to
-claim. That comparison *is* the election question.
+Both carry the decoded packet as structured fields, plus a `local_*` block holding this
+server's own configured group — so the model can compare what arrived against what it is
+configured to claim. That comparison *is* the election question.
+
+**The two variants do not carry the same keys, and a handler must not assume they do.** They
+are different protocols; only the fields both packets actually have are common.
+
+| | VRRP | CARP |
+|---|---|---|
+| common | `variant`, `version`, `vrid`, `advert_interval` (seconds, already converted from whichever unit the version uses), `source_address`, `checksum_valid`, `checksum_scope` | same |
+| VRRP only | `priority`, `addresses` (dotted quads), `address_count`, `auth_type`, `is_address_owner`, `is_resignation` | — |
+| CARP only | — | `advskew`, `advbase`, `demote`, `counter`, `hmac_valid` |
+
+The asymmetry is the protocols', not an omission: CARP has no priority and no virtual-address
+list on the wire, and VRRP has no skew, no demotion counter and no HMAC.
 
 No hex string, no byte blob, in either direction. The CARP HMAC is never handed to the model:
 it gets `hmac_valid`, which is a decision, not 20 opaque octets.

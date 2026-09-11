@@ -5,7 +5,9 @@
 //! Every other server suite starts the `netget` binary and lets `server_startup` bring the
 //! protocol up. That cannot work here, and the reason is worth knowing before you try:
 //! **`server_startup`'s privilege gate is per-protocol, not per-transport.** STP declares
-//! `PrivilegeRequirement::RawSockets`, and `requires_privileges` is `!privilege_met` for that
+//! `PrivilegeRequirement::PacketCapture` — not `RawSockets`; the transport is libpcap and never
+//! opens a `SOCK_RAW`, and on macOS ChmodBPF grants capture without raw sockets, so the two are
+//! deliberately different requirements. `requires_privileges` is `!privilege_met` for that
 //! variant, so an unprivileged `start_server` is refused *before* the startup parameters are
 //! read — including `transport: "udp"`, which needs no privilege at all. Declaring anything
 //! weaker would be a lie about the raw transport, which is the real one.

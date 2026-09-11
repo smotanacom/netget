@@ -22,15 +22,17 @@ handler (no call by construction) or points the client at `127.0.0.1:1` so that 
     --test server lldp -- --test-threads=100
 ```
 
-28 tests, ~1.1s.
+32 tests (22 codec + 10 e2e).
 
 ## `codec_test.rs` — literal bytes, not round-trips
 
 Every expected byte string is written out literally and derived from the published layout, **not
 from the implementation**. Round-tripping the encoder through the decoder would prove only that
-one function inverts the other, which the root `CLAUDE.md` names as circular evidence; it appears
-here exactly once, as the last test in the file, explicitly labelled as a consistency check and
-not as the argument.
+one function inverts the other, which the root `CLAUDE.md` names as circular evidence. Where a
+round trip does appear it is labelled as a consistency check and never as the argument:
+`encode_and_decode_agree_but_this_proves_nothing_on_its_own`, and
+`a_newline_in_system_description_is_allowed_because_a_real_banner_has_one`, where the round trip
+*is* the claim (that a multi-line banner survives unchanged).
 
 Sources are named in the file header: IEEE 802.1AB-2016 §8.1, §8.4, §8.5.1–8.5.9 and Tables 7-1,
 8-2, 8-3, 8-4.
@@ -119,3 +121,33 @@ Everything past the codec on the real transport:
 A green run here means "the bytes are right and the failure discipline is honest". It does not
 mean LLDP works. `src/server/lldp/CLAUDE.md` records the `feth`-pair + `lldpd` experiment that
 would change that, and it has not been run.
+
+## Control characters: a text TLV is an entry in somebody's neighbour table
+
+Four tests at the end of `codec_test.rs`, and the design they pin is asymmetric on purpose.
+
+LLDP is unauthenticated, so whatever a neighbour puts in its System Name is copied verbatim
+into `show lldp neighbors`, into an NMS topology display, and into this protocol's own
+`LLDP neighbour {system_name} ({chassis_id}) on port {port_id}` log line — which
+`src/protocol/log_template.rs` renders with no quoting at all. A newline there forges a whole
+extra neighbour entry in every one of those displays, which is the point of impersonating a
+switch. The TLV is length-prefixed, so such a frame is *perfectly legal LLDP*; only the
+rendering is the problem, which is why the codec is where it has to be fixed.
+
+| direction | behaviour | why |
+|---|---|---|
+| encode (model → wire) | **refuse**, naming the field | the model wrote the string and can be told; silently rewriting its answer would make the frame disagree with the decision the log records |
+| decode (wire → event/log) | **replace with a space** | a neighbour cannot be asked to resend, and dropping the advertisement would hide a device that is really there |
+
+`a_control_character_in_a_free_text_chassis_or_port_id_is_refused` exists separately because
+those two do not go through `push_text_tlv` at all — `encode_id_value` is a second path, and
+would have been a second hole.
+
+**System Description is exempt in both directions, and that is a decision.** It is `sysDescr`;
+for IOS it is a multi-line banner, it is the most useful single thing a recon operator reads
+off a link, and it appears in no log template — only in the JSON-escaped trace line. Refusing
+its newlines would cost real information to close a hole that is not there.
+`a_newline_in_system_description_is_allowed_because_a_real_banner_has_one` pins it, so a later
+"simplification" that refuses everything cannot pass either.
+
+Each of the three refusal/sanitisation tests was verified to fail with its own guard removed.

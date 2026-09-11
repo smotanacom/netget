@@ -4,7 +4,11 @@ Spanning Tree (IEEE 802.1D-2004) and Rapid Spanning Tree (802.1w) bridge. NetGet
 receives BPDUs off an Ethernet segment, decodes them into structured fields, and
 transmits whatever BPDU the operator's handler or the model decides on.
 
-**State**: `Experimental`. **Privilege**: `RawSockets`. **Connectionless**: yes.
+**State**: `Experimental`. **Privilege**: `PacketCapture`. **Connectionless**: yes.
+**Not `RawSockets`** — the transport is libpcap and never opens a `SOCK_RAW`. On Linux
+both come from `CAP_NET_RAW`, but on macOS a user in the ChmodBPF group has capture and
+not raw sockets, so declaring `RawSockets` would refuse a host that can in fact run this.
+`arp`, `datalink`, `isis` and `cdp` all declare `PacketCapture` for the same reason.
 **Stack**: `ETH>LLC>STP`.
 
 ## The point, and the hazard
@@ -194,7 +198,7 @@ Routing a TCN to `stp_bpdu_received` would make an operator's topology-change
 handler never match, so the split is asserted by
 `a_topology_change_notification_raises_the_topology_change_event`.
 
-Both carry the decoded BPDU as structured fields — `root_bridge_mac`,
+A **config or RST** BPDU is reported as structured fields — `root_bridge_mac`,
 `root_priority`, `root_system_id_extension`, `root_path_cost`, `bridge_*`,
 `port_priority`, `port_number`, a `flags` object, the four timers **in seconds**,
 `is_rstp`, `is_tcn`, `source_mac`, `destination_mac` — plus a `local_*` block
@@ -202,6 +206,20 @@ holding this server's own configured identity, so the model can compare what
 arrived against what it is configured to claim. That comparison *is* the root
 election question. `stp_topology_change` adds `change_reason`
 (`tcn_bpdu` / `topology_change_flag`).
+
+**A TCN BPDU carries almost none of that, and cannot.** The frame is four octets
+— protocol id, version, type — with no bridge, root, port or timer fields at all,
+so the event raised for one carries only the seven keys there is evidence for:
+`bpdu_type`, `protocol_version`, `is_rstp`, `is_tcn`, `source_mac`,
+`destination_mac`, `change_reason`. (The `local_*` block is attached to every
+event either way, since it comes from our own configuration rather than from the
+frame.)
+
+So a handler must not assume `root_bridge_mac` is present on every
+`stp_topology_change`. It is there when `change_reason` is
+`topology_change_flag` — a config or RST BPDU with the flag set, which does carry
+the full field set — and absent when it is `tcn_bpdu`. Branch on
+`change_reason`, not on the event id.
 
 No hex string, no byte blob, in either direction.
 
@@ -253,8 +271,8 @@ decides what this bridge emits.
 
 Worth knowing before you try to start this through the TUI, MCP or the e2e
 harness: `server_startup`'s check is
-`requires_privileges = !privilege_met` for `RawSockets`, evaluated **before** the
-startup parameters are read. So an unprivileged `start_server` is refused even
+`requires_privileges = !privilege_met` for `PacketCapture`, evaluated **before**
+the startup parameters are read. So an unprivileged `start_server` is refused even
 with `transport: "udp"`, which needs no privilege at all.
 
 That is not a defect in the gate — declaring anything weaker would be a lie about
@@ -272,11 +290,6 @@ propagation, no BPDU guard/root guard, no per-VLAN instance handling beyond
 carrying the system ID extension, no MSTP (version 3) encoding — a version-3 BPDU
 is *decoded* with its version reported verbatim, but its MSTP extension after
 offset 35 is not parsed. No storage of any kind.
-
-`pnet` is a declared dependency of the feature and is currently unused: the codec
-is hand-written, and `pcap` alone covers capture and injection. Left declared
-because it is the natural home for any future MAC/interface helper and the
-feature line is a shared file.
 
 ## Proven and unproven — read this before rating it
 

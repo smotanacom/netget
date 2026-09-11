@@ -198,7 +198,8 @@ fn config_bpdu_frame_is_byte_for_byte_the_spec_layout() {
         BRIDGE_GROUP_ADDRESS,
         [0x00, 0x1c, 0x0e, 0x87, 0x78, 0x4f],
         &body,
-    );
+    )
+    .expect("a 35-octet BPDU fits the 802.3 length field");
 
     assert_eq!(
         frame,
@@ -248,7 +249,8 @@ fn rst_bpdu_frame_is_byte_for_byte_the_spec_layout() {
         "802.1w §9.3.3: the version 1 length octet is always zero"
     );
 
-    let frame = codec::encode_frame(BRIDGE_GROUP_ADDRESS, mac, &body);
+    let frame = codec::encode_frame(BRIDGE_GROUP_ADDRESS, mac, &body)
+        .expect("a 36-octet RST BPDU fits the 802.3 length field");
     assert_eq!(
         frame,
         RST_BPDU_FRAME.to_vec(),
@@ -265,7 +267,8 @@ fn tcn_bpdu_frame_is_byte_for_byte_the_spec_layout() {
         BRIDGE_GROUP_ADDRESS,
         [0x00, 0x1c, 0x0e, 0x87, 0x78, 0x4f],
         &codec::encode_tcn_bpdu(),
-    );
+    )
+    .expect("a 4-octet TCN BPDU fits the 802.3 length field");
     assert_eq!(
         frame,
         TCN_BPDU_FRAME.to_vec(),
@@ -284,7 +287,8 @@ fn tcn_bpdu_frame_is_byte_for_byte_the_spec_layout() {
 #[test]
 fn timers_are_encoded_in_units_of_one_256th_of_a_second() {
     let body = textbook_config_bpdu().encode().unwrap();
-    let frame = codec::encode_frame(BRIDGE_GROUP_ADDRESS, [0; 6], &body);
+    let frame = codec::encode_frame(BRIDGE_GROUP_ADDRESS, [0; 6], &body)
+        .expect("a 35-octet BPDU fits the 802.3 length field");
 
     // The four timer fields, at their spec offsets, with the values every 802.1D capture
     // shows for the recommended defaults.
@@ -750,4 +754,55 @@ fn mac_addresses_round_trip_through_their_text_form() {
 
     assert!(codec::parse_mac("01:80:c2:00:00").is_err());
     assert!(codec::parse_mac("zz:80:c2:00:00:00").is_err());
+}
+
+/// The 802.3 length field is bounded in **both** directions, at the same value.
+///
+/// `decode_frame` has always rejected a declared length above 1500, on the grounds that IEEE
+/// 802.3 reserves 0x0600 and above for EtherType. `encode_frame` narrowed with a bare `as u16`
+/// and did not, which is the asymmetry this pins: a frame whose length field lands in the
+/// EtherType range is not an oversized 802.3 frame, it is an Ethernet II frame of some other
+/// protocol, and the BPDU behind it is never parsed by anybody.
+///
+/// No BPDU this codec produces can reach that size — they are 4, 35 or 36 octets — so the guard
+/// exists for a future caller of what is a `pub fn` taking an arbitrary slice.
+#[test]
+fn the_8023_length_field_is_bounded_in_both_directions() {
+    let oversized = vec![0u8; 2000];
+    let client_len = codec::LLC_HEADER_LEN + oversized.len();
+    assert!(
+        client_len >= 0x0600,
+        "this test is only meaningful if the length field would land in the EtherType range"
+    );
+
+    let err = codec::encode_frame(BRIDGE_GROUP_ADDRESS, [0; 6], &oversized)
+        .expect_err("a frame whose length field is an EtherType must be refused")
+        .to_string();
+    assert!(
+        err.contains(&codec::MAX_8023_LENGTH.to_string()) && err.contains("EtherType"),
+        "the error must say why {} is the bound, got: {err}",
+        codec::MAX_8023_LENGTH
+    );
+
+    // The largest body that is still unambiguously a length is accepted, so the bound sits
+    // exactly on the encapsulation boundary rather than somewhere convenient.
+    let largest = vec![0u8; codec::MAX_8023_LENGTH - codec::LLC_HEADER_LEN];
+    let frame = codec::encode_frame(BRIDGE_GROUP_ADDRESS, [0; 6], &largest)
+        .expect("a client-data length of exactly 1500 is still a length");
+    assert_eq!(
+        be16(&frame, 12) as usize,
+        codec::MAX_8023_LENGTH,
+        "the length field must carry the client-data length, padding excluded"
+    );
+
+    // And the decode side refuses the same value, which is where the constant came from.
+    let mut ethernet_ii = vec![0u8; 64];
+    ethernet_ii[12..14].copy_from_slice(&0x0800u16.to_be_bytes()); // IPv4 EtherType
+    let err = codec::decode_frame(&ethernet_ii)
+        .expect_err("an EtherType in the length field is not an 802.3 frame")
+        .to_string();
+    assert!(
+        err.contains("EtherType"),
+        "the decode-side refusal must name the same reason, got: {err}"
+    );
 }

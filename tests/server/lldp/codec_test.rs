@@ -7,8 +7,11 @@
 //! and derived from the published layout, not from the implementation.**
 //!
 //! Round-tripping the encoder through the decoder would prove only that one function inverts
-//! the other. The root `CLAUDE.md` names that circular evidence, so it appears here exactly
-//! once, at the end, as a consistency check and not as the argument.
+//! the other. The root `CLAUDE.md` names that circular evidence, so where it appears it is
+//! labelled a consistency check and never the argument — in
+//! `encode_and_decode_agree_but_this_proves_nothing_on_its_own`, and in
+//! `a_newline_in_system_description_is_allowed_because_a_real_banner_has_one`, where the round
+//! trip is the point (the claim being that a multi-line banner survives unchanged).
 //!
 //! Sources for every literal below:
 //!
@@ -680,8 +683,7 @@ fn event_data_carries_no_octets_anywhere() {
 }
 
 /// Consistency check, and **not** the evidence for anything: the literal-byte cases above are.
-/// It is here because an asymmetry between the two directions would be a real bug, and it is
-/// deliberately the last test in the file so nobody mistakes it for the argument.
+/// It is here because an asymmetry between the two directions would be a real bug.
 #[test]
 fn encode_and_decode_agree_but_this_proves_nothing_on_its_own() {
     let original = Lldpdu {
@@ -694,4 +696,161 @@ fn encode_and_decode_agree_but_this_proves_nothing_on_its_own() {
     };
     let decoded = Lldpdu::decode(&original.encode().expect("encodes")).expect("decodes");
     assert_eq!(decoded, original);
+}
+
+// =============================================================================================
+// Control characters: an LLDP text TLV is an entry in somebody's neighbour table
+// =============================================================================================
+//
+// LLDP has no authentication, so whatever a neighbour puts in its System Name is copied verbatim
+// into `show lldp neighbors`, into an NMS topology display, and — on this side — into the
+// `lldp_neighbor_advertisement` log line, which `src/protocol/log_template.rs` renders with no
+// quoting at all. A newline therefore does not merely look odd: it forges a whole extra entry in
+// every one of those displays, which is the point of impersonating a switch.
+//
+// The two directions take deliberately opposite exits, and both are pinned here:
+//
+// * **Encode** refuses. The model authored the string and can be told, and silently rewriting
+//   its answer would make the frame disagree with the decision the log records.
+// * **Decode** strips, on the identifier TLVs only. A neighbour cannot be asked to resend, and
+//   dropping the advertisement would hide a device that is really there.
+
+/// A control character in a model-authored identifier or `ifDescr` field is refused, not encoded.
+///
+/// Asserted through `AdvertisementRequest::from_action`, which is the path a model's answer
+/// actually takes, rather than through `Lldpdu::encode` directly.
+#[test]
+fn a_control_character_in_a_model_authored_identifier_is_refused() {
+    for (field, value) in [
+        ("system_name", "sw1\nsw2"),
+        ("port_description", "Uplink\rto core"),
+    ] {
+        let mut action = json!({
+            "type": "send_lldp_advertisement",
+            "chassis_id": CHASSIS_MAC,
+            "port_id": "1/1",
+        });
+        action[field] = json!(value);
+
+        let err = AdvertisementRequest::from_action(&action)
+            .expect_err("a control character in a neighbour-table field must be refused")
+            .to_string();
+        assert!(
+            err.contains(field) && err.contains("control character"),
+            "the error must name the field and say what is wrong, got: {err}"
+        );
+    }
+}
+
+/// The same refusal on a free-text Chassis ID / Port ID, which are the *keys* of the table.
+///
+/// These do not go through `push_text_tlv` at all — they are built by `encode_id_value`, a
+/// separate path that would otherwise be a separate hole.
+#[test]
+fn a_control_character_in_a_free_text_chassis_or_port_id_is_refused() {
+    for (field, subtype_field, subtype) in [
+        ("chassis_id", "chassis_id_subtype", "local"),
+        ("port_id", "port_id_subtype", "interface_name"),
+    ] {
+        let mut action = json!({
+            "type": "send_lldp_advertisement",
+            "chassis_id": CHASSIS_MAC,
+            "port_id": "1/1",
+        });
+        action[field] = json!("real-switch\nimpostor");
+        action[subtype_field] = json!(subtype);
+
+        let err = AdvertisementRequest::from_action(&action)
+            .expect_err("a control character in a table key must be refused")
+            .to_string();
+        assert!(
+            err.contains("control character"),
+            "expected a control-character refusal for {field}, got: {err}"
+        );
+    }
+}
+
+/// **System Description is exempt, and that is a decision, not an oversight.**
+///
+/// 802.1AB's System Description is `sysDescr`; for IOS it is a multi-line banner, and it is the
+/// most useful single thing a recon operator reads off a link. It is interpolated into no log
+/// template — only into the JSON-escaped trace line — so refusing its newlines would cost real
+/// information to close a hole that is not there.
+#[test]
+fn a_newline_in_system_description_is_allowed_because_a_real_banner_has_one() {
+    let banner = "Vendor OS Software\nVersion 15.0(2)SE11\nCopyright (c) 1986-2010";
+    let action = json!({
+        "type": "send_lldp_advertisement",
+        "chassis_id": CHASSIS_MAC,
+        "port_id": "1/1",
+        "system_description": banner,
+    });
+    let request = AdvertisementRequest::from_action(&action).expect("a real banner must encode");
+    assert_eq!(request.lldpdu.system_description.as_deref(), Some(banner));
+
+    // And it survives the round trip byte for byte, so the exemption is real rather than a
+    // refusal that happens not to fire.
+    let decoded = Lldpdu::decode(&request.lldpdu.encode().expect("encodes")).expect("decodes");
+    assert_eq!(decoded.system_description.as_deref(), Some(banner));
+}
+
+/// A hostile neighbour cannot forge a log line through the System Name, Chassis ID or Port ID.
+///
+/// The frame is built by hand rather than through our encoder — the encoder now refuses these
+/// values, so using it would test nothing. These are the octets a real attacker puts on the
+/// wire, and 802.1AB permits them: the TLV is length-prefixed, so a newline is perfectly legal
+/// framing. Only the rendering is the problem.
+#[test]
+fn a_neighbours_control_characters_cannot_forge_a_log_line() {
+    // Chassis ID subtype 7 and Port ID subtype 7 are both "locally assigned", i.e. the free-text
+    // forms, so the injected bytes land in the identifier rather than in a MAC.
+    let chassis = b"core-sw\n2026-09-11 LLDP neighbour attacker";
+    let port = b"Gi0/1\rforged";
+    let name = b"switch1\nswitch2";
+
+    let mut lldpdu: Vec<u8> = Vec::new();
+    {
+        let mut push = |tlv_type: u8, value: &[u8]| {
+            let header = ((tlv_type as u16) << 9) | value.len() as u16;
+            lldpdu.extend_from_slice(&header.to_be_bytes());
+            lldpdu.extend_from_slice(value);
+        };
+        let mut chassis_value = vec![7u8];
+        chassis_value.extend_from_slice(chassis);
+        push(1, &chassis_value);
+        let mut port_value = vec![7u8];
+        port_value.extend_from_slice(port);
+        push(2, &port_value);
+        push(3, &120u16.to_be_bytes());
+        push(5, name);
+        push(0, &[]);
+    }
+
+    let decoded = Lldpdu::decode(&lldpdu).expect("a hostile LLDPDU is still well-formed LLDP");
+
+    for (field, text) in [
+        ("chassis_id", decoded.chassis_id.as_str()),
+        ("port_id", decoded.port_id.as_str()),
+        (
+            "system_name",
+            decoded.system_name.as_deref().expect("present"),
+        ),
+    ] {
+        assert!(
+            !text.chars().any(char::is_control),
+            "{field} reached the event still carrying a control character: {text:?}. It is \
+             rendered unquoted into `LLDP neighbour {{system_name}} ({{chassis_id}}) on port \
+             {{port_id}}`, so this forges a log line."
+        );
+    }
+
+    // Neutralised, not truncated: the rest of the value is still reported, so an operator sees
+    // what the neighbour actually claimed.
+    assert_eq!(decoded.system_name.as_deref(), Some("switch1 switch2"));
+    assert!(decoded.chassis_id.starts_with("core-sw "));
+    assert_eq!(decoded.port_id, "Gi0/1 forged");
+
+    // The event the model reads carries the same neutralised string.
+    let data = decoded.to_event_data();
+    assert_eq!(data["system_name"], json!("switch1 switch2"));
 }
