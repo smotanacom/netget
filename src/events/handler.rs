@@ -2756,18 +2756,26 @@ fn describe_pattern(pattern: &crate::scripting::EventPattern) -> String {
     }
 }
 
-/// Collect every action name a protocol can execute in response to an event matching
+/// Collect every action name a **server** can execute in response to an event matching
 /// `pattern`, or `None` if the protocol declares no event matching it.
 ///
 /// `get_sync_actions()` is the protocol-wide catalog for event responses; each matching
 /// event type may additionally advertise its own actions, so both are unioned.
-fn protocol_actions_for_pattern<P>(
-    protocol: &P,
+///
+/// `get_async_actions()` is deliberately **not** part of it, and this is the asymmetry a
+/// future reader will be tempted to "fix": a server has two LLM entry points, so its
+/// async/sync split is a real statement about what may answer a network event. TCP's
+/// `close_connection` takes a `connection_id` and is a user-driven action against the server;
+/// the verb for hanging up on the peer whose event this is, is `close_this_connection`. SSH's
+/// `ssh_auth` narrows to `ssh_auth_decision` for the same reason. A handler answering an event
+/// is in the sync position, so it is held to the sync vocabulary.
+///
+/// Clients are the opposite case and go through
+/// [`crate::llm::actions::client_trait::client_action_names_for_pattern`] — see the note there.
+fn server_actions_for_pattern(
+    protocol: &dyn crate::llm::actions::protocol_trait::Protocol,
     pattern: &crate::scripting::EventPattern,
-) -> Option<Vec<String>>
-where
-    P: crate::llm::actions::protocol_trait::Protocol + ?Sized,
-{
+) -> Option<Vec<String>> {
     let event_types = protocol.get_event_types();
     let matching: Vec<_> = event_types
         .iter()
@@ -2809,7 +2817,40 @@ fn event_handler_parameter_name(error_msg: &str) -> &'static str {
     }
 }
 
+/// The `AppState` used to enumerate a client's async actions while validating handlers.
+///
+/// `Protocol::get_async_actions` takes an `&AppState` and `parse_event_handlers` has none —
+/// it is an associated function that validates a configuration, called before anything is
+/// started. Building one per handler is out of the question: `AppState::new()` shells out to
+/// `python3`, `node`, `go` and `perl` to detect the scripting environments and probes the
+/// process's raw-socket capabilities, which is why `server_registry::register_protocols` also
+/// builds a single shared dummy one. So this is built at most once per process, and only if a
+/// static handler is actually validated.
+///
+/// Passing a state that is not the live one is sound *for enumerating names*: no client reads
+/// it (all 100 `get_async_actions` implementations take `_state`), and a client whose
+/// vocabulary varied with live state could not be validated ahead of start-up by any means.
+fn catalog_state() -> &'static AppState {
+    static CATALOG_STATE: std::sync::OnceLock<AppState> = std::sync::OnceLock::new();
+    CATALOG_STATE.get_or_init(AppState::new)
+}
+
 /// `parse_event_handlers` serves `start_server` and `start_client` alike.
+///
+/// Protocols are matched by the events they declare, so a specific pattern resolves to the
+/// protocol(s) that raise that event and a wildcard pattern matches every protocol in both
+/// registries and yields the union of their catalogs. The union is what makes a wildcard
+/// handler usable at all — the caller starts one instance, of one protocol, and the pattern
+/// says nothing about which — and it is why a wildcard catalog is necessarily broader than
+/// any one protocol's: validation here rejects a name *no* candidate protocol could execute,
+/// which is the typo case it exists for.
+///
+/// Server and client contributions are gathered by different rules, and the difference is
+/// deliberate: see [`server_actions_for_pattern`] (narrowing) and
+/// [`crate::llm::actions::client_trait::client_action_names_for_pattern`] (union). For a
+/// wildcard that matches both a server and a client this means the server contributes its
+/// sync vocabulary and the client its whole one, which is exactly what each of them would
+/// accept when the event fires.
 ///
 /// If no compiled protocol declares a matching event (an event id we do not know about),
 /// the catalog is empty and validation is skipped rather than rejecting the handler.
@@ -2821,14 +2862,18 @@ fn action_catalog_for_pattern(pattern: &crate::scripting::EventPattern) -> Actio
     let mut scopes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for (_, protocol) in crate::protocol::server_registry::registry().all_protocols() {
-        if let Some(actions) = protocol_actions_for_pattern(protocol.as_ref(), pattern) {
+        if let Some(actions) = server_actions_for_pattern(protocol.as_ref(), pattern) {
             scopes.insert(protocol.protocol_name().to_string());
             names.extend(actions);
         }
     }
 
     for protocol in crate::protocol::client_registry::CLIENT_REGISTRY.get_all() {
-        if let Some(actions) = protocol_actions_for_pattern(protocol.as_ref(), pattern) {
+        if let Some(actions) = crate::llm::actions::client_trait::client_action_names_for_pattern(
+            protocol.as_ref(),
+            catalog_state(),
+            pattern,
+        ) {
             scopes.insert(protocol.protocol_name().to_string());
             names.extend(actions);
         }

@@ -158,12 +158,16 @@ impl Protocol for TelnetClientProtocol {
     }
     /// The same four.
     ///
-    /// A client has one LLM entry point, so the async/sync split cannot express a narrowing
-    /// and `client_llm_action_set` unions them anyway — but
-    /// `events::handler::action_catalog_for_pattern` builds the `event_handlers` validation
-    /// catalog from the **sync** list plus the matching event's own actions, and reads the
-    /// async list not at all. `disconnect` was async-only, so a static handler naming it was
-    /// rejected as an unknown action.
+    /// A client has one LLM entry point, so the async/sync split cannot express a narrowing,
+    /// and the two readers that matter union the lists: `client_llm_action_set` for the model
+    /// and `client_action_names_for_pattern` for `event_handlers` validation, which no longer
+    /// reads the sync list alone — `disconnect` was async-only and a static handler naming it
+    /// was rejected as an unknown action until that was fixed centrally.
+    ///
+    /// The copy stays because a third reader still takes the sync list by itself:
+    /// `cli::rolling_tui`'s `execute_single_task` builds a **client-scoped scheduled task**'s
+    /// action list from `get_sync_actions()` alone, and `ConversationHandler` rejects
+    /// everything outside it. Union there too and this list can go.
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![
             send_command_action(),

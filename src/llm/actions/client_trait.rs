@@ -184,6 +184,57 @@ pub fn client_llm_action_set(
     out
 }
 
+/// The action names a **deterministic handler** (`{"type": "static", …}`) for `pattern` may
+/// name on this client, or `None` if the client declares no event matching `pattern`.
+///
+/// This is [`client_llm_action_set`]'s rule applied to the other consumer of a protocol's
+/// vocabulary. `events::handler::action_catalog_for_pattern` validates a handler's action
+/// names at startup, and it built that catalog from `get_sync_actions()` plus the matching
+/// event types' own actions — never `get_async_actions()`. That is the same defect
+/// `client_llm_action_set` was written to fix, one layer over: WHOIS declares `query_whois`
+/// async-only, so `{"event_pattern": "whois_connected", "handler": {"type": "static",
+/// "actions": [{"type": "query_whois", …}]}}` — the client's own documented static-mode
+/// startup example — was **rejected at startup** as an unknown action, and the client could
+/// not be driven deterministically at all.
+///
+/// The reasoning is the one on [`client_llm_action_set`] and it is why this function exists
+/// rather than the server rule being loosened for everyone: **clients union, servers narrow.**
+/// A server has two LLM entry points, so `ssh_auth` narrowing to `ssh_auth_decision` is a real
+/// statement about what may answer an authentication request, and a static handler for that
+/// event should be held to it. A client has one entry point and therefore cannot express a
+/// narrowing — its async/sync split is vestigial — so anything it would offer the model, a
+/// handler may name. Handlers and the model must see the same vocabulary: a verb the model can
+/// use but a script or static handler cannot is a difference nothing in the client means.
+///
+/// `state` is only ever passed through to `get_async_actions`, which no client reads (all 100
+/// implementations take `_state`); enumerating names does not need the live state.
+pub fn client_action_names_for_pattern(
+    protocol: &dyn Client,
+    state: &AppState,
+    pattern: &crate::scripting::EventPattern,
+) -> Option<Vec<String>> {
+    let event_types = protocol.get_event_types();
+    let matching: Vec<_> = event_types
+        .iter()
+        .filter(|et| pattern.matches(&et.id))
+        .collect();
+    if matching.is_empty() {
+        return None;
+    }
+
+    // async ∪ sync, exactly as the model is shown it…
+    let mut names: Vec<String> = client_llm_action_set(protocol, state, None)
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    // …plus whatever the matching events attach, which is the third term of the union that
+    // `client_llm_action_set` adds once an event is actually firing.
+    for event_type in matching {
+        names.extend(event_type.actions.iter().map(|a| a.name.clone()));
+    }
+    Some(names)
+}
+
 /// Audit a client protocol's action declarations against what the model can actually see.
 ///
 /// This is the client-side counterpart of

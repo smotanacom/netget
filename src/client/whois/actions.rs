@@ -10,12 +10,17 @@
 //!   the example is rendered verbatim into the documentation and so has to be executable.
 //! * The parameters the client actually puts on each event — `remote_addr`, `response`,
 //!   `query`, `truncated` — were documented nowhere the model could read them.
-//! * `event_handlers` validation (`events::handler::action_catalog_for_pattern`) builds its
-//!   catalog from `get_sync_actions()` **plus the matching event's own actions**, and reads
+//! * `event_handlers` validation (`events::handler::action_catalog_for_pattern`) built its
+//!   catalog from `get_sync_actions()` **plus the matching event's own actions**, and read
 //!   `get_async_actions()` not at all. With no `.with_actions(…)` anywhere and an empty sync
 //!   list, the catalog for a whois-client event was the common actions alone — so
 //!   `{"type": "query_whois"}` in a static handler was rejected as an unknown action, and a
-//!   whois client could not be routed deterministically at all.
+//!   whois client could not be routed deterministically at all. **That was a defect in the
+//!   shared code and is fixed there**: a client's catalog is now async ∪ sync ∪ the matching
+//!   events' actions, the same union the model is shown
+//!   (`llm::actions::client_trait::client_action_names_for_pattern`). Attaching the two verbs
+//!   to the events below is still right — the event's own list is what a reader of the docs
+//!   sees as the answer to *that* event — but it is no longer what makes them nameable.
 //!
 //! The actions are therefore defined once, below, and attached to both events.
 
@@ -152,10 +157,16 @@ impl Protocol for WhoisClientProtocol {
         vec![query_whois_action(), disconnect_action()]
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
-        // The same two verbs. A client has one LLM entry point, so async/sync cannot express
-        // a narrowing and `client_llm_action_set` unions them anyway — but
-        // `events::handler::action_catalog_for_pattern` reads the *sync* list and not the
-        // async one, so declaring here is what lets a static or script handler name these.
+        // The same two verbs. A client has one LLM entry point, so async/sync cannot express a
+        // narrowing, and the two readers that matter union the lists anyway:
+        // `client_llm_action_set` for the model and `client_action_names_for_pattern` for
+        // `event_handlers` validation, which no longer reads the sync list alone.
+        //
+        // The copy stays because a third reader still does: `cli::rolling_tui`'s
+        // `execute_single_task` builds a client-scoped scheduled task's action list from
+        // `get_sync_actions()` and nothing else, and `ConversationHandler` rejects anything
+        // outside it. Drop this list and a scheduled task on a WHOIS client can no longer
+        // issue a query. Union there too and this can go.
         vec![query_whois_action(), disconnect_action()]
     }
     fn protocol_name(&self) -> &'static str {
