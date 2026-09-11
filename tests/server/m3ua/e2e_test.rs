@@ -207,7 +207,10 @@ mod m3ua_e2e_test {
         });
 
         let server = start_netget_server(config).await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Wait for the condition, never a fixed sleep: `start_netget_server` returns when
+        // startup is *parsed*, not when the socket is bound, and two seconds is enough alone
+        // and not when a hundred tests run together.
+        server.wait_for_log("M3UA SGP listening on", 15).await?;
 
         let mut asp = timeout(
             Duration::from_secs(5),
@@ -384,7 +387,10 @@ mod m3ua_e2e_test {
         });
 
         let server = start_netget_server(config).await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Wait for the condition, never a fixed sleep: `start_netget_server` returns when
+        // startup is *parsed*, not when the socket is bound, and two seconds is enough alone
+        // and not when a hundred tests run together.
+        server.wait_for_log("M3UA SGP listening on", 15).await?;
 
         let mut asp = timeout(
             Duration::from_secs(5),
@@ -464,7 +470,10 @@ mod m3ua_e2e_test {
         });
 
         let server = start_netget_server(config).await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        // Wait for the condition, never a fixed sleep: `start_netget_server` returns when
+        // startup is *parsed*, not when the socket is bound, and two seconds is enough alone
+        // and not when a hundred tests run together.
+        server.wait_for_log("M3UA SGP listening on", 15).await?;
 
         let mut asp = timeout(
             Duration::from_secs(5),

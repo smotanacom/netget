@@ -94,6 +94,19 @@ The consequential case is Protocol Data. A 15-octet value (12 of routing label p
 part) declares 19 and occupies 20. Get it wrong by one and the far end reads a padding octet as
 the last byte of an ISUP message.
 
+**Both length fields are bounded on the encode side as well as the decode side.**
+`MAX_MESSAGE_LEN` (65535) guards `parse_header`, where a hostile peer chooses the number and
+the risk is an allocation. The mirror image had no guard at all: `Parameter::write_into`
+writes `declared_len()` as a `u16`, so a user part the *model* supplied at 65520 octets or
+more wrapped the Parameter Length field and produced a message no SS7 peer could parse — with
+nothing anywhere saying so. `decode_payload` now refuses past `codec::MAX_USER_DATA_LEN`
+(65511 = 65535 − 8 common header − 4 parameter header − 12 Protocol Data fixed fields),
+counting decoded octets so declaring `hex` buys no extra budget. For scale, a real MSU carries
+at most 272 octets of user part, so anything near the limit means the field has been
+misunderstood rather than a legitimate ceiling reached.
+`codec_test.rs::a_user_part_too_large_to_frame_is_refused_rather_than_wrapped` pins it, and
+asserts the constant is derived from the headers rather than picked.
+
 **Message Length covers the whole message including the common header.** NetGet *includes* the
 parameters' padding in it, which is what the reference stacks do. A peer that excludes the final
 parameter's padding produces a length that is not a multiple of four while still writing the
