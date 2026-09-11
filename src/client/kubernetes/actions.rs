@@ -19,12 +19,23 @@ pub static K8S_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "Kubernetes client connected to cluster API",
         json!({"type": "k8s_list_pods", "namespace": "default"}),
     )
-    .with_parameters(vec![Parameter {
-        name: "cluster_url".to_string(),
-        type_hint: "string".to_string(),
-        description: "Kubernetes cluster URL or kubeconfig path".to_string(),
-        required: true,
-    }])
+    .with_parameters(vec![
+        Parameter {
+            name: "cluster_url".to_string(),
+            type_hint: "string".to_string(),
+            description: "The address this client was opened with: \"default\" when the \
+                          kubeconfig decides the cluster, otherwise the kubeconfig path"
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "namespace".to_string(),
+            type_hint: "string".to_string(),
+            description: "Namespace every action that does not name one itself will use"
+                .to_string(),
+            required: true,
+        },
+    ])
 });
 
 /// Kubernetes client resource received event
@@ -319,18 +330,16 @@ impl Protocol for KubernetesClientProtocol {
         "Kubernetes"
     }
 
+    /// The two statics, cloned — **not** freshly built copies.
+    ///
+    /// This used to construct a second `EventType` per id with its own wording and no
+    /// `.with_parameters(...)`, so the model was shown a `k8s_connected` with no fields while
+    /// the event that actually fires declares `cluster_url`. Two declarations of one event
+    /// drift the moment either is edited; there is only one now.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "k8s_connected",
-                "Triggered when Kubernetes client connects to cluster",
-                json!({"type": "k8s_list_pods", "namespace": "default"}),
-            ),
-            EventType::new(
-                "k8s_resource_received",
-                "Triggered when Kubernetes operation completes",
-                json!({"type": "k8s_list_pods", "namespace": "default"}),
-            ),
+            K8S_CLIENT_CONNECTED_EVENT.clone(),
+            K8S_CLIENT_RESOURCE_RECEIVED_EVENT.clone(),
         ]
     }
 
@@ -347,9 +356,25 @@ impl Protocol for KubernetesClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("kube-rs library for Kubernetes API access")
-            .llm_control("Full control over cluster resources (Pods, Deployments, Services, etc.)")
-            .e2e_testing("minikube or kind local cluster")
+            .implementation(
+                "kube 0.99 + k8s-openapi 0.24 (v1_30 types) over rustls. Verbs: list pods / \
+                 deployments / services, get pod, pod logs (last 100 lines), create pod, \
+                 delete pod. No watch, exec, port-forward, patch, scale or custom resources.",
+            )
+            .llm_control(
+                "The model issues those verbs and is called again with the result \
+                 (k8s_resource_received), so a listing can be followed up on. Follow-ups run \
+                 through run_operation_once, which raises no event and therefore terminates.",
+            )
+            .e2e_testing(
+                "tests/client/kubernetes/command_channel_test.rs - no cluster and no LLM: \
+                 KUBECONFIG is pointed at a throwaway file whose only cluster is a loopback \
+                 HTTP stub, an injected k8s_list_pods is asserted to have reached \
+                 /api/v1/namespaces/default/pods, and the developer's own ~/.kube/config is \
+                 never read. There is NO test against a real cluster: the minikube/kind tests \
+                 in e2e_test.rs were placeholders that asserted nothing and have been removed, \
+                 which is why this stays Experimental.",
+            )
             .build()
     }
 
@@ -364,6 +389,11 @@ impl Protocol for KubernetesClientProtocol {
     fn group_name(&self) -> &'static str {
         "Cloud & Orchestration"
     }
+    /// **`remote_addr` must be `"default"`, or a `kubeconfig` startup parameter must name a
+    /// file.** These examples said `"kubernetes.local:6443"`, which `connect()` refuses
+    /// outright — this client has no host:port form, because a cluster address alone carries
+    /// no credentials or CA and `kube` cannot be pointed at one. A model copying the old
+    /// example got "address is not understood" every time.
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
         use crate::llm::actions::StartupExamples;
         use serde_json::json;
@@ -372,20 +402,21 @@ impl Protocol for KubernetesClientProtocol {
             // LLM mode: LLM handles Kubernetes cluster queries
             json!({
                 "type": "open_client",
-                "remote_addr": "kubernetes.local:6443",
+                "remote_addr": "default",
                 "base_stack": "kubernetes",
                 "instruction": "Connect to Kubernetes cluster and list all pods in the default namespace",
                 "startup_params": {
                     "namespace": "default"
                 }
             }),
-            // Script mode: Code-based Kubernetes handling
+            // Script mode: Code-based Kubernetes handling, against an explicit kubeconfig
             json!({
                 "type": "open_client",
-                "remote_addr": "kubernetes.local:6443",
+                "remote_addr": "default",
                 "base_stack": "kubernetes",
                 "startup_params": {
-                    "namespace": "default"
+                    "namespace": "default",
+                    "kubeconfig": "~/.kube/config"
                 },
                 "event_handlers": [{
                     "event_pattern": "k8s_connected",
@@ -399,7 +430,7 @@ impl Protocol for KubernetesClientProtocol {
             // Static mode: Fixed Kubernetes action
             json!({
                 "type": "open_client",
-                "remote_addr": "kubernetes.local:6443",
+                "remote_addr": "default",
                 "base_stack": "kubernetes",
                 "startup_params": {
                     "namespace": "default"

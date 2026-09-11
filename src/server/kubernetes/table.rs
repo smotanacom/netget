@@ -284,6 +284,10 @@ fn ready_cell(kind: &str, item: &Value) -> String {
 }
 
 fn restarts_cell(item: &Value) -> String {
+    // Saturating, not `sum()`. `restartCount` comes out of the model's object, so two
+    // containers claiming `i64::MAX` is reachable — and `Cargo.toml` has no `[profile.dev]`, so
+    // `overflow-checks` is on in every debug and test build: a plain `sum()` would panic there
+    // and wrap silently in the shipped binary, which is exactly the wrong way round.
     let total: i64 = item
         .get("status")
         .and_then(|s| s.get("containerStatuses"))
@@ -292,7 +296,7 @@ fn restarts_cell(item: &Value) -> String {
             statuses
                 .iter()
                 .filter_map(|s| s.get("restartCount").and_then(Value::as_i64))
-                .sum()
+                .fold(0i64, i64::saturating_add)
         })
         .unwrap_or(0);
     total.to_string()

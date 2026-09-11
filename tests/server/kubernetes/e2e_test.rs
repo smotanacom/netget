@@ -28,14 +28,35 @@ use tokio::time::timeout;
 // kubectl harness
 // ---------------------------------------------------------------------------
 
-/// `true` when a usable `kubectl` is on PATH. The kubectl-driven tests skip without it rather
-/// than failing, so the suite still runs on a machine that has no Kubernetes tooling.
-fn kubectl_available() -> bool {
-    Command::new("kubectl")
+/// Fail unless a usable `kubectl` is on PATH, naming the client version it found.
+///
+/// **This must not skip.** The real `kubectl` binary *is* the evidence these tests exist to
+/// produce — it is what makes this protocol's maturity rating honest, because a Kubernetes API
+/// server that has only ever been talked to by our own code proves nothing. A
+/// `println!("SKIP")` + `return Ok(())` is a silent pass on any machine without the binary, and
+/// that is precisely how a maturity claim outlives the thing that justified it. Copied from
+/// `tests/server/npm/e2e_test.rs`, which says the same in its own words.
+fn require_kubectl() -> Result<String, Box<dyn std::error::Error>> {
+    match Command::new("kubectl")
         .args(["version", "--client"])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    {
+        Ok(out) if out.status.success() => {
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        Ok(out) => Err(format!(
+            "`kubectl version --client` exited {}: this test's whole point is driving the real \
+             kubectl binary against NetGet's apiserver",
+            out.status
+        )
+        .into()),
+        Err(e) => Err(format!(
+            "kubectl is not available ({e}): this test's whole point is driving the real kubectl \
+             binary against NetGet's apiserver, and skipping it would leave the Kubernetes \
+             server's maturity rating resting on nothing"
+        )
+        .into()),
+    }
 }
 
 /// Write a kubeconfig pointing at the NetGet server and return its path.
@@ -174,10 +195,7 @@ fn node_items() -> Value {
 async fn test_kubectl_version_get_pods_and_get_nodes() -> E2EResult<()> {
     println!("\n=== E2E Test: real kubectl against NetGet ===");
 
-    if !kubectl_available() {
-        println!("SKIP: kubectl is not installed");
-        return Ok(());
-    }
+    println!("kubectl client: {}", require_kubectl()?);
 
     let prompt =
         "Open a Kubernetes API server on port {AVAILABLE_PORT} with three pods and two nodes";
@@ -336,10 +354,7 @@ async fn test_kubectl_version_get_pods_and_get_nodes() -> E2EResult<()> {
 async fn test_kubectl_get_single_pod_and_not_found() -> E2EResult<()> {
     println!("\n=== E2E Test: kubectl get pod / NotFound Status ===");
 
-    if !kubectl_available() {
-        println!("SKIP: kubectl is not installed");
-        return Ok(());
-    }
+    println!("kubectl client: {}", require_kubectl()?);
 
     let prompt =
         "Open a Kubernetes API server on port {AVAILABLE_PORT} serving one pod named web-0";

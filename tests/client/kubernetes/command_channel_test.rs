@@ -189,11 +189,12 @@ users:
 /// dependency is optional and is not enabled by the `kubernetes` feature, so `rustls::` is not
 /// nameable from here.
 ///
-/// **This is a test-side workaround for a real defect**: a NetGet binary built with
-/// `all-protocols` has the same ambiguity and `kube::Client::try_default()` panics in it.
-/// Fixing that needs the same `install_default` call inside
-/// `KubernetesClient::connect_with_llm_actions`, which needs `dep:rustls` added to the
-/// `kubernetes` feature in `Cargo.toml`. See `src/client/kubernetes/CLAUDE.md`.
+/// **Belt-and-braces, not a workaround.** `connect_with_llm_actions` installs the provider
+/// itself (as `dot`, `tls`, `dc` and `http3` do), and `src/bin/netget.rs` installs one for the
+/// shipped binary under a gate `tests/rustls_provider_gate_test.rs` keeps honest. Calling it
+/// here as well is harmless — `install_default` returns `Err` when one is already set — and it
+/// keeps the test independent of which of those ran first. See
+/// `src/client/kubernetes/CLAUDE.md`.
 fn install_rustls_provider() {
     let _ = quinn::rustls::crypto::ring::default_provider().install_default();
 }

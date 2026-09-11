@@ -144,7 +144,14 @@ impl Protocol for KubernetesProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta, on evidence rather than on vibes: `tests/server/kubernetes/e2e_test.rs`
+            // drives the **real kubectl binary** through version / get pods / get nodes /
+            // get pod -o json / a 404 NotFound / delete, and `require_kubectl()` **fails**
+            // rather than skipping when the binary is absent. A skip-when-missing gate is a
+            // silent pass, which is what held this at Experimental; it is not what holds it
+            // now. Not Stable: TLS has never been driven by kubectl, and watch, OpenAPI,
+            // admission, RBAC and authentication are all absent (see `notes`).
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "hyper HTTP/1.1 + serde_json, optional tokio-rustls TLS. JSON only - no \
@@ -161,18 +168,26 @@ impl Protocol for KubernetesProtocol {
             )
             .e2e_testing(
                 "tests/server/kubernetes/e2e_test.rs - mocked LLM, driven by the real kubectl \
-                 binary via a generated kubeconfig, plus reqwest for wire-level assertions",
+                 binary via a generated kubeconfig, plus reqwest for wire-level assertions. The \
+                 kubectl gate HARD FAILS when the binary is missing rather than skipping, so a \
+                 machine without kubectl reports that instead of a silent pass. \
+                 tests/server/kubernetes/guard_test.rs covers the request-body cap, the \
+                 status-code range check and Table rendering of hostile numbers.",
             )
             .notes(
                 "Validated against real kubectl v1.22.4 (darwin/arm64) over plain HTTP: \
                  'kubectl version', 'kubectl get pods', 'kubectl get nodes', 'kubectl get pod \
-                 <name> -o json', 'kubectl get pods' against an empty cluster, and a 404 \
-                 NotFound Status. TLS is implemented via the shared tls_cert_manager \
-                 (tls_enabled=true) and exercised by a rustls client in the suite, but has NOT \
-                 been driven by kubectl. NOT implemented: watch (?watch=true returns a 501 \
-                 Status), OpenAPI schema endpoints (/openapi/* returns 404, so 'kubectl \
+                 <name> -o json', 'kubectl get pods' against an empty cluster, a 404 NotFound \
+                 Status and 'kubectl delete pod'. TLS is implemented via the shared \
+                 tls_cert_manager (tls_enabled=true) and exercised by a rustls client in the \
+                 suite, but has NOT been driven by kubectl. Request bodies are capped at 3 MiB \
+                 (the apiserver's own maxRequestBodyBytes) and refused with a 413 \
+                 RequestEntityTooLarge Status. NOT implemented: watch (?watch=true returns a \
+                 501 Status), OpenAPI schema endpoints (/openapi/* returns 404, so 'kubectl \
                  explain' and client-side apply validation will not work), admission, RBAC, \
-                 authentication, protobuf content negotiation, and server-side apply.",
+                 authentication (no Authorization header is checked and none is put in the \
+                 event, so the model cannot make that decision either - every request is \
+                 served), protobuf content negotiation, and server-side apply.",
             )
             .build()
     }
