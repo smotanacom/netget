@@ -103,12 +103,26 @@ pub static TURN_CLIENT_PERMISSION_CREATED_EVENT: LazyLock<EventType> = LazyLock:
             "type": "wait_for_more"
         }),
     )
-    .with_parameters(vec![Parameter {
-        name: "peer_address".to_string(),
-        type_hint: "string".to_string(),
-        description: "Peer address granted permission".to_string(),
-        required: true,
-    }])
+    .with_parameters(vec![
+        Parameter {
+            name: "peer_address".to_string(),
+            type_hint: "string".to_string(),
+            description: "Peer address granted permission. Recovered by correlating the \
+                          response's transaction ID with the CreatePermission request that \
+                          named this peer — RFC 8656 section 9.4 makes the Success Response \
+                          empty, so the server does not repeat it. A response whose \
+                          transaction ID matches nothing this client sent raises no event at \
+                          all rather than reporting a peer it cannot name."
+                .to_string(),
+            required: true,
+        },
+        Parameter {
+            name: "transaction_id".to_string(),
+            type_hint: "string".to_string(),
+            description: "Transaction ID of the CreatePermission exchange (hex)".to_string(),
+            required: true,
+        },
+    ])
 });
 
 /// TURN client allocation refreshed event
@@ -116,7 +130,12 @@ pub static TURN_CLIENT_REFRESHED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "turn_refreshed",
         "TURN allocation lifetime extended",
-        json!({"type": "placeholder", "event_id": "turn_refreshed"}),
+        // Not `placeholder`: the example is what the model copies, and no executor
+        // accepts an action by that name.
+        json!({
+            "type": "refresh_allocation",
+            "lifetime_seconds": 600
+        }),
     )
     .with_parameters(vec![Parameter {
         name: "lifetime_seconds".to_string(),
@@ -262,33 +281,23 @@ impl Protocol for TurnClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "TURN"
     }
+    /// The events this client raises — **the same `LazyLock` statics it actually
+    /// emits**, not fresh copies.
+    ///
+    /// This used to build five brand-new `EventType`s whose `example` was
+    /// `{"type": "placeholder", "event_id": …}` and which carried no parameters at
+    /// all. `placeholder` is not an action any executor accepts, so the one
+    /// worked example an operator or model sees for each event was unusable, and
+    /// the parameter list the statics do carry was invisible here. Two
+    /// descriptions of the same event that can drift are one too many; there is
+    /// now a single source.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "turn_connected",
-                "Triggered when TURN client connects to server",
-                json!({"type": "placeholder", "event_id": "turn_connected"}),
-            ),
-            EventType::new(
-                "turn_allocated",
-                "Triggered when relay address is allocated",
-                json!({"type": "placeholder", "event_id": "turn_allocated"}),
-            ),
-            EventType::new(
-                "turn_data_received",
-                "Triggered when data is received from peer via relay",
-                json!({"type": "placeholder", "event_id": "turn_data_received"}),
-            ),
-            EventType::new(
-                "turn_permission_created",
-                "Triggered when permission is created for a peer",
-                json!({"type": "placeholder", "event_id": "turn_permission_created"}),
-            ),
-            EventType::new(
-                "turn_refreshed",
-                "Triggered when allocation is refreshed",
-                json!({"type": "placeholder", "event_id": "turn_refreshed"}),
-            ),
+            TURN_CLIENT_CONNECTED_EVENT.clone(),
+            TURN_CLIENT_ALLOCATED_EVENT.clone(),
+            TURN_CLIENT_DATA_RECEIVED_EVENT.clone(),
+            TURN_CLIENT_PERMISSION_CREATED_EVENT.clone(),
+            TURN_CLIENT_REFRESHED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
@@ -302,16 +311,39 @@ impl Protocol for TurnClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("webrtc-turn library for TURN/STUN protocol")
+            // NOT webrtc-turn, which this claimed for a long time. That crate is an
+            // optional dependency of the `turn` feature and nothing in src/ calls
+            // it; every byte here is hand-built on the STUN message format.
+            .implementation(
+                "Manual TURN client (RFC 8656) on the STUN message format — Allocate, \
+                 Refresh, CreatePermission and Send indications are built and parsed here, \
+                 not by a library",
+            )
             .llm_control("Full control over allocations, permissions, and relay data")
-            .e2e_testing("NetGet TURN server as test server")
+            .e2e_testing(
+                "NetGet TURN server as test server; tests/client/turn/command_channel_test.rs \
+                 asserts the datagrams reach a real socket and \
+                 tests/client/turn/response_parsing_test.rs asserts an Allocate Success \
+                 Response is decoded and that malformed ones do not kill the read loop",
+            )
+            .notes(
+                "remote_addr must be a literal IP:port — it is parsed with \
+                 `SocketAddr::parse` and hostnames are rejected. No authentication: \
+                 MESSAGE-INTEGRITY, USERNAME, REALM and NONCE are not implemented, so this \
+                 cannot talk to a public TURN service, only to one that grants without \
+                 credentials. Responses are correlated by transaction ID only for \
+                 CreatePermission; an Allocate or Refresh response from any source that can \
+                 reach the client's ephemeral port is accepted, so do not point this at an \
+                 untrusted network. UDP allocations only: no TCP, no TLS, no ChannelBind, and \
+                 no automatic refresh — the model must refresh before the lifetime expires.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
         "TURN client for NAT traversal relay"
     }
     fn example_prompt(&self) -> &'static str {
-        "Connect to TURN server at localhost:3478 and allocate a relay address"
+        "Connect to TURN server at 127.0.0.1:3478 and allocate a relay address"
     }
     fn group_name(&self) -> &'static str {
         "Network Infrastructure"
@@ -324,14 +356,14 @@ impl Protocol for TurnClientProtocol {
             // LLM mode: LLM controls TURN relay
             json!({
                 "type": "open_client",
-                "remote_addr": "localhost:3478",
+                "remote_addr": "127.0.0.1:3478",
                 "base_stack": "turn",
                 "instruction": "Allocate a relay address and create permission for peer 192.168.1.100:5000"
             }),
             // Script mode: Code-based TURN handling
             json!({
                 "type": "open_client",
-                "remote_addr": "localhost:3478",
+                "remote_addr": "127.0.0.1:3478",
                 "base_stack": "turn",
                 "event_handlers": [{
                     "event_pattern": "turn_data_received",
@@ -345,7 +377,7 @@ impl Protocol for TurnClientProtocol {
             // Static mode: Fixed relay allocation
             json!({
                 "type": "open_client",
-                "remote_addr": "localhost:3478",
+                "remote_addr": "127.0.0.1:3478",
                 "base_stack": "turn",
                 "event_handlers": [
                     {

@@ -2,10 +2,14 @@
 
 ## Overview
 
-TURN (Traversal Using Relays around NAT) client implementing RFC 8656. Connects to TURN servers to obtain relay
-addresses for NAT traversal when direct peer-to-peer connections fail.
+TURN (Traversal Using Relays around NAT) client speaking a **subset** of RFC 8656. Connects to
+TURN servers to obtain relay addresses for NAT traversal when direct peer-to-peer connections
+fail.
 
-**Compliance**: RFC 8656 (TURN), RFC 8489 (STUN)
+**Compliance**: a subset of RFC 8656 (TURN) on RFC 8489 (STUN) framing. Not "compliant" —
+RFC 8656 §7.2 requires MESSAGE-INTEGRITY on an Allocate and this client has no credentials
+at all, so a conforming server refuses everything it sends. `## Limitations` below is the
+honest list; this line used to read "Compliance: RFC 8656, RFC 8489" flat.
 
 **Protocol Purpose**: TURN relays traffic between peers when direct connection is impossible due to restrictive NATs or
 firewalls. Essential fallback for WebRTC, VoIP, and real-time communication.
@@ -32,7 +36,12 @@ TURN uses UDP for control and data:
 
 - Single UDP socket bound to random port
 - All TURN messages sent to/from server address
-- Responses matched by transaction ID
+- **Responses are matched by message type, not by transaction ID** — except
+  CreatePermission, which is correlated (RFC 8656 §9.4 makes its Success Response empty, so
+  there is no other way to know which peer was permitted). An Allocate or Refresh response
+  from *any* source that can reach the ephemeral port is accepted at face value, including a
+  forged XOR-RELAYED-ADDRESS. This line used to claim blanket transaction-ID matching, which
+  the file then contradicted 220 lines later under "Limitations"; the limitation was right.
 
 **Connection Flow**:
 
@@ -89,8 +98,23 @@ All TURN messages follow STUN format:
 - `0x0003`: Allocate Request
 - `0x0004`: Refresh Request
 - `0x0008`: CreatePermission Request
-- `0x0016`: SendIndication
-- `0x0017`: DataIndication
+- `0x0016`: Send Indication
+
+**Message Types (Server → Client)**:
+
+- `0x0103` / `0x0113`: Allocate Success / Error Response
+- `0x0104` / `0x0114`: Refresh Success / Error Response
+- `0x0108` / `0x0118`: CreatePermission Success / Error Response
+- `0x0017`: Data Indication (this was listed under client → server above; it is the
+  direction that carries relayed peer traffic *back*)
+
+**Class decoding** is `C1<<1 | C0` with C0 at bit 4 and C1 at bit 8 (RFC 8489 §5), giving
+0 = request, 1 = indication, 2 = success response, 3 = error response. `parse_turn_header`
+had an expression that collapsed the two bits wrongly and evaluated to `C0 + 18*C1`, so
+every class with C1 set landed on 18 or 19 and fell through to "Unknown". A client receives
+nothing but responses and indications, so **not one reply could be parsed**: `relay_address`
+was never learned and all four response-driven events below were unreachable. Fixed
+September 2026; `tests/client/turn/response_parsing_test.rs` pins it.
 
 **Key Attributes**:
 
@@ -192,7 +216,7 @@ The client must XOR-decode relay addresses from responses and XOR-encode peer ad
 
 ### Example LLM Flow
 
-**User Instruction**: "Connect to TURN server at localhost:3478, allocate a relay, and grant permission for peer
+**User Instruction**: "Connect to TURN server at 127.0.0.1:3478, allocate a relay, and grant permission for peer
 192.168.1.100:5000"
 
 **LLM Behavior**:
@@ -259,17 +283,43 @@ indication really arrive at a peer socket, with the byte counts the outcomes cla
     - No background task to keep allocation alive
     - **Impact**: Allocation may expire if LLM forgets to refresh
 
-6. **Simple Transaction ID Matching**
-    - Responses matched only by parsing message type
-    - No transaction ID correlation for request/response pairing
-    - **Impact**: May misattribute responses in high-traffic scenarios
+6. **Almost no Transaction ID Matching**
+    - Allocate, Refresh and Data responses are matched by message type alone
+    - CreatePermission **is** correlated by transaction ID, because its Success Response is
+      empty and the peer is otherwise unknowable (RFC 8656 §9.4)
+    - **Impact**: may misattribute responses under load, and see the security note below
+
+7. **Hostnames are not supported**
+    - `remote_addr` goes through `SocketAddr::parse`, so `turn.example.com:3478` is rejected
+      with "Invalid TURN server address"
+    - The startup examples used to say `localhost:3478`, which is exactly the form that
+      fails; they now say `127.0.0.1:3478`
+    - Silver lining: there is no `lookup_host` here, so the getaddrinfo stall documented in
+      the root CLAUDE.md does not apply
 
 ### Security Considerations
 
-**No Message Integrity**: Without MESSAGE-INTEGRITY, server cannot verify client authenticity. Open relay abuse risk.
+**No Message Integrity**: Without MESSAGE-INTEGRITY, the server cannot verify client
+authenticity, and this client cannot authenticate the server either.
 
-**Predictable Transaction IDs**: Uses `rand::random()` for transaction IDs. Secure for testing, not cryptographically
-strong.
+**An unsolicited response is believed.** Because Allocate and Refresh replies are matched on
+message type only, any host that can reach the client's ephemeral UDP port can send an
+Allocate Success Response and have its XOR-RELAYED-ADDRESS recorded as the relay — the model
+is then told to use an address the attacker chose. The socket is bound to `0.0.0.0:0` and the
+read loop does not check that a datagram came from the configured TURN server. Do not point
+this client at an untrusted network.
+
+**Malformed input used to kill the read loop silently.** Four hand-rolled attribute walks
+bounded their cursor on the 16-bit length the *sender* declared while indexing a 2048-byte
+buffer, so a 20-byte datagram declaring `0xFFFF` panicked. `tokio::spawn` swallows that
+panic: the client stayed `Connected` in `AppState` and the dashboard kept offering `[ send ]`
+while nothing could ever be received again. There is now one bounded walk
+(`TurnClient::attributes`), which trusts the shorter of the declared length and what arrived,
+and `tests/client/turn/response_parsing_test.rs` fires the exact datagram at it.
+
+**Transaction IDs are fine.** `rand::random()` is `ThreadRng`, a ChaCha12 CSPRNG — this
+section used to call them "not cryptographically strong", which was wrong in the direction
+that invites someone to "fix" it.
 
 **No TLS**: Control messages sent in cleartext over UDP. Vulnerable to eavesdropping.
 
@@ -292,25 +342,25 @@ noticeable for VoIP/gaming.
 ### Basic TURN Allocation
 
 ```
-Connect to TURN server at localhost:3478 and allocate a relay address for 600 seconds.
+Connect to TURN server at 127.0.0.1:3478 and allocate a relay address for 600 seconds.
 ```
 
 ### TURN with Peer Permission
 
 ```
-Connect to TURN server at localhost:3478, allocate relay, and grant permission for peer 192.168.1.100:5000.
+Connect to TURN server at 127.0.0.1:3478, allocate relay, and grant permission for peer 192.168.1.100:5000.
 ```
 
 ### TURN Data Relay
 
 ```
-Connect to TURN server at localhost:3478, allocate relay, create permission for peer 192.168.1.100:5000, and when data arrives, echo it back.
+Connect to TURN server at 127.0.0.1:3478, allocate relay, create permission for peer 192.168.1.100:5000, and when data arrives, echo it back.
 ```
 
 ### TURN with Manual Refresh
 
 ```
-Connect to TURN server at localhost:3478, allocate relay with 60 second lifetime, and refresh every 45 seconds to keep it alive.
+Connect to TURN server at 127.0.0.1:3478, allocate relay with 60 second lifetime, and refresh every 45 seconds to keep it alive.
 ```
 
 ## Use Cases
