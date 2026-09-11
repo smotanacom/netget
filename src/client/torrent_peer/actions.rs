@@ -16,7 +16,11 @@ pub static PEER_HANDSHAKE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "peer_handshake",
         "Received handshake from BitTorrent peer",
-        json!({"type": "placeholder", "event_id": "peer_handshake"}),
+        // Not `{"type": "placeholder", ...}`, which `execute_action` refuses outright as
+        // `Unknown Peer client action: placeholder` — the single example the model was shown
+        // was one it would be rejected for copying. Declaring interest is the realistic
+        // answer to a completed handshake.
+        json!({"type": "peer_interested"}),
     )
     .with_parameters(vec![
         Parameter {
@@ -42,7 +46,13 @@ pub static PEER_HANDSHAKE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 
 /// Peer message event
 pub static PEER_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
-    EventType::new("peer_message", "Received message from BitTorrent peer", json!({"type": "placeholder", "event_id": "peer_message"}))
+    EventType::new(
+        "peer_message",
+        "Received message from BitTorrent peer",
+        // Not a placeholder — see PEER_HANDSHAKE_EVENT above. Requesting a block is the
+        // realistic answer to a peer that has just unchoked or advertised a piece.
+        json!({"type": "peer_request_piece", "index": 0, "begin": 0, "length": 16384}),
+    )
     .with_parameters(vec![
         Parameter {
             name: "message_type".to_string(),
@@ -199,19 +209,14 @@ impl Protocol for TorrentPeerClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "BitTorrent Peer Wire"
     }
+    /// Clone the statics the client actually emits, rather than rebuilding them.
+    ///
+    /// This used to construct a second, parameterless pair. `get_event_types()` is the copy
+    /// the model is shown — the statics are used only at the emit site — so every field
+    /// `with_parameters` declares was invisible to it. Two definitions of one event drift;
+    /// one cannot.
     fn get_event_types(&self) -> Vec<EventType> {
-        vec![
-            EventType::new(
-                "peer_handshake",
-                "Received handshake from peer",
-                json!({"type": "placeholder", "event_id": "peer_handshake"}),
-            ),
-            EventType::new(
-                "peer_message",
-                "Received message from peer",
-                json!({"type": "placeholder", "event_id": "peer_message"}),
-            ),
-        ]
+        vec![PEER_HANDSHAKE_EVENT.clone(), PEER_MESSAGE_EVENT.clone()]
     }
     fn stack_name(&self) -> &'static str {
         "ETH>IP>TCP>BitTorrent-PeerWire"

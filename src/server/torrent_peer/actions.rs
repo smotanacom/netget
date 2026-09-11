@@ -387,10 +387,16 @@ pub static PEER_REQUEST_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "peer_request_message",
         "Peer requested a block of a piece. Answer with send_piece, or with send_choke to \
          refuse.",
+        // Concrete numbers, not `"{{event.index}}"`. `execute_send_piece` reads both with
+        // `.as_u64()`, so the quoted placeholder fails as `Missing index` — and this is a
+        // `response_example`, which is shown to the *model*, where `{{...}}` is not
+        // interpolated at all (only static handlers get that). `SEND_HANDSHAKE_ACTION`'s
+        // own comment records dodging exactly this trap by using real hex in its example;
+        // this event reintroduced it. Copy the event's own numeric `index` and `begin`.
         json!({
             "type": "send_piece",
-            "index": "{{event.index}}",
-            "begin": "{{event.begin}}",
+            "index": 0,
+            "begin": 0,
             "block_hex": "48656c6c6f20576f726c64"
         }),
     )

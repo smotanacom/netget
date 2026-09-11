@@ -132,10 +132,10 @@ async fn injected_dht_query_reaches_the_node() {
     let serde_bencode::value::Value::Dict(msg) = decoded else {
         panic!("a KRPC query is a dictionary");
     };
-    let Some(serde_bencode::value::Value::Dict(args)) = msg.get(b"a".as_ref()) else {
+    let Some(serde_bencode::value::Value::Dict(args)) = msg.get::<[u8]>(b"a") else {
         panic!("a KRPC query carries an `a` dictionary");
     };
-    match args.get(b"id".as_ref()) {
+    match args.get::<[u8]>(b"id") {
         Some(serde_bencode::value::Value::Bytes(id)) => {
             assert_eq!(
                 id.len(),
@@ -150,7 +150,7 @@ async fn injected_dht_query_reaches_the_node() {
         }
         other => panic!("expected `id` to be a byte string, got {other:?}"),
     }
-    match msg.get(b"t".as_ref()) {
+    match msg.get::<[u8]>(b"t") {
         Some(serde_bencode::value::Value::Bytes(t)) => assert_eq!(
             t.as_slice(),
             &[0x00, 0xaa],

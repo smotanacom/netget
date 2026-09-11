@@ -80,11 +80,24 @@ impl Protocol for TorrentDhtProtocol {
         use serde_json::json;
 
         // Deterministic: answer every DHT ping with a pong, no LLM call.
+        //
+        // `transaction_id` is echoed from the event, and both halves of that matter. It is
+        // `required: true`, so `{"type": "send_ping_response"}` — which is what this example
+        // used to be — is rejected outright by `execute_send_ping_response` and the script
+        // answers nothing at all. And because KRPC correlates only on `t`, a reply carrying
+        // anything other than the querying node's own value is discarded by it, so the node
+        // waits out its own timeout exactly as if we had stayed silent. This is the
+        // UDP-protocol echo rule the root CLAUDE.md states for DNS, STUN and NTP; it applies
+        // here for the same reason.
         let script = r#"import json, sys
 data = json.load(sys.stdin)
 event = data["event"]
 if data["event_type_id"] == "dht_ping_query":
-    actions = [{"type": "send_ping_response"}]
+    actions = [{
+        "type": "send_ping_response",
+        "transaction_id": event["transaction_id"],
+        "node_id": "0123456789abcdef0123456789abcdef01234567",
+    }]
 else:
     actions = []
 print(json.dumps({"actions": actions}))"#;
@@ -119,10 +132,15 @@ print(json.dumps({"actions": actions}))"#;
                 "event_handlers": [{
                     "event_pattern": "dht_ping_query",
                     "handler": {
+                        // `{{event.transaction_id}}`, not a hardcoded "aa". A static
+                        // handler IS interpolated, and a KRPC reply that does not echo the
+                        // querying node's own `t` is discarded by it — so a fixed id means
+                        // every client times out, which looks like the server never
+                        // answered rather than like a wrong answer.
                         "type": "static",
                         "actions": [{
                             "type": "send_ping_response",
-                            "transaction_id": "aa",
+                            "transaction_id": "{{event.transaction_id}}",
                             "node_id": "0123456789abcdef0123456789abcdef01234567"
                         }]
                     }
