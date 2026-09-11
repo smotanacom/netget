@@ -67,9 +67,40 @@ and static modes both answer pings entirely in-process, and the static one shows
 matters: `{{event.icmp_id}}` / `{{event.icmp_sequence}}` interpolation, so the correlation the
 sender matches on survives without anyone reasoning about it.
 
-A matched script, static or manual rule is **exempt from the budget**, because it costs no
+A script, static or manual rule that **answers** is exempt from the budget, because it costs no
 model call. An explicit `{"type":"llm"}` rule is **not** exempt: asking for the model by name
 does not raise the ceiling.
+
+**Exemption is decided by the answer, not by the configuration — and getting that backwards
+made the whole bound bypassable.** `handle_frame` used to ask `a_rule_answers`, which only
+looked at what kind of handler was *configured*. But `execute_script_handler`
+(`src/llm/event_handler_executor.rs`) returns `FallbackToLlm` in three cases — the language is
+not installed, the language name is unknown, or the script threw — and by then gate 3 had
+already been skipped on the strength of the handler merely existing. `call_llm` then reached
+the model with no `llm_escalation` check, no budget debit, and `handled_by_rule` bumped in the
+stats.
+
+The shipped script-mode startup example on a machine without `python3` was therefore **one
+uncounted model call per admitted packet, at wire rate**, with `llm_escalation: "never"` inert.
+Measured before the fix: ten packets, ten model calls, under `"never"`. `handle_frame` now runs
+`try_execute_event_handler` itself and only `Handled` is exempt; anything else falls through to
+gate 3 like an unclaimed packet. `Err` (a manual handler that timed out or was dismissed) fails
+closed, writing nothing.
+
+The cost is that `call_llm` dispatches the handlers a second time on the escalation path, so a
+*throwing* script runs twice. That is wasteful rather than harmful — it already failed and
+executed no actions — and the answering path never reaches it. A second entry point into
+`src/llm/` that skipped dispatch would be two copies of the same logic, waiting to drift.
+
+Only `Static` structurally cannot reach the model; `Manual` returns `Err` on timeout rather
+than falling back. So the residual, if any, is narrow — but the point is that the code no
+longer has to know which is which.
+
+Pinned by three tests in `tests/server/tuntap/e2e_test.rs`:
+`a_script_handler_that_cannot_answer_does_not_bypass_the_bound` (zero calls under `"never"`),
+`a_failing_script_handler_is_charged_to_the_budget` (two calls against a ceiling of two, from
+ten packets), and `a_static_handler_that_answers_still_costs_nothing` — the control, without
+which both zeros would be satisfied just as well by deleting gate 2 altogether.
 
 ### Gate 3 — `llm_escalation` + `llm_max_per_minute`
 

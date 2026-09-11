@@ -76,6 +76,7 @@ use tracing::{debug, trace};
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::actions::protocol_trait::ActionResult;
+use crate::llm::event_handler_executor::EventHandlerResult;
 use crate::llm::OllamaClient;
 use crate::logging::emit::Log;
 use crate::protocol::{Event, SpawnContext, StartupParams};
@@ -626,61 +627,103 @@ impl TunTapEngine {
             return;
         }
 
-        // --- Gate 2: a deterministic handler, which costs no model call. ---
-        let handled_by_rule = self
-            .a_rule_answers(TUNTAP_PACKET_RECEIVED_EVENT.id.as_str())
-            .await;
-
-        // --- Gate 3: escalation, only for what nothing else claimed. ---
-        if !handled_by_rule {
-            match self.cfg.escalation {
-                LlmEscalation::Never => {
-                    TunTapStats::bump(&self.stats.dropped_escalation_disabled);
-                    self.log_decision(Decision::LlmDisabled, &decoded, None);
-                    return;
-                }
-                LlmEscalation::Unhandled => {
-                    if !self.budget.try_take() {
-                        TunTapStats::bump(&self.stats.dropped_over_budget);
-                        self.log_decision(
-                            Decision::FailClosedRateLimited,
-                            &decoded,
-                            Some(format!(
-                                "already used the {} consultations this minute allows",
-                                self.budget.max_per_minute()
-                            )),
-                        );
-                        return;
-                    }
-                }
-            }
-            TunTapStats::bump(&self.stats.escalated_to_llm);
-        } else {
-            TunTapStats::bump(&self.stats.handled_by_rule);
-        }
-
         let event = Event::new(&TUNTAP_PACKET_RECEIVED_EVENT, decoded.to_event_data());
-        let outcome = call_llm(
-            &self.llm_client,
+
+        // --- Gate 2: a deterministic handler, which costs no model call. ---
+        //
+        // This *runs* the handler rather than inspecting the configuration. Inspecting it was
+        // the hole that made the whole escalation bound bypassable: a Script handler is exempt
+        // from gate 3 because it answers in-process, but `execute_script_handler` returns
+        // `FallbackToLlm` when the language is not installed, when the language name is
+        // unknown, or when the script throws — and gate 3 had already been skipped on the
+        // strength of the handler merely *existing*. The shipped script-mode startup example
+        // plus a box without `python3` was therefore an uncounted model call per admitted
+        // packet, with `llm_escalation: "never"` and `llm_max_per_minute` both inert and the
+        // counters reporting `handled_by_rule`.
+        //
+        // Running it here means the answer decides, not the configuration. `Handled` is used
+        // as it stands and costs nothing; anything else falls through to gate 3 like any
+        // unclaimed packet.
+        let handler_outcome = crate::llm::event_handler_executor::try_execute_event_handler(
             &self.state,
             self.server_id,
             None,
-            &event,
-            &self.protocol,
+            TUNTAP_PACKET_RECEIVED_EVENT.id.as_str(),
+            &event.event_type.description,
+            Some(event.data.clone()),
+            Some(&self.protocol),
         )
         .await;
 
-        let result = match outcome {
-            Ok(r) => r,
+        let mut handled_by_rule = false;
+        let result = match handler_outcome {
+            Ok(EventHandlerResult::Handled(result)) => {
+                handled_by_rule = true;
+                TunTapStats::bump(&self.stats.handled_by_rule);
+                result
+            }
             Err(e) => {
-                // The whole point of the protocol: no reply is written, ever. A packet
-                // NetGet cannot justify is a packet the host would treat as genuine.
+                // A manual handler that timed out or was dismissed. Same fail-closed path as
+                // a backend failure: nothing is written.
                 self.log_decision(
                     Decision::FailClosedLlmError,
                     &decoded,
                     Some(format!("{e:#}")),
                 );
                 return;
+            }
+            Ok(EventHandlerResult::FallbackToLlm { .. }) => {
+                // --- Gate 3: escalation, only for what nothing else claimed. ---
+                match self.cfg.escalation {
+                    LlmEscalation::Never => {
+                        TunTapStats::bump(&self.stats.dropped_escalation_disabled);
+                        self.log_decision(Decision::LlmDisabled, &decoded, None);
+                        return;
+                    }
+                    LlmEscalation::Unhandled => {
+                        if !self.budget.try_take() {
+                            TunTapStats::bump(&self.stats.dropped_over_budget);
+                            self.log_decision(
+                                Decision::FailClosedRateLimited,
+                                &decoded,
+                                Some(format!(
+                                    "already used the {} consultations this minute allows",
+                                    self.budget.max_per_minute()
+                                )),
+                            );
+                            return;
+                        }
+                    }
+                }
+                TunTapStats::bump(&self.stats.escalated_to_llm);
+
+                // `call_llm` dispatches the handlers again before reaching the model. For a
+                // handler that just told us it cannot answer that is a second no-op (an
+                // unknown or missing language) or a second failing script run — wasteful, not
+                // harmful, and the alternative is a second entry point into `src/llm/` whose
+                // two copies would drift. The answering path never gets here at all.
+                match call_llm(
+                    &self.llm_client,
+                    &self.state,
+                    self.server_id,
+                    None,
+                    &event,
+                    &self.protocol,
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        // The whole point of the protocol: no reply is written, ever. A packet
+                        // NetGet cannot justify is a packet the host would treat as genuine.
+                        self.log_decision(
+                            Decision::FailClosedLlmError,
+                            &decoded,
+                            Some(format!("{e:#}")),
+                        );
+                        return;
+                    }
+                }
             }
         };
 
@@ -782,12 +825,20 @@ impl TunTapEngine {
         }
     }
 
-    /// Does a deterministic rule claim this event?
+    /// Is a deterministic rule configured for the lifecycle events?
     ///
-    /// Gate 2. A script, static or manual rule answers in-process and costs no model call, so
-    /// it is exempt from the escalation budget — that is the whole reason the budget can be
-    /// set as low as it is. An explicit `{"type":"llm"}` rule is *not* exempt: it asks for the
-    /// model by name, and asking by name does not raise the ceiling.
+    /// Gate 2 for `tuntap_interface_up`/`_down`, which fire twice in the life of a server and
+    /// so cannot flood anything — the cost of running a handler speculatively is not worth
+    /// paying there, and neither event is rate-limited.
+    ///
+    /// **The packet path deliberately does not use this**, and that is the fix rather than an
+    /// inconsistency. A script rule is exempt from the escalation budget because it answers
+    /// in-process, but `execute_script_handler` falls back to the model when the language is
+    /// missing, the language name is unknown, or the script throws. Deciding exemption from
+    /// the *configuration* meant the exemption survived the handler failing to answer, so the
+    /// bound the whole protocol exists for could be bypassed at wire rate. `handle_frame` runs
+    /// the handler and lets the answer decide. An explicit `{"type":"llm"}` rule is not exempt
+    /// either way: it asks for the model by name, and asking by name does not raise a ceiling.
     async fn a_rule_answers(&self, event_type_id: &str) -> bool {
         match self.state.get_event_handler_config(self.server_id).await {
             Some(config) => matches!(

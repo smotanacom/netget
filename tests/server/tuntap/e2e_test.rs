@@ -303,6 +303,17 @@ mod tests {
             h.inject(tcp_syn(40000 + i)).await;
         }
         h.wait_for_received(40, Duration::from_secs(60)).await;
+        // `wait_for_received` counts frames *arriving*; its counter is bumped before the
+        // decision path runs, so it backs itself with a fixed 120ms and that is a deadline
+        // rather than a condition. Wait for the terminal counter and for the mock's own
+        // expectations instead — the last packet's decision is what this test measures.
+        h.wait_for_stat(
+            |s| TunTapStats::get(&s.dropped_over_budget),
+            17,
+            Duration::from_secs(60),
+        )
+        .await;
+        h.mock.wait_for_expectations(30).await;
 
         let s = h.stats();
         assert_eq!(TunTapStats::get(&s.received), 40);
@@ -335,6 +346,228 @@ mod tests {
             "only the escalated packets can produce a reply"
         );
         assert_echo_reply(&sent[0], 0x1000, 0);
+
+        h.finish().await
+    }
+
+    /// A handler that cannot answer must not keep its exemption from the escalation bound.
+    ///
+    /// Gate 2 used to decide exemption by **inspecting the configuration**: a `Script` rule
+    /// existing was taken as proof that the packet would be answered in-process, so gate 3 was
+    /// skipped entirely — no `llm_escalation` check, no budget debit, and the counters reported
+    /// `handled_by_rule`. But `execute_script_handler` returns `FallbackToLlm` when the
+    /// language is not installed, when the language name is unknown, or when the script
+    /// throws, and by then the gate had already been passed. The shipped script-mode startup
+    /// example on a box without `python3` was therefore an **uncounted model call per admitted
+    /// packet**, at wire rate, with `llm_escalation: "never"` inert.
+    ///
+    /// `"never"` is the sharpest way to state it: its documented meaning is that no LLM budget
+    /// is *ever* spent, so any number above zero here is the whole claim failing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_script_handler_that_cannot_answer_does_not_bypass_the_bound(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // The mock answers if it is reached. Reaching it is the failure.
+        let mock = MockOllamaServer::start(
+            MockLlmBuilder::new()
+                .on_event("tuntap_packet_received")
+                .respond_with_actions(json!([{"type": "no_response"}]))
+                .expect_calls(0)
+                .build(),
+        )
+        .await?;
+
+        let mut handlers = lifecycle_handled();
+        handlers.push((
+            "tuntap_packet_received",
+            // A language the dispatcher does not recognise, which is the deterministic stand-in
+            // for the realistic case (python3 absent). Both take the same `FallbackToLlm` exit.
+            EventHandlerType::Script {
+                language: "brainfuck".to_string(),
+                code: "+[----->+++<]>+.".to_string(),
+                resident: false,
+                scope: None,
+            },
+        ));
+
+        let mut h = Harness::start(
+            json!({
+                "packet_filter": "icmp",
+                "llm_escalation": "never",
+            }),
+            handlers,
+            mock,
+        )
+        .await;
+
+        for i in 0..10u16 {
+            h.inject(ping(0x2000 + i, i)).await;
+        }
+        h.wait_for_received(10, Duration::from_secs(60)).await;
+        h.wait_for_stat(
+            |s| TunTapStats::get(&s.dropped_escalation_disabled),
+            10,
+            Duration::from_secs(60),
+        )
+        .await;
+
+        let calls = h.mock.call_count().await;
+        assert_eq!(
+            calls, 0,
+            "`llm_escalation: \"never\"` promises no model call ever; a script handler that \
+             could not answer produced {calls} of them"
+        );
+
+        let s = h.stats();
+        assert_eq!(TunTapStats::get(&s.received), 10);
+        assert_eq!(
+            TunTapStats::get(&s.handled_by_rule),
+            0,
+            "a handler that fell back to the model did not handle anything, and counting it as \
+             `handled_by_rule` is what hid this"
+        );
+        assert_eq!(
+            TunTapStats::get(&s.dropped_escalation_disabled),
+            10,
+            "every packet must land on gate 3 and be dropped there"
+        );
+        assert_eq!(TunTapStats::get(&s.escalated_to_llm), 0);
+        assert!(
+            h.drain_egress().is_empty(),
+            "nothing may reach the interface"
+        );
+
+        h.finish().await
+    }
+
+    /// The same hole under a budget rather than an outright ban.
+    ///
+    /// With `llm_escalation: "unhandled"` and a ceiling of two, a script handler that cannot
+    /// answer must consume the budget like any other unanswered packet — bounded, not exempt.
+    /// Before the fix this measured ten.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_failing_script_handler_is_charged_to_the_budget(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mock = MockOllamaServer::start(
+            MockLlmBuilder::new()
+                .on_event("tuntap_packet_received")
+                .respond_with_actions(json!([{"type": "no_response"}]))
+                .expect_calls(2)
+                .build(),
+        )
+        .await?;
+
+        let mut handlers = lifecycle_handled();
+        handlers.push((
+            "tuntap_packet_received",
+            EventHandlerType::Script {
+                language: "brainfuck".to_string(),
+                code: "+[----->+++<]>+.".to_string(),
+                resident: false,
+                scope: None,
+            },
+        ));
+
+        let mut h = Harness::start(
+            json!({
+                "packet_filter": "icmp",
+                "llm_escalation": "unhandled",
+                "llm_max_per_minute": 2,
+            }),
+            handlers,
+            mock,
+        )
+        .await;
+
+        for i in 0..10u16 {
+            h.inject(ping(0x3000 + i, i)).await;
+        }
+        h.wait_for_received(10, Duration::from_secs(60)).await;
+        h.wait_for_stat(
+            |s| TunTapStats::get(&s.dropped_over_budget),
+            8,
+            Duration::from_secs(60),
+        )
+        .await;
+        h.mock.wait_for_expectations(30).await;
+
+        let calls = h.mock.call_count().await;
+        assert_eq!(
+            calls, 2,
+            "the ceiling is 2 consultations a minute; measured {calls} for 10 packets"
+        );
+        let s = h.stats();
+        assert_eq!(TunTapStats::get(&s.escalated_to_llm), 2);
+        assert_eq!(TunTapStats::get(&s.dropped_over_budget), 8);
+
+        h.finish().await
+    }
+
+    /// A script handler that *does* answer stays exempt, so the fix is not a ban on scripts.
+    ///
+    /// Without this, the two tests above would pass just as well if gate 2 had been deleted —
+    /// and script mode is the whole point of the protocol being usable at all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_static_handler_that_answers_still_costs_nothing(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mock = MockOllamaServer::start(
+            MockLlmBuilder::new()
+                .on_event("tuntap_packet_received")
+                .respond_with_actions(json!([{"type": "no_response"}]))
+                .expect_calls(0)
+                .build(),
+        )
+        .await?;
+
+        let mut handlers = lifecycle_handled();
+        handlers.push((
+            "tuntap_packet_received",
+            EventHandlerType::static_response(vec![json!({
+                "type": "send_packet",
+                "source": "10.7.0.2",
+                "destination": "10.7.0.1",
+                "protocol": "icmp",
+                "icmp_type": "echo_reply",
+                "icmp_id": 1,
+                "icmp_sequence": 1,
+            })]),
+        ));
+
+        let mut h = Harness::start(
+            json!({
+                "packet_filter": "icmp",
+                // The strictest setting there is: if the handler were charged, nothing would
+                // be answered at all.
+                "llm_escalation": "never",
+            }),
+            handlers,
+            mock,
+        )
+        .await;
+
+        for i in 0..5u16 {
+            h.inject(ping(0x4000 + i, i)).await;
+        }
+        h.wait_for_received(5, Duration::from_secs(60)).await;
+        h.wait_for_stat(
+            |s| TunTapStats::get(&s.handled_by_rule),
+            5,
+            Duration::from_secs(60),
+        )
+        .await;
+
+        assert_eq!(h.mock.call_count().await, 0, "a static handler is free");
+        let s = h.stats();
+        assert_eq!(
+            TunTapStats::get(&s.handled_by_rule),
+            5,
+            "every packet must be credited to the handler that actually answered it"
+        );
+        assert_eq!(TunTapStats::get(&s.dropped_escalation_disabled), 0);
+        assert_eq!(
+            h.drain_egress().len(),
+            5,
+            "the handler's replies must still reach the interface"
+        );
 
         h.finish().await
     }
