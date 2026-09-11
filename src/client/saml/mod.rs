@@ -16,7 +16,7 @@ use crate::client::saml::actions::{
 use crate::llm::actions::client_trait::{Client, ClientActionResult};
 use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ClientLlmResult;
-use crate::protocol::Event;
+use crate::protocol::{Event, StartupParams};
 use crate::state::app_state::AppState;
 use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
@@ -44,6 +44,60 @@ pub enum Dispatch {
     Deferred,
 }
 
+/// The Service Provider side of the configuration, as the caller declared it.
+///
+/// `entity_id`, `acs_url` and `binding` are declared startup parameters and arrive on
+/// `ConnectContext::startup_params`. They are resolved once, at connect, and written into
+/// `protocol_data` -- which is where every later step reads them from, and which
+/// `cli/client_startup.rs` leaves `Value::Null` until someone writes it.
+struct SamlConfig {
+    entity_id: String,
+    acs_url: String,
+    binding: String,
+}
+
+impl SamlConfig {
+    /// NetGet's own placeholder SP identity, used when the caller names none.
+    const DEFAULT_ENTITY_ID: &'static str = "urn:netget:sp";
+    /// Placeholder ACS URL, likewise.
+    const DEFAULT_ACS_URL: &'static str = "http://localhost:8080/saml/acs";
+
+    fn resolve(params: Option<&StartupParams>) -> Result<Self> {
+        let (entity_id, acs_url, binding) = match params {
+            Some(params) => (
+                params.get_optional_string("entity_id")?,
+                params.get_optional_string("acs_url")?,
+                params.get_optional_string("binding")?,
+            ),
+            None => (None, None, None),
+        };
+
+        // Refused rather than silently reinterpreted. `build_sso_request` treats anything that
+        // is not exactly "redirect" as HTTP-POST, so "Redirect" or a typo would quietly change
+        // the binding -- an advertised knob doing something other than what it says is worse
+        // than one that does nothing.
+        let binding = match binding {
+            None => "redirect".to_string(),
+            Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+                "redirect" => "redirect".to_string(),
+                "post" => "post".to_string(),
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "startup parameter 'binding' must be \"redirect\" or \"post\", got {:?}",
+                        value
+                    ))
+                }
+            },
+        };
+
+        Ok(Self {
+            entity_id: entity_id.unwrap_or_else(|| Self::DEFAULT_ENTITY_ID.to_string()),
+            acs_url: acs_url.unwrap_or_else(|| Self::DEFAULT_ACS_URL.to_string()),
+            binding,
+        })
+    }
+}
+
 /// SAML client that authenticates with a SAML Identity Provider
 pub struct SamlClient;
 
@@ -55,6 +109,7 @@ impl SamlClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<StartupParams>,
     ) -> Result<SocketAddr> {
         // For SAML, "connection" is logical - we're preparing to authenticate
         // The actual communication happens via HTTP requests to the IdP
@@ -64,7 +119,17 @@ impl SamlClient {
             client_id, remote_addr
         );
 
-        // Store IdP URL in protocol_data
+        // The three declared parameters. They used to be written here as *hardcoded*
+        // placeholders, under a comment saying they could be "overridden by startup params" --
+        // and `ctx.startup_params` was dropped, so nothing could override them. What the
+        // caller passed was silently replaced by `urn:netget:sp` and
+        // `http://localhost:8080/saml/acs`, which are the SP identity the AuthnRequest claims
+        // and the address it asks the IdP to post the assertion to. Errors propagate: a
+        // wrong-typed value must name itself, not panic the task that is starting the client.
+        let config = SamlConfig::resolve(startup_params.as_ref())?;
+
+        // Store the IdP URL and the resolved SP configuration in protocol_data. Everything
+        // downstream (`build_sso_request`) reads it back from there.
         app_state
             .with_client_mut(client_id, |client| {
                 client.set_protocol_field(
@@ -72,18 +137,12 @@ impl SamlClient {
                     serde_json::json!("initialized"),
                 );
                 client.set_protocol_field("idp_url".to_string(), serde_json::json!(remote_addr));
-                // Default entity ID (can be overridden by startup params)
                 client.set_protocol_field(
                     "entity_id".to_string(),
-                    serde_json::json!("urn:netget:sp"),
+                    serde_json::json!(config.entity_id),
                 );
-                // Default ACS URL
-                client.set_protocol_field(
-                    "acs_url".to_string(),
-                    serde_json::json!("http://localhost:8080/saml/acs"),
-                );
-                // Default binding (redirect or post)
-                client.set_protocol_field("binding".to_string(), serde_json::json!("redirect"));
+                client.set_protocol_field("acs_url".to_string(), serde_json::json!(config.acs_url));
+                client.set_protocol_field("binding".to_string(), serde_json::json!(config.binding));
             })
             .await;
 
@@ -417,8 +476,8 @@ impl SamlClient {
         let (idp_url, entity_id, acs_url, binding) = config_opt.context("Client not found")?;
 
         let idp_url = idp_url.context("No IdP URL found")?;
-        let entity_id = entity_id.unwrap_or_else(|| "urn:netget:sp".to_string());
-        let acs_url = acs_url.unwrap_or_else(|| "http://localhost:8080/saml/acs".to_string());
+        let entity_id = entity_id.unwrap_or_else(|| SamlConfig::DEFAULT_ENTITY_ID.to_string());
+        let acs_url = acs_url.unwrap_or_else(|| SamlConfig::DEFAULT_ACS_URL.to_string());
         let binding = binding.unwrap_or_else(|| "redirect".to_string());
 
         // Generate SAML AuthnRequest

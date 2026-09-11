@@ -59,12 +59,31 @@ validating SAML assertions.
 
 Client stores in `protocol_data`:
 
-- `idp_url`: Identity Provider endpoint URL
+- `idp_url`: Identity Provider endpoint URL (from `remote_addr`)
 - `entity_id`: Service Provider entity identifier (default: `urn:netget:sp`)
 - `acs_url`: Assertion Consumer Service URL (where IdP sends response)
 - `binding`: SAML binding type (`redirect` or `post`)
 - `request_id`: Generated request ID for validation
 - `sso_url`: Complete SSO URL for user redirection
+
+`entity_id`, `acs_url` and `binding` are resolved from the declared **startup parameters** at
+connect and written here; everything downstream reads them back out of `protocol_data`.
+
+**Until September 2026 they were resolved from nothing.** `connect` dropped
+`ctx.startup_params` and wrote the three defaults as hardcoded literals, under a comment
+reading "Default entity ID (can be overridden by startup params)" — nothing could override
+them, because nothing read them. `cli/client_startup.rs` leaves `protocol_data` as
+`Value::Null`, so there was no other route in either. Every AuthnRequest NetGet produced
+therefore claimed to be `urn:netget:sp` and asked the IdP to post the assertion to
+`http://localhost:8080/saml/acs`, whoever the caller was and wherever their ACS really lived —
+the SP identity and the assertion destination, so SSO could not work at all.
+
+`binding` is additionally **validated**: `build_sso_request` treats anything that is not
+exactly `"redirect"` as HTTP-POST, so once the parameter is honoured a typo would silently
+change the binding. An unrecognised value is refused at connect instead.
+
+Pinned by `tests/client/saml/startup_params_test.rs`, which asserts on the decoded
+AuthnRequest XML rather than on the stored fields.
 
 ## LLM Integration
 
