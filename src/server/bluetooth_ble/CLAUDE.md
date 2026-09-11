@@ -222,10 +222,34 @@ The LLM has full control over the BLE GATT server:
 
 **Server-Level State**:
 
-- `ConnectionState`: Idle/Processing/Accumulating (prevents concurrent LLM calls)
 - `memory`: LLM conversation memory
-- `characteristics`: Tracked characteristic metadata and current values
-- `queued_events`: Events queued during Processing state
+- `characteristics`: Tracked characteristic metadata and current values, keyed by
+  `characteristic_key` (see below)
+
+**There is no per-connection state machine here, and there never was one that worked.** This
+module used to carry the `ConnectionState` Idle/Processing/Accumulating trio and a
+`queued_events` vector, documented as "prevents concurrent LLM calls" and "events queued during
+Processing state". Neither was true. `event_loop` is a `while let Some(event) = event_rx.recv()`
+loop that awaits each event's LLM call to completion before receiving the next, so the state was
+set to `Processing` and back to `Idle` inside a single iteration and nothing could ever observe
+it as anything but `Idle`. The `Processing` and `Accumulating` match arms were unreachable, and
+`queued_events` was pushed to in four places and drained in none.
+
+That is worse than merely dead: had the loop ever been made concurrent, those arms would have
+moved the ATT `responder` into a vector nothing reads, so the central would wait out its
+30-second transaction timeout and tear down the connection rather than get an error. All of it
+is removed. **Serialisation here is a property of the loop, not of a state variable** — if
+concurrent handling is ever wanted, it needs a real design, not the revival of this.
+
+**Characteristic keys are canonical.** `characteristic_key` normalises every UUID spelling to
+the lowercase-hyphenated 128-bit form before it is used as a map key, because the radio reports
+`Uuid::to_string()` while the model writes whatever the documentation showed it. Three separate
+places disagreed about this before: `add_service` filed values under the model's spelling, the
+read/write paths looked them up under the radio's, `send_notification` used the model's again,
+and `BleRouter::register_characteristic` merely lowercased. So a service added with this
+protocol's own documented `"uuid": "2A37"` had an unreachable `initial_value`, writes never
+updated the stored value, and characteristic routing always fell through to the "newest live
+server" fallback — which is invisible with one server and cross-wires two.
 
 **No Connection Tracking**:
 
