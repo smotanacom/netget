@@ -179,7 +179,11 @@ impl CoapServer {
                 // RFC 7252 §4.3 CoAP Ping: an empty Confirmable message is answered with
                 // a Reset. This is not a decision, so it does not reach the model.
                 MessageType::Confirmable => {
-                    debug!("CoAP ping from {}; replying RST", peer_addr);
+                    debug!(
+                        "CoAP ping from {}; replying RST decision={}",
+                        peer_addr,
+                        Decision::SpecReply.as_str()
+                    );
                     Self::send(
                         &codec::reset_for(request.message_id),
                         peer_addr,
@@ -207,9 +211,10 @@ impl CoapServer {
             // not define. RFC 7252 §5.8 defines only GET/POST/PUT/DELETE.
             if codec::code_class(request.code) == 0 {
                 warn!(
-                    "CoAP unrecognised method {} from {}; replying 4.05",
+                    "CoAP unrecognised method {} from {}; replying 4.05 decision={}",
                     codec::code_to_string(request.code),
-                    peer_addr
+                    peer_addr,
+                    Decision::SpecReply.as_str()
                 );
                 let fresh = next_message_id.fetch_add(1, Ordering::Relaxed);
                 let response = codec::response_to(&request, fresh, codec::CODE_METHOD_NOT_ALLOWED);
@@ -287,7 +292,7 @@ impl CoapServer {
 
         let event = Event::new(&COAP_REQUEST_EVENT, event_data);
 
-        let outcome = match call_llm(
+        let (decision, outcome) = match call_llm(
             &llm_client,
             &app_state,
             server_id,
@@ -304,17 +309,36 @@ impl CoapServer {
                 Self::outcome_from_results(&request, &execution_result.protocol_results)
             }
             Err(e) => {
+                // The error text stays in the log; the peer gets only the code.
                 error!("CoAP LLM error for {} {}: {}", method, path, e);
                 let _ = status_tx.send(format!("✗ CoAP LLM error: {e}"));
                 // Fail closed with a code that means exactly what happened, rather than
                 // inventing a representation or leaving the client to retransmit.
-                Outcome::Response {
-                    code: codec::CODE_SERVICE_UNAVAILABLE,
-                    payload: Vec::new(),
-                    content_format: None,
-                }
+                (
+                    Decision::FailClosedLlmError,
+                    Outcome::Response {
+                        code: codec::CODE_SERVICE_UNAVAILABLE,
+                        payload: Vec::new(),
+                        content_format: None,
+                    },
+                )
             }
         };
+
+        // Log the decision before writing it, and make the fail-closed paths loud. 5.03 is
+        // both what a backend outage produces and something the model may pick itself, so
+        // the peer cannot tell them apart and an operator has to be able to.
+        let summary = format!(
+            "CoAP {method} {path} from {peer_addr} decision={}",
+            decision.as_str()
+        );
+        if decision.is_fail_closed() {
+            Log::new(Some(&status_tx)).error(format!(
+                "{summary} (answered 5.03 because no usable answer was produced)"
+            ));
+        } else {
+            debug!("{summary}");
+        }
 
         let fresh = next_message_id.fetch_add(1, Ordering::Relaxed);
         let message = match outcome {
@@ -358,7 +382,10 @@ impl CoapServer {
     ///
     /// Fails closed: no usable action becomes 5.03 Service Unavailable, never a
     /// plausible-looking 2.05 with an empty body.
-    fn outcome_from_results(request: &CoapMessage, results: &[ActionResult]) -> Outcome {
+    fn outcome_from_results(
+        request: &CoapMessage,
+        results: &[ActionResult],
+    ) -> (Decision, Outcome) {
         for result in results {
             let ActionResult::Custom { name, data } = result else {
                 continue;
@@ -379,14 +406,24 @@ impl CoapServer {
                         .get("content_format")
                         .and_then(|v| v.as_u64())
                         .map(|v| v as u16);
-                    return Outcome::Response {
-                        code,
-                        payload,
-                        content_format,
+                    // A class-2 code is the model serving the resource; 4.xx and 5.xx are
+                    // it refusing. `execute_action` has already rejected every other class.
+                    let decision = if codec::code_class(code) == 2 {
+                        Decision::ModelAnswer
+                    } else {
+                        Decision::ModelReject
                     };
+                    return (
+                        decision,
+                        Outcome::Response {
+                            code,
+                            payload,
+                            content_format,
+                        },
+                    );
                 }
-                RESULT_RESET => return Outcome::Reset,
-                RESULT_IGNORE => return Outcome::Ignore,
+                RESULT_RESET => return (Decision::ModelReset, Outcome::Reset),
+                RESULT_IGNORE => return (Decision::ModelSilent, Outcome::Ignore),
                 _ => {}
             }
         }
@@ -396,11 +433,14 @@ impl CoapServer {
             codec::method_name(request.code).unwrap_or("?"),
             request.uri_path()
         );
-        Outcome::Response {
-            code: codec::CODE_SERVICE_UNAVAILABLE,
-            payload: Vec::new(),
-            content_format: None,
-        }
+        (
+            Decision::FailClosedNoAction,
+            Outcome::Response {
+                code: codec::CODE_SERVICE_UNAVAILABLE,
+                payload: Vec::new(),
+                content_format: None,
+            },
+        )
     }
 
     /// Encode and send one message, updating counters and the dual logs.
@@ -440,6 +480,52 @@ impl CoapServer {
         ));
         log.trace(format!("CoAP sent (hex): {}", hex::encode(&bytes)));
         let _ = status_tx.send(format!("→ CoAP response to {peer_addr}"));
+    }
+}
+
+/// Why a request is being answered the way it is.
+///
+/// 5.03 Service Unavailable is what both fail-closed paths put on the wire, and it is also
+/// a code the model may legitimately choose itself, so the three are indistinguishable to
+/// the peer. The log carries the distinction instead, with stable tokens -
+/// `decision=fail_closed_` finds every request the model did not actually answer. Mirrors
+/// `src/server/radius/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decision {
+    /// The model served the resource (a class-2 response).
+    ModelAnswer,
+    /// The model refused, with a class-4 or class-5 code of its choosing.
+    ModelReject,
+    /// The model chose a Reset - "this message makes no sense at all".
+    ModelReset,
+    /// The model chose to send nothing. A decision, not an absence of one.
+    ModelSilent,
+    /// The specification determined the reply; the model was never asked.
+    SpecReply,
+    /// The LLM backend failed. Nobody decided anything.
+    FailClosedLlmError,
+    /// The model was asked and returned nothing this request could use.
+    FailClosedNoAction,
+}
+
+impl Decision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Decision::ModelAnswer => "model_answer",
+            Decision::ModelReject => "model_reject",
+            Decision::ModelReset => "model_reset",
+            Decision::ModelSilent => "model_silent",
+            Decision::SpecReply => "spec_reply",
+            Decision::FailClosedLlmError => "fail_closed_llm_error",
+            Decision::FailClosedNoAction => "fail_closed_no_action",
+        }
+    }
+
+    fn is_fail_closed(self) -> bool {
+        matches!(
+            self,
+            Decision::FailClosedLlmError | Decision::FailClosedNoAction
+        )
     }
 }
 
