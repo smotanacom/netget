@@ -53,6 +53,20 @@ impl KubernetesClient {
         // For Kubernetes, "connection" means establishing API client configuration
         // The kube client is stateless and makes requests on-demand
 
+        // `kube` builds a rustls `ClientConfig` even for an `http://` apiserver, and rustls
+        // 0.23 **panics** at that point unless exactly one of its `ring` / `aws-lc-rs` features
+        // is active or a process-wide provider has been installed. Feature unification makes
+        // both active whenever `kubernetes` compiles alongside the AWS SDK protocols, so
+        // `--features kubernetes,s3` had two and neither won.
+        //
+        // `src/bin/netget.rs` installs one up front for every feature that enables `dep:rustls`
+        // (`tests/rustls_provider_gate_test.rs` keeps that list honest), so the shipped binary
+        // is covered — but that is `main`, not this library, and anything embedding NetGet or
+        // testing it goes straight past it. Install here too; it is the same one-liner `dot`,
+        // `tls`, `dc` and `http3` already carry, and `install_default` returning `Err` when a
+        // provider is already set is exactly the outcome we want.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         info!(
             "Kubernetes client {} initializing for cluster {}",
             client_id, remote_addr
@@ -196,6 +210,12 @@ impl KubernetesClient {
         // go through run_operation_once, which raises no event.
         let conn_state = app_state.clone();
         let conn_status = status_tx.clone();
+        // The event declares `cluster_url` as a required parameter, so it has to actually carry
+        // one: the data used to be `{}`, which told the model a field was present and then
+        // withheld it. `namespace` goes with it — the model's actions may omit a namespace and
+        // it should know which one that resolves to.
+        let conn_cluster_url = remote_addr.clone();
+        let conn_namespace = namespace.clone();
         let conn_task = tokio::spawn(async move {
             let Some(instruction) = conn_state.get_instruction_for_client(client_id).await else {
                 return;
@@ -203,7 +223,10 @@ impl KubernetesClient {
             let protocol = crate::client::kubernetes::actions::KubernetesClientProtocol::new();
             let event = Event::new(
                 &crate::client::kubernetes::actions::K8S_CLIENT_CONNECTED_EVENT,
-                serde_json::json!({}),
+                serde_json::json!({
+                    "cluster_url": conn_cluster_url,
+                    "namespace": conn_namespace,
+                }),
             );
             match crate::client::llm_budget::call_llm_for_client(
                 &conn_llm,
