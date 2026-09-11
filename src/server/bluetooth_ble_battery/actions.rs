@@ -53,7 +53,7 @@ impl Protocol for BluetoothBleBatteryProtocol {
             ParameterDefinition {
                 name: "initial_level".to_string(),
                 type_hint: "number".to_string(),
-                description: "Initial battery level 0-100, folded into the instruction given to the LLM (default: 100)".to_string(),
+                description: "Initial battery level as a percentage, 0-100, folded into the instruction given to the LLM (default: 100). A value above 100 is refused, not clamped: the Battery Level characteristic reserves everything past 100.".to_string(),
                 required: false,
                 example: json!(80),
             },
@@ -235,14 +235,28 @@ impl Server for BluetoothBleBatteryProtocol {
                 .flatten()
                 .unwrap_or_else(|| "NetGet-Battery".to_string());
 
-            let initial_level = ctx
+            // `initial_level` is a Battery Level percentage, so 0-100 is the whole of its
+            // range and anything else is a caller error. Refuse it rather than narrow it:
+            // this was `.unwrap_or(100).min(100) as u8`, which started a server claiming a
+            // full battery when asked for 150 or 4000, with nothing in any log to say the
+            // number had been changed. A clamped percentage is a lie that reads as a fact.
+            let initial_level = match ctx
                 .startup_params
                 .as_ref()
                 .map(|p| p.get_optional_u64("initial_level"))
                 .transpose()?
                 .flatten()
-                .unwrap_or(100)
-                .min(100) as u8;
+            {
+                None => 100u8,
+                // Range-checked before the conversion, and the conversion is checked too, so
+                // no value can reach the wire by being truncated into one.
+                Some(level) if level <= 100 => u8::try_from(level).unwrap_or(100),
+                Some(level) => anyhow::bail!(
+                    "initial_level is a Battery Level (0x2A19) percentage and must be 0-100; \
+                     got {level}. The Bluetooth SIG reserves every value above 100, so there \
+                     is no battery level this server could honestly advertise."
+                ),
+            };
 
             // The user's own instruction must reach the base stack; the profile preamble is
             // added there, not substituted for it.

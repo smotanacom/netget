@@ -54,9 +54,40 @@ impl BluetoothBleHeartRate {
     }
 }
 
+/// Heart Rate Service, Bluetooth SIG assigned number.
 pub const HEART_RATE_SERVICE: u16 = 0x180D;
+/// Heart Rate Measurement characteristic.
 pub const HEART_RATE_MEASUREMENT: u16 = 0x2A37;
+/// Body Sensor Location characteristic.
+pub const BODY_SENSOR_LOCATION: u16 = 0x2A38;
 
-pub fn encode_heart_rate(bpm: u8) -> [u8; 2] {
-    [0x00, bpm.clamp(30, 220)] // Flags byte + BPM
+/// Encode a Heart Rate Measurement (0x2A37) characteristic value.
+///
+/// Layout, from the Bluetooth SIG Heart Rate Service 1.0 specification §3.1: a mandatory 8-bit
+/// Flags octet, then the Heart Rate Measurement Value. **Flags bit 0 selects the value's
+/// type** — 0 means a `uint8` in one octet, 1 means a `uint16` in two, little-endian. The other
+/// flag bits describe optional fields (sensor contact, energy expended, RR-interval) that this
+/// encoder does not emit, so they stay clear.
+///
+/// The format bit and the field width are chosen together here rather than left to the caller,
+/// because disagreeing about them is the invisible failure this function exists to prevent: a
+/// central handed `00 48 00` reads 72 BPM and then a stray octet it cannot account for, while
+/// `01 48` is one octet short of the uint16 the flags promised.
+///
+/// **There is deliberately no clamp.** This used to be `[0x00, bpm.clamp(30, 220)]`, so a
+/// caller asking for 25 got a confident 30 and one asking for 250 got 220 — an obvious error
+/// silently rewritten into a believable claim about a human heart. The spec constrains the
+/// field width and nothing else, so the width is all this enforces; whether a number is a
+/// *plausible* heart rate is a judgement the wire format does not make and neither does this.
+pub fn encode_heart_rate(bpm: u16) -> Vec<u8> {
+    if let Ok(small) = u8::try_from(bpm) {
+        // Flags bit 0 clear: the value is the single following octet. The conversion is
+        // checked rather than cast, so the branch and the width cannot drift apart.
+        vec![0x00, small]
+    } else {
+        let mut v = Vec::with_capacity(3);
+        v.push(0x01); // Flags bit 0 set: uint16 value follows.
+        v.extend_from_slice(&bpm.to_le_bytes()); // GATT is little-endian.
+        v
+    }
 }

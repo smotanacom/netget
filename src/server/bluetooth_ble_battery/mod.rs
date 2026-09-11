@@ -79,15 +79,24 @@ pub mod battery_uuids {
     pub const BATTERY_LEVEL: u16 = 0x2A19;
 }
 
-/// Battery Level characteristic value (1 byte)
+/// Encode a Battery Level (0x2A19) characteristic value.
 ///
-/// Value range: 0-100 (percentage)
+/// The characteristic is a single `uint8` carrying a **percentage**: the Bluetooth SIG Battery
+/// Service 1.0 specification §3.1 defines 0 to 100 and reserves every other value. 75% is the
+/// single octet `0x4B`.
 ///
-/// Example: 75% battery
-/// ```text
-/// 0x4B  (75 decimal)
-/// ```
-pub fn encode_battery_level(level: u8) -> [u8; 1] {
-    let clamped = level.min(100);
-    [clamped]
+/// **Returns `Err` rather than clamping.** This used to be `level.min(100)`, which turned 200
+/// into a confident "100%". A percentage is the one type where truncation is least survivable:
+/// every out-of-range value lands on a perfectly ordinary reading, so a caller's obvious
+/// mistake becomes an unfalsifiable claim about a device's charge. There is no octet that
+/// honestly represents 200%, so there is nothing to return.
+pub fn encode_battery_level(level: u8) -> Result<[u8; 1]> {
+    if level > 100 {
+        anyhow::bail!(
+            "Battery Level (0x2A19) is a percentage and the Bluetooth SIG reserves every \
+             value above 100: {level} cannot be encoded. Refusing rather than clamping, \
+             because a clamped 100 is indistinguishable from a full battery."
+        );
+    }
+    Ok([level])
 }
