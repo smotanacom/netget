@@ -62,6 +62,29 @@ enum Dispatch {
     Await,
 }
 
+/// How much of a response body is read before it is refused.
+///
+/// The body is remote-controlled and ends up in an event and then in an LLM prompt.
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Read a response body as text, refusing anything past [`MAX_RESPONSE_BYTES`].
+///
+/// Refuses as soon as the cap is passed rather than after buffering, so a server answering
+/// with an endless stream costs at most the cap.
+async fn read_body_bounded(mut response: reqwest::Response) -> Result<String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(anyhow!(
+                "response body exceeded {} bytes; refusing to buffer the rest",
+                MAX_RESPONSE_BYTES
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
 /// OpenAPI client that makes spec-driven requests to HTTP servers
 pub struct OpenApiClient;
 
@@ -126,20 +149,56 @@ impl OpenApiClient {
         #[cfg(not(feature = "openapi"))]
         let parsed_spec = ();
 
-        // Determine base URL (from spec or override)
+        // Determine the base URL. Precedence: an explicit `base_url` parameter, then the
+        // address the operator named, and the spec's own `servers[0]` only as a last resort.
+        //
+        // **That order used to be inverted**, and the inversion is the defect `CLAUDE.md`
+        // records for the DynamoDB client wearing different clothes: the spec's declared
+        // server won over `remote_addr`, so an operator who said "connect to 127.0.0.1:9000"
+        // and handed over a spec whose `servers:` block names
+        // `https://api.production.example.com` got the production host — silently, with no
+        // log line saying so. A spec is data supplied with the request, often by the model;
+        // it must not be able to retarget the client away from the address it was given.
+        //
+        // The tell was in the test suite: `tests/client/openapi/e2e_test.rs` has to rewrite
+        // `{port}` inside the spec before every run, which is the workaround you write when
+        // `remote_addr` is not what decides. It still passes now, because both agree.
         #[cfg(feature = "openapi")]
         let base_url =
             if let Some(override_url) = startup_params.get("base_url").and_then(|v| v.as_str()) {
                 override_url.to_string()
-            } else if let Some(server) = parsed_spec.servers.first() {
-                server.url.clone()
-            } else {
-                // Default: use remote_addr with http://
-                if remote_addr.starts_with("http://") || remote_addr.starts_with("https://") {
+            } else if !remote_addr.trim().is_empty() {
+                let named = if remote_addr.contains("://") {
                     remote_addr.clone()
                 } else {
+                    // reqwest needs an absolute URL; a bare `host:port` fails every request
+                    // with "relative URL without a base".
                     format!("http://{}", remote_addr)
+                };
+                if let Some(server) = parsed_spec.servers.first() {
+                    if server.url != named {
+                        info!(
+                            "OpenAPI client {} using remote_addr {} rather than the spec's \
+                             servers[0] ({}); pass base_url to override",
+                            client_id, named, server.url
+                        );
+                    }
                 }
+                named
+            } else if let Some(server) = parsed_spec.servers.first() {
+                // Nothing was named, so the spec is all there is. Say so, rather than
+                // arriving at a host nobody in this conversation typed.
+                info!(
+                    "OpenAPI client {} has no remote_addr; falling back to the spec's \
+                     servers[0]: {}",
+                    client_id, server.url
+                );
+                server.url.clone()
+            } else {
+                return Err(anyhow!(
+                    "OpenAPI client needs a target: pass remote_addr, a base_url startup \
+                     parameter, or a spec declaring servers[0]"
+                ));
             };
 
         #[cfg(not(feature = "openapi"))]
@@ -673,8 +732,22 @@ impl OpenApiClient {
                     }
                 }
 
-                // Get body
-                let body_text = response.text().await.unwrap_or_default();
+                // Get body, bounded. `response.text()` buffers the whole thing with no
+                // limit, and the body is remote-controlled: it goes into an
+                // `openapi_operation_response` event and from there into an LLM prompt,
+                // where a megabyte is already useless. `unwrap_or_default()` also turned a
+                // read failure into an empty body, which reads downstream as "the server
+                // answered with nothing" rather than "we could not read the answer".
+                let body_text = match read_body_bounded(response).await {
+                    Ok(text) => text,
+                    Err(e) => {
+                        Log::new(Some(status_tx)).warn(format!(
+                            "OpenAPI client {} could not read the response for '{}': {}",
+                            client_id, operation_id, e
+                        ));
+                        return Err(e);
+                    }
+                };
 
                 info!(
                     "OpenAPI client {} received response for '{}': {} ({})",

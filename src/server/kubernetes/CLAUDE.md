@@ -4,9 +4,18 @@ NetGet impersonates a `kube-apiserver` convincingly enough that a real `kubectl`
 The model invents the cluster — nodes, pods, namespaces, CRs — and NetGet supplies the
 envelope: routing, discovery, `Table` rendering and the `Status` error object.
 
-**State**: Experimental. **Privilege**: `None` (6443 is above 1023, and any port works).
+**State**: Beta. **Privilege**: `None` (6443 is above 1023, and any port works).
 **Feature**: `kubernetes-server`. **Group**: AI & API. **Keywords**: `kubernetes`, `k8s`,
 `kube-apiserver`, `kubectl`.
+
+**Why Beta, and what would take it away.** The bar is "works against real clients", and the
+evidence is `tests/server/kubernetes/e2e_test.rs` driving the **real kubectl binary** —
+`version`, `get pods`, `get nodes`, `get pod -o json`, a 404 `NotFound`, `delete pod` — with
+`require_kubectl()` **failing** rather than skipping when the binary is absent. That gate is the
+whole difference: a `println!("SKIP")` + `return Ok(())` is a silent pass, which is what held
+this at Experimental, and it is exactly what the root `CLAUDE.md` warns about. If anyone ever
+softens that gate back to a skip, demote this at the same time. Not Stable: TLS has never been
+driven by kubectl, and watch, OpenAPI, admission, RBAC and authentication are all absent.
 
 ## The `kubernetes` vs `kubernetes-server` split (read this first)
 
@@ -129,6 +138,19 @@ Neither failure branch invents an empty `PodList`. An empty list is a *claim abo
 pods" — and it must never be indistinguishable from "the model said nothing". This is the OAuth2
 lesson applied here.
 
+- **Request body over `MAX_REQUEST_BODY_BYTES` (3 MiB)** → `413` `Status`,
+  `reason: RequestEntityTooLarge`, logged `decision=fail_closed_body_rejected`, and the model is
+  never called. 3 MiB is the apiserver's own `maxRequestBodyBytes`. The cap matters here more
+  than in most HTTP protocols for two reasons: this server authenticates nothing, so the `POST`
+  is anonymous, and the body is embedded whole in an LLM prompt, so there is no legitimate large
+  one. An unreadable body is refused rather than passed on as empty — the model would otherwise
+  see a create carrying no object and could admit it as though the client had sent none.
+- **A status code outside 100..599** → `500`, logged `decision=fail_closed_bad_status`.
+  `model_status_code` range-checks **before** the `u16` cast, and that ordering is the whole
+  point: `65736 as u16 == 200`, so casting first turns an impossible code into a `200 OK`. Same
+  shape as LDAP's `result_code as u8`. `execute_status` / `execute_object_response` bound it
+  too; this is the second lock on the same door, because the first one's absence was invisible.
+
 ## Table rendering
 
 `kubectl get` sends `Accept: application/json;as=Table;v=1;g=meta.k8s.io,application/json` and
@@ -153,6 +175,12 @@ that wants the columns itself answers with `k8s_table_response` instead.
 Two rendering leniencies worth knowing: a Pod with no `containerStatuses` but
 `status.phase: Running` renders READY as `n/n` rather than `0/n`, and a missing or unparseable
 `creationTimestamp` renders AGE as `<unknown>`.
+
+Every number in a cell comes out of the model's object, so the arithmetic has to survive
+whatever it puts there. `RESTARTS` folds with `i64::saturating_add`, not `sum()`: `Cargo.toml`
+has no `[profile.dev]`, so `overflow-checks` is **on** in debug and test builds and off in
+release — two containers claiming `i64::MAX` panicked the render in exactly the build where you
+would find it, and wrapped silently in the one that ships.
 
 ## Routing
 
@@ -238,7 +266,13 @@ addressed with a stale RESTMapper.
 - **OpenAPI.** `/openapi/v2` and `/openapi/v3` are 404, so `kubectl explain` and client-side
   `apply` validation do not work.
 - **Protobuf** content negotiation, **server-side apply**, **admission**, **RBAC**,
-  **authentication** (every request is served; there is no `Authorization` check).
+  **authentication**. Every request is served: nothing checks `Authorization`, **and the event
+  does not carry it either**, so the model cannot make that call on the server's behalf. That
+  second half is the part worth saying out loud — it is the same gap the root `CLAUDE.md` names
+  in the cloud family. Adding an `authorization` field to the event would let a model refuse
+  with `k8s_status` 401/403, and is the obvious next step for anyone who wants RBAC-shaped
+  behaviour here; it has not been done, so do not read "the model owns the cluster" as "the
+  model could deny a request if it wanted to".
 - **HTTP/2.** ALPN is not advertised, so kubectl uses HTTP/1.1 even over TLS.
 - Per-connection tasks are untracked, so `stop_server` does not cancel in-flight requests —
   the same gap every hyper-based protocol here has.
@@ -246,7 +280,11 @@ addressed with a stale RESTMapper.
 ## Testing
 
 `tests/server/kubernetes/e2e_test.rs`, 4 tests, ~10 LLM calls. Two are driven by the **real
-`kubectl` binary**; two are wire-level with `reqwest`. See `tests/server/kubernetes/CLAUDE.md`.
+`kubectl` binary** (hard-failing when it is missing, never skipping); two are wire-level with
+`reqwest`. `tests/server/kubernetes/guard_test.rs` adds three: the request-body cap refusing a
+`413` without a model call while an ordinary write still succeeds, `model_status_code` refusing
+the values a `u16` cast would narrow into 2xx, and `RESTARTS` saturating. See
+`tests/server/kubernetes/CLAUDE.md`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features kubernetes-server \

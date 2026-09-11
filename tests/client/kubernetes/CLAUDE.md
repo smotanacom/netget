@@ -1,152 +1,56 @@
-# Kubernetes Client E2E Tests
+# Kubernetes Client Tests
 
-## Test Strategy
+## Strategy
 
-Unit tests for Kubernetes client protocol registration and action definitions. Full integration tests require a running
-Kubernetes cluster (minikube or kind).
+**No test here talks to a real Kubernetes cluster, and none pretends to.**
 
-## LLM Call Budget
+This file used to be a page of minikube/kind setup instructions describing three "integration
+tests" that were `#[ignore]`d, gated on `kubectl cluster-info`, and asserted **nothing** — they
+printed `Full E2E test implementation requires NetGet binary integration` and returned. A test
+that is green whether the client works or not is not evidence; they have been deleted, and the
+client's `metadata().e2e_testing` says as much. The client stays `Experimental` for that reason.
 
-**Target:** < 10 calls
-**Actual:** 0 calls (unit tests only)
+What the suite actually covers is the wire path, without a cluster and without a model:
 
-Full E2E tests would use:
+| File | LLM calls | What it proves |
+|---|---|---|
+| `command_channel_test.rs` | 0 | `AppState::send_to_client` injects an action into a running client, the command loop runs it through the same `apply_action` every path uses, and the request **really reaches a listener** — `stub.saw("/api/v1/namespaces/default/pods")`. Also: an unknown verb comes back `Rejected`, `disconnect` comes back `Disconnected`, and the command handle is gone afterwards |
+| `e2e_test.rs` | 0 | registry identity; every advertised verb executes into a `k8s_operation` carrying the right `operation`/`resource_type`; an unknown verb is refused; `get_event_types()` returns the statics that actually fire, with their parameters |
 
-- 1 call: Client initialization
-- 2 calls: List pods operation
-- 3 calls: Get pod logs operation
+`command_channel_test.rs` points the client's LLM at `http://127.0.0.1:1`, so the
+`k8s_resource_received` call *fails* — tolerating that is part of what the test verifies.
 
-## Test Cluster Setup (for integration tests)
+## Privacy
 
-### Option 1: minikube
+`pin_kubeconfig_to_loopback` writes a throwaway kubeconfig whose single cluster is a loopback
+TCP listener and sets `KUBECONFIG` to it. Without that, `kube::Client::try_default()` reads the
+developer's real `~/.kube/config` and the test talks to their actual cluster. Anything added
+here must keep that property.
 
-```bash
-# Install minikube
-# macOS: brew install minikube
-# Linux: curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64 && sudo install minikube-linux-amd64 /usr/local/bin/minikube
+It also clears `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` (and the lowercase forms): `kube` refuses
+to build a client at all when a proxy is configured unless the optional `kube/http-proxy`
+feature is on, which NetGet does not enable. Everything under test is on loopback, which no
+proxy should handle.
 
-# Start cluster
-minikube start
+## rustls provider
 
-# Verify
-kubectl get nodes
+`install_rustls_provider()` installs `ring` through `quinn`'s rustls re-export. This is now
+belt-and-braces rather than a workaround: `connect_with_llm_actions` installs the provider
+itself, and `install_default` returning `Err` because one is already set is the wanted outcome.
+See `src/client/kubernetes/CLAUDE.md` for why two providers can be linked at once.
 
-# Run tests
-./cargo-isolated.sh test --no-default-features --features kubernetes --test kubernetes -- --ignored
-```
-
-### Option 2: kind (Kubernetes IN Docker)
-
-```bash
-# Install kind
-# macOS: brew install kind
-# Linux: curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64 && chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
-
-# Create cluster
-kind create cluster
-
-# Verify
-kubectl get nodes
-
-# Run tests
-./cargo-isolated.sh test --no-default-features --features kubernetes --test kubernetes -- --ignored
-```
-
-### Cleanup
+## Running
 
 ```bash
-# minikube
-minikube delete
-
-# kind
-kind delete cluster
+./cargo-isolated.sh test --no-default-features --features kubernetes \
+    --test client -- --test-threads=100 kubernetes
 ```
 
-## Tests
+Note `--test client`, not `--test kubernetes`: these compile into `tests/client.rs` through
+`tests/client/mod.rs`. Runtime: under 5 seconds.
 
-### Unit Tests (no cluster required)
+## What would make this client Beta
 
-1. **test_kubernetes_protocol_registered** (0 LLM calls)
-    - Verify protocol is in CLIENT_REGISTRY
-    - Check protocol name, stack name, keywords
-    - Runtime: < 1 second
-
-2. **test_kubernetes_client_actions** (0 LLM calls)
-    - Verify all async actions are defined
-    - Check action names (k8s_list_pods, k8s_get_pod, etc.)
-    - Runtime: < 1 second
-
-3. **test_kubernetes_action_execution** (0 LLM calls)
-    - Test action JSON parsing
-    - Verify execute_action returns correct results
-    - Runtime: < 1 second
-
-### Integration Tests (cluster required, marked #[ignore])
-
-4. **test_kubernetes_client_connect** (1 LLM call)
-    - Connect to cluster via kubeconfig
-    - Verify client initialization
-    - Runtime: ~5 seconds
-
-5. **test_kubernetes_list_pods** (2 LLM calls)
-    - Initialize client
-    - Execute k8s_list_pods action
-    - Verify pod list response
-    - Runtime: ~10 seconds
-
-6. **test_kubernetes_get_logs** (3 LLM calls)
-    - Initialize client
-    - List pods to find target
-    - Get logs from a pod
-    - Verify log data response
-    - Runtime: ~15 seconds
-
-## Runtime
-
-**Unit tests:** < 5 seconds
-**Integration tests (if cluster available):** ~30 seconds
-
-## Known Issues
-
-- Integration tests require manual cluster setup
-- Tests are marked `#[ignore]` by default
-- Kubeconfig must be at default location (~/.kube/config)
-- RBAC permissions required for list/get operations
-
-## Future Tests
-
-- Test create_pod operation
-- Test delete_pod operation
-- Test list_deployments and list_services
-- Test label selector filtering
-- Test namespace switching
-- Test with multiple cluster contexts
-- Test RBAC permission errors
-- Test connection timeout handling
-- Test invalid kubeconfig handling
-
-## Prerequisites
-
-- **kubectl** installed and configured
-- **minikube** or **kind** for local cluster
-- Valid kubeconfig at ~/.kube/config
-- Cluster running with at least one pod
-- RBAC permissions for get/list operations on pods, deployments, services
-
-## Running Tests
-
-```bash
-# Unit tests only (no cluster required)
-./cargo-isolated.sh test --no-default-features --features kubernetes --test kubernetes
-
-# All tests including integration (requires cluster)
-./cargo-isolated.sh test --no-default-features --features kubernetes --test kubernetes -- --ignored --test-threads=1
-```
-
-## Security Notes
-
-- Tests use read-only operations (GET/LIST)
-- No destructive operations in default tests
-- Create/Delete tests would require explicit consent
-- Uses existing kubeconfig credentials
-- All operations scoped to test namespaces
+A test in which a **real** Kubernetes apiserver (kind or minikube) answers, driven from CI or at
+least hard-failing when absent the way `tests/server/kubernetes/e2e_test.rs` does for `kubectl`.
+A skip-when-missing gate would put this straight back where it started.

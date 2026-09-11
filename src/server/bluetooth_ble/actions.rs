@@ -209,24 +209,13 @@ impl BluetoothBleProtocol {
 // Implement Protocol trait (common functionality)
 impl Protocol for BluetoothBleProtocol {
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
-        vec![
-            ParameterDefinition {
-                name: "device_name".to_string(),
-                type_hint: "string".to_string(),
-                description: "Bluetooth device name for advertising (default: NetGet-BLE)"
-                    .to_string(),
-                required: false,
-                example: json!("MyDevice"),
-            },
-            ParameterDefinition {
-                name: "auto_advertise".to_string(),
-                type_hint: "boolean".to_string(),
-                description: "Start advertising immediately after server starts (default: true)"
-                    .to_string(),
-                required: false,
-                example: json!(true),
-            },
-        ]
+        vec![ParameterDefinition {
+            name: "device_name".to_string(),
+            type_hint: "string".to_string(),
+            description: "Bluetooth device name for advertising (default: NetGet-BLE)".to_string(),
+            required: false,
+            example: json!("MyDevice"),
+        }]
     }
 
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
@@ -271,8 +260,33 @@ impl Protocol for BluetoothBleProtocol {
             .state(DevelopmentState::Experimental)
             .implementation("ble-peripheral-rust (cross-platform: Windows/WinRT, macOS/CoreBluetooth, Linux/BlueZ)")
             .llm_control("Full GATT server control: services, characteristics, read/write/notify")
-            .e2e_testing("Real BLE hardware or simulator required")
-            .notes("Cross-platform BLE peripheral. LLM controls GATT services, advertising, and responses.")
+            .e2e_testing(
+                "Split, and the split is the point. The decision logic is covered without a \
+                 radio, because `BluetoothBle::run_event_loop_without_radio` runs the real event \
+                 loop over an injected event stream: the ATT read/write fail-closed paths \
+                 (tests/server/bluetooth_ble/llm_failure_test.rs), the stored-value fallback and \
+                 its refusal to substitute an undecodable answer (read_default_value_test.rs), \
+                 and characteristic routing across servers sharing the one radio \
+                 (shared_peripheral_routing_test.rs). None of those is #[ignore]d. What needs \
+                 hardware is everything that transmits — advertising, service registration and a \
+                 real central completing a GATT exchange — and those tests \
+                 (tests/server/bluetooth_ble/e2e_test.rs) are #[ignore]d because they claim the \
+                 machine's single BLE adapter and would deadlock a --test-threads=100 run.",
+            )
+            .notes(
+                "VERIFIED without a radio: that an LLM failure answers ATT Unlikely Error (0x0E) \
+                 rather than inventing a characteristic value or acknowledging a write that never \
+                 took effect; that an explicit 'error' status on respond_to_write is honoured; \
+                 that a respond_to_read whose value will not decode fails closed instead of \
+                 silently serving the stored value; and that every one of those outcomes is \
+                 distinguishable in the log by its decision= tag, which is the only place ATT can \
+                 carry the distinction. NOT VERIFIED: nothing in the automated suite has ever put \
+                 a byte on a radio. Advertising, service registration and any real central's \
+                 GATT exchange are exercised only by the #[ignore]d tests, run by hand on macOS \
+                 (see docs/archive/MACOS_SUPPORT.md). A rating above Experimental would need \
+                 those to be neither ignored nor hardware-bound, which the single-adapter \
+                 constraint currently prevents.",
+            )
             .build()
     }
 
@@ -315,8 +329,7 @@ print(json.dumps({"actions": actions}))"#;
                 "base_stack": "bluetooth-ble",
                 "instruction": "Act as a BLE heart rate monitor with Heart Rate Service (0x180D)",
                 "startup_params": {
-                    "device_name": "NetGet-HeartRate",
-                    "auto_advertise": true
+                    "device_name": "NetGet-HeartRate"
                 }
             }),
             // Script mode: Code-based BLE handling

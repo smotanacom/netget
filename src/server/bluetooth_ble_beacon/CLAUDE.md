@@ -108,7 +108,8 @@ saying the live handle is required. It is unreachable today, since `executor::ex
 always calls the state-aware variant; failing rather than returning a success that transmitted
 nothing means a change in that plumbing would be loud.
 
-`AppState::teardown_server` drops the handle, which drops `bluer`'s `AdvertisementHandle`, which
+`AppStateInner::teardown_server` drops the handle, which drops `bluer`'s `AdvertisementHandle`,
+which
 unregisters the advertisement from `bluetoothd`. There is no accept loop and no event loop, so
 nothing is registered with `register_server_task()` — there is no task to cancel.
 
@@ -157,7 +158,10 @@ membership of a `bluetooth` group, or a polkit rule.
 
 ## What is verified, and what is not
 
-**Verified** (on macOS/arm64, `tests/server/bluetooth_ble_beacon/payload_test.rs`, 22 tests):
+**Verified** (on macOS/arm64, `tests/server/bluetooth_ble_beacon/payload_test.rs`, 24 test
+functions on a non-Linux host — 23 `#[test]` plus `non_linux_refuses_to_start`, which is a
+`#[tokio::test]` compiled only under `cfg(not(target_os = "linux"))`, so the count is 23 on
+Linux). Derive it rather than trusting it; this line said 22 and was never right:
 
 - iBeacon manufacturer data and full AD, against Apple's published layout, with literal
   expected bytes including big-endian major/minor and the signed measured-power octet.

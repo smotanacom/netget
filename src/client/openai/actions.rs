@@ -73,6 +73,13 @@ pub static OPENAI_CLIENT_RESPONSE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock
     ])
 });
 
+/// Largest `max_tokens` this client will forward.
+///
+/// Comfortably above any real model's context window, so it never truncates a legitimate
+/// request; its job is to keep the value inside `u32` and away from the narrowing casts that
+/// used to sit between the model and the wire.
+const MAX_COMPLETION_TOKENS: u64 = 1_000_000;
+
 /// OpenAI client protocol action handler
 pub struct OpenAiClientProtocol;
 
@@ -257,9 +264,22 @@ impl Protocol for OpenAiClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("async-openai library for OpenAI API access")
+            .implementation(
+                "async-openai 0.26 over a reqwest client built once per endpoint on \
+                 spawn_blocking, so the platform root store is not loaded on the async \
+                 runtime and a literal-IP host skips the system resolver. The API base comes \
+                 from remote_addr and nothing else: an absent one refuses rather than \
+                 reaching async-openai's default of https://api.openai.com/v1.",
+            )
             .llm_control("Full control over chat completions, embeddings, and function calling")
-            .e2e_testing("OpenAI API with test key or mock server")
+            .e2e_testing(
+                "tests/client/openai/. endpoint_and_limits_test pins the API base against \
+                 the vendor default and the max_tokens/temperature ranges; \
+                 command_channel_test drives the injected-action path against a loopback \
+                 OpenAI-shaped stub; e2e_test starts the real binary against a dead loopback \
+                 port. No test contacts api.openai.com and no real key is involved, so this \
+                 is not validation against the real API.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
@@ -382,12 +402,51 @@ impl Client for OpenAiClientProtocol {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let temperature = action.get("temperature").and_then(|v| v.as_f64());
+                // `as f32` turns a NaN or an out-of-range value into something the request
+                // serialiser cannot represent, and OpenAI's own range is 0.0-2.0. Refuse
+                // rather than send a number the API will reject with a message the model
+                // never sees.
+                let temperature = match action.get("temperature") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(v) => {
+                        let t = v.as_f64().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "send_chat_completion 'temperature' must be a number, got {v}"
+                            )
+                        })?;
+                        if !t.is_finite() || !(0.0..=2.0).contains(&t) {
+                            return Err(anyhow::anyhow!(
+                                "send_chat_completion 'temperature' {t} is out of range; use \
+                                 0.0-2.0"
+                            ));
+                        }
+                        Some(t)
+                    }
+                };
 
-                let max_tokens = action
-                    .get("max_tokens")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n as u32);
+                // Two narrowing casts used to sit between the model and the wire: `as u32`
+                // here and `as u16` where the request was built. `max_tokens: 70000` became
+                // 4464 and `max_tokens: 4294967296` became 0 — a budget silently replaced by
+                // a different, smaller one, which reads on the wire as a deliberate choice.
+                // Refuse instead, and name the range so the repair loop can correct it.
+                let max_tokens = match action.get("max_tokens") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(v) => {
+                        let n = v.as_u64().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "send_chat_completion 'max_tokens' must be a positive whole \
+                                 number, got {v}"
+                            )
+                        })?;
+                        if n == 0 || n > MAX_COMPLETION_TOKENS {
+                            return Err(anyhow::anyhow!(
+                                "send_chat_completion 'max_tokens' {n} is out of range; use \
+                                 1-{MAX_COMPLETION_TOKENS}"
+                            ));
+                        }
+                        Some(n as u32)
+                    }
+                };
 
                 let functions = action.get("functions").cloned();
 

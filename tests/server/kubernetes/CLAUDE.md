@@ -16,8 +16,16 @@ The other two tests are wire-level with `reqwest`, covering what kubectl cannot 
 be made to show: the exact JSON of each discovery document, the TLS listener, `?watch=true`,
 and unadvertised resources.
 
-Validated against **kubectl v1.22.4 (darwin/arm64)**. The kubectl-driven tests skip with a
-printed message when `kubectl` is not on PATH.
+Validated against **kubectl v1.22.4 (darwin/arm64)**.
+
+**`require_kubectl()` fails; it does not skip — and that is load-bearing.** This protocol's
+Beta rating rests on the kubectl evidence, so a `println!("SKIP: kubectl is not installed")` +
+`return Ok(())` would make it a silent pass on any machine without the binary, which is exactly
+how a maturity claim outlives the thing that justified it. `tests/server/npm/e2e_test.rs` says
+the same about npm and is where the shape came from. The cost is that kubectl must exist
+wherever this suite runs — it is not in the blocking CI feature set (`tcp,http,dns,udp,redis,
+mcp-stdio`), so CI never reaches these tests either way. **If you soften this gate, demote the
+protocol in the same commit.**
 
 ## Tests
 
@@ -31,6 +39,14 @@ printed message when `kubectl` is not on PATH.
 **Total: 10 LLM calls.** Discovery, `/version` and `/healthz` are served deterministically and
 cost nothing, which is what keeps the budget workable — a single `kubectl get pods` issues
 seven HTTP requests and only one of them reaches the model.
+
+### `guard_test.rs` — three defects, three tests that fail without their fix
+
+| Test | LLM calls | What it proves |
+|---|---|---|
+| `oversized_request_body_is_refused_before_the_model_sees_it` | 2 | a `POST` over `MAX_REQUEST_BODY_BYTES` gets a `413 RequestEntityTooLarge` `Status` whose message leaks no internals, and **costs no LLM call** — the `k8s_write_request` rule is `expect_calls(1)` and the ordinary write that follows is the one call. Without the second half a guard that refused everything would pass |
+| `a_status_code_outside_the_http_range_never_narrows_into_success` | 0 | `65736`, `65739`, `66036`, `131272` are refused rather than truncated — each `as u16` to a value inside 1xx-5xx, and `StatusCode::from_u16` accepts all of them |
+| `restart_counts_saturate_instead_of_overflowing` | 0 | two `i64::MAX` restart counts render rather than panicking under `overflow-checks`, and an ordinary pod still shows the real total |
 
 ## Protocol-level assertions, not liveness
 

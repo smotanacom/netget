@@ -8,8 +8,11 @@
 //! The always-running test checks the rule that needs no hardware and is easiest to get wrong:
 //! a client whose connect failed must not be left offering `[ send ]`. If a reader *is* present,
 //! the same test runs the injection half for real, asserting that an unknown verb is `Rejected`
-//! and that `read_ndef` — declared by the protocol but not implemented by this client — comes
-//! back as an honest `Executed` saying so rather than silently doing nothing.
+//! and that `read_ndef` comes back as an `Executed` naming what happened rather than silently
+//! doing nothing.
+//!
+//! The NDEF codec and the APDU builder are pure functions over bytes, so they need no reader at
+//! all and are pinned against literal specification bytes in `e2e_test.rs`.
 //!
 //! `send_apdu` against a real card is the `#[ignore]`d half. It is the only NFC verb that can
 //! report `Sent`, and only when a card actually answered.
@@ -117,8 +120,12 @@ async fn command_channel_follows_the_reader() {
         other => panic!("expected Rejected{{..}}, got {other:?}"),
     }
 
-    // read_ndef is advertised by the protocol but this client cannot perform it. The honest
-    // answer says so; it must not look like success and must not be silence.
+    // read_ndef runs the real Type 4 APDU sequence. Whether it succeeds depends on what is
+    // on the reader, which this test cannot control — so what is asserted is the part that
+    // holds either way: the answer names the verb, and it is neither silence nor a claim of
+    // success. (This assertion used to require the detail to say "not implemented", which was
+    // true when the verb was a stub and became a lie the day it was implemented. It never
+    // failed, because it only runs when a reader is attached.)
     let outcome = state
         .send_to_client(
             client_id,
@@ -129,8 +136,8 @@ async fn command_channel_follows_the_reader() {
         .expect("send_to_client read_ndef");
     match &outcome {
         ClientSendOutcome::Executed { detail } => assert!(
-            detail.contains("read_ndef") && detail.contains("not implemented"),
-            "detail must say the verb is unimplemented, got {detail:?}"
+            detail.contains("read_ndef"),
+            "detail must name the verb and say what happened, got {detail:?}"
         ),
         other => panic!("expected Executed{{..}}, got {other:?}"),
     }

@@ -43,11 +43,21 @@ use tokio::sync::{mpsc, oneshot};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// Full 128-bit forms, because the read request carries `Uuid::to_string()` (the long form) and
-/// the stored-value map is keyed by exactly the string `add_service` was given. Using the long
-/// form on both sides is what makes the fallback lookup hit.
+/// Full 128-bit forms, which is what an ATT read request carries (`Uuid::to_string()`).
+///
+/// These used to be the long form on *both* sides for a stated reason — "the stored-value map is
+/// keyed by exactly the string `add_service` was given, so using the long form on both sides is
+/// what makes the fallback lookup hit". That was true, and it was the bug: the map really was
+/// keyed by the model's own spelling while every lookup used the radio's canonical form, so the
+/// only spelling that worked was the one these tests happened to pick. `add_service`'s own
+/// documented example uses `"2A37"`, which never matched.
+/// `a_characteristic_added_by_its_short_uuid_is_found_by_a_read` pins the general case.
 const SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
 const CHARACTERISTIC: &str = "00002a37-0000-1000-8000-00805f9b34fb";
+
+/// The same characteristic as [`CHARACTERISTIC`], spelled the way the protocol's own
+/// `add_service` example spells it.
+const CHARACTERISTIC_SHORT: &str = "2A37";
 
 /// Start the radio-free event loop against a mock LLM and issue one ATT read.
 async fn read_with_actions(
@@ -273,4 +283,134 @@ fn undecodable_initial_value_is_refused_rather_than_stored_as_empty() {
         .expect("0x-prefixed hex is legal"),
         vec![0x00, 0x48]
     );
+}
+
+/// A characteristic added under the 16-bit shorthand must be found by a read.
+///
+/// This is the regression test for a key mismatch that made `add_service`'s `initial_value`
+/// unreachable in production while every existing test passed. `add_service` filed the stored
+/// value under **the model's own spelling** of the UUID; the read path looked it up under the
+/// **canonical 128-bit form** the radio reports. Every documented example in
+/// `src/server/bluetooth_ble/actions.rs` uses the shorthand (`"uuid": "2A37"`), so a model
+/// following the protocol's own documentation produced a table nothing could read back: a read
+/// the handler declined to answer fell through to `decision=fail_closed_model_silent_no_value`
+/// and replied ATT Unlikely Error, although an `initial_value` had been supplied. The same
+/// mismatch meant a write never updated the stored value, and it hit
+/// `BleRouter::register_characteristic` too, where it fell into the "newest live server"
+/// fallback and so let a second BLE server capture a first server's characteristic traffic.
+///
+/// Both tests in this file's stored-value pair used the long form on both sides, which is the
+/// one spelling that happened to work — so the suite was green throughout.
+///
+/// Seeding goes through the same `characteristic_key` normalisation as the production
+/// `add_service`, so this asserts the real invariant: **the spelling used to add a
+/// characteristic does not have to match the spelling used to read it.** Without the fix the
+/// seeded `"2A37"` entry is invisible to a read for `00002a37-…` and the reply is
+/// `UnlikelyError` with no bytes.
+#[tokio::test]
+async fn a_characteristic_added_by_its_short_uuid_is_found_by_a_read() -> TestResult {
+    // The handler answers, but names no value — so the read must fall back to what the
+    // characteristic holds. Anything other than the stored bytes means the lookup missed.
+    let reply = read_with_actions_seeded(
+        serde_json::json!([]),
+        vec![(CHARACTERISTIC_SHORT.to_string(), vec![0x00, 0x48])],
+    )
+    .await?;
+
+    assert_eq!(
+        reply.response,
+        RequestResponse::Success,
+        "a characteristic added as {CHARACTERISTIC_SHORT:?} must be reachable by a read for its \
+         canonical form {CHARACTERISTIC:?}; UnlikelyError here means the stored-value lookup \
+         missed because the two spellings were keyed differently"
+    );
+    assert_eq!(
+        reply.value,
+        vec![0x00, 0x48],
+        "the read must serve the value stored under the short-form UUID"
+    );
+    Ok(())
+}
+
+/// `send_notification` files the new value under the same canonical key a read looks up.
+///
+/// This covers the third of the three spellings that used to disagree (see
+/// `characteristic_key`). `execute_send_notification` updated the stored value using **the
+/// model's own spelling** of `characteristic_uuid`, so a notification sent as `"2A37"` — the
+/// form this protocol's own `bluetooth_subscribe` example uses — wrote an entry no read could
+/// find. The value went out over the radio but the server's idea of what the characteristic
+/// holds did not move, so the next read the handler declined to answer served the *previous*
+/// value, or failed closed if there was none.
+///
+/// Driving it through the real event loop is what makes this meaningful: the subscribe event
+/// genuinely offers `send_notification` (`BLUETOOTH_SUBSCRIBE_EVENT.with_actions`), so this is
+/// an answer a real model could produce, not a mock reaching for an action it would never be
+/// shown. The loop handles each event to completion before the next, so the notification has
+/// landed before the read is issued.
+#[tokio::test]
+async fn a_notification_sent_by_short_uuid_is_visible_to_a_later_read() -> TestResult {
+    let mock_config = MockLlmBuilder::new()
+        .on_event("bluetooth_subscribe")
+        .respond_with_actions(serde_json::json!([{
+            "type": "send_notification",
+            "characteristic_uuid": CHARACTERISTIC_SHORT,
+            "value": "0051"
+        }]))
+        .expect_at_least(1)
+        .and()
+        .on_event("bluetooth_read_request")
+        .respond_with_actions(serde_json::json!([]))
+        .expect_at_least(1)
+        .and()
+        .build();
+
+    let mock = MockOllamaServer::start(mock_config).await?;
+
+    let (event_tx, event_rx) = mpsc::channel::<PeripheralEvent>(8);
+    tokio::spawn(BluetoothBle::run_event_loop_without_radio(
+        event_rx,
+        ServerId::new(1),
+        OllamaClient::new(mock.base_url()),
+        Arc::new(AppState::new()),
+        mpsc::unbounded_channel::<String>().0,
+        // Seeded under the short form with a *different* value, so a read that serves 0x0048
+        // proves the notification never landed, while 0x0051 proves it did.
+        vec![(CHARACTERISTIC_SHORT.to_string(), vec![0x00, 0x48])],
+    ));
+
+    let request = PeripheralRequest {
+        client: "test-central".to_string(),
+        service: uuid::Uuid::parse_str(SERVICE)?,
+        characteristic: uuid::Uuid::parse_str(CHARACTERISTIC)?,
+    };
+
+    event_tx
+        .send(PeripheralEvent::CharacteristicSubscriptionUpdate {
+            request: request.clone(),
+            subscribed: true,
+        })
+        .await?;
+
+    let (responder, response) = oneshot::channel();
+    event_tx
+        .send(PeripheralEvent::ReadRequest {
+            request,
+            offset: 0,
+            responder,
+        })
+        .await?;
+
+    let reply = tokio::time::timeout(Duration::from_secs(20), response)
+        .await
+        .map_err(|_| "No ATT read response within 20s")??;
+
+    assert_eq!(
+        reply.value,
+        vec![0x00, 0x51],
+        "the read must serve the value send_notification stored. 0x0048 here means the \
+         notification was filed under a key the read could not find, so the stored value never \
+         moved"
+    );
+    mock.verify_calls().await?;
+    Ok(())
 }

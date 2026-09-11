@@ -95,7 +95,7 @@ impl Protocol for BluetoothBleProximityProtocol {
                 "Base BLE GATT control (add_service, start_advertising, stop_advertising, respond_to_read, respond_to_write, send_notification); the LLM builds the Proximity profile services (Immediate Alert 0x1802, Link Loss 0x1803, Tx Power 0x1804) itself.",
             )
             .e2e_testing(
-                "Requires a real Bluetooth LE adapter and a central such as nRF Connect; no automated coverage",
+                "tests/server/bluetooth_ble_proximity/gatt_layout_test.rs pins the Immediate Alert / Link Loss / Tx Power UUIDs and Alert Level encoding in the startup examples against the SIG specifications; it is a pure unit test, so it claims no adapter and is not #[ignore]d. e2e_test.rs additionally starts the server against a mocked model, which proves startup and the bluetooth_ble_started round trip and nothing about the profile behaviour. Whether a real central drives Find Me or Path Loss against this is untested and needs an adapter plus an independent central (nRF Connect, btleplug); until that exists the rating cannot rise above Experimental.",
             )
             .notes(
                 "Thin profile wrapper over the bluetooth-ble base stack. It prepends an instruction describing the Proximity profile services (Immediate Alert 0x1802, Link Loss 0x1803, Tx Power 0x1804) and otherwise reuses the base entirely: the base hardcodes BluetoothBleProtocol when it calls the LLM, so the action vocabulary, the event types and the executor are the base's. This protocol deliberately declares no actions or events of its own - one that did would be documented to the model but never reachable at runtime.",

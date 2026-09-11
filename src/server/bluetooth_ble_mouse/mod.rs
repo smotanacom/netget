@@ -76,7 +76,24 @@ pub mod hid_mouse_buttons {
     pub const BUTTON_MIDDLE: u8 = 0x04;
 }
 
-/// HID Report Descriptor for mouse
+/// Length in bytes of the input report [`HID_MOUSE_REPORT_DESCRIPTOR`] describes.
+///
+/// One byte of three button bits plus five padding bits, then one signed byte each of X, Y
+/// and Wheel. The startup examples in `actions.rs` size the input report characteristic's
+/// initial value from it.
+pub const HID_MOUSE_INPUT_REPORT_LEN: usize = 4;
+
+/// HID Report Descriptor for mouse.
+///
+/// This is the single source of truth for the report map: `actions.rs` hex-encodes these
+/// bytes into its startup examples rather than carrying a second copy, and
+/// `tests/server/bluetooth_ble_mouse/report_descriptor_test.rs` walks every item and
+/// asserts the total is `HID_MOUSE_INPUT_REPORT_LEN` bytes.
+///
+/// X, Y and Wheel are **signed** and **relative**: Logical Minimum is `0x81` (-127) and
+/// Logical Maximum `0x7F` (127), and the Input item sets the Relative bit (0x06, not 0x02).
+/// Both matter — a host reading these as unsigned sees every leftward movement as a large
+/// rightward one.
 pub const HID_MOUSE_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x02, // Usage (Mouse)

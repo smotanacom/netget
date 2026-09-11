@@ -129,8 +129,27 @@ gets. The refusal is clear, but the message attributes all three causes to "not 
 
 - `device_name` (string, optional) — advertised name, default `NetGet-Proximity`
 
-Declared in `get_startup_parameters()`. That is not optional: `StartupParams` **panics** on an undeclared key, and the JSON comes from the LLM or an MCP client.
+Declared in `get_startup_parameters()`. That is not optional: an undeclared key is
+**rejected**, and the JSON comes from the LLM or an MCP client. `StartupParams::new` and
+every `get_*` accessor return `Result<_, StartupParamError>`, and `spawn` propagates with
+`?`, so an unknown key produces a clean error naming it and listing the allowed ones and
+leaves no half-registered server behind. (They used to panic, which over MCP killed the
+per-request task before it could reply; that is fixed, and this file said otherwise until
+September 2026.)
 
 ## Testing
 
-There is no test directory for this protocol, and none is declared in `tests/server/mod.rs`. Meaningful coverage needs a real adapter and a BLE central (nRF Connect, `btleplug`), which CI runners do not have. A mocked E2E test would only exercise the base stack's LLM plumbing, which the base's own tests should cover.
+`tests/server/bluetooth_ble_proximity/` exists and is declared in `tests/server/mod.rs`. It
+holds two things:
+
+- **`gatt_layout_test.rs`** — pure unit tests over the GATT layout in `get_startup_examples()`.
+  No adapter, no radio, no `#[ignore]`. It asserts the three services carry the characteristics
+  the SIG assigns them, that Immediate Alert's Alert Level is write-only while Link Loss's is
+  read/write, that Tx Power Level is read-only, that every published value is a single octet in
+  the range its specification defines, and that all three services are advertised.
+- **`e2e_test.rs`** — starts the server against a mocked model and asserts the
+  `bluetooth_ble_started` round trip. That proves startup and the base's LLM plumbing, and
+  **nothing about the Proximity profile**.
+
+Neither is evidence for a rating above `Experimental`. Proving Find Me or Path Loss behaviour
+needs an adapter and an independent central (nRF Connect, `btleplug`).

@@ -647,6 +647,20 @@ impl OllamaClientImpl {
                 "list_models" => Self::perform_list_models(client_id, app_state, status_tx)
                     .await
                     .map(|_| ()),
+                // `generate_embeddings` was missing from this list while being advertised,
+                // executable and wired into `apply_action` — so the model could ask for an
+                // embedding on connect but never in reply to a response, where it fell into
+                // the `other` arm below and was logged away. `perform_embeddings_request`
+                // raises no event, so it respects the same bound as its three neighbours.
+                "generate_embeddings" => Self::perform_embeddings_request(
+                    client_id,
+                    data["prompt"].as_str().unwrap_or_default().to_string(),
+                    data["model"].as_str().unwrap_or_default().to_string(),
+                    app_state,
+                    status_tx,
+                )
+                .await
+                .map(|_| ()),
                 other => {
                     info!(
                         "Ollama client {} follow-up '{}' has no non-notifying path; skipped",
@@ -731,8 +745,7 @@ impl OllamaClientImpl {
             client_id, model
         );
 
-        // Build Ollama client with custom endpoint
-        let client = reqwest::Client::new();
+        let client = Self::http_client(&api_endpoint).await?;
         let url = format!("{}/api/generate", api_endpoint);
 
         let request_body = serde_json::json!({
@@ -745,7 +758,7 @@ impl OllamaClientImpl {
         match client.post(&url).json(&request_body).send().await {
             Ok(response) => {
                 let status_code = response.status();
-                let response_json: serde_json::Value = response.json().await?;
+                let response_json = Self::json_bounded(response).await?;
 
                 if status_code.is_success() {
                     let response_text = response_json
@@ -812,8 +825,7 @@ impl OllamaClientImpl {
             client_id, model
         );
 
-        // Build Ollama client with custom endpoint
-        let client = reqwest::Client::new();
+        let client = Self::http_client(&api_endpoint).await?;
         let url = format!("{}/api/chat", api_endpoint);
 
         let request_body = serde_json::json!({
@@ -826,7 +838,7 @@ impl OllamaClientImpl {
         match client.post(&url).json(&request_body).send().await {
             Ok(response) => {
                 let status_code = response.status();
-                let response_json: serde_json::Value = response.json().await?;
+                let response_json = Self::json_bounded(response).await?;
 
                 if status_code.is_success() {
                     let message_content = response_json
@@ -889,15 +901,14 @@ impl OllamaClientImpl {
 
         info!("Ollama client {} listing models", client_id);
 
-        // Build Ollama client with custom endpoint
-        let client = reqwest::Client::new();
+        let client = Self::http_client(&api_endpoint).await?;
         let url = format!("{}/api/tags", api_endpoint);
 
         // Make request
         match client.get(&url).send().await {
             Ok(response) => {
                 let status_code = response.status();
-                let response_json: serde_json::Value = response.json().await?;
+                let response_json = Self::json_bounded(response).await?;
 
                 if status_code.is_success() {
                     let models = response_json
@@ -965,8 +976,7 @@ impl OllamaClientImpl {
             client_id, model
         );
 
-        // Build Ollama client with custom endpoint
-        let client = reqwest::Client::new();
+        let client = Self::http_client(&api_endpoint).await?;
         let url = format!("{}/api/embeddings", api_endpoint);
 
         let request_body = serde_json::json!({
@@ -978,7 +988,7 @@ impl OllamaClientImpl {
         match client.post(&url).json(&request_body).send().await {
             Ok(response) => {
                 let status_code = response.status();
-                let response_json: serde_json::Value = response.json().await?;
+                let response_json = Self::json_bounded(response).await?;
 
                 if status_code.is_success() {
                     let embedding = response_json
@@ -1021,6 +1031,86 @@ impl OllamaClientImpl {
                 Err(e.into())
             }
         }
+    }
+}
+
+/// How long one Ollama API call may take, end to end.
+///
+/// Generous, because generation legitimately takes minutes on a large model — but finite,
+/// because `reqwest::Client::new()` has no timeout at all and the injected-command loop
+/// awaits each request in turn. One endpoint that accepts the connection and never answers
+/// used to wedge that loop for the life of the process, so the dashboard's `[ send ]` for
+/// this client never worked again.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How much of a response body is read before it is refused.
+///
+/// The endpoint is remote and its reply is entirely under its control: `response.json()`
+/// buffers the whole body with no limit, and `/api/generate` with `stream: true` is an
+/// arbitrarily long NDJSON stream by design. A reply larger than this is not a reply netget
+/// can do anything with — the content ends up in an event and then in an LLM prompt.
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+impl OllamaClientImpl {
+    /// The HTTP client for `endpoint`, built once per endpoint and reused.
+    ///
+    /// Two problems this fixes, both of which used to be paid on **every** request because
+    /// each `perform_*` called `reqwest::Client::new()`:
+    ///
+    /// 1. `Client::builder().build()` sets up the rustls stack and loads the platform root
+    ///    store, which on macOS reads the keychain through Security.framework — synchronously
+    ///    and serialised across processes. On the async runtime that parks a tokio worker.
+    ///    It is built on `spawn_blocking` and kept, so later requests also reuse the
+    ///    connection pool rather than rebuilding a TLS stack.
+    /// 2. `reqwest` hands the URL host to its resolver unconditionally, and `GaiResolver`
+    ///    does not special-case a dotted quad — so `http://127.0.0.1:11434`, which is where
+    ///    this client points more often than anywhere else, performed a real
+    ///    `getaddrinfo("127.0.0.1")`. Measured at 8.25 s with ~100 processes asking at once.
+    ///    `client_for_endpoint_with_timeout` applies the override when, and only when, the
+    ///    host parses as an `IpAddr`; a hostname is left to the resolver.
+    ///
+    /// Keyed by endpoint because the resolver override is per-host. The cache is a plain
+    /// `std::sync::Mutex` holding nothing across an await.
+    async fn http_client(endpoint: &str) -> Result<reqwest::Client> {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+
+        static CLIENTS: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+        let cache = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+
+        if let Some(client) = cache.lock().ok().and_then(|map| map.get(endpoint).cloned()) {
+            return Ok(client);
+        }
+
+        let owned = endpoint.to_string();
+        let built = tokio::task::spawn_blocking(move || {
+            crate::llm::ollama_client::client_for_endpoint_with_timeout(&owned, REQUEST_TIMEOUT)
+        })
+        .await
+        .context("Ollama HTTP client build task panicked")?;
+
+        if let Ok(mut map) = cache.lock() {
+            return Ok(map.entry(endpoint.to_string()).or_insert(built).clone());
+        }
+        Ok(built)
+    }
+
+    /// Read a JSON response body, refusing anything past [`MAX_RESPONSE_BYTES`].
+    ///
+    /// `response.json()` buffers the whole body first; this refuses as soon as the cap is
+    /// passed, so an endpoint answering with an endless stream costs at most the cap.
+    async fn json_bounded(mut response: reqwest::Response) -> Result<serde_json::Value> {
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                return Err(anyhow::anyhow!(
+                    "Ollama endpoint returned more than {} bytes; refusing to buffer the rest",
+                    MAX_RESPONSE_BYTES
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&body).context("Ollama endpoint returned a body that is not JSON")
     }
 }
 

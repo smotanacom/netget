@@ -34,15 +34,21 @@ Unit Tests            ← Action parsing, EventType construction
     - `connect_device` by address
     - `connect_device` by name
     - `connect_device` error (neither address nor name)
-    - `read_characteristic` with valid UUIDs
-    - `write_characteristic` with hex data
-    - `subscribe_notifications` / `unsubscribe_notifications`
+    - `write_characteristic` with hex data, and with invalid hex
     - `disconnect`
 
-2. **UUID Validation**:
-    - Standard GATT UUIDs (16-bit format expanded to 128-bit)
-    - Custom vendor UUIDs (full 128-bit)
-    - Invalid UUIDs (should error gracefully)
+   There is **no** unit test for `read_characteristic`, `subscribe_notifications` or
+   `unsubscribe_notifications`; this list used to claim all three. The `unit_tests` module in
+   `e2e_test.rs` is the authority on what exists.
+
+2. **UUID Validation**: *this section described something NetGet does not do.*
+    - `test_uuid_parsing` calls `uuid::Uuid::parse_str` on strings that are **already** in
+      128-bit form, so it exercises the `uuid` crate rather than any NetGet code.
+    - **The client does not expand the 16-bit shorthand.** `src/client/bluetooth/mod.rs` parses
+      every UUID with `Uuid::parse_str` directly, so `"180F"` is rejected, not expanded. The
+      expansion helper (`parse_ble_uuid`, covered by `tests/ble_uuid_test.rs`) belongs to the
+      **server** side and is gated on the `bluetooth-ble` feature, which this client does not
+      enable. Pass full 128-bit UUIDs to every client action.
 
 3. **Hex Data Encoding**:
     - `write_characteristic` hex string → bytes conversion
@@ -55,7 +61,7 @@ Unit Tests            ← Action parsing, EventType construction
 **Example**:
 
 ```rust
-#[cfg(all(test, feature = "bluetooth-ble"))]
+#[cfg(all(test, feature = "bluetooth-ble-client"))]
 mod tests {
     use super::*;
     use crate::llm::actions::client_trait::Client;
@@ -100,9 +106,19 @@ mod tests {
 }
 ```
 
-## Integration Tests (Mock btleplug)
+## Integration Tests
 
-**Status**: Not implemented (btleplug doesn't provide mocking interface)
+**Status**: implemented, in `command_channel_test.rs` — this section used to say "not
+implemented (btleplug doesn't provide mocking interface)", which is the wrong conclusion from a
+true premise. btleplug indeed cannot be mocked, but the part worth testing does not need it:
+`command_channel_follows_the_adapter` drives `ClientForm` into the real client loop and calls
+`AppState::send_to_client`, asserting that an unknown verb comes back `Rejected` and that a GATT
+read with no peripheral attached **errors rather than reporting success**. That is the injected-
+action path (`src/client/command_support.rs`), and it is radio-free because every one of those
+outcomes is decided before btleplug is reached.
+
+What still needs hardware is only what actually talks to a peripheral, and those tests are
+`#[ignore]`d.
 
 **Future Work**: If btleplug adds mock support or we create our own abstraction layer, we can test:
 
@@ -183,7 +199,7 @@ Setup:
 Prompt: "Connect to device AA:BB:CC:DD:EE:FF and read battery level"
 
 LLM Call 1:
-  - Action: connect_device (address: "AA:BB:CC:DD:EE:FF")
+  - Action: connect_device (device_address: "AA:BB:CC:DD:EE:FF")
   - Event: bluetooth_connected
 
 LLM Call 2:
@@ -191,7 +207,7 @@ LLM Call 2:
   - Event: bluetooth_services_discovered (services: [...])
 
 LLM Call 3:
-  - Action: read_characteristic (service: 0x180F, char: 0x2A19)
+  - Action: read_characteristic (service_uuid / characteristic_uuid, full 128-bit form)
   - Event: bluetooth_data_read (value_hex: "5f")
 
 Validation:
@@ -216,7 +232,7 @@ Prompt: "Connect to Heart Rate Monitor and subscribe to heart rate updates"
 
 LLM Call 1: connect_device
 LLM Call 2: discover_services
-LLM Call 3: subscribe_notifications (service: 0x180D, char: 0x2A37)
+LLM Call 3: subscribe_notifications (service_uuid / characteristic_uuid, full 128-bit form)
 LLM Call 4: bluetooth_notification_received (HR data)
 LLM Call 5: bluetooth_notification_received (HR data)
 
@@ -278,7 +294,10 @@ Strategy to minimize calls:
 
 **Bluetooth adapter is shared resource**:
 
-- Only run one BLE test at a time (Ollama lock handles serialization)
+- Only run one BLE test at a time. **Nothing enforces this** — `--ollama-lock` is parsed and
+  read by nothing (`tests/ollama_lock_is_a_noop_test.rs` keeps it that way), so it serializes
+  nothing. The hardware tests are `#[ignore]`d precisely because no mechanism arbitrates the
+  single adapter; run them with `--test-threads=1 --include-ignored`.
 - Disconnect from device after each test
 - Clear adapter scan cache between tests (may require adapter restart)
 
@@ -295,13 +314,15 @@ Strategy to minimize calls:
 ```
 tests/client/bluetooth/
 ├── CLAUDE.md (this file)
-└── e2e_test.rs (E2E tests, feature-gated)
+├── mod.rs (declares the submodules — an undeclared file is never compiled)
+├── e2e_test.rs (unit_tests module, always run; five #[ignore]d hardware tests)
+└── command_channel_test.rs (one always-run test; one #[ignore]d hardware test)
 ```
 
 ## E2E Test Template
 
 ```rust
-#[cfg(all(test, feature = "bluetooth-ble"))]
+#[cfg(all(test, feature = "bluetooth-ble-client"))]
 mod e2e_tests {
     use super::*;
 

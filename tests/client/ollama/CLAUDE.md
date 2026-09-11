@@ -9,7 +9,22 @@ Ollama servers.
 
 **Black-box testing**: Tests interact with NetGet client through prompts and observe output.
 
-**Real Ollama server required**: Tests connect to actual Ollama server (localhost:11434).
+**No real Ollama is contacted by any test that runs.** The five mocked tests point at dead
+loopback ports on purpose: this protocol *is* an Ollama client, so aiming a test at
+`localhost:11434` aims it at whatever real Ollama the machine is running. Only the
+`#[ignore]`d `*_real` variants want one, and each calls `require_ollama()` first.
+
+**These five tests asserted nothing until September 2026.** Each passed `base_url` in
+`startup_params`; the Ollama client declares no startup parameters, so every `open_client`
+was rejected with "Undeclared startup parameter 'base_url'" and no client was ever created.
+The only assertion was that the output contained "Ollama" — which that error message
+contains. They now assert `ready (endpoint: ...)`, printed only after `connect()` succeeded.
+
+Two suites carry the real coverage: `endpoint_targeting_test` (all four verbs reach the
+endpoint the operator named, and an endless response body is refused rather than buffered)
+and `command_channel_test` (the dashboard's injected-action path against a loopback stub).
+Neither needs a mock LLM at all - a `*` static handler with no actions answers every client
+event.
 
 ## LLM Call Budget
 
@@ -154,13 +169,10 @@ ollama pull qwen2.5-coder:0.5b
 
 ### Skip Behavior
 
-Tests automatically skip if Ollama is not available:
-
-```
-⚠️  Skipping Ollama test: Ollama server not running on localhost:11434
-```
-
-This is done by checking `http://localhost:11434/api/tags` with 2-second timeout.
+`require_ollama()` skips when no Ollama answers `http://localhost:11434/api/tags` within 2s.
+It is called **only** by the `#[ignore]`d `*_real` variants, which are not part of any run
+unless asked for by name. The mocked tests need nothing running and must never call it: a
+skip-when-missing gate is a silent pass, not evidence.
 
 ## Expected Output
 

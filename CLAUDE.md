@@ -99,7 +99,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (35 protocols as of August 30 2026;
+- **Beta** — human-reviewed, works against real clients (36 protocols as of September 11 2026;
   re-derive, the count drifts every pass). The original ten are
   `dns`, `doh`, `dot`, `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`; August 2026 added
   fourteen that are each driven by the protocol's own third-party client in a test that is **not**
@@ -137,13 +137,19 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   The August 30 sweep of the rest turned up four more near-misses, and the reasons are worth
   keeping because each looks like evidence until you read it:
 
-  - **A real client behind a skip-when-missing gate is not evidence** — `kubernetes` (kubectl),
-    `oci_registry` (crane), `maven` (mvn, and additionally `#[ignore]`d), `websocket`
+  - **A real client behind a skip-when-missing gate is not evidence** — `oci_registry` (crane),
+    `maven` (mvn, and additionally `#[ignore]`d), `websocket`
     (websocat). Each prints `SKIP: … is not installed` and returns `Ok(())`, so on a runner
     without the binary it is a silent pass. `npm`'s real-CLI test is the shape to copy: it
     **fails** when npm is absent, saying in as many words that skipping "would leave NPM's
-    maturity rating resting on nothing". Converting these four to hard-fail is the cheap path
+    maturity rating resting on nothing". Converting these to hard-fail is the cheap path
     to promoting them, but it means the binary has to exist wherever the suite runs.
+    **`kubernetes` was the fourth entry here and has taken that path** (September 2026): its
+    gate now hard-fails, and with the gate closed the evidence stands on its own — real
+    `kubectl` completes `version`, `get pods`, `get nodes`, `-o json`, a 404 NotFound and
+    `delete`. It is Beta. The *client* stays Experimental and for the opposite reason: its
+    three e2e tests were `#[ignore]`d placeholders that printed a message and asserted
+    nothing, so deleting them left it with no coverage to misread.
   - **`#[ignore]`d, however good the reason** — `bluetooth_ble` (btleplug is a real BLE central
     and the suite is verified passing by hand, but all three tests claim the machine's single
     adapter and are ignored so a 100-thread run does not deadlock on it) and `tor_relay`

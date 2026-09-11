@@ -87,7 +87,22 @@ pub mod consumer_control {
     pub const HOME: u16 = 0x223;
 }
 
-/// HID Report Descriptor for Consumer Control remote
+/// Length in bytes of the input report [`HID_REMOTE_REPORT_DESCRIPTOR`] describes.
+///
+/// 16 one-bit buttons, so exactly two bytes with no padding. `build_remote_report`
+/// returns this many bytes, and the startup examples in `actions.rs` size the input
+/// report characteristic's initial value from it.
+pub const HID_REMOTE_INPUT_REPORT_LEN: usize = 2;
+
+/// HID Report Descriptor for Consumer Control remote.
+///
+/// This is the single source of truth for the report map: `actions.rs` hex-encodes
+/// these bytes into its startup examples rather than carrying a second copy, and
+/// `tests/server/bluetooth_ble_remote/report_descriptor_test.rs` walks every item and
+/// asserts the total is `HID_REMOTE_INPUT_REPORT_LEN` bytes.
+///
+/// Bit order matches [`build_remote_report`] exactly: the *n*th Usage below is bit *n*
+/// of the report.
 pub const HID_REMOTE_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x0C, // Usage Page (Consumer)
     0x09, 0x01, // Usage (Consumer Control)
@@ -95,41 +110,49 @@ pub const HID_REMOTE_REPORT_DESCRIPTOR: &[u8] = &[
     0x15, 0x00, //   Logical Minimum (0)
     0x25, 0x01, //   Logical Maximum (1)
     0x75, 0x01, //   Report Size (1)
-    0x95, 0x10, //   Report Count (16)
-    // Media controls (16 bits)
-    0x09, 0xCD, //   Usage (Play/Pause)
-    0x09, 0xB5, //   Usage (Next Track)
-    0x09, 0xB6, //   Usage (Previous Track)
-    0x09, 0xB7, //   Usage (Stop)
-    0x09, 0xB3, //   Usage (Fast Forward)
-    0x09, 0xB4, //   Usage (Rewind)
-    0x09, 0xE9, //   Usage (Volume Up)
-    0x09, 0xEA, //   Usage (Volume Down)
-    0x09, 0xE2, //   Usage (Mute)
-    0x09, 0x30, //   Usage (Power)
-    0x09, 0x40, //   Usage (Menu)
-    0x09, 0x23, 0x02, //   Usage (Home)
-    0x09, 0x00, //   Usage (Unassigned) - padding
-    0x09, 0x00, //   Usage (Unassigned) - padding
-    0x09, 0x00, //   Usage (Unassigned) - padding
-    0x09, 0x00, //   Usage (Unassigned) - padding
+    0x95, 0x0C, //   Report Count (12) - one bit per named control below
+    0x09, 0xCD, //   Usage (Play/Pause)           -> bit 0
+    0x09, 0xB5, //   Usage (Scan Next Track)      -> bit 1
+    0x09, 0xB6, //   Usage (Scan Previous Track)  -> bit 2
+    0x09, 0xB7, //   Usage (Stop)                 -> bit 3
+    0x09, 0xB3, //   Usage (Fast Forward)         -> bit 4
+    0x09, 0xB4, //   Usage (Rewind)               -> bit 5
+    0x09, 0xE9, //   Usage (Volume Increment)     -> bit 6
+    0x09, 0xEA, //   Usage (Volume Decrement)     -> bit 7
+    0x09, 0xE2, //   Usage (Mute)                 -> bit 8
+    0x09, 0x30, //   Usage (Power)                -> bit 9
+    0x09, 0x40, //   Usage (Menu)                 -> bit 10
+    // AC Home is 0x0223, a two-byte usage, so it needs the bSize=2 form of the Usage
+    // item (0x0A) and not the one-byte form (0x09). Written as `0x09, 0x23, 0x02` the
+    // trailing 0x02 is not data at all: it parses as a *new* item with bTag=0000 and
+    // bType=Main, which is reserved, and it then swallows the two bytes after it. That
+    // is what this descriptor said until September 2026, and a host walking it would
+    // have rejected the report map outright.
+    0x0A, 0x23, 0x02, //   Usage (AC Home)        -> bit 11
     0x81, 0x02, //   Input (Data, Variable, Absolute)
+    // Pad bits 12-15 so the report is exactly two whole bytes. Constant padding is the
+    // spec's mechanism for this; the four `Usage (0x00)` items that used to stand here
+    // named the Undefined usage, which is not a padding declaration.
+    0x95, 0x04, //   Report Count (4)
+    0x81, 0x03, //   Input (Constant, Variable, Absolute) - padding
     0xC0, // End Collection
 ];
 
-/// Build a remote control report (2 bytes)
+/// Build a remote control report from a control name.
 ///
-/// Format:
-/// - Bytes 0-1: Button bits (16 buttons)
+/// The report is [`HID_REMOTE_INPUT_REPORT_LEN`] bytes, little-endian bit order: bit *n*
+/// is the *n*th Usage declared in [`HID_REMOTE_REPORT_DESCRIPTOR`]. Bits 12-15 are the
+/// descriptor's constant padding and are always zero.
 ///
-/// Example: Play/Pause pressed
-/// ```text
-/// 01 00  (bit 0 set)
-/// ```
-pub fn build_remote_report(button: &str) -> [u8; 2] {
-    let mut report = [0u8; 2];
-
-    let bit_position = match button {
+/// Example: Play/Pause pressed is bit 0, so `[0x01, 0x00]`.
+///
+/// Returns `None` for a name this profile does not define. That is deliberate and is the
+/// reason this is not `[u8; 2]`: a report full of zeroes is a *valid* report meaning "no
+/// control is pressed", so returning one for an unrecognised name would turn a caller's
+/// mistake into an affirmative statement on the wire that every button was released. The
+/// caller has to decide what an unknown name means; this function will not decide for it.
+pub fn build_remote_report(button: &str) -> Option<[u8; HID_REMOTE_INPUT_REPORT_LEN]> {
+    let bit_position: u32 = match button {
         "play_pause" => 0,
         "next_track" => 1,
         "previous_track" => 2,
@@ -142,14 +165,10 @@ pub fn build_remote_report(button: &str) -> [u8; 2] {
         "power" => 9,
         "menu" => 10,
         "home" => 11,
-        _ => return report, // No button pressed
+        _ => return None,
     };
 
-    if bit_position < 8 {
-        report[0] = 1 << bit_position;
-    } else {
-        report[1] = 1 << (bit_position - 8);
-    }
-
-    report
+    let mut report = [0u8; HID_REMOTE_INPUT_REPORT_LEN];
+    report[(bit_position / 8) as usize] = 1u8 << (bit_position % 8);
+    Some(report)
 }

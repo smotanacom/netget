@@ -138,6 +138,21 @@ const TFTP_TID_NOTE: &str = "A `udp port 69` filter captures only the initial RR
     then moves the transfer to an ephemeral TID port, so every DATA and ACK packet is missed. \
     Capture the host instead (drop the port from the filter) and use the `tftp` display filter.";
 
+const GTP_NOTE: &str = "GTP binds two ports and they are different protocols: GTP-C on \
+2123 (signalling) and GTP-U on 2152 (user payload). Give each its own `-d udp.port==N,gtp` \
+clause, or the port you omit stays undecoded.";
+
+const M3UA_NOTE: &str = "Real M3UA runs over SCTP, where the capture filter must be \
+`sctp port N` and no decode-as clause is needed. The `tcp` form below matches NetGet's \
+non-standard TCP transport (`transport=tcp`), which exists for environments without SCTP - \
+this machine is one.";
+
+const CAN_NOTE: &str = "Wireshark dissects CAN from a SocketCAN capture on a bus interface \
+(`can0`, `vcan0`) on Linux, where `can` is a valid display filter. There is no IP port to \
+filter on. NetGet's UDP transport carries a raw `struct can_frame` with no encapsulation \
+Wireshark recognises, and `-d udp.port==N,can` is rejected outright - so for the UDP lab \
+transport there is nothing to decode with, and the bytes must be read by hand.";
+
 const ARP_LOOPBACK_NOTE: &str = "`arp` is an Ethernet-only BPF keyword and is rejected on \
     loopback, which is DLT_NULL on macOS. Capture on a real interface; ARP is not carried on lo0 \
     at all, so there would be nothing to see there anyway. Same trap as isis.";
@@ -273,6 +288,16 @@ pub fn wire_for(protocol: &str) -> Wire {
         "ipsec" => udp("isakmp"),
         "torrent_dht" => with_display(udp("bt-dht"), "bt-dht"),
         "webrtc" => with_display(udp("stun"), "stun || dtls || rtp"),
+        // The telecom/industrial family, all three of which were falling through to the
+        // PLAIN_TCP default. For gtp and can that default is the wrong *transport*, not
+        // merely a missing dissector. Checked against this machine's tshark 4.6.8, which
+        // rejects an unknown name in `-d` (verified with a bogus one), so these are
+        // measurements: `udp.port==N,gtp` is accepted, `tcp.port==N,m3ua` is accepted,
+        // and `udp.port==N,can` is *rejected* - hence can gets the off-network treatment
+        // rather than a dissector it does not have.
+        "gtp" => with_note(with_display(udp("gtp"), "gtp || gtpv2"), GTP_NOTE),
+        "m3ua" => with_note(tcp("m3ua"), M3UA_NOTE),
+        "can" => offline(CAN_NOTE),
         // ---- raw / link layer --------------------------------------------
         "icmp" => raw("icmp", "icmp"),
         "igmp" => raw("igmp", "igmp"),
