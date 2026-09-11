@@ -271,3 +271,46 @@ What it pins:
 counts.
 
 **LLM call budget: 0.**
+
+## `sandbox_test.rs` — filesystem confinement
+
+In-process, **zero LLM calls, no network**: every client points at `http://127.0.0.1:1`, so
+its `git_connected` call fails and the command loop has to tolerate that. Repositories are
+`git2`-initialised temp directories.
+
+Two layers, and the second is the one that matters.
+
+**The boundary itself** (`GitSandbox::resolve`, no client): a relative path lands inside the
+root; a destination that does not exist yet is allowed (otherwise no clone could ever run);
+an absolute path outside is refused, naming `allowed_root` *and* which of the three paths was
+refused; `..` cannot climb out, spelled absolutely or relatively; a `..` below a component
+that does not exist is refused rather than guessed at; a symlink inside the root pointing out
+of it is refused, both directly and when traversed; an empty path is refused rather than
+meaning the root; the default root is neither `$HOME` nor the cwd nor an ancestor of the cwd.
+
+**The boundary as wired** (a real client via `ClientForm`, an action injected via
+`AppState::send_to_client`): a clone outside the workspace is refused **and nothing is
+written**; a `..` clone is refused; a `file://` source outside the workspace is refused; a
+repository or a `local_path` outside the workspace is refused **at connect**; `git_push` and
+a remote `git_delete_branch` are refused without `allow_remote_writes` while a local `force`
+delete is not; and every one of the eleven repository verbs refuses once the repository is
+moved out from under the session.
+
+Three of these are **positive controls** and they are what stop the file passing vacuously: a
+clone *inside* the workspace succeeds and the `.git` directory is asserted to exist, a
+relative path resolves inside the root, and the default workspace works with **no startup
+parameters at all**. A guard whose default is unusable gets switched off.
+
+Proven by disabling the fix: with `GitSandbox::resolve` stubbed to return the requested path
+and `require_remote_writes` stubbed to `Ok(())`, **13 of these tests fail** and exactly the
+positive controls still pass.
+
+### Note for anyone adding a Git client test
+
+**The Git client confines every path it touches**, so a test repository in a `tempfile`
+tempdir must declare that tempdir as `allowed_root` in `startup_params` — otherwise
+`ClientForm::create` fails with a refusal naming the parameter. `command_channel_test.rs` and
+`operation_events_test.rs` both do this. That is not a weakening: it is the parameter working,
+and those two tests are now also end-to-end evidence that it is read.
+
+**LLM call budget: 0.**

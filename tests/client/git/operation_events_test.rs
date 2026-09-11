@@ -105,6 +105,12 @@ async fn a_git_operation_reports_its_output_back_to_the_model() -> E2EResult<()>
     let client_id = ClientForm {
         protocol: "git".to_string(),
         remote_addr: Some(repo_path.display().to_string()),
+        // The Git client confines every path it touches to `allowed_root`, so a test
+        // repository in a tempdir has to declare that tempdir. See
+        // `src/client/git/sandbox.rs`; the default root is a NetGet-owned workspace.
+        startup_params: Some(serde_json::json!({
+            "allowed_root": temp.path().display().to_string()
+        })),
         instruction: Some("Show me the most recent commits, then disconnect.".to_string()),
         ..Default::default()
     }
@@ -173,6 +179,12 @@ async fn a_failing_git_operation_reports_the_error_back_to_the_model() -> E2ERes
     let client_id = ClientForm {
         protocol: "git".to_string(),
         remote_addr: Some(repo_path.display().to_string()),
+        // The Git client confines every path it touches to `allowed_root`, so a test
+        // repository in a tempdir has to declare that tempdir. See
+        // `src/client/git/sandbox.rs`; the default root is a NetGet-owned workspace.
+        startup_params: Some(serde_json::json!({
+            "allowed_root": temp.path().display().to_string()
+        })),
         instruction: Some("Check out the release branch.".to_string()),
         ..Default::default()
     }

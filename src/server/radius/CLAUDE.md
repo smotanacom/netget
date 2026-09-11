@@ -120,6 +120,24 @@ pick up each other's signing material.
 Declaring `PrivilegedPort(1812)` would be dead code — the `svn`/`PrivilegedPort(3690)`
 mistake.
 
+## Maturity: Beta (September 2026)
+
+Promoted from `Experimental`. The rating rests on `tests/server/radius/real_client_test.rs`
+driving **FreeRADIUS `radclient`** — a peer NetGet did not write and does not link — which
+verifies our Response Authenticator itself and refuses the reply outright if the MD5 is
+wrong. Both its tests run (neither is `#[ignore]`d) and both **fail rather than skip** when
+`radclient` is absent. That last point is the promotion: the evidence was always there, but
+behind a gate that printed `SKIPPED` and returned `Ok(())`, and the root `CLAUDE.md` is
+explicit that a skip-when-missing gate is a silent pass rather than evidence.
+
+FreeRADIUS is therefore required wherever the `radius` feature's suite runs
+(`brew install freeradius-server`, or `apt-get install -y freeradius-utils`). It is not in
+CI's `CI_FEATURES`, so the CI gate neither compiles nor runs those tests — see
+`tests/server/radius/CLAUDE.md` for the per-job derivation.
+
+What Beta does **not** claim: Message-Authenticator, CHAP, MS-CHAP and EAP are unimplemented
+(above), and the tests cover neither, deliberately.
+
 ## Known limitations
 
 - One `shared_secret` for the whole server; no per-NAS client table.

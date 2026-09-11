@@ -13,7 +13,15 @@
 //! That was confirmed by hand against a deliberately-wrong authenticator before this test was
 //! written, so a green run here really does mean the MD5 is right.
 //!
-//! Skipped, loudly, when `radclient` is not installed (`brew install freeradius-server`).
+//! **This test FAILS, it does not skip, when `radclient` is absent.** That is deliberate and
+//! it is the whole reason RADIUS may be rated `Beta`. A skip-when-missing gate returns
+//! `Ok(())` on a runner without FreeRADIUS, so the suite reports a silent pass and the
+//! maturity rating ends up resting on nothing — which is exactly how a claim outlives the
+//! evidence that justified it. `tests/server/npm/e2e_test.rs` is the precedent.
+//!
+//! Install with `brew install freeradius-server` (macOS) or `apt-get install -y freeradius-utils`
+//! (Debian/Ubuntu). RADIUS is not in CI's `CI_FEATURES`, so this costs the CI gate nothing;
+//! see `tests/server/radius/CLAUDE.md`.
 
 #![cfg(feature = "radius")]
 
@@ -23,8 +31,62 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+/// Locate `radclient` — or fail the test, saying why a skip would be worse.
+///
+/// **Fail, never skip.** `radclient` is the only peer in this repository that NetGet did not
+/// write, and it is the whole of RADIUS's `Beta` evidence. A machine without FreeRADIUS must
+/// say so loudly rather than return `Ok(())`: a vacuous green is exactly how a maturity claim
+/// outlives the thing that justified it, and `CLAUDE.md` names four protocols held back from
+/// `Beta` for having precisely this gate. `tests/server/npm/e2e_test.rs` is the precedent.
+///
+/// This also confirms the binary *runs* rather than merely existing, so a broken or
+/// architecture-mismatched install fails here with its own error rather than three assertions
+/// later as an unexplained timeout.
+async fn require_radclient() -> E2EResult<String> {
+    let binary = find_radclient().ok_or_else(|| {
+        "radclient not found (searched /opt/homebrew/bin, /usr/local/bin, /usr/bin and $PATH). \
+         These two tests drive FreeRADIUS's own client against NetGet's RADIUS server, and \
+         that is the only independent check that our Response Authenticator MD5 is right. \
+         Skipping would leave RADIUS's Beta rating resting on nothing, so this is a failure \
+         and not a skip. Install it with `brew install freeradius-server` (macOS) or \
+         `apt-get install -y freeradius-utils` (Debian/Ubuntu). RADIUS is not in CI's \
+         CI_FEATURES, so nothing in the CI gate compiles or runs this file."
+            .to_string()
+    })?;
+
+    let version = Command::new(&binary)
+        .arg("-v")
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|e| {
+            format!(
+                "`{binary} -v` could not be executed ({e}): a radclient that cannot run is not \
+                 evidence of anything"
+            )
+        })?;
+
+    // `radclient -v` exits non-zero on some builds while still printing its banner, so the
+    // banner is what is asserted on rather than the exit status.
+    let banner = format!(
+        "{}{}",
+        String::from_utf8_lossy(&version.stdout),
+        String::from_utf8_lossy(&version.stderr)
+    );
+    if !banner.to_lowercase().contains("radclient") {
+        return Err(format!(
+            "`{binary} -v` printed no recognisable radclient banner, so this is not the \
+             FreeRADIUS client these tests need:\n{banner}"
+        )
+        .into());
+    }
+    println!("radclient: {}", banner.lines().next().unwrap_or("").trim());
+
+    Ok(binary)
+}
+
 /// Locate `radclient`, or `None` if FreeRADIUS is not installed here.
-fn radclient() -> Option<String> {
+fn find_radclient() -> Option<String> {
     for candidate in [
         "/opt/homebrew/bin/radclient",
         "/usr/local/bin/radclient",
@@ -95,13 +157,7 @@ async fn run_radclient(
 /// event-derived branch fires proves the server unhid `User-Password` correctly.
 #[tokio::test]
 async fn freeradius_radclient_accepts_our_access_accept() -> E2EResult<()> {
-    let Some(binary) = radclient() else {
-        eprintln!(
-            "SKIPPED: radclient not found. Install with `brew install freeradius-server` \
-             to run RADIUS against a real client."
-        );
-        return Ok(());
-    };
+    let binary = require_radclient().await?;
 
     let config = NetGetConfig::new(
         "listen on port {AVAILABLE_PORT} via radius with shared secret xyzzy5461. \
@@ -193,10 +249,7 @@ async fn freeradius_radclient_accepts_our_access_accept() -> E2EResult<()> {
 /// configured to fail over would move to the next server and possibly get a yes.
 #[tokio::test]
 async fn freeradius_radclient_sees_a_valid_reject_when_the_model_is_silent() -> E2EResult<()> {
-    let Some(binary) = radclient() else {
-        eprintln!("SKIPPED: radclient not found (brew install freeradius-server).");
-        return Ok(());
-    };
+    let binary = require_radclient().await?;
 
     let config = NetGetConfig::new(
         "listen on port {AVAILABLE_PORT} via radius with shared secret xyzzy5461.",
