@@ -239,10 +239,24 @@ impl TorrentTrackerProtocol {
                     let mut dict = std::collections::HashMap::new();
                     // `peer id` is optional in the dictionary model (BEP 3) and a model
                     // that omits it should still get a well-formed peer entry.
+                    //
+                    // It is hex-decoded when it is valid 40-character hex, because that is
+                    // the form the *event* reports an inbound `peer_id` in, and echoing the
+                    // event's value is the obvious thing for a model to do. Writing those
+                    // characters through as text put 40 bytes on the wire where BEP 3 wants
+                    // 20 — the `send_tcp_data` defect shape. A value that is not 40-char hex
+                    // is a literal peer id (`-TR2940-abcdefghijkl`, which real clients send
+                    // as raw ASCII) and goes through unchanged; the two are told apart by
+                    // decoding rather than by a flag, because only one of them can be both
+                    // 40 characters long and valid hex.
                     if let Some(peer_id) = peer.get("peer_id").and_then(|v| v.as_str()) {
+                        let bytes = match hex::decode(peer_id) {
+                            Ok(decoded) if peer_id.len() == 40 => decoded,
+                            _ => peer_id.as_bytes().to_vec(),
+                        };
                         dict.insert(
                             b"peer id".to_vec(),
-                            serde_bencode::value::Value::Bytes(peer_id.as_bytes().to_vec()),
+                            serde_bencode::value::Value::Bytes(bytes),
                         );
                     }
                     dict.insert(
@@ -353,11 +367,19 @@ impl TorrentTrackerProtocol {
         // The action definition, CLAUDE.md and the E2E test all said `failure_reason`
         // (matching the bencode key BEP 3 defines) while the executor read `error`, so
         // every documented use produced the literal string "Unknown error". Accept both.
+        // `failure_reason` is declared `required: true`, so it is enforced rather than
+        // defaulted. It used to fall back to the literal string "Unknown error", which is
+        // then what the client displays before it stops announcing to this tracker — a
+        // refusal that says nothing is barely better than no refusal, and the declaration
+        // promised the model it would be told when it left the field out.
         let error_message = action
             .get("failure_reason")
             .or_else(|| action.get("error"))
             .and_then(|v| v.as_str())
-            .unwrap_or("Unknown error");
+            .context(
+                "send_error_response requires 'failure_reason' (alias 'error'): the text the \
+                 client displays before it stops announcing to this tracker",
+            )?;
 
         let mut response_dict = std::collections::HashMap::new();
         response_dict.insert(
@@ -466,12 +488,17 @@ pub static TRACKER_ANNOUNCE_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|
     EventType::new(
         "tracker_announce_request",
         "BitTorrent client announced itself and is asking for peers",
+        // Concrete, not `"{{event.compact}}"`. A `response_example` is shown to the *model*,
+        // and `{{...}}` is interpolated only for static handlers — so the placeholder
+        // reached `is_compact` as text, matched nothing, and silently produced the
+        // dictionary peer form that real clients refuse. The static-handler example in
+        // `get_startup_examples` keeps the placeholder, where it does work.
         json!({
             "type": "send_announce_response",
             "interval": 1800,
             "complete": 1,
             "incomplete": 0,
-            "compact": "{{event.compact}}",
+            "compact": 1,
             "peers": [{"ip": "127.0.0.1", "port": 51413}]
         }),
     )
@@ -496,11 +523,17 @@ pub static TRACKER_SCRAPE_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| 
     EventType::new(
         "tracker_scrape_request",
         "BitTorrent client asked for torrent statistics",
+        // The array form, and a concrete info_hash. A `{{...}}` placeholder used as an
+        // object *key* is worse than one used as a value: `hex::decode` rejects it, the
+        // entry is dropped, and the client gets an empty `files` dictionary under a 200 OK.
+        // Nothing errors, so the model has no way to learn it did not work. Copy the
+        // event's own 40-character `info_hash` into the value here.
         json!({
             "type": "send_scrape_response",
-            "files": {
-                "{{event.info_hash}}": {"complete": 1, "downloaded": 1, "incomplete": 0}
-            }
+            "files": [{
+                "info_hash": "1111111111111111111111111111111111111111",
+                "complete": 1, "downloaded": 1, "incomplete": 0
+            }]
         }),
     )
     .with_parameters(common_request_parameters())
@@ -549,23 +582,35 @@ pub static SEND_ANNOUNCE_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock:
                 // what the executor actually implements.
                 type_hint: "boolean|number".to_string(),
                 description: "Encode peers in BEP 23 compact form (4-byte IPv4 + 2-byte \
-                              port). Pass the request's own `compact` value through as \
-                              \"{{event.compact}}\" (it arrives as 1 or 0); `true`/`false` \
-                              also work. Most real clients require compact form, which \
-                              carries no peer_id and drops IPv6 peers."
+                              port). Send 1 or 0 (`true`/`false` also work). Most real \
+                              clients require compact form, which carries no peer_id and \
+                              drops IPv6 peers, so 1 is usually right. In a *static* handler \
+                              — and only there — \"{{event.compact}}\" passes the request's \
+                              own value through; on this path that placeholder is not \
+                              interpolated and would be read as text."
                     .to_string(),
                 required: false,
             },
             Parameter {
                 name: "peers".to_string(),
                 type_hint: "array".to_string(),
-                description: "Array of peer objects with ip and port (and optional \
-                              peer_id, used only in non-compact form)"
+                description: "Array of peer objects with `ip` and `port`, plus an optional \
+                              `peer_id` used only in non-compact form. A `peer_id` of 40 hex \
+                              characters is decoded to the 20 bytes BEP 3 wants — that is \
+                              the form the announce event reports it in — and anything else \
+                              is sent as literal text."
                     .to_string(),
                 required: false,
             },
         ],
-        example: json!({"type": "send_announce_response", "interval": 1800, "complete": 10, "incomplete": 5, "compact": "{{event.compact}}", "peers": [{"peer_id": "-TR0001-xxxxxxxxxxxx", "ip": "192.168.1.100", "port": 51413}]}),
+        // `"{{event.compact}}"` is NOT usable here. `{{...}}` is interpolated only for
+        // *static* handlers; on the LLM path the model copies the example verbatim and the
+        // executor receives that literal string, which `is_compact` does not match — so it
+        // answered in the dictionary form this action's own comment says real clients
+        // refuse. Accepted, wrong bytes, no error raised, which is why it survived. The
+        // example shows a concrete 1; the parameter description explains interpolation for
+        // handler authors.
+        example: json!({"type": "send_announce_response", "interval": 1800, "complete": 10, "incomplete": 5, "compact": 1, "peers": [{"peer_id": "2d5452303030312d787878787878787878787878", "ip": "192.168.1.100", "port": 51413}]}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> BT announce: {peers_len} peers, interval={interval}s")
@@ -588,7 +633,13 @@ pub static SEND_SCRAPE_RESPONSE_ACTION: LazyLock<ActionDefinition> = LazyLock::n
                 .to_string(),
             required: false,
         }],
-        example: json!({"type": "send_scrape_response", "files": {"{{event.info_hash}}": {"complete": 10, "downloaded": 100, "incomplete": 5}}}),
+        // Not `{"{{event.info_hash}}": ...}`. On the LLM path that key arrives literally,
+        // `hex::decode` rejects it, the entry is `continue`d, and the client gets an empty
+        // `files` dictionary under a 200 OK — silently, which is why it survived. The array
+        // form is shown instead: it puts the info_hash in a value rather than a key, so a
+        // static handler can interpolate it there and the LLM path has an obvious place to
+        // copy the event's hex into.
+        example: json!({"type": "send_scrape_response", "files": [{"info_hash": "1111111111111111111111111111111111111111", "complete": 10, "downloaded": 100, "incomplete": 5}]}),
         log_template: Some(
             LogTemplate::new()
                 .with_info("-> BT scrape: {files_len} torrents")
@@ -606,7 +657,10 @@ pub static SEND_ERROR_RESPONSE_ACTION: LazyLock<ActionDefinition> =
         parameters: vec![Parameter {
             name: "failure_reason".to_string(),
             type_hint: "string".to_string(),
-            description: "Message shown to the client (alias: `error`)".to_string(),
+            description: "Message shown to the client, which then stops announcing to this \
+                          tracker (alias: `error`). Genuinely required — omitting it is an \
+                          error, not a generic refusal."
+                .to_string(),
             required: true,
         }],
         example: json!({"type": "send_error_response", "failure_reason": "Torrent not found"}),
