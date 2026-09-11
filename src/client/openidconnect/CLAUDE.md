@@ -2,8 +2,25 @@
 
 ## Overview
 
-The OpenID Connect (OIDC) client implements a full OAuth2/OIDC authentication client for NetGet. It supports multiple
-OAuth2 flows and allows the LLM to control authentication, token management, and user information retrieval.
+The OpenID Connect (OIDC) client drives OAuth2/OIDC authentication flows for NetGet: discovery,
+authorization code, device code, password and client credentials, with the LLM choosing which
+flow to run and what to do with the result.
+
+**Read this first: no ID token is verified.** The `openidconnect` crate *can* check a JWT's
+signature, issuer, audience and nonce — that is `id_token.claims(&client.id_token_verifier(),
+&nonce)` — and this client never calls it. Tokens are taken as opaque strings and stored, so a
+forged or expired `id_token` is accepted exactly as readily as a genuine one. Nothing
+downstream re-checks it either. Treat this as a client for *exercising providers*, not as an
+authentication boundary, and do not let "the openidconnect crate validates tokens" back into
+these docs: the crate offers validation, this code declines it. `metadata().notes` says the
+same.
+
+**Tokens do not reach the model.** `oidc_token_received` reports `access_token`, `id_token` and
+`refresh_token` as `"[REDACTED]"` — or `""` when absent — matching the sibling `oauth2` client,
+which has always done this. The values are held in `protocol_data` and every action that needs
+one (`fetch_userinfo`, `refresh_token`, `validate_token`) reads it back from there, so the
+model has no use for the secret; sending it copied a live bearer token into the LLM prompt,
+into `netget.log` and onto the TUI status stream. If you add an event, redact there too.
 
 ## Library Choice
 
@@ -13,7 +30,8 @@ The `openidconnect` crate is the official Rust implementation of OpenID Connect,
 
 - Full OpenID Connect Discovery (`.well-known/openid-configuration`)
 - OAuth2 flows: Password and Client Credentials (via library APIs)
-- Automatic token validation and JWT parsing
+- Token validation and JWT parsing — **offered by the crate, not used here**; see the warning
+  above
 - Type-safe API with strong guarantees
 - Built on top of the `oauth2` crate
 - Async HTTP client support via `reqwest`
