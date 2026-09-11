@@ -43,6 +43,17 @@ use actions::{
     USB_SERIAL_ATTACHED_EVENT, USB_SERIAL_DATA_RECEIVED_EVENT, USB_SERIAL_DETACHED_EVENT,
 };
 
+/// Most host-written bytes one `usb_serial_data_received` event will carry.
+///
+/// The loop below coalesces everything the host wrote while the previous LLM call was in
+/// flight, so this is a bound on a backlog that grows at the host's line rate for the length
+/// of a model round-trip -- and it was unbounded. The bytes were then copied a second time by
+/// `from_utf8_lossy` and a third into the event JSON, all of which the model then has to read.
+/// 8 KiB is well past any line a serial peer sends in one go; the remainder is reported to the
+/// host as a CDC overrun, which is exactly what a real port says when its receive buffer fills.
+#[cfg(feature = "usb-serial")]
+const MAX_EVENT_BYTES: usize = 8 * 1024;
+
 #[cfg(feature = "usb-serial")]
 #[derive(Debug, Clone, PartialEq)]
 enum ConnectionState {
@@ -247,8 +258,37 @@ impl UsbSerialServer {
                     // Coalesce whatever else is already queued: while the previous LLM call
                     // was running the host may have written several times, and one event per
                     // URB would turn a paste into a burst of model round-trips.
-                    while let Ok(more) = rx_rx.try_recv() {
-                        data.extend_from_slice(&more);
+                    //
+                    // Bounded on append. What is being coalesced is precisely the backlog that
+                    // accumulated while the model was busy, so an attached host writing at line
+                    // rate decided the size of this buffer, of the `from_utf8_lossy` copy of it
+                    // and of the event JSON built from that.
+                    let mut overran = data.len() > MAX_EVENT_BYTES;
+                    data.truncate(MAX_EVENT_BYTES);
+                    while data.len() < MAX_EVENT_BYTES {
+                        let Ok(more) = rx_rx.try_recv() else { break };
+                        let room = MAX_EVENT_BYTES - data.len();
+                        if more.len() > room {
+                            data.extend_from_slice(&more[..room]);
+                            overran = true;
+                        } else {
+                            data.extend_from_slice(&more);
+                        }
+                    }
+                    if overran {
+                        // Say so in CDC's own vocabulary rather than silently serving a
+                        // truncated prefix to the model and nothing to the host.
+                        warn!(
+                            "USB serial connection {} clamped the host's backlog to {} bytes",
+                            connection_id, MAX_EVENT_BYTES
+                        );
+                        if protocol.signal_overrun(connection_id) {
+                            let _ = status_tx.send(format!(
+                                "[ERROR] USB serial port {connection_id} signalled \
+                                 SERIAL_STATE overrun: the host wrote more than \
+                                 {MAX_EVENT_BYTES} bytes while the model was busy"
+                            ));
+                        }
                     }
 
                     let text = String::from_utf8_lossy(&data).to_string();
