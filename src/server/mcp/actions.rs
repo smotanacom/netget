@@ -262,10 +262,23 @@ impl McpProtocol {
     }
 
     fn execute_mcp_error_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let code = action
+        // Range-checked, not narrowed. `as i32` wraps in silence, so a model answering
+        // `-32601` + 2^32 sent `-32601`'s neighbour — or worse, a value that lands inside
+        // JSON-RPC's reserved -32768..-32000 band and claims to be a transport-level fault
+        // the server never had. Refusing beats clamping: `i32::MIN` is not what the model
+        // asked for either, and the message is what the repair loop reads.
+        let raw = action
             .get("code")
             .and_then(|v| v.as_i64())
-            .context("Missing 'code' parameter")? as i32;
+            .context("Missing 'code' parameter")?;
+        let code = i32::try_from(raw).map_err(|_| {
+            anyhow::anyhow!(
+                "'code' {raw} does not fit the 32-bit integer JSON-RPC error codes use. \
+                 -32700 parse error, -32600 invalid request, -32601 method not found, \
+                 -32602 invalid params, -32603 internal error; -32000..-32099 are reserved \
+                 for the server to define."
+            )
+        })?;
 
         let message = action
             .get("message")

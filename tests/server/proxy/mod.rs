@@ -7,3 +7,6 @@ mod llm_failure_test;
 // traffic through the proxy with `reqwest`. `e2e_test.rs` only checks that the server starts.
 #[cfg(all(test, feature = "proxy"))]
 mod test;
+
+#[cfg(all(test, feature = "proxy"))]
+mod status_range_test;

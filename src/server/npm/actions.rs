@@ -274,10 +274,26 @@ impl NpmProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown error");
 
-        let status_code = action
-            .get("status_code")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(500) as u16;
+        // `as u16` wraps: a `status_code` of 65736 is 200, so `npm_error` — the model's only
+        // way to refuse a request — told the client the fetch had succeeded. Refuse the
+        // out-of-range value rather than clamping it, and name the range for the repair loop.
+        let status_code = match action.get("status_code") {
+            None => 500,
+            Some(v) if v.is_null() => 500,
+            Some(v) => {
+                let raw = v.as_u64().ok_or_else(|| {
+                    anyhow::anyhow!("npm_error 'status_code' must be a number, got {v}")
+                })?;
+                if !(100..=599).contains(&raw) {
+                    return Err(anyhow::anyhow!(
+                        "npm_error 'status_code' {raw} is not an HTTP status code; use 100-599 \
+                         (404 for an unknown package, 403 for a forbidden one, 500 for a \
+                         registry fault)"
+                    ));
+                }
+                raw as u16
+            }
+        };
 
         debug!("NPM error response: {} ({})", error_message, status_code);
 

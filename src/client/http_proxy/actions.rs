@@ -425,11 +425,23 @@ impl Client for HttpProxyClientProtocol {
                     .context("Missing 'target_host' field")?
                     .to_string();
 
-                let target_port = action
+                // Range-checked, not narrowed. `as u16` wraps in silence, so
+                // `target_port: 66079` became 543 and the CONNECT went to a *different
+                // service on the same host* than the one the model named — quietly, with
+                // every log line downstream reporting the port it ended up at rather than
+                // the one it was asked for. A client that loses its target must fail rather
+                // than pick one.
+                let raw = action
                     .get("target_port")
                     .and_then(|v| v.as_u64())
-                    .context("Missing 'target_port' field")?
-                    as u16;
+                    .context("Missing 'target_port' field")?;
+                if !(1..=65535).contains(&raw) {
+                    return Err(anyhow::anyhow!(
+                        "'target_port' {raw} is not a TCP port (1-65535). Truncating it \
+                         would tunnel to a different service than the one named."
+                    ));
+                }
+                let target_port = raw as u16;
 
                 Ok(ClientActionResult::Custom {
                     name: "establish_tunnel".to_string(),

@@ -373,6 +373,39 @@ pub static ZOOKEEPER_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
 /// ZooKeeper protocol implementation
 pub struct ZookeeperProtocol;
 
+/// Read a model-supplied ZooKeeper wire integer, refusing anything a Java `int` cannot hold.
+///
+/// Every one of these was `as_i64()… as i32`, which wraps in silence, and for `error_code` the
+/// wrap is a fail-open: **`error_code: 4294967296` narrows to `0`**, `is_error` goes false, and
+/// a reply the model meant as NONODE or NOAUTH is encoded as the success it was refusing —
+/// body appended and all. The `required: true` guard on `zookeeper_response` checks that the
+/// field is *an integer*, which such a value is; it never checked that the integer survived
+/// the narrowing.
+///
+/// `xid` is the same shape on a correlation identifier: a client matches replies by xid, so a
+/// wrapped one answers whichever request happened to carry the truncated value.
+///
+/// Refusing beats clamping — `i32::MAX` is not what the model asked for either — and the
+/// message is what the repair loop reads. ZooKeeper's own wire types are Java `int`, so that
+/// is the honest bound rather than a list of named codes.
+fn i32_field(action: &serde_json::Value, key: &str, default: i32) -> Result<i32> {
+    let value = match action.get(key) {
+        None => return Ok(default),
+        Some(v) if v.is_null() => return Ok(default),
+        Some(v) => v,
+    };
+    let raw = value
+        .as_i64()
+        .ok_or_else(|| anyhow!("zookeeper '{key}' must be an integer, got {value}"))?;
+    i32::try_from(raw).map_err(|_| {
+        anyhow!(
+            "zookeeper '{key}' {raw} does not fit the 32-bit integer ZooKeeper puts on the \
+             wire (-2147483648 to 2147483647). Truncating it would change what the reply \
+             says: an error_code that narrows to 0 is a grant."
+        )
+    })
+}
+
 impl ZookeeperProtocol {
     pub fn new() -> Self {
         Self
@@ -555,17 +588,18 @@ impl Server for ZookeeperProtocol {
         // the connection loop knows the xid of the request being answered and substitutes it
         // when the handler omitted one. Defaulting to 0 at this layer would put a reply on the
         // wire that no client can correlate.
-        let xid = action.get("xid").and_then(|v| v.as_i64()).map(|v| v as i32);
+        let xid = match action.get("xid") {
+            None => None,
+            Some(v) if v.is_null() => None,
+            Some(_) => Some(i32_field(&action, "xid", 0)?),
+        };
         let zxid = action.get("zxid").and_then(|v| v.as_i64()).unwrap_or(0);
         // Shared by every action below. The dedicated success responses (create, get_data,
         // …) do not declare `error_code` and are affirmative by construction, so 0 is right
         // for them; `zookeeper_response` DOES declare it required and is checked in its own
         // arm, because there 0 is a grant rather than a shape.
-        let error_code = action
-            .get("error_code")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0) as i32;
-        let version = action.get("version").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let error_code = i32_field(&action, "error_code", 0)?;
+        let version = i32_field(&action, "version", 0)?;
 
         // A non-zero error code means the reply is header-only: real ZooKeeper sends no body
         // with an error, and appending one desynchronizes the client.
@@ -626,14 +660,8 @@ impl Server for ZookeeperProtocol {
                 if is_error {
                     Vec::new()
                 } else {
-                    let data_length = action
-                        .get("data_length")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0) as i32;
-                    let num_children = action
-                        .get("num_children")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0) as i32;
+                    let data_length = i32_field(&action, "data_length", 0)?;
+                    let num_children = i32_field(&action, "num_children", 0)?;
                     encode_stat(zxid, version, data_length, num_children)
                 }
             }
