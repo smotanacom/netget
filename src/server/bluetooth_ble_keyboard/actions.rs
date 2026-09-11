@@ -105,7 +105,7 @@ impl Protocol for BluetoothBleKeyboardProtocol {
                 "Base BLE GATT control (add_service, start_advertising, stop_advertising, respond_to_read, respond_to_write, send_notification); the LLM builds the HID Service (0x1812) in keyboard mode itself.",
             )
             .e2e_testing(
-                "Requires a real Bluetooth LE adapter and a central such as nRF Connect; no automated coverage",
+                "tests/server/bluetooth_ble_keyboard/report_descriptor_test.rs pins the HID report descriptor and the GATT values in the startup examples against literal spec bytes; it is a pure unit test, so it claims no adapter and is not #[ignore]d. e2e_test.rs additionally starts the server against a mocked model, which proves startup and the bluetooth_ble_started round trip and nothing at all about HID. Whether a real host accepts this as an input device is untested and needs an adapter plus an independent central (nRF Connect, btleplug); until that exists the rating cannot rise above Experimental.",
             )
             .notes(
                 "Thin profile wrapper over the bluetooth-ble base stack. It prepends an instruction describing the HID Service (0x1812) in keyboard mode and otherwise reuses the base entirely: the base hardcodes BluetoothBleProtocol when it calls the LLM, so the action vocabulary, the event types and the executor are the base's. This protocol deliberately declares no actions or events of its own - one that did would be documented to the model but never reachable at runtime.",
@@ -127,6 +127,25 @@ impl Protocol for BluetoothBleKeyboardProtocol {
 
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
         use crate::llm::actions::StartupExamples;
+
+        use crate::server::bluetooth_ble_keyboard::{
+            HID_KEYBOARD_INPUT_REPORT_LEN, HID_KEYBOARD_REPORT_DESCRIPTOR,
+        };
+
+        // The report map is hex-encoded from the descriptor const rather than written out
+        // again here. A model copies these examples verbatim onto a real GATT table, so a
+        // second hand-maintained copy is a report map that drifts from the one the profile
+        // documents — which is exactly what happened: the literal that used to sit here was
+        // truncated mid-item and declared a ten-byte report against an eight-byte initial
+        // value, and nothing could have caught it because nothing parsed it.
+        let report_map = hex::encode(HID_KEYBOARD_REPORT_DESCRIPTOR);
+        // An all-zeroes report of the exact length the descriptor declares: "no modifier,
+        // no keys". Sized from the const so it cannot disagree with the report map.
+        let empty_report = hex::encode(vec![0u8; HID_KEYBOARD_INPUT_REPORT_LEN]);
+        let read_script = format!(
+            "actions = [{{'type': 'respond_to_read', 'value': '{}'}}]",
+            empty_report
+        );
 
         // Every event id and action name below is one the base stack really emits and really
         // executes. UUIDs are written in full 128-bit form because the base parses them with
@@ -156,7 +175,7 @@ impl Protocol for BluetoothBleKeyboardProtocol {
                         "handler": {
                             "type": "script",
                             "language": "python",
-                            "code": "actions = [{'type': 'respond_to_read', 'value': '0000000000000000'}]"
+                            "code": read_script
                         }
                     }
                 ]
@@ -188,7 +207,13 @@ impl Protocol for BluetoothBleKeyboardProtocol {
                                             "permissions": [
                                                 "readable"
                                             ],
-                                            "initial_value": "01110002"
+                                            // HID Information: bcdHID 0x0111 (v1.11) as a
+                                            // little-endian uint16, then bCountryCode 0x00
+                                            // and Flags 0x02 (NormallyConnectable). Every
+                                            // GATT integer is little-endian, so the version
+                                            // is `1101` and not `0111` — written the other
+                                            // way round a host reads HID version 17.01.
+                                            "initial_value": "11010002"
                                         },
                                         {
                                             "uuid": "00002a4b-0000-1000-8000-00805f9b34fb",
@@ -198,7 +223,7 @@ impl Protocol for BluetoothBleKeyboardProtocol {
                                             "permissions": [
                                                 "readable"
                                             ],
-                                            "initial_value": "05010906a101050719e029e71500250175019508810295017508810105067508950815002565050719002965810003c0"
+                                            "initial_value": report_map
                                         },
                                         {
                                             "uuid": "00002a4d-0000-1000-8000-00805f9b34fb",
@@ -209,7 +234,7 @@ impl Protocol for BluetoothBleKeyboardProtocol {
                                             "permissions": [
                                                 "readable"
                                             ],
-                                            "initial_value": "0000000000000000"
+                                            "initial_value": empty_report
                                         },
                                         {
                                             "uuid": "00002a4c-0000-1000-8000-00805f9b34fb",
@@ -239,7 +264,7 @@ impl Protocol for BluetoothBleKeyboardProtocol {
                             "actions": [
                                 {
                                     "type": "respond_to_read",
-                                    "value": "0000000000000000"
+                                    "value": empty_report
                                 }
                             ]
                         }

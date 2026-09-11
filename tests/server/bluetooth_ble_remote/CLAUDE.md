@@ -1,95 +1,69 @@
-# BLE Remote Control E2E Tests
+# BLE Media Remote — tests
 
-## Test Strategy
+Two files, and between them they prove considerably less than this document used to claim.
 
-BLE remote control is a simple HID Consumer Control device with button presses. Testing validates button press events
-are sent correctly.
+| File | Needs an adapter? | `#[ignore]`d? | What it actually asserts |
+|---|---|---|---|
+| `report_descriptor_test.rs` | no | no | The HID report descriptor, `build_remote_report`'s bit assignments, and the GATT values in `get_startup_examples()`, against literal spec bytes |
+| `e2e_test.rs` | yes (a real radio) | no | The server starts and answers `bluetooth_ble_started`. Nothing about HID |
 
-### Test Approach
+**LLM call budget: 2** — one to interpret the instruction, one for `bluetooth_ble_started`.
+Both are mocked; `wait_for_mocks(30)` waits for the exchange and `verify_mocks()` asserts it.
 
-**Black-box testing**: Tests validate remote behavior by:
+## `report_descriptor_test.rs` — where the real coverage is
 
-- Connecting as BLE central
-- Pairing with remote server
-- Subscribing to HID report notifications
-- Validating button press reports
+Nothing inside NetGet parses a HID report map. The base BLE stack carries it as an opaque byte
+string, hands it to whichever central asks, and never looks at it. So the first parser to see a
+malformed descriptor is a real host, on someone else's machine, after it has shipped — and that
+is exactly what happened here. Before September 2026 this profile published a report map in
+which `Usage (AC Home)` was written `0x09, 0x23, 0x02`: AC Home is `0x0223`, a two-byte usage,
+and the one-byte `0x09` form leaves the trailing `0x02` to be parsed as a fresh item with a
+reserved Main tag, which then swallows the two bytes after it. A host's parser stops there.
 
-### Client Library
+The startup example was worse and separately wrong: nine controls against a `Report Count` of
+eight (so Stop was silently dropped), on entirely different bits from the ones
+`build_remote_report` sets, describing a one-byte report where the descriptor const describes
+two. A model copying that example onto a real GATT table would have produced a device whose
+buttons did the wrong things, if the host accepted it at all.
 
-Using **btleplug** as BLE central for testing.
+The tests decode every item against the USB HID 1.11 item encoding (`hid_descriptor.rs`, shared
+from the keyboard suite via `#[path]`) and assert:
 
-## Test Cases
+- the descriptor is byte-for-byte the literal written out in the test, with each item's meaning
+  spelled beside it — so changing the const forces someone to restate what the new bytes mean;
+- it is well formed, every collection closed, and describes exactly
+  `HID_REMOTE_INPUT_REPORT_LEN` bytes;
+- the twelve usages are on the Consumer page and in the same order `build_remote_report`
+  assigns bits, checked control by control;
+- the AC Home encoding: the test *breaks* it back to `0x09` and asserts the walker rejects it,
+  so the test is shown to catch the original defect rather than merely agreeing with the fix;
+- an unrecognised control name yields `None`, not a zeroed report. A zeroed report is not
+  "nothing" — it is a valid HID report asserting every control is released, which is a
+  statement this profile has no business making on a caller's typo;
+- the startup examples publish the same bytes as the const, and the HID Information
+  characteristic decodes to v1.11 little-endian.
 
-### 1. Play/Pause Button Test
+## What would earn a rating above `Experimental`
 
-**LLM Budget**: 2 calls (start server, press play/pause)
+An adapter plus an **independent central** — nRF Connect by hand, or `btleplug` in the suite —
+that bonds, reads the report map, subscribes to the input report, and reports the control
+NetGet intended. All three parts matter, and the last is the one a lenient test would skip:
+reading the descriptor back proves it is *parseable*, not that bit 6 means Volume Up to the
+host.
 
-Validates:
+That test does not exist, and it cannot be written to run unattended here. HID-over-GATT only
+becomes an input device after bonding, and `ble-peripheral-rust` 0.2 exposes no pairing or
+bonding control at all. Any adapter-claiming test would also have to be `#[ignore]`d so a
+100-thread run does not deadlock on the machine's single radio — and per the root `CLAUDE.md`,
+an `#[ignore]`d test is not evidence however good its reason.
 
-- HID service (0x1812) is advertised
-- Report descriptor matches Consumer Control format
-- Play/pause button press sends correct report (0x01 0x00)
+## What this file used to say
 
-### 2. Volume Control Test
-
-**LLM Budget**: 3 calls (start server, volume up, volume down)
-
-Validates:
-
-- Volume up button (bit 6)
-- Volume down button (bit 7)
-- Button release (0x00 0x00)
-
-### 3. Multiple Button Sequence Test
-
-**LLM Budget**: 4 calls (start server, multiple buttons)
-
-Validates:
-
-- Sequential button presses work correctly
-- No button state interference
-- Each button press followed by release
-
-## LLM Call Budget
-
-**Total**: < 10 LLM calls across all tests
-
-- Server startup: 1 call (shared)
-- Button press actions: 6-8 calls
-
-## Expected Runtime
-
-- **Per test**: 3-5 seconds
-- **Total suite**: 15-25 seconds
-
-## Test Environment Requirements
-
-### Hardware
-
-- **BLE adapter** required
-- **Permissions**: No special permissions
-
-### Platform Support
-
-- **Linux**: BlueZ
-- **macOS**: Bluetooth enabled
-- **Windows**: Windows 10+ with Bluetooth
-
-### CI/CD Considerations
-
-- Tests marked `#[ignore]` (require BLE hardware)
-- Server startup test runs without hardware
-
-## Known Issues
-
-### Platform Differences
-
-- **Windows**: May require pairing dialog
-- **macOS**: System Bluetooth preferences may interfere
-- **Linux**: BlueZ HID plugin must be enabled
-
-## Limitations
-
-- **No connection tracking**: Cannot test per-client messaging
-- **No button combinations**: Cannot press multiple buttons simultaneously
-- **No long press**: Only momentary button presses supported
+It described three test cases — play/pause, volume control, a multi-button sequence — driven by
+`btleplug` as a BLE central, with an LLM budget of 2-4 calls each and a note that the tests were
+marked `#[ignore]`. None of that existed: there was one test, it used a mocked model, it claimed
+no adapter beyond the one the server itself powers on, and it was not `#[ignore]`d. It also
+listed "Report descriptor matches Consumer Control format" as something the suite validated,
+while the descriptor it would have validated was malformed. Recorded here because a test
+document that describes coverage which does not exist is worse than no document: it is the
+reason nobody went looking.

@@ -99,7 +99,24 @@ pub mod hid_keycodes {
     }
 }
 
-/// HID Report Descriptor for keyboard
+/// Length in bytes of the input report [`HID_KEYBOARD_REPORT_DESCRIPTOR`] describes.
+///
+/// One modifier byte, one reserved byte, and a six-slot key array: the standard boot
+/// keyboard input report. The startup examples in `actions.rs` size the input report
+/// characteristic's initial value from it.
+pub const HID_KEYBOARD_INPUT_REPORT_LEN: usize = 8;
+
+/// HID Report Descriptor for keyboard.
+///
+/// This is the single source of truth for the report map: `actions.rs` hex-encodes these
+/// bytes into its startup examples rather than carrying a second copy, and
+/// `tests/server/bluetooth_ble_keyboard/report_descriptor_test.rs` walks every item and
+/// asserts the total is `HID_KEYBOARD_INPUT_REPORT_LEN` bytes.
+///
+/// Input-only: there is no LED Output block, so a host cannot drive Caps/Num Lock. That is
+/// a deliberate omission rather than a missing piece — nothing in this profile consumes an
+/// output report — and it is why the descriptor is shorter than the boot-protocol keyboard
+/// descriptor in the HID specification's Appendix B.
 pub const HID_KEYBOARD_REPORT_DESCRIPTOR: &[u8] = &[
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x06, // Usage (Keyboard)

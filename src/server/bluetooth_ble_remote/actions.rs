@@ -100,7 +100,7 @@ impl Protocol for BluetoothBleRemoteProtocol {
                 "Base BLE GATT control (add_service, start_advertising, stop_advertising, respond_to_read, respond_to_write, send_notification); the LLM builds the HID Service (0x1812) as a consumer control device itself.",
             )
             .e2e_testing(
-                "Requires a real Bluetooth LE adapter and a central such as nRF Connect; no automated coverage",
+                "tests/server/bluetooth_ble_remote/report_descriptor_test.rs pins the HID report descriptor, build_remote_report's bit assignments and the GATT values in the startup examples against literal spec bytes; it is a pure unit test, so it claims no adapter and is not #[ignore]d. e2e_test.rs additionally starts the server against a mocked model, which proves startup and the bluetooth_ble_started round trip and nothing at all about HID. Whether a real host accepts this as an input device is untested and needs an adapter plus an independent central (nRF Connect, btleplug); until that exists the rating cannot rise above Experimental.",
             )
             .notes(
                 "Thin profile wrapper over the bluetooth-ble base stack. It prepends an instruction describing the HID Service (0x1812) as a consumer control device and otherwise reuses the base entirely: the base hardcodes BluetoothBleProtocol when it calls the LLM, so the action vocabulary, the event types and the executor are the base's. This protocol deliberately declares no actions or events of its own - one that did would be documented to the model but never reachable at runtime.",
@@ -122,6 +122,27 @@ impl Protocol for BluetoothBleRemoteProtocol {
 
     fn get_startup_examples(&self) -> crate::llm::actions::StartupExamples {
         use crate::llm::actions::StartupExamples;
+
+        use crate::server::bluetooth_ble_remote::{
+            HID_REMOTE_INPUT_REPORT_LEN, HID_REMOTE_REPORT_DESCRIPTOR,
+        };
+
+        // The report map is hex-encoded from the descriptor const rather than written out
+        // again here. A model copies these examples verbatim onto a real GATT table, so a
+        // second hand-maintained copy is a report map that drifts from the one the profile
+        // documents — which is exactly what happened: the literal that used to sit here
+        // declared nine controls against a Report Count of eight (so Stop was silently
+        // dropped), assigned the remaining eight to entirely different bits from
+        // `build_remote_report`, and described a one-byte report where the descriptor const
+        // describes two.
+        let report_map = hex::encode(HID_REMOTE_REPORT_DESCRIPTOR);
+        // An all-zeroes report of the exact length the descriptor declares: "no control is
+        // pressed". Sized from the const so it cannot disagree with the report map.
+        let empty_report = hex::encode(vec![0u8; HID_REMOTE_INPUT_REPORT_LEN]);
+        let read_script = format!(
+            "actions = [{{'type': 'respond_to_read', 'value': '{}'}}]",
+            empty_report
+        );
 
         // Every event id and action name below is one the base stack really emits and really
         // executes. UUIDs are written in full 128-bit form because the base parses them with
@@ -151,7 +172,7 @@ impl Protocol for BluetoothBleRemoteProtocol {
                         "handler": {
                             "type": "script",
                             "language": "python",
-                            "code": "actions = [{'type': 'respond_to_read', 'value': '00'}]"
+                            "code": read_script
                         }
                     }
                 ]
@@ -183,7 +204,13 @@ impl Protocol for BluetoothBleRemoteProtocol {
                                             "permissions": [
                                                 "readable"
                                             ],
-                                            "initial_value": "01110002"
+                                            // HID Information: bcdHID 0x0111 (v1.11) as a
+                                            // little-endian uint16, then bCountryCode 0x00
+                                            // and Flags 0x02 (NormallyConnectable). Every
+                                            // GATT integer is little-endian, so the version
+                                            // is `1101` and not `0111` — written the other
+                                            // way round a host reads HID version 17.01.
+                                            "initial_value": "11010002"
                                         },
                                         {
                                             "uuid": "00002a4b-0000-1000-8000-00805f9b34fb",
@@ -193,7 +220,7 @@ impl Protocol for BluetoothBleRemoteProtocol {
                                             "permissions": [
                                                 "readable"
                                             ],
-                                            "initial_value": "050c0901a1010ab5000ab6000acd000ae9000aea000ae2000ab0000ab1000ab70015002501750195088102c0"
+                                            "initial_value": report_map
                                         },
                                         {
                                             "uuid": "00002a4d-0000-1000-8000-00805f9b34fb",
@@ -204,7 +231,7 @@ impl Protocol for BluetoothBleRemoteProtocol {
                                             "permissions": [
                                                 "readable"
                                             ],
-                                            "initial_value": "00"
+                                            "initial_value": empty_report
                                         },
                                         {
                                             "uuid": "00002a4c-0000-1000-8000-00805f9b34fb",
@@ -234,7 +261,7 @@ impl Protocol for BluetoothBleRemoteProtocol {
                             "actions": [
                                 {
                                     "type": "respond_to_read",
-                                    "value": "00"
+                                    "value": empty_report
                                 }
                             ]
                         }
