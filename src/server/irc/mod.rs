@@ -1,11 +1,12 @@
 //! IRC server implementation
 pub mod actions;
+pub(crate) mod wire;
 
 use crate::server::connection::ConnectionId;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace};
 
@@ -13,6 +14,7 @@ use crate::llm::action_helper::call_llm;
 use crate::llm::actions::protocol_trait::ActionResult;
 use crate::llm::ollama_client::OllamaClient;
 use crate::protocol::Event;
+use crate::server::irc::wire::{read_irc_line, IrcLine, MAX_IRC_READ_LINE};
 use crate::server::IrcProtocol;
 use crate::state::app_state::AppState;
 use actions::IRC_MESSAGE_RECEIVED_EVENT;
@@ -101,12 +103,47 @@ impl IrcServer {
                             );
 
                             let mut reader = BufReader::new(read_half);
-                            let mut line = String::new();
 
-                            while let Ok(n) = reader.read_line(&mut line).await {
-                                if n == 0 {
-                                    break;
-                                }
+                            loop {
+                                // Bounded: `read_line` grows its buffer until it finds a
+                                // newline, so an unauthenticated peer that connects and
+                                // streams bytes with no `\n` was a one-connection OOM. IRC
+                                // messages are 512 bytes by RFC 1459 and 8704 with IRCv3
+                                // tags, so nothing real is refused by the ceiling.
+                                let (read, n) =
+                                    match read_irc_line(&mut reader, MAX_IRC_READ_LINE).await {
+                                        Ok(v) => v,
+                                        Err(e) => {
+                                            debug!(
+                                                "IRC read error on connection {}: {}",
+                                                connection_id, e
+                                            );
+                                            break;
+                                        }
+                                    };
+                                let line = match read {
+                                    IrcLine::Line(line) => line,
+                                    IrcLine::Eof => break,
+                                    IrcLine::TooLong => {
+                                        // No resynchronisation point: the peer is mid-line
+                                        // and its prefix is gone. ERROR + close is IRC's own
+                                        // way of ending a link, and it names the limit so a
+                                        // real client's operator can see what happened.
+                                        error!(
+                                            "IRC connection {} sent {} bytes with no newline \
+                                             (limit {}), closing",
+                                            connection_id, n, MAX_IRC_READ_LINE
+                                        );
+                                        let reply = format!(
+                                            "ERROR :Closing link: message exceeds {MAX_IRC_READ_LINE} bytes\r\n"
+                                        );
+                                        let mut write = write_half_arc.lock().await;
+                                        let _ = write.write_all(reply.as_bytes()).await;
+                                        let _ = write.flush().await;
+                                        let _ = write.shutdown().await;
+                                        break;
+                                    }
+                                };
                                 state_clone
                                     .update_connection_stats(
                                         server_id,
@@ -281,7 +318,6 @@ impl IrcServer {
                                         }
                                     }
                                 }
-                                line.clear();
                             }
 
                             // Connection closed - every exit path (EOF, read error,
