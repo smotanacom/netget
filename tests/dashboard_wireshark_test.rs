@@ -122,7 +122,9 @@ fn port_zero_means_unknown_until_started() {
 
 #[test]
 fn off_network_protocols_get_an_explanation_instead_of_a_command() {
-    for name in ["USB-Keyboard", "bluetooth_ble_heart_rate", "pty", "nfc"] {
+    // `nfc` is deliberately absent: only its *client* is off-network. See the pair of tests
+    // below — this list is for protocols where neither role touches a socket.
+    for name in ["USB-Keyboard", "bluetooth_ble_heart_rate", "pty"] {
         let plan = CapturePlan::build(server(name, "", 0), Platform::Linux);
         assert_eq!(plan.wire.transport, Transport::NotNetwork, "{name}");
         assert_eq!(plan.wireshark_command(), None, "{name}");
@@ -134,6 +136,45 @@ fn off_network_protocols_get_an_explanation_instead_of_a_command() {
             "{name}"
         );
     }
+}
+
+/// The NFC **client** genuinely cannot be captured: it speaks PC/SC to a physical reader.
+#[test]
+fn the_nfc_client_explains_that_pc_sc_is_not_on_a_network() {
+    let plan = CapturePlan::build(
+        CaptureTarget::client("nfc", Some("127.0.0.1:35963")),
+        Platform::Linux,
+    );
+
+    assert_eq!(plan.wire.transport, Transport::NotNetwork);
+    assert_eq!(plan.wireshark_command(), None);
+    assert!(
+        plan.notes.iter().any(|n| n.contains("usbmon")),
+        "the note should point at the one place these APDUs *are* visible: {:?}",
+        plan.notes
+    );
+}
+
+/// The NFC **server** is a plain TCP socket speaking vpcd — no PC/SC call, no reader. Keying
+/// the table on the protocol name alone gave both roles the client's answer, so an operator
+/// debugging a virtual tag was told to give up on a capture that works.
+#[test]
+fn the_nfc_server_is_a_tcp_socket_and_gets_a_real_command() {
+    let plan = CapturePlan::build(server("nfc", "127.0.0.1", 35963), Platform::Linux);
+
+    assert_eq!(plan.wire.transport, Transport::Tcp);
+    assert_eq!(plan.capture_filter, "tcp port 35963");
+    assert!(
+        plan.wireshark_command().is_some(),
+        "the server must hand over a runnable command"
+    );
+    // There is no vpcd dissector, so the operator has to be told to read the hex pane rather
+    // than left wondering why the bytes are undecoded.
+    assert!(
+        plan.notes.iter().any(|n| n.contains("vpcd")),
+        "expected a note about the missing dissector: {:?}",
+        plan.notes
+    );
 }
 
 #[test]

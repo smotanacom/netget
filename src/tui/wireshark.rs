@@ -153,6 +153,11 @@ filter on. NetGet's UDP transport carries a raw `struct can_frame` with no encap
 Wireshark recognises, and `-d udp.port==N,can` is rejected outright - so for the UDP lab \
 transport there is nothing to decode with, and the bytes must be read by hand.";
 
+const NFC_SERVER_NOTE: &str = "NetGet's NFC server is a plain TCP socket speaking vpcd - no \
+PC/SC call is made and no reader is involved - so the whole exchange is capturable on \
+loopback. Wireshark has no vpcd dissector, so the length-prefixed APDUs appear as raw bytes; \
+read them in the hex pane.";
+
 const ARP_LOOPBACK_NOTE: &str = "`arp` is an Ethernet-only BPF keyword and is rejected on \
     loopback, which is DLT_NULL on macOS. Capture on a real interface; ARP is not carried on lo0 \
     at all, so there would be nothing to see there anyway. Same trap as isis.";
@@ -311,8 +316,14 @@ pub fn wire_for(protocol: &str) -> Wire {
         "datalink" => raw("", ""),
         // ---- not on a network --------------------------------------------
         "pty" | "stdio" | "named_pipe" | "socket_file" | "ssh_agent" => offline(LOCAL_NOTE),
+        // The client only. `wire_for_role` overrides this for the server, which is a plain
+        // TCP vpcd socket. On Linux the reader's own USB traffic is capturable through usbmon
+        // and Wireshark has a real `usbccid` dissector (confirmed present in `-G protocols`),
+        // which is the one place these APDUs can be seen; macOS has no equivalent.
         "nfc" => offline(
-            "NFC goes through a PC/SC reader, not a network interface; Wireshark cannot see it.",
+            "NFC goes through a PC/SC reader, not a network interface. On Linux the reader's \
+             USB traffic can be captured with usbmon and dissected as `usbccid`; on macOS \
+             there is no equivalent and the APDUs are not observable.",
         ),
         n if n.starts_with("usb") => offline(USB_NOTE),
         n if n.starts_with("bluetooth") => offline(BLE_NOTE),
@@ -460,9 +471,28 @@ pub struct CapturePlan {
     pub notes: Vec<String>,
 }
 
+/// `wire_for` keyed on the protocol name alone, which is right for every protocol whose two
+/// halves ride the same transport — and wrong for the few where they do not.
+///
+/// `nfc` is the case that forced this. Both halves report `protocol_name() == "nfc"`, so one
+/// arm served both, and the arm described the *client*: PC/SC to a physical reader, nothing on
+/// a network. But the NFC **server** is a plain TCP socket speaking vpcd — it makes no PC/SC
+/// call and no reader is involved — so the whole exchange is capturable on loopback, and the
+/// operator was being told to give up on a capture that works.
+fn wire_for_role(protocol: &str, role: Role) -> Wire {
+    let name = protocol.trim().to_ascii_lowercase().replace('-', "_");
+    match (name.as_str(), role) {
+        // The virtual tag is a TCP socket. There is no vpcd dissector, so the length-prefixed
+        // APDUs show as raw bytes in the hex pane — which is exactly what you want when the
+        // question is what the card said.
+        ("nfc", Role::Server) => with_note(PLAIN_TCP, NFC_SERVER_NOTE),
+        _ => wire_for(protocol),
+    }
+}
+
 impl CapturePlan {
     pub fn build(target: CaptureTarget, platform: Platform) -> Self {
-        let wire = wire_for(&target.protocol);
+        let wire = wire_for_role(&target.protocol, target.role);
         let mut notes = Vec::new();
         let host = target.host.as_deref().map(str::trim).unwrap_or("");
         let port = target.port.filter(|p| *p != 0);
