@@ -387,18 +387,50 @@ peer_conn.out_tx.send(Message::Text(msg_json))?;
 
 ## Security Considerations
 
-- **Peer ID Spoofing**: Malicious peer can claim any peer_id
-- **DoS Risk**: Malicious peer can flood server with messages
-- **Eavesdropping**: SDP contains IP addresses (privacy leak)
-- **No Rate Limiting**: Unlimited message forwarding
-- **No Authorization**: No control over who can signal whom
+This is an **unauthenticated relay by design** — a honeypot-shaped SDP exchange with no
+identity model. What that does and does not mean is worth being exact about, because two
+things that read as consequences of "no authentication" were separate defects, fixed
+September 2026 and pinned by `tests/server/webrtc_signaling/relay_abuse_test.rs`:
 
-**Recommended Mitigations**:
-- Add peer authentication (tokens, certificates)
-- Implement rate limiting per peer
-- Use TLS/WSS for encryption
-- Validate peer IDs (e.g., UUID format)
-- Add message size limits
+**Still true, and deliberate**
+
+- **Peer ID squatting**: any client may claim any *unused* peer_id, first come first served,
+  and no peer can verify who it is talking to. A duplicate is refused, and that refusal is
+  the only thing standing between two peers and each other's traffic.
+- **No authorization**: no control over who may signal whom. Relay is never gated on the
+  model — it happens in Rust before any handler runs, because a model round-trip in front of
+  every ICE candidate would break any real browser peer. The LLM's only lever is
+  `disconnect_peer` at registration time.
+- **Eavesdropping**: SDP carries IP addresses, and this is plain `ws://`. There is no `wss://`
+  listener.
+- **No rate limiting**: a registered peer may relay as fast as it likes, and the
+  per-connection writer queue is an unbounded channel, so a peer that stops reading
+  accumulates whatever others send it. Put this behind something that limits connections on
+  an untrusted network.
+
+**Fixed, because neither followed from the above**
+
+- **`from` was forgeable.** The field was relayed verbatim, so any registered peer could send
+  an offer that the recipient *and* the `webrtc_signaling_message_received` event attributed
+  to a third party — and the recipient answers whoever `from` names. It is now overwritten
+  with the sender's registered id (a mismatch is logged at WARN, not refused: the field is
+  redundant, since the connection already identifies the sender).
+- **An unregistered socket could relay.** The offer/answer/ice_candidate/relay arm had no
+  registration guard, so a connection that never sent `register` could inject frames —
+  including a `relay` carrying arbitrary JSON — at any registered peer. It now gets an error
+  frame saying to register first.
+
+**Limits that now exist** (there were none):
+
+| Limit | Value | Why |
+|---|---|---|
+| Registered peers | 1024 | the registry is keyed on a string the peer chooses |
+| Peer id length | 128 bytes | echoed into logs, events and every relayed frame |
+| WebSocket message | 256 KiB | tungstenite's default is **64 MiB**, and the largest real SDP offer is a few kilobytes |
+| Handshake | 10s | a TCP connection that never upgraded parked a task forever, invisible to the dashboard since a connection is only registered in `AppState` once it registers |
+
+**Still recommended before any untrusted exposure**: peer authentication, per-peer rate
+limiting, and WSS.
 
 ## Testing Strategy
 
@@ -413,9 +445,13 @@ Key test scenarios:
 
 ## Performance Considerations
 
-- **Memory**: Each peer consumes ~1 KB (WebSocket overhead)
+- **Memory**: a peer's floor is small, but its ceiling is `SIGNALING_MAX_MESSAGE_BYTES`
+  (256 KiB) per in-flight frame plus an **unbounded** writer queue, so a peer that stops
+  reading is bounded only by what others send it. This section used to say "~1 KB per peer"
+  while the frame limit was tungstenite's 64 MiB default.
 - **CPU**: Minimal (message forwarding is fast)
-- **Connections**: Recommended limit: 1,000-10,000 concurrent peers
+- **Connections**: hard limit **1024** (`SIGNALING_MAX_PEERS`). This used to read
+  "Recommended limit: 1,000-10,000 concurrent peers" while nothing enforced anything.
 - **Bandwidth**: Depends on signaling traffic (typically < 10 KB/peer)
 
 ## Future Enhancements
@@ -453,10 +489,6 @@ Key test scenarios:
 
 # Connection established
 > # Peers now have direct P2P connection, signaling complete
-
-# List connected peers
-> [ACTION] list_signaling_peers
-> Active signaling peers: ["alice", "bob"]
 
 # Peer disconnects
 > [EVENT] webrtc_signaling_peer_disconnected (peer_id: "bob")
