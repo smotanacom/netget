@@ -12,7 +12,10 @@ pub mod summary;
 pub mod tools;
 
 // Re-export commonly used functions and types
-pub use client_trait::{audit_client_action_declarations, client_llm_action_set, Client};
+pub use client_trait::{
+    audit_client_action_declarations, client_action_names_for_pattern, client_llm_action_set,
+    Client,
+};
 // Export the Client trait
 pub use common::{
     generate_base_stack_documentation, get_network_event_common_actions,
