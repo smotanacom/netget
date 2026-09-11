@@ -221,11 +221,26 @@ impl IppProtocol {
     fn execute_ipp_response(&self, action: serde_json::Value) -> Result<ActionResult> {
         // `http_status` is the documented name; `status` is accepted because that is what the
         // action was originally called and prompts in the wild still use it.
-        let http_status = action
-            .get("http_status")
-            .or_else(|| action.get("status"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(200) as u16;
+        // Range-checked, not narrowed. `as u16` on a `u64` wraps in silence, so an
+        // `http_status` of 65736 became 200 — the model's refusal delivered as the success it
+        // was refusing. Refusing beats clamping: 599 is not what the model asked for either.
+        let http_status = match action.get("http_status").or_else(|| action.get("status")) {
+            None => 200,
+            Some(v) if v.is_null() => 200,
+            Some(v) => {
+                let raw = v.as_u64().with_context(|| {
+                    format!("send_ipp_response 'http_status' must be a number, got {v}")
+                })?;
+                if !(100..=599).contains(&raw) {
+                    anyhow::bail!(
+                        "send_ipp_response 'http_status' {raw} is not an HTTP status code; \
+                         use 100-599. IPP carries its own outcome in 'ipp_status' and answers \
+                         200 even for an IPP-level error."
+                    );
+                }
+                raw as u16
+            }
+        };
 
         let ipp_status_name = action
             .get("ipp_status")
