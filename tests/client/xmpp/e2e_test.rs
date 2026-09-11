@@ -46,6 +46,7 @@ async fn test_xmpp_client_connect() -> Result<()> {
             app_state.clone(),
             status_tx.clone(),
             client_id,
+            None,
         ),
     )
     .await;
@@ -113,6 +114,7 @@ async fn test_xmpp_client_send_message() -> Result<()> {
         app_state.clone(),
         status_tx.clone(),
         client_id,
+        None,
     )
     .await?;
 
@@ -162,6 +164,7 @@ async fn test_xmpp_client_presence() -> Result<()> {
         app_state.clone(),
         status_tx.clone(),
         client_id,
+        None,
     )
     .await?;
 
