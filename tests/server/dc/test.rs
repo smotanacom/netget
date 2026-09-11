@@ -588,9 +588,11 @@ async fn test_oversize_command_is_refused_not_buffered() -> E2EResult<()> {
                 break;
             }
             Err(_) => {
-                return Err("hub kept the connection open after 128 KiB with no '|' terminator: \
+                return Err(
+                    "hub kept the connection open after 128 KiB with no '|' terminator: \
                             the accumulator is unbounded again"
-                    .into())
+                        .into(),
+                )
             }
         }
     }
@@ -651,9 +653,11 @@ async fn test_close_connection_actually_closes() -> E2EResult<()> {
         }
         Ok(Err(e)) => println!("✓ connection reset after close_connection: {}", e),
         Err(_) => {
-            return Err("hub kept the connection open after close_connection (the break left \
+            return Err(
+                "hub kept the connection open after close_connection (the break left \
                         only the inner action loop)"
-                .into())
+                    .into(),
+            )
         }
     }
 

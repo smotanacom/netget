@@ -34,20 +34,28 @@ raw bytes, and interpret responses.
              - Used by action execution
 ```
 
-### Connection State Machine
+### No connection state machine — and there never was a working one
 
-**States:**
+This client reads and calls the model on the **same task**: `read_half.read()` is not called
+again until the LLM round-trip returns, so data arriving during a call waits in the kernel's
+socket buffer. That is the same discipline `reverse_shell` documents.
 
-1. **Idle** - No LLM processing happening
-2. **Processing** - LLM is being called, new data queued
-3. **Accumulating** - LLM still processing, accumulating more data
+The Idle/Processing/Accumulating enum that used to live here was copied from the *server*
+(`src/server/tcp/mod.rs`), where it is real because the reader task hands each payload to a
+separate task and a second read genuinely can arrive mid-call. Here `Processing` and
+`Accumulating` were unreachable, and the `queued_data` their branches filled was cleared without
+ever being read. It has been removed: dead code that reads as backpressure is worse than no code.
 
-**Transitions:**
+`ClientData` now holds the LLM memory and nothing else.
 
-- Idle → Processing: Data received, call LLM
-- Processing → Accumulating: More data arrives during LLM call
-- Accumulating → Accumulating: More data while LLM processing
-- Processing/Accumulating → Idle: LLM returns, process queue
+### Locking rule, and the trap this client fell into
+
+Never pass `&client_data.lock().await.memory` into `call_llm_for_client`. A temporary in a
+`match` scrutinee lives until the end of the whole `match`, so the guard stays held inside the
+arms — and the `Ok` arm re-locks the same non-reentrant tokio `Mutex` to store `memory_updates`.
+Copy the memory out first, as the code now does. It is latent here only because
+`call_llm_for_client` currently hardcodes `memory_updates = None`; the DC client had the same
+shape with a re-lock on every action, and that one deadlocked for real.
 
 ### LLM Control
 
@@ -68,12 +76,17 @@ raw bytes, and interpret responses.
 
 ### Data Encoding
 
-**Critical**: Data is hex-encoded for LLM interaction:
+**Critical**: received data is always hex-encoded; outbound data has two fields and they are not
+interchangeable.
 
 - Received: `{"data_hex": "48656c6c6f", "data_length": 5}`
-- Sent: `{"type": "send_tcp_data", "data_hex": "776f726c64"}`
+- Sent as text: `{"type": "send_tcp_data", "data": "HELLO\r\n"}` — the characters go on the wire
+- Sent as binary: `{"type": "send_tcp_data", "data_hex": "776f726c64"}` — decoded first
 
-LLMs cannot work with raw bytes but can construct hex strings.
+`data` is checked first, so putting hex in it sends the hex digits themselves. `tcp_connected`'s
+own worked example used to be `{"data": "48656c6c6f"}`, which taught the model to do exactly
+that — the same confusion the TCP *server* was given an explicit `encoding` field to end. To
+echo, pass the event's `data_hex` back as `data_hex`.
 
 ### Dual Logging
 

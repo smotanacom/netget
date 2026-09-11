@@ -6,14 +6,14 @@ pub use actions::DcClientProtocol;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::client::dc::actions::{
     DC_CLIENT_AUTHENTICATED_EVENT, DC_CLIENT_CONNECTED_EVENT, DC_CLIENT_HUBINFO_EVENT,
@@ -27,6 +27,30 @@ use crate::llm::ClientLlmResult;
 use crate::protocol::Event;
 use crate::state::app_state::AppState;
 use crate::state::{ClientId, ClientStatus};
+
+/// Largest single NMDC message this client accepts from a hub, in bytes.
+///
+/// The read loop frames on `|`, and `read_until` only returns when it finds the delimiter or
+/// hits EOF — so a hub that sends bytes and never a `|` grew the buffer as fast as its link
+/// allowed until the process died. The hub is the untrusted party here: this client connects
+/// out to one, so an attacker who controls (or impersonates) it needed only an open socket.
+/// The largest real message is a `$NickList` for a busy hub, so this is generous.
+const MAX_MESSAGE_LEN: usize = 1024 * 1024;
+
+/// Strip the NMDC framing characters from a value interpolated into a command.
+///
+/// Every command this client writes is `format!("$Something {}|", value)`, so a `|` in any
+/// interpolated value ends the command early and the hub parses the remainder as a command of
+/// its own. The values come from startup parameters, from the model, and — for `$Key` — are
+/// derived from the hub's own `$Lock` bytes, which is the one the NMDC specification calls out
+/// for escaping. `send_dc_raw_command` is deliberately exempt: sending an arbitrary frame is its
+/// declared purpose.
+fn nmdc_field(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| *c != '|' && *c != '\r' && *c != '\n')
+        .collect()
+}
 
 /// Enum to handle both TCP and TLS write halves
 enum DcWriteHalf {
@@ -82,6 +106,15 @@ struct DcClientState {
     share_size: u64,
     memory: String,
     file_list: Vec<DcFileEntry>, // Files to advertise
+    /// Set when an executed action asked to end the session, so the read loop stops.
+    ///
+    /// `apply_dc_action` returns `Applied::Disconnect` after writing `$Quit|`, and
+    /// `execute_dc_actions` discarded that return value — so the model's own `disconnect`
+    /// action sent `$Quit|` and then went on reading, calling the LLM for every further hub
+    /// message, with the socket open until the hub closed it. Only the injected-command path
+    /// honoured it. The flag carries the decision out to the read loop without threading a
+    /// return value through five handler signatures.
+    quit_requested: bool,
 }
 
 /// DC client that connects to a DC hub
@@ -294,9 +327,17 @@ impl DcClient {
                             ),
                         }
                     }
-                    let delay_secs =
-                        initial_reconnect_delay_secs * (2u64.pow(reconnect_attempt - 1));
-                    let delay_secs = delay_secs.min(60); // Cap at 60 seconds
+                    // Saturating, and the cap applied to the shift as well as the product.
+                    // `2u64.pow(reconnect_attempt - 1)` panics in debug and test builds once
+                    // the exponent reaches 64 — reachable with `max_reconnect_attempts: 0`,
+                    // which the parameter documents as "unlimited" — and a large
+                    // `initial_reconnect_delay_secs` overflowed the multiply on the very first
+                    // retry. The cap was applied after the arithmetic, so it protected nothing.
+                    let delay_secs = 2u64
+                        .checked_pow(reconnect_attempt.saturating_sub(1))
+                        .and_then(|factor| initial_reconnect_delay_secs.checked_mul(factor))
+                        .unwrap_or(60)
+                        .min(60);
 
                     info!(
                         "DC client {} connection failed (attempt {}/{}), retrying in {}s: {}",
@@ -492,6 +533,7 @@ where
         share_size,
         memory: String::new(),
         file_list: Vec::new(), // Start with empty file list
+        quit_requested: false,
     }));
 
     // Command channel for injected actions (the dashboard's [ send_dc_chat ] and friends).
@@ -528,7 +570,34 @@ where
         // so partial messages are carried across reads correctly.
         loop {
             let mut buf = Vec::new();
-            match reader.read_until(b'|', &mut buf).await {
+            // `read_until` returns only when it finds the delimiter or hits EOF, so a hub that
+            // sends bytes and never a '|' grows `buf` without bound — the same shape as the
+            // server-side accumulator, with the hub in the attacker's seat. `take` caps the
+            // read at MAX_MESSAGE_LEN + 1; a full buffer with no trailing '|' is a hub sending
+            // an oversize message and the session ends.
+            let read = (&mut reader)
+                .take(MAX_MESSAGE_LEN as u64 + 1)
+                .read_until(b'|', &mut buf)
+                .await;
+            if let Ok(n) = read {
+                if n > MAX_MESSAGE_LEN && buf.last() != Some(&b'|') {
+                    warn!(
+                        "DC client {} received {} bytes with no '|' terminator (limit {}); \
+                         disconnecting",
+                        client_id, n, MAX_MESSAGE_LEN
+                    );
+                    app_state
+                        .update_client_status(client_id, ClientStatus::Disconnected)
+                        .await;
+                    let _ = status_tx.send(format!(
+                        "[CLIENT] DC client {} disconnected: hub sent an oversize message",
+                        client_id
+                    ));
+                    let _ = status_tx.send("__UPDATE_UI__".to_string());
+                    break;
+                }
+            }
+            match read {
                 Ok(0) => {
                     info!("DC client {} disconnected from hub", client_id);
                     app_state
@@ -564,6 +633,22 @@ where
                     .await
                     {
                         error!("Error processing DC message: {}", e);
+                    }
+
+                    // An action asked to end the session and `$Quit|` has already gone out.
+                    // Stop reading rather than answering every further hub message.
+                    if client_state.lock().await.quit_requested {
+                        info!(
+                            "DC client {} ending the session: decision=model_disconnect",
+                            client_id
+                        );
+                        app_state
+                            .update_client_status(client_id, ClientStatus::Disconnected)
+                            .await;
+                        let _ = status_tx
+                            .send(format!("[CLIENT] DC client {} disconnected", client_id));
+                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                        break;
                     }
                 }
                 Err(e) => {
@@ -607,8 +692,19 @@ fn parse_private_message(message: &str) -> Result<PrivateMessageParts> {
         .find(" From:")
         .ok_or_else(|| anyhow::anyhow!("Missing 'From:' in private message"))?;
 
-    // Extract target (between "$To: " and " From:")
-    let target_part = &message[5..from_pos]; // Skip "$To: "
+    // Extract target (between "$To: " and " From:").
+    //
+    // `str::get` rather than `&message[..]` throughout this function: both ends of every range
+    // here are hub-controlled and neither is checked by the code above. Two frames a hub can
+    // send today panicked the read loop, where `tokio::spawn` swallows it and the client sits
+    // at Connected reading nothing:
+    //   "$To: From: bob $<<bob>> hi"  -> " From:" matches at index 4, so this was &message[5..4]
+    //   "$To:é From: bob $<<bob>> hi" -> index 5 falls inside the two-byte 'é'
+    // A malformed private message is now a parse error, which is what this function's own
+    // CLAUDE.md already claimed ("parse errors are logged but don't crash the client").
+    let target_part = message
+        .get(5..from_pos)
+        .ok_or_else(|| anyhow::anyhow!("Malformed private message: bad target range"))?;
     let target = target_part.trim().to_string();
 
     // Find the second $ which marks the start of the actual message
@@ -618,12 +714,16 @@ fn parse_private_message(message: &str) -> Result<PrivateMessageParts> {
         + from_pos;
 
     // Extract source (between "From: " and " $")
-    let source_part = &message[from_pos + 6..msg_start]; // Skip " From:"
+    let source_part = message
+        .get(from_pos + 6..msg_start)
+        .ok_or_else(|| anyhow::anyhow!("Malformed private message: bad source range"))?;
     let source = source_part.trim().to_string();
 
     // Extract message content
     // Format is: $<<source>> <message>
-    let msg_part = &message[msg_start + 1..]; // Skip '$'
+    let msg_part = message
+        .get(msg_start + 1..)
+        .ok_or_else(|| anyhow::anyhow!("Malformed private message: bad message range"))?;
 
     // Find the end of <<source>> pattern
     let msg_text_start = msg_part
@@ -906,12 +1006,31 @@ async fn handle_lock_message(
         .await
         .unwrap_or_default();
 
+    // Copied out, and the guard dropped, *before* the call.
+    //
+    // Passing `&client_state.lock().await.memory` straight into the call deadlocked this client
+    // outright. A temporary in a `match` scrutinee lives until the end of the whole `match`, so
+    // the `MutexGuard` was still held inside the arms — and `apply_dc_action`'s first line is
+    // `client_state.lock().await.nickname.clone()` on the same non-reentrant tokio Mutex. So
+    // *any* action the model returned here hung the task forever, on the very first event of the
+    // session: no `$Key`, no `$ValidateNick`, no `$MyINFO`, the handshake never completing, the
+    // client stuck in AwaitingLock while reporting Connected, and `command_loop` blocked behind
+    // the same lock so `[ send ]` hung too. `dc_connected`'s own advertised answer is
+    // `{"type": "wait_for_more"}`, which is a non-empty action list — the documented reply was
+    // enough to trigger it.
+    //
+    // It survived because no test reaches the Ok arm: `tests/client/dc/e2e_test.rs` points at a
+    // port with nothing listening, and `command_channel_test.rs` points the model at
+    // `http://127.0.0.1:1`, so `call_llm_for_client` always returns `Err` and the Err arm takes
+    // no lock.
+    let memory = client_state.lock().await.memory.clone();
+
     match call_llm_for_client(
         llm_client,
         app_state,
         client_id.to_string(),
         &instruction,
-        &client_state.lock().await.memory,
+        &memory,
         Some(&event),
         &DcClientProtocol::new(),
         status_tx,
@@ -959,13 +1078,15 @@ async fn handle_lock_message(
     // Calculate key from lock
     let key = calculate_dc_key(lock_str);
 
-    // Send Key response
-    let key_cmd = format!("$Key {}|", key);
+    // Send Key response. The key is derived from the *hub's* lock bytes, so a hub can choose a
+    // lock whose derived key contains 0x7C ('|') and inject a second command into our outbound
+    // stream — this is the case the NMDC specification explicitly requires escaping for.
+    let key_cmd = format!("$Key {}|", nmdc_field(&key));
     send_dc_command(write_half, &key_cmd).await?;
     info!("DC client {} sent Key", client_id);
 
     // Send ValidateNick
-    let validate_cmd = format!("$ValidateNick {}|", nickname);
+    let validate_cmd = format!("$ValidateNick {}|", nmdc_field(nickname));
     send_dc_command(write_half, &validate_cmd).await?;
     info!("DC client {} sent ValidateNick: {}", client_id, nickname);
 
@@ -976,7 +1097,10 @@ async fn handle_lock_message(
     // Send MyINFO
     let myinfo_cmd = format!(
         "$MyINFO $ALL {} {}$ $LAN(T3)A${}${}$|",
-        nickname, description, email, share_size
+        nmdc_field(nickname),
+        nmdc_field(description),
+        nmdc_field(email),
+        share_size
     );
     send_dc_command(write_half, &myinfo_cmd).await?;
     info!("DC client {} sent MyINFO", client_id);
@@ -1635,10 +1759,31 @@ async fn execute_dc_actions(
 
     let protocol = DcClientProtocol::new();
 
-    // Execute actions
+    // Execute actions.
+    //
+    // Each one is reported and the loop continues. Both statements used to end in `?`, so a
+    // single unknown action name — anything `execute_action` rejects — aborted the batch and
+    // propagated all the way out to `error!("Error processing DC message")`. A model answering
+    // `[send_dc_chat, typo, send_dc_chat]` sent one message and silently lost the third. The
+    // handshake paths already did it this way.
     for action in result.actions {
-        let action_result = protocol.execute_action(action)?;
-        apply_dc_action(action_result, client_state, write_half, client_id).await?;
+        let action_result = match protocol.execute_action(action) {
+            Ok(result) => result,
+            Err(e) => {
+                error!("DC client {} rejected one of its actions: {}", client_id, e);
+                continue;
+            }
+        };
+        match apply_dc_action(action_result, client_state, write_half, client_id).await {
+            // `$Quit|` has been written; tell the read loop to stop rather than carrying on
+            // with an LLM call for every further hub message.
+            Ok(Applied::Disconnect) => {
+                client_state.lock().await.quit_requested = true;
+                return Ok(());
+            }
+            Ok(Applied::Sent(_)) => {}
+            Err(e) => error!("DC client {} could not send an action: {}", client_id, e),
+        }
     }
 
     Ok(())
@@ -1662,7 +1807,9 @@ async fn apply_dc_action(
 ) -> Result<Applied> {
     use crate::llm::actions::client_trait::ClientActionResult;
 
-    let nickname = client_state.lock().await.nickname.clone();
+    // Sanitised once. Every frame below interpolates it, and a `|` in the nickname would end
+    // the command early just as one in the message would.
+    let nickname = nmdc_field(&client_state.lock().await.nickname.clone());
     let mut sent = 0usize;
 
     {
@@ -1670,7 +1817,7 @@ async fn apply_dc_action(
             ClientActionResult::Custom { name, data } => match name.as_str() {
                 "dc_chat" => {
                     if let Some(message) = data.get("message").and_then(|v| v.as_str()) {
-                        let cmd = format!("<{}> {}|", nickname, message);
+                        let cmd = format!("<{}> {}|", nickname, nmdc_field(message));
                         send_dc_command(write_half, &cmd).await?;
                         sent = cmd.len();
                         info!("DC client {} sent chat: {}", client_id, message);
@@ -1683,7 +1830,10 @@ async fn apply_dc_action(
                     ) {
                         let cmd = format!(
                             "$To: {} From: {} $<{}> {}|",
-                            target, nickname, nickname, message
+                            nmdc_field(target),
+                            nickname,
+                            nickname,
+                            nmdc_field(message)
                         );
                         send_dc_command(write_half, &cmd).await?;
                         sent = cmd.len();
@@ -1696,7 +1846,8 @@ async fn apply_dc_action(
                 "dc_search" => {
                     if let Some(query) = data.get("query").and_then(|v| v.as_str()) {
                         // Simple search format: "$Search Hub:nickname F?F?0?1?query"
-                        let cmd = format!("$Search Hub:{} F?F?0?1?{}|", nickname, query);
+                        let cmd =
+                            format!("$Search Hub:{} F?F?0?1?{}|", nickname, nmdc_field(query));
                         send_dc_command(write_half, &cmd).await?;
                         sent = cmd.len();
                         info!("DC client {} sent search: {}", client_id, query);
@@ -1710,7 +1861,10 @@ async fn apply_dc_action(
                     ) {
                         let cmd = format!(
                             "$MyINFO $ALL {} {}$ $LAN(T3)A${}${}$|",
-                            nickname, description, email, share_size
+                            nickname,
+                            nmdc_field(description),
+                            nmdc_field(email),
+                            share_size
                         );
                         send_dc_command(write_half, &cmd).await?;
                         sent = cmd.len();
@@ -1901,12 +2055,24 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// Calculate DC key from lock using NMDC algorithm
+/// Calculate DC key from lock using NMDC algorithm.
+///
+/// The `len < 3` guard is not cosmetic: `key[0]` indexes `len - 2`, and the only check used to
+/// be `len == 0`. A hub sending `$Lock X Pk=h|` — one lock character — underflowed the
+/// subtraction. `Cargo.toml` has no `[profile.dev]`, so debug and test builds panic on the
+/// subtraction and release builds wrap to `usize::MAX` and panic on the index instead; either
+/// way it happens inside the spawned read loop, where `tokio::spawn` swallows the panic. The
+/// client would then sit at `Connected`, never read the socket again, and log nothing. Every
+/// real lock is 30+ characters, so refusing the degenerate ones costs nothing.
 fn calculate_dc_key(lock: &str) -> String {
     let lock_bytes = lock.as_bytes();
     let len = lock_bytes.len();
 
-    if len == 0 {
+    if len < 3 {
+        warn!(
+            "DC lock of {} byte(s) is too short for the NMDC key algorithm; sending no key",
+            len
+        );
         return String::new();
     }
 

@@ -20,18 +20,22 @@ use crate::state::app_state::AppState;
 use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 
-/// Connection state for LLM processing
-#[derive(Debug, Clone, PartialEq)]
-enum ConnectionState {
-    Idle,
-    Processing,
-    Accumulating,
-}
-
-/// Per-client data for LLM handling
+/// Per-client data for LLM handling.
+///
+/// There is no Idle/Processing/Accumulating state machine here any more, and the one that was
+/// here did active harm rather than nothing.
+///
+/// The receive loop awaits its LLM call inline, so `recv_from` is not called again until the
+/// call returns — `Processing` was therefore unreachable from the loop itself, and datagrams
+/// arriving during a call wait in the socket buffer. `Accumulating` *was* reachable, via
+/// `wait_for_more`, and it was **terminal**: nothing ever moved the state back, so every
+/// subsequent datagram took the `Accumulating` branch, was pushed onto `queued_datagrams`, and
+/// was never looked at again. One `wait_for_more` made the client permanently deaf while it went
+/// on reporting Connected, and the queue grew for as long as datagrams kept arriving.
+///
+/// `wait_for_more` now means what the TCP server's action of the same name says: answer with
+/// nothing, and the next datagram is a fresh event.
 struct ClientData {
-    state: ConnectionState,
-    queued_datagrams: Vec<(Vec<u8>, SocketAddr)>, // (data, source_addr)
     memory: String,
     default_target: SocketAddr,
 }
@@ -74,8 +78,6 @@ impl UdpClient {
 
         // Initialize client data
         let client_data = Arc::new(Mutex::new(ClientData {
-            state: ConnectionState::Idle,
-            queued_datagrams: Vec::new(),
             memory: String::new(),
             default_target,
         }));
@@ -200,56 +202,38 @@ impl UdpClient {
                                 source_addr
                             );
 
-                            // Handle datagram with LLM
-                            let mut client_data_lock = client_data.lock().await;
-
-                            match client_data_lock.state {
-                                ConnectionState::Idle => {
-                                    // Process immediately
-                                    client_data_lock.state = ConnectionState::Processing;
-                                    drop(client_data_lock);
-
-                                    // Process the datagram
-                                    if let Err(e) = Self::process_datagram(
-                                        data,
-                                        source_addr,
-                                        client_id,
-                                        &llm_client,
-                                        &app_state,
-                                        &status_tx,
-                                        &socket_arc,
-                                        &client_data,
-                                    )
-                                    .await
-                                    {
-                                        error!(
-                                            "Error processing UDP datagram for client {}: {}",
-                                            client_id, e
-                                        );
-
-                                        // Reset to Idle on error
-                                        let mut client_data_lock = client_data.lock().await;
-                                        client_data_lock.state = ConnectionState::Idle;
-                                    }
-                                }
-                                ConnectionState::Processing => {
-                                    // Queue the datagram
-                                    trace!(
-                                        "UDP client {} is processing, queuing datagram",
+                            // Handle the datagram with the LLM. Sequential by construction: the
+                            // next `recv_from` does not run until this returns, and datagrams
+                            // arriving meanwhile wait in the socket buffer.
+                            match Self::process_datagram(
+                                data,
+                                source_addr,
+                                client_id,
+                                &llm_client,
+                                &app_state,
+                                &status_tx,
+                                &socket_arc,
+                                &client_data,
+                            )
+                            .await
+                            {
+                                // `close_socket` used to be honoured only by the injected-command
+                                // path: here `handle_llm_result` marked the client Disconnected
+                                // and returned Ok, and this loop carried straight on receiving
+                                // and calling the model on a client the dashboard showed as
+                                // closed.
+                                Ok(true) => {
+                                    info!(
+                                        "UDP client {} closing: decision=model_close_socket",
                                         client_id
                                     );
-                                    client_data_lock.queued_datagrams.push((data, source_addr));
-                                    drop(client_data_lock);
+                                    break;
                                 }
-                                ConnectionState::Accumulating => {
-                                    // Accumulate the datagram
-                                    trace!(
-                                        "UDP client {} is accumulating, adding datagram",
-                                        client_id
-                                    );
-                                    client_data_lock.queued_datagrams.push((data, source_addr));
-                                    drop(client_data_lock);
-                                }
+                                Ok(false) => {}
+                                Err(e) => error!(
+                                    "Error processing UDP datagram for client {}: {}",
+                                    client_id, e
+                                ),
                             }
                         }
                         Err(e) => {
@@ -278,7 +262,9 @@ impl UdpClient {
         Ok(local_addr)
     }
 
-    /// Process a received datagram with the LLM
+    /// Process a received datagram with the LLM.
+    ///
+    /// Returns `true` when an action asked to close the socket, so the caller can stop.
     async fn process_datagram(
         data: Vec<u8>,
         source_addr: SocketAddr,
@@ -288,7 +274,7 @@ impl UdpClient {
         status_tx: &mpsc::UnboundedSender<String>,
         socket: &Arc<UdpSocket>,
         client_data: &Arc<Mutex<ClientData>>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let data_hex = hex::encode(&data);
         let data_len = data.len();
 
@@ -324,7 +310,7 @@ impl UdpClient {
             .await?;
 
             // Handle LLM result
-            Self::handle_llm_result(
+            return Self::handle_llm_result(
                 llm_result,
                 socket,
                 client_data,
@@ -332,13 +318,15 @@ impl UdpClient {
                 app_state,
                 status_tx,
             )
-            .await?;
+            .await;
         }
 
-        Ok(())
+        Ok(false)
     }
 
-    /// Handle LLM result and execute actions
+    /// Handle LLM result and execute actions.
+    ///
+    /// Returns `true` when an action asked to close the socket.
     async fn handle_llm_result(
         llm_result: ClientLlmResult,
         socket: &Arc<UdpSocket>,
@@ -346,49 +334,46 @@ impl UdpClient {
         client_id: ClientId,
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // Update memory if needed
         if let Some(new_memory) = llm_result.memory_updates {
             let mut client_data_lock = client_data.lock().await;
             client_data_lock.memory = new_memory;
         }
 
-        // Execute actions
+        // Execute actions.
+        //
+        // Both statements used to end in `?`, so one unusable action discarded every action
+        // after it — a model answering `[send_udp_datagram, typo, send_udp_datagram]` sent one
+        // datagram and lost the third. Each is reported and the loop continues.
         let protocol = Arc::new(UdpClientProtocol::new());
         for action in llm_result.actions {
-            let action_result = protocol.as_ref().execute_action(action)?;
-            let waits = matches!(action_result, ClientActionResult::WaitForMore);
+            let action_result = match protocol.as_ref().execute_action(action) {
+                Ok(result) => result,
+                Err(e) => {
+                    error!(
+                        "UDP client {} rejected one of its actions: {}",
+                        client_id, e
+                    );
+                    continue;
+                }
+            };
 
-            match Self::apply_action_result(action_result, socket, client_data, client_id).await? {
-                Applied::Disconnect => {
+            match Self::apply_action_result(action_result, socket, client_data, client_id).await {
+                Ok(Applied::Disconnect) => {
                     app_state
                         .update_client_status(client_id, ClientStatus::Disconnected)
                         .await;
                     let _ = status_tx.send(format!("[CLIENT] UDP client {} closed", client_id));
                     let _ = status_tx.send("__UPDATE_UI__".to_string());
-                    return Ok(());
+                    return Ok(true);
                 }
-                // `wait_for_more` left the client Accumulating; returning here is what
-                // keeps it there instead of falling through to the Idle reset below.
-                _ if waits => return Ok(()),
-                _ => {}
+                Ok(_) => {}
+                Err(e) => error!("UDP client {} could not apply an action: {}", client_id, e),
             }
         }
 
-        // Clear queued datagrams and return to Idle
-        // (LLM has already made its decision based on the current event)
-        let mut client_data_lock = client_data.lock().await;
-        if !client_data_lock.queued_datagrams.is_empty() {
-            trace!(
-                "UDP client {} clearing {} queued datagrams",
-                client_id,
-                client_data_lock.queued_datagrams.len()
-            );
-            client_data_lock.queued_datagrams.clear();
-        }
-        client_data_lock.state = ConnectionState::Idle;
-
-        Ok(())
+        Ok(false)
     }
 
     /// Put one executed action on the wire.
@@ -468,12 +453,15 @@ impl UdpClient {
                 Ok(Applied::Disconnect)
             }
             ClientActionResult::WaitForMore => {
-                // Change state to Accumulating
-                let mut client_data_lock = client_data.lock().await;
-                client_data_lock.state = ConnectionState::Accumulating;
-                trace!("UDP client {} waiting for more datagrams", client_id);
+                // Answer with nothing and keep listening. This used to move the client into a
+                // terminal `Accumulating` state that nothing ever left, so one `wait_for_more`
+                // made it permanently deaf: every later datagram was pushed onto a queue nobody
+                // read, while the client still reported Connected.
+                trace!("UDP client {} answered with nothing", client_id);
                 Ok(Applied::Executed(
-                    "wait_for_more: now accumulating, nothing written to the wire".to_string(),
+                    "wait_for_more: nothing written to the wire; the next datagram is a fresh \
+                     event"
+                        .to_string(),
                 ))
             }
             ClientActionResult::NoAction => Ok(Applied::Executed(

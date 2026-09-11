@@ -149,11 +149,20 @@ impl Protocol for UdpClientProtocol {
                         required: true,
                     },
                     Parameter {
+                        // It has never defaulted to the source of the received datagram:
+                        // `apply_action_result` falls back to the client's `default_target`.
+                        // For the ordinary case (this client talks to one server) the two are
+                        // the same address, which is why the wrong description survived — but
+                        // when a *different* host answers, the reply went to the configured
+                        // target rather than to whoever asked.
                         name: "target_addr".to_string(),
                         type_hint: "string".to_string(),
-                        description:
-                            "Optional target address (defaults to source of received datagram)"
-                                .to_string(),
+                        description: "Optional target address. When omitted the datagram goes to \
+                                      this client's current default target (the remote_addr it \
+                                      was created with, or whatever change_target last set) - \
+                                      NOT to the source of the datagram you are answering. To \
+                                      reply to the sender, pass the event's source_addr here."
+                            .to_string(),
                         required: false,
                     },
                 ],
@@ -165,7 +174,10 @@ impl Protocol for UdpClientProtocol {
             },
             ActionDefinition {
                 name: "wait_for_more".to_string(),
-                description: "Wait for more datagrams before responding".to_string(),
+                description: "Answer this datagram with nothing and keep listening. The next \
+                              datagram arrives as a fresh event; nothing is accumulated and \
+                              this one is not repeated."
+                    .to_string(),
                 parameters: vec![],
                 example: json!({
                     "type": "wait_for_more"
@@ -177,18 +189,17 @@ impl Protocol for UdpClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "UDP"
     }
+    /// The two statics the client actually emits, not fresh copies of them.
+    ///
+    /// This used to build two new `EventType`s inline with a `"placeholder"` example and no
+    /// parameters, so everything reading the declared event surface — docs, routing editor,
+    /// composer — was shown events carrying no `data_hex`, no `source_addr` and no worked
+    /// example, while `mod.rs` emitted the fully described statics above. Same ids, so nothing
+    /// flagged the divergence.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "udp_connected",
-                "Triggered when UDP client socket is bound and ready",
-                json!({"type": "placeholder", "event_id": "udp_connected"}),
-            ),
-            EventType::new(
-                "udp_datagram_received",
-                "Triggered when UDP client receives a datagram",
-                json!({"type": "placeholder", "event_id": "udp_datagram_received"}),
-            ),
+            UDP_CLIENT_CONNECTED_EVENT.clone(),
+            UDP_CLIENT_DATAGRAM_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {

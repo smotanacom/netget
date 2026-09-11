@@ -40,28 +40,24 @@ connection - the client binds a local socket and sends/receives datagrams to/fro
 
 ### State Management
 
-**Per-Client State Machine:**
+**There is no state machine, and the one that was here did harm.**
 
-```
-Idle → (datagram received) → Processing → (LLM responds) → Idle
-                              ↓
-                         (wait_for_more)
-                              ↓
-                        Accumulating → (more datagrams) → Accumulating → (LLM responds) → Idle
-```
+The receive loop awaits its LLM call inline, so `recv_from` is not called again until the call
+returns and datagrams arriving meanwhile wait in the socket buffer. `Processing` was therefore
+unreachable from the loop. `Accumulating` *was* reachable — `wait_for_more` set it — and it was
+**terminal**: nothing ever moved the state back, so every later datagram took the `Accumulating`
+branch, was pushed onto `queued_datagrams`, and was never looked at again. One `wait_for_more`
+made the client permanently deaf while it went on reporting `Connected`, and the queue grew for
+as long as datagrams kept arriving. The diagram above described a transition back to Idle that
+no line of code performed.
+
+`wait_for_more` now means what the TCP server's action of the same name says: answer with
+nothing; the next datagram is a fresh event.
 
 **State Fields:**
 
-- `state`: Idle, Processing, or Accumulating
-- `queued_datagrams`: Vec of (data, source_addr) tuples for datagrams received during Processing
 - `memory`: LLM's persistent memory across events
-- `default_target`: Default address for sending (from initial remote_addr)
-
-**Queueing Strategy:**
-
-- **Idle:** Process datagram immediately
-- **Processing:** Queue datagram for later processing
-- **Accumulating:** Queue datagram and wait for LLM decision (wait_for_more or respond)
+- `default_target`: Default address for sending (from initial remote_addr, or `change_target`)
 
 ### Data Flow
 
@@ -145,7 +141,13 @@ LLM interprets the data and decides how to respond.
 **Sync Actions (Response to Events):**
 
 1. **send_udp_datagram** (same as async)
-    - If `target_addr` omitted, defaults to `source_addr` of received datagram
+    - If `target_addr` is omitted the datagram goes to the client's current **default target**,
+      *not* to the `source_addr` of the datagram being answered. The action's own description
+      claimed the opposite for a long time; the code has always used `default_target`. For the
+      ordinary case (one client, one server) the two are the same address, which is how the
+      wrong description survived — but when a different host answers, the reply went to the
+      configured target rather than to whoever asked. Pass the event's `source_addr` explicitly
+      to reply to the sender.
 
 2. **wait_for_more**
    ```json
@@ -153,7 +155,8 @@ LLM interprets the data and decides how to respond.
      "type": "wait_for_more"
    }
    ```
-   Accumulate more datagrams before responding.
+   Answer with nothing and keep listening. Nothing is accumulated and this datagram is not
+   repeated in the next event.
 
 ### Action Execution
 
@@ -171,7 +174,11 @@ ClientActionResult::Custom {
 }
 ```
 
-The `handle_llm_result` function parses this and calls `socket.send_to()`.
+The `handle_llm_result` function parses this and calls `socket.send_to()`. It returns `true` when
+an action asked to close the socket, and the receive loop breaks on it: `close_socket` used to be
+honoured only by the injected-command path, so the model's own `close_socket` marked the client
+`Disconnected` and the loop carried straight on receiving datagrams and calling the model on a
+client the dashboard showed as closed.
 
 ## UDP vs TCP Differences
 

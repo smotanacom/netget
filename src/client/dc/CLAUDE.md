@@ -7,7 +7,9 @@ DC (Direct Connect) is a peer-to-peer file sharing protocol where a central "hub
 **Status**: Experimental (Application Protocol)
 **RFC**: No official RFC (community-maintained specification)
 **Specification**: https://nmdc.sourceforge.io/NMDC.html
-**Port**: 411 (plain TCP), 412 (with TLS, not implemented)
+**Port**: 411 (plain TCP), 412 (with TLS — TLS *is* implemented, via the `use_tls` startup
+parameter and `tokio_rustls`; this line said "not implemented" while §5 of this same file
+documented it)
 
 ## Library Choices
 
@@ -65,8 +67,20 @@ For each byte in lock:
 key[0] = lock[0] ^ lock[len-1] ^ lock[len-2] ^ 5
 
 Nibble swap each byte: (byte << 4) | (byte >> 4)
-Escape special characters: 0, 5, 36 ($), 96 (`), 124 (|), 126 (~)
 ```
+
+**The NMDC per-byte escaping (0, 5, 36 `$`, 96 `` ` ``, 124 `|`, 126 `~`) is NOT implemented.**
+This document claimed it was. `calculate_dc_key` ends with `String::from_utf8_lossy`, which
+replaces every non-UTF-8 byte with U+FFFD, so the key sent is wrong for nearly every real lock.
+What *is* handled is the framing consequence: `nmdc_field()` strips `|`, `\r` and `\n` from the
+key before it goes into `$Key {}|`, so a hub that picks a lock whose derived key contains a pipe
+can no longer inject a second command into our outbound stream. Real escaping (and therefore a
+key any hub would accept) is still to do.
+
+Locks shorter than 3 bytes are refused with a warning rather than used: `key[0]` indexes
+`len - 2` and the only guard was `len == 0`, so `$Lock X Pk=h|` underflowed the subtraction —
+a panic inside the spawned read loop, which `tokio::spawn` swallows, leaving the client at
+`Connected` and reading nothing.
 
 ### 4. State Machine
 
@@ -296,15 +310,21 @@ See `actions.rs` for complete action list with examples.
 
 ### 3. File List Generation
 
-**Feature**: ✅ **IMPLEMENTED** - Basic XML file list generation capability
+**Feature**: ⚠️ **PARTIAL — the XML is generated and then thrown away.**
+
+The `$GetListLen` / `$UGetBlock` handler builds the XML, logs its length and writes **nothing**
+to the socket (`mod.rs`, "not fully implemented - use send_dc_raw_command to respond"). So the
+`send_dc_filelist` action's own description, "Configure **and send** file list in response to hub
+request", is false: it only stores. This section used to say "✅ IMPLEMENTED".
 
 **Usage**: LLM can configure file list via `send_dc_filelist` action
 
 **Implementation**:
 - LLM configures file list with array of file objects (name, size, optional TTH hash)
-- Client stores file list and generates NMDC-compliant XML format
-- Detects file list requests from hub (`$GetListLen`, `$UGetBlock`)
-- Generates proper XML with escaping and TTH support
+- Client stores the file list and can render NMDC-compliant XML from it
+- Detects file list requests from hub (`$GetListLen`, `$UGetBlock`) and logs them
+- The XML escapes file *names* but not the nickname interpolated into `CID` nor the `tth` into
+  `TTH="{}"`; unreachable today only because the XML is never sent
 
 **Example**:
 ```json
@@ -339,7 +359,12 @@ See `actions.rs` for complete action list with examples.
 **Improvements**:
 - Private messages now correctly extract target, source, and message fields
 - Chat messages use char-based indexing to support Unicode nicknames and messages
-- Parse errors are logged but don't crash the client
+- Parse errors are logged but don't crash the client. This was **not** true until September
+  2026: `parse_private_message` sliced `&message[5..from_pos]` and `&message[from_pos + 6..
+  msg_start]` on hub-controlled ranges, so `$To: From: bob $<<bob>> hi` (`" From:"` matches at
+  index 4, giving `&message[5..4]`) and `$To:é From: …` (index 5 inside a two-byte char) both
+  panicked the read loop — swallowed by `tokio::spawn`, leaving the client at `Connected`
+  reading nothing. All three ranges go through `str::get` now
 - Better handling of edge cases (missing delimiters, empty messages, etc.)
 
 **Remaining Limitations**:
@@ -384,12 +409,24 @@ See `actions.rs` for complete action list with examples.
 ```
 
 **Details**:
-- Reconnects automatically if connection drops or initial connection fails
-- Exponential backoff (2s, 4s, 8s, 16s, ..., max 60s)
-- Configurable max attempts (0 = unlimited)
-- Emits `dc_client_disconnected` event before each reconnection
-- LLM can observe reconnection progress through events
-- Maintains all connection state (nickname, description, TLS settings)
+- Reconnects automatically if the **initial connection** fails. It does **not** reconnect when
+  an established session drops: `connect_once` returns `Ok` as soon as the read loop is spawned,
+  so the retry loop has already exited by then. EOF and read errors end the read loop and the
+  task, and nothing restarts it
+- For the same reason, `dc_client_disconnected` is emitted **only** on initial-connect failure.
+  A hub dropping the session raises no event and makes no LLM call — the model goes deaf with
+  no notice. This is the largest remaining gap in this client
+- Exponential backoff (2s, 4s, 8s, 16s, ..., max 60s). The cap is applied to the shift as well
+  as the product now: `2u64.pow(attempt - 1)` panics in debug and test builds once the exponent
+  reaches 64, which `max_reconnect_attempts: 0` ("unlimited") reaches, and a large
+  `initial_reconnect_delay_secs` overflowed the multiply on the first retry. The cap used to be
+  applied *after* the arithmetic, so it protected nothing
+- Configurable max attempts (0 = unlimited). Note it is read as `u64 … as u32`, so a value above
+  `u32::MAX` truncates — `4294967296` becomes 0, i.e. "unlimited", the opposite of the intent
+- Re-passes nickname, description, email, share size and TLS settings. It does **not** carry LLM
+  memory across: `run_dc_client_loop` seeds `memory: String::new()` every time and never reads
+  `get_memory_for_client`, so the two memory stores (the in-session `DcClientState.memory` and
+  the `AppState` copy the disconnect handler writes) are never reconciled
 
 ### 7. No Hub State Caching
 

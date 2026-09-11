@@ -20,18 +20,19 @@ use crate::protocol::Event;
 use crate::state::app_state::AppState;
 use crate::state::{ClientId, ClientStatus};
 
-/// Connection state for LLM processing
-#[derive(Debug, Clone, PartialEq)]
-enum ConnectionState {
-    Idle,
-    Processing,
-    Accumulating,
-}
-
-/// Per-client data for LLM handling
+/// Per-client data for LLM handling.
+///
+/// There is no Idle/Processing/Accumulating state machine here, and there was never a working
+/// one. The server's state machine (`src/server/tcp/mod.rs`) exists because its reader task
+/// hands each payload to a *separate* task, so a second read really can arrive mid-call. This
+/// client reads and calls the model on the same task: `read_half.read()` is not called again
+/// until the LLM round-trip returns, so `Processing` was unreachable, `Accumulating` was
+/// unreachable, and the `queued_data` those two branches filled was cleared without ever being
+/// looked at. Copying the server's shape here produced dead code that read as backpressure.
+///
+/// Data arriving during a call waits in the kernel's socket buffer, which is the same discipline
+/// `reverse_shell` documents.
 struct ClientData {
-    state: ConnectionState,
-    queued_data: Vec<u8>,
     memory: String,
 }
 
@@ -74,8 +75,6 @@ impl TcpClient {
 
         // Initialize client data
         let client_data = Arc::new(Mutex::new(ClientData {
-            state: ConnectionState::Idle,
-            queued_data: Vec::new(),
             memory: String::new(),
         }));
 
@@ -99,12 +98,26 @@ impl TcpClient {
                 }),
             );
 
+            // The memory is copied out and the guard dropped *before* the call. Passing
+            // `&client_data.lock().await.memory` straight into the call holds the guard across
+            // the whole LLM round-trip — the rule the top-level CLAUDE.md states outright — and
+            // worse, a temporary in a `match` scrutinee lives until the end of the whole
+            // `match`, so it was still held inside the arms. The Ok arm re-locks the same
+            // non-reentrant tokio Mutex to store `memory_updates`.
+            //
+            // That is latent rather than live today only because `call_llm_for_client` hardcodes
+            // `memory_updates = None` (`src/llm/action_helper.rs`), so the re-lock is never
+            // reached. The day anyone extracts memory from a client response, this task hangs
+            // forever holding the socket while still reporting Connected. The DC client has the
+            // same shape and *is* live, because its Ok arm re-locks on every action.
+            let memory = client_data.lock().await.memory.clone();
+
             match call_llm_for_client(
                 &llm_client,
                 &app_state,
                 client_id.to_string(),
                 &instruction,
-                &client_data.lock().await.memory,
+                &memory,
                 Some(&event),
                 &crate::client::tcp::actions::TcpClientProtocol,
                 &status_tx,
@@ -222,100 +235,92 @@ impl TcpClient {
                         );
                         trace!("TCP client {} received {} bytes", client_id, n);
 
-                        // Handle data with LLM
-                        let mut client_data_lock = client_data.lock().await;
+                        // Handle data with the LLM. This is sequential by construction: the next
+                        // `read_half.read()` does not happen until this returns, and anything
+                        // the server sends meanwhile waits in the socket buffer.
+                        if let Some(instruction) =
+                            app_state.get_instruction_for_client(client_id).await
+                        {
+                            let protocol =
+                                Arc::new(crate::client::tcp::actions::TcpClientProtocol::new());
+                            let event = Event::new(
+                                &TCP_CLIENT_DATA_RECEIVED_EVENT,
+                                serde_json::json!({
+                                    "data_hex": hex::encode(&data),
+                                    "data_length": data.len(),
+                                }),
+                            );
 
-                        match client_data_lock.state {
-                            ConnectionState::Idle => {
-                                // Process immediately
-                                client_data_lock.state = ConnectionState::Processing;
-                                drop(client_data_lock);
+                            // Copied out, guard dropped: see the note at the connected-event
+                            // call above. Holding it across the call deadlocked on the memory
+                            // write in the Ok arm.
+                            let memory = client_data.lock().await.memory.clone();
 
-                                // Call LLM
-                                if let Some(instruction) =
-                                    app_state.get_instruction_for_client(client_id).await
-                                {
-                                    let protocol = Arc::new(
-                                        crate::client::tcp::actions::TcpClientProtocol::new(),
-                                    );
-                                    let event = Event::new(
-                                        &TCP_CLIENT_DATA_RECEIVED_EVENT,
-                                        serde_json::json!({
-                                            "data_hex": hex::encode(&data),
-                                            "data_length": data.len(),
-                                        }),
-                                    );
+                            match call_llm_for_client(
+                                &llm_client,
+                                &app_state,
+                                client_id.to_string(),
+                                &instruction,
+                                &memory,
+                                Some(&event),
+                                protocol.as_ref(),
+                                &status_tx,
+                            )
+                            .await
+                            {
+                                Ok(ClientLlmResult {
+                                    actions,
+                                    memory_updates,
+                                }) => {
+                                    // Update memory
+                                    if let Some(mem) = memory_updates {
+                                        client_data.lock().await.memory = mem;
+                                    }
 
-                                    match call_llm_for_client(
-                                        &llm_client,
-                                        &app_state,
-                                        client_id.to_string(),
-                                        &instruction,
-                                        &client_data.lock().await.memory,
-                                        Some(&event),
-                                        protocol.as_ref(),
-                                        &status_tx,
-                                    )
-                                    .await
-                                    {
-                                        Ok(ClientLlmResult {
-                                            actions,
-                                            memory_updates,
-                                        }) => {
-                                            // Update memory
-                                            if let Some(mem) = memory_updates {
-                                                client_data.lock().await.memory = mem;
-                                            }
-
-                                            // Execute actions
-                                            for action in actions {
-                                                use crate::llm::actions::client_trait::Client;
-                                                match protocol.as_ref().execute_action(action) {
-                                                    Ok(crate::llm::actions::client_trait::ClientActionResult::SendData(bytes)) => {
-                                                        let mut write_guard = write_half_arc.lock().await;
-                                                        if write_guard.write_all(&bytes).await.is_ok() {
-                                                            if write_guard.flush().await.is_ok() {
-                                                                trace!("TCP client {} sent {} bytes", client_id, bytes.len());
-                                                            }
-                                                        }
-                                                    }
-                                                    Ok(crate::llm::actions::client_trait::ClientActionResult::Disconnect) => {
-                                                        info!("TCP client {} disconnecting", client_id);
-                                                        app_state
-                                                            .update_client_status(client_id, ClientStatus::Disconnected)
-                                                            .await;
-                                                        let _ = status_tx.send(format!(
-                                                            "[CLIENT] TCP client {} disconnected",
-                                                            client_id
-                                                        ));
-                                                        let _ = status_tx.send("__UPDATE_UI__".to_string());
-                                                        break 'read_loop;
-                                                    }
-                                                    _ => {}
+                                    // Execute actions
+                                    for action in actions {
+                                        use crate::llm::actions::client_trait::Client;
+                                        match protocol.as_ref().execute_action(action) {
+                                            Ok(crate::llm::actions::client_trait::ClientActionResult::SendData(bytes)) => {
+                                                let mut write_guard = write_half_arc.lock().await;
+                                                // A failed write used to be discarded by
+                                                // `.is_ok()`, so a send that never reached the
+                                                // server looked identical to one that did.
+                                                if let Err(e) = write_guard.write_all(&bytes).await {
+                                                    error!("TCP client {} write failed: {}", client_id, e);
+                                                } else if let Err(e) = write_guard.flush().await {
+                                                    error!("TCP client {} flush failed: {}", client_id, e);
+                                                } else {
+                                                    trace!("TCP client {} sent {} bytes", client_id, bytes.len());
                                                 }
                                             }
-                                        }
-                                        Err(e) => {
-                                            error!("LLM error for TCP client {}: {}", client_id, e);
+                                            Ok(crate::llm::actions::client_trait::ClientActionResult::Disconnect) => {
+                                                info!("TCP client {} disconnecting", client_id);
+                                                app_state
+                                                    .update_client_status(client_id, ClientStatus::Disconnected)
+                                                    .await;
+                                                let _ = status_tx.send(format!(
+                                                    "[CLIENT] TCP client {} disconnected",
+                                                    client_id
+                                                ));
+                                                let _ = status_tx.send("__UPDATE_UI__".to_string());
+                                                break 'read_loop;
+                                            }
+                                            Ok(_) => {}
+                                            Err(e) => {
+                                                // Keep going: one unusable action must not
+                                                // discard the rest of the model's answer.
+                                                error!(
+                                                    "TCP client {} could not execute an action: {}",
+                                                    client_id, e
+                                                );
+                                            }
                                         }
                                     }
                                 }
-
-                                // Process queued data if any
-                                let mut client_data_lock = client_data.lock().await;
-                                if !client_data_lock.queued_data.is_empty() {
-                                    client_data_lock.queued_data.clear();
+                                Err(e) => {
+                                    error!("LLM error for TCP client {}: {}", client_id, e);
                                 }
-                                client_data_lock.state = ConnectionState::Idle;
-                            }
-                            ConnectionState::Processing => {
-                                // Queue data
-                                client_data_lock.queued_data.extend_from_slice(&data);
-                                client_data_lock.state = ConnectionState::Accumulating;
-                            }
-                            ConnectionState::Accumulating => {
-                                // Continue queuing
-                                client_data_lock.queued_data.extend_from_slice(&data);
                             }
                         }
                     }

@@ -16,9 +16,12 @@ pub static TCP_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "tcp_connected",
         "TCP client successfully connected to server",
+        // `data` is sent as literal characters, so a hex string here taught the model to put
+        // "48656c6c6f" on the wire rather than "Hello" — the exact confusion the TCP *server*
+        // was given an explicit `encoding` field to end. Binary goes in `data_hex`.
         serde_json::json!({
             "type": "send_tcp_data",
-            "data": "48656c6c6f"
+            "data": "HELLO\r\n"
         }),
     )
     .with_parameters(vec![Parameter {
@@ -149,18 +152,17 @@ impl Protocol for TcpClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "TCP"
     }
+    /// The two statics the client actually emits, not fresh copies of them.
+    ///
+    /// This used to build two new `EventType`s inline with a `"placeholder"` example and no
+    /// parameters at all, so everything reading the protocol's declared event surface — the
+    /// docs, the routing editor, the composer — was shown events with no `data_hex`, no
+    /// `data_length` and no worked example, while `mod.rs` emitted the fully described statics
+    /// above. Same ids, so nothing flagged the divergence.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "tcp_connected",
-                "Triggered when TCP client connects to server",
-                json!({"type": "placeholder", "event_id": "tcp_connected"}),
-            ),
-            EventType::new(
-                "tcp_data_received",
-                "Triggered when TCP client receives data from server",
-                json!({"type": "placeholder", "event_id": "tcp_data_received"}),
-            ),
+            TCP_CLIENT_CONNECTED_EVENT.clone(),
+            TCP_CLIENT_DATA_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
