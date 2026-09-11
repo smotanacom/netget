@@ -199,6 +199,27 @@ impl MqttProtocol {
         Ok(id as u16)
     }
 
+    /// The broker this action addresses: our own id when the executor is bound to one,
+    /// otherwise the model's `server_id`.
+    ///
+    /// The `None` arm used to end in `as u32`, which wraps in silence — `4294967297` becomes
+    /// `1`, so an action naming a broker that does not exist is delivered to whichever broker
+    /// happens to be number 1 rather than failing.
+    fn require_server_id(&self, action: &serde_json::Value) -> Result<u32> {
+        if let Some(id) = self.server_id {
+            return Ok(id.as_u32());
+        }
+        let raw = action.get("server_id").and_then(|v| v.as_u64()).context(
+            "Missing 'server_id' (the id of the running MQTT server, from the server list)",
+        )?;
+        u32::try_from(raw).map_err(|_| {
+            anyhow::anyhow!(
+                "server_id {raw} is not a NetGet server id (0-4294967295); take it from the \
+                 server list rather than inventing one"
+            )
+        })
+    }
+
     // ---- executors -------------------------------------------------------
 
     fn execute_connack(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -347,14 +368,7 @@ impl MqttProtocol {
         let target = action.get(target_key).and_then(|v| v.as_str());
         match target {
             Some(client) => {
-                let server_id = match self.server_id {
-                    Some(id) => id.as_u32(),
-                    None => action
-                        .get("server_id")
-                        .and_then(|v| v.as_u64())
-                        .context("Missing 'server_id' (the id of the running MQTT server, from the server list)")?
-                        as u32,
-                };
+                let server_id = self.require_server_id(&action)?;
                 let delivered = deliver(server_id, client, &bytes);
                 if delivered.is_empty() {
                     warn!(
@@ -412,14 +426,7 @@ impl MqttProtocol {
     }
 
     fn execute_list_clients(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let server_id = match self.server_id {
-            Some(id) => id.as_u32(),
-            None => action
-                .get("server_id")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'server_id' (the id of the running MQTT server)")?
-                as u32,
-        };
+        let server_id = self.require_server_id(&action)?;
         let clients = list_clients(ServerId::new(server_id));
         Ok(ActionResult::Custom {
             name: "list_mqtt_clients".to_string(),

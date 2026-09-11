@@ -261,10 +261,22 @@ impl SvnProtocol {
     }
 
     fn execute_send_failure(&self, action: serde_json::Value) -> Result<ActionResult> {
+        // Range-check before narrowing. `as u32` wraps, and the wrap lands on the one value
+        // this frame must never carry: apr-err 0 is `APR_SUCCESS`, so a failure response
+        // built from `error_code: 4294967296` tells the client the operation did not fail.
         let error_code = action
             .get("error_code")
             .and_then(|v| v.as_u64())
-            .unwrap_or(210000) as u32;
+            .unwrap_or(210000);
+        if error_code == 0 || error_code > u32::MAX as u64 {
+            return Err(anyhow::anyhow!(
+                "error_code {error_code} is not an apr-err this failure response can carry \
+                 (1-4294967295). 0 is APR_SUCCESS and would report the operation as having \
+                 succeeded; svn's own codes start at 20000 (SVN_ERR_BAD_CONTAINING_POOL), \
+                 with 210000 (SVN_ERR_RA_SVN_CMD_ERR) the generic ra_svn failure."
+            ));
+        }
+        let error_code = error_code as u32;
 
         let message = action
             .get("message")

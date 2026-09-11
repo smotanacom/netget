@@ -525,7 +525,18 @@ impl Client for OpenIdConnectClientProtocol {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
 
-                let port = action.get("port").and_then(|v| v.as_u64()).unwrap_or(8080) as u16;
+                // Range-check before narrowing. `as u16` wraps, so `66079` becomes `543` and
+                // the redirect listener binds a port the model never named — and `65536`
+                // becomes `0`, which is "pick any ephemeral port", so the redirect URI
+                // registered with the provider points somewhere nothing is listening.
+                let port = action.get("port").and_then(|v| v.as_u64()).unwrap_or(8080);
+                if !(1..=u16::MAX as u64).contains(&port) {
+                    return Err(anyhow::anyhow!(
+                        "port {port} is not a TCP port (1-65535). This is the local port the \
+                         authorization-code redirect is received on."
+                    ));
+                }
+                let port = port as u16;
 
                 Ok(ClientActionResult::Custom {
                     name: "oidc_authorization_code".to_string(),
