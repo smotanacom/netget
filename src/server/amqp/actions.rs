@@ -345,6 +345,28 @@ impl AmqpProtocol {
             .with_context(|| format!("Missing '{}'. {}", key, hint))
     }
 
+    /// The server this action addresses: our own id when the executor is bound to one,
+    /// otherwise the model's `server_id`.
+    ///
+    /// The `None` arm used to end in `as u32`, which wraps in silence — `4294967297` becomes
+    /// `1`, so an action naming a broker that does not exist is delivered to whichever broker
+    /// happens to be number 1 rather than failing. The id is the only thing separating two
+    /// running brokers, so the wrap publishes to the wrong one.
+    fn require_server_id(&self, action: &Value) -> Result<u32> {
+        if let Some(id) = self.server_id {
+            return Ok(id.as_u32());
+        }
+        let raw = action.get("server_id").and_then(|v| v.as_u64()).context(
+            "Missing 'server_id' (the id of the running AMQP server, from the server list)",
+        )?;
+        u32::try_from(raw).map_err(|_| {
+            anyhow::anyhow!(
+                "server_id {raw} is not a NetGet server id (0-4294967295); take it from the \
+                 server list rather than inventing one"
+            )
+        })
+    }
+
     // ---- executors -------------------------------------------------------
 
     fn execute_connection_open_ok(&self) -> Result<ActionResult> {
@@ -546,12 +568,7 @@ impl AmqpProtocol {
              attached are listed in the event's active_consumers, or use list_amqp_consumers.",
         )?;
 
-        let server_id = match self.server_id {
-            Some(id) => id.as_u32(),
-            None => action.get("server_id").and_then(|v| v.as_u64()).context(
-                "Missing 'server_id' (the id of the running AMQP server, from the server list)",
-            )? as u32,
-        };
+        let server_id = self.require_server_id(&action)?;
 
         let handle = lookup_consumer(server_id, consumer_tag).ok_or_else(|| {
             anyhow::anyhow!(
@@ -747,14 +764,7 @@ impl AmqpProtocol {
     }
 
     fn execute_list_consumers(&self, action: Value) -> Result<ActionResult> {
-        let server_id = match self.server_id {
-            Some(id) => id.as_u32(),
-            None => action
-                .get("server_id")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'server_id' (the id of the running AMQP server)")?
-                as u32,
-        };
+        let server_id = self.require_server_id(&action)?;
         Ok(ActionResult::Custom {
             name: "list_amqp_consumers".to_string(),
             data: json!({
