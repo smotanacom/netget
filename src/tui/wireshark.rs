@@ -179,6 +179,10 @@ pub fn wire_for(protocol: &str) -> Wire {
         // web arm above does not list (it has only the server's "dynamo"), so it fell through
         // to PLAIN_TCP and lost the HTTP dissector.
         "dynamodb" => tcp("http"),
+        // Client-only protocol names. Both talk HTTP to a provider and may use TLS, so the
+        // display filter admits either; without an arm they defaulted to plain TCP.
+        "openidconnect" => with_display(tcp("http"), "http || tls"),
+        "saml" => with_display(tcp("http"), "http || tls"),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),
