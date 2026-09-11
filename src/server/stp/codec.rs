@@ -68,6 +68,13 @@ pub const ETHERNET_HEADER_LEN: usize = 14;
 /// Minimum 802.3 frame excluding the FCS. Shorter frames are padded on transmit.
 pub const MIN_ETHERNET_FRAME_LEN: usize = 60;
 
+/// The largest value the 802.3 length field can carry **as a length**.
+///
+/// IEEE 802.3 reserves every value from `0x0600` (1536) upwards for EtherType, so a frame whose
+/// length field reaches there is read as Ethernet II and its LLC payload is never looked at.
+/// 1500 is the largest value that is unambiguously a length, and both directions enforce it.
+pub const MAX_8023_LENGTH: usize = 1500;
+
 pub const PROTOCOL_ID: u16 = 0x0000;
 
 pub const VERSION_STP: u8 = 0;
@@ -578,8 +585,22 @@ pub struct Frame8023 {
 /// The length field carries the MAC **client data** length — LLC header plus BPDU — and
 /// deliberately does *not* include the padding. A configuration BPDU therefore always shows
 /// `00 26` (38) and an RST BPDU `00 27` (39).
-pub fn encode_frame(destination: [u8; 6], source: [u8; 6], bpdu: &[u8]) -> Vec<u8> {
+///
+/// Refuses a body that would not fit the length field *as a length*. Every BPDU this codec
+/// produces is 4, 35 or 36 octets, so no caller here can trip it — but this is a `pub fn`
+/// taking an arbitrary slice, and narrowing with a bare `as u16` would let a future one write
+/// a value of 1536 or more, which IEEE 802.3 reserves for EtherType. The frame would then stop
+/// being 802.3 at all and every receiver would read it as Ethernet II, the BPDU never parsed.
+/// [`decode_frame`] already rejects exactly this in the other direction.
+pub fn encode_frame(destination: [u8; 6], source: [u8; 6], bpdu: &[u8]) -> Result<Vec<u8>> {
     let client_len = LLC_HEADER_LEN + bpdu.len();
+    if client_len > MAX_8023_LENGTH {
+        bail!(
+            "802.3 client data is {client_len} octets; the length field only carries a length \
+             up to {MAX_8023_LENGTH} (0x0600 and above are EtherTypes, so a longer frame is read \
+             as Ethernet II and the BPDU is never parsed)"
+        );
+    }
     let mut frame =
         Vec::with_capacity(MIN_ETHERNET_FRAME_LEN.max(ETHERNET_HEADER_LEN + client_len));
     frame.extend_from_slice(&destination);
@@ -592,7 +613,7 @@ pub fn encode_frame(destination: [u8; 6], source: [u8; 6], bpdu: &[u8]) -> Vec<u
     while frame.len() < MIN_ETHERNET_FRAME_LEN {
         frame.push(0x00);
     }
-    frame
+    Ok(frame)
 }
 
 /// Parse an 802.3 + LLC frame and hand back the BPDU body.
@@ -613,7 +634,7 @@ pub fn decode_frame(frame: &[u8]) -> Result<Frame8023> {
     source.copy_from_slice(&frame[6..12]);
 
     let declared_len = u16::from_be_bytes([frame[12], frame[13]]) as usize;
-    if declared_len > 1500 {
+    if declared_len > MAX_8023_LENGTH {
         bail!(
             "not an 802.3 length-encapsulated frame: field at offset 12 is 0x{declared_len:04x}, \
              which is an EtherType, not a length. BPDUs are never carried in Ethernet II frames."

@@ -682,16 +682,12 @@ impl StpServer {
                 let destination = StpProtocol::destination_from_action(&data)?;
                 let source = StpProtocol::source_from_action(&data, config.bridge_mac)?;
                 let body = StpProtocol::config_bpdu_from_action(&data)?.encode()?;
-                Ok(codec::encode_frame(destination, source, &body))
+                codec::encode_frame(destination, source, &body)
             }
             "send_stp_tcn" => {
                 let destination = StpProtocol::destination_from_action(data)?;
                 let source = StpProtocol::source_from_action(data, config.bridge_mac)?;
-                Ok(codec::encode_frame(
-                    destination,
-                    source,
-                    &codec::encode_tcn_bpdu(),
-                ))
+                codec::encode_frame(destination, source, &codec::encode_tcn_bpdu())
             }
             other => bail!("unknown STP action '{other}'"),
         }
