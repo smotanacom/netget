@@ -97,6 +97,21 @@ pub static OPENID_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             required: false,
         },
         Parameter {
+            name: "configured_issuer".to_string(),
+            type_hint: "string".to_string(),
+            description: "Issuer set at startup or by a previous configure_provider, or null. \
+                          Use it in the discovery document and in `iss` claims so successive \
+                          responses agree."
+                .to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "configured_scopes".to_string(),
+            type_hint: "array".to_string(),
+            description: "Scopes this provider is configured to support.".to_string(),
+            required: false,
+        },
+        Parameter {
             name: "endpoint_type".to_string(),
             type_hint: "string".to_string(),
             description: "OIDC endpoint type: discovery, authorization, token, userinfo, jwks, or unknown".to_string(),
@@ -164,33 +179,16 @@ impl Protocol for OpenIdProtocol {
     fn example_prompt(&self) -> &'static str {
         "Start an OpenID Connect server for SSO on port 8080"
     }
+    /// None. Every OIDC endpoint is request/response, so there is nothing an operator can
+    /// usefully initiate out of band.
+    ///
+    /// `configure_provider` used to live here and could never take effect: an async action's
+    /// `ActionResult` never reaches `handle_llm_response`, and `execute_action` is a `&self`
+    /// method on a unit struct with no access to `OpenIdState`, so the issuer it "set" was
+    /// discarded. It is a sync action now, offered on `openid_request`, where the handler
+    /// that owns the state can apply it.
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
-        vec![
-                ActionDefinition {
-                    name: "configure_provider".to_string(),
-                    description: "Configure OpenID Connect provider settings (issuer, supported scopes, etc.)".to_string(),
-                    parameters: vec![
-                        Parameter {
-                            name: "issuer".to_string(),
-                            type_hint: "string".to_string(),
-                            description: "Issuer URL (e.g., http://localhost:8080)".to_string(),
-                            required: true,
-                        },
-                        Parameter {
-                            name: "supported_scopes".to_string(),
-                            type_hint: "array".to_string(),
-                            description: "Array of supported OAuth scopes (e.g., [\"openid\", \"profile\", \"email\"])".to_string(),
-                            required: false,
-                        },
-                    ],
-                    example: serde_json::json!({"type": "configure_provider", "issuer": "http://localhost:8080", "supported_scopes": ["openid", "profile", "email"]}),
-                    log_template: Some(
-                        LogTemplate::new()
-                            .with_info("-> OIDC configured: {issuer}")
-                            .with_debug("OIDC provider configured: issuer={issuer}"),
-                    ),
-                },
-            ]
+        Vec::new()
     }
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![
@@ -470,6 +468,33 @@ impl Protocol for OpenIdProtocol {
                         LogTemplate::new()
                             .with_info("-> OIDC error: {error}")
                             .with_debug("OIDC error response: {error} - {error_description}"),
+                    ),
+                },
+                ActionDefinition {
+                    name: "configure_provider".to_string(),
+                    description: "Set the provider's issuer and supported scopes for the rest of this server's life. \
+                                  Produces no HTTP response of its own, so pair it with the action that answers \
+                                  this request; the values come back as `configured_issuer` / `configured_scopes` \
+                                  on every later openid_request.".to_string(),
+                    parameters: vec![
+                        Parameter {
+                            name: "issuer".to_string(),
+                            type_hint: "string".to_string(),
+                            description: "Issuer URL (e.g., http://localhost:8080)".to_string(),
+                            required: true,
+                        },
+                        Parameter {
+                            name: "supported_scopes".to_string(),
+                            type_hint: "array".to_string(),
+                            description: "Array of supported OAuth scopes (e.g., [\"openid\", \"profile\", \"email\"])".to_string(),
+                            required: false,
+                        },
+                    ],
+                    example: serde_json::json!({"type": "configure_provider", "issuer": "http://localhost:8080", "supported_scopes": ["openid", "profile", "email"]}),
+                    log_template: Some(
+                        LogTemplate::new()
+                            .with_info("-> OIDC configured: {issuer}")
+                            .with_debug("OIDC provider configured: issuer={issuer}"),
                     ),
                 },
             ]
