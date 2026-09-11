@@ -331,3 +331,86 @@ async fn a_characteristic_added_by_its_short_uuid_is_found_by_a_read() -> TestRe
     );
     Ok(())
 }
+
+/// `send_notification` files the new value under the same canonical key a read looks up.
+///
+/// This covers the third of the three spellings that used to disagree (see
+/// `characteristic_key`). `execute_send_notification` updated the stored value using **the
+/// model's own spelling** of `characteristic_uuid`, so a notification sent as `"2A37"` — the
+/// form this protocol's own `bluetooth_subscribe` example uses — wrote an entry no read could
+/// find. The value went out over the radio but the server's idea of what the characteristic
+/// holds did not move, so the next read the handler declined to answer served the *previous*
+/// value, or failed closed if there was none.
+///
+/// Driving it through the real event loop is what makes this meaningful: the subscribe event
+/// genuinely offers `send_notification` (`BLUETOOTH_SUBSCRIBE_EVENT.with_actions`), so this is
+/// an answer a real model could produce, not a mock reaching for an action it would never be
+/// shown. The loop handles each event to completion before the next, so the notification has
+/// landed before the read is issued.
+#[tokio::test]
+async fn a_notification_sent_by_short_uuid_is_visible_to_a_later_read() -> TestResult {
+    let mock_config = MockLlmBuilder::new()
+        .on_event("bluetooth_subscribe")
+        .respond_with_actions(serde_json::json!([{
+            "type": "send_notification",
+            "characteristic_uuid": CHARACTERISTIC_SHORT,
+            "value": "0051"
+        }]))
+        .expect_at_least(1)
+        .and()
+        .on_event("bluetooth_read_request")
+        .respond_with_actions(serde_json::json!([]))
+        .expect_at_least(1)
+        .and()
+        .build();
+
+    let mock = MockOllamaServer::start(mock_config).await?;
+
+    let (event_tx, event_rx) = mpsc::channel::<PeripheralEvent>(8);
+    tokio::spawn(BluetoothBle::run_event_loop_without_radio(
+        event_rx,
+        ServerId::new(1),
+        OllamaClient::new(mock.base_url()),
+        Arc::new(AppState::new()),
+        mpsc::unbounded_channel::<String>().0,
+        // Seeded under the short form with a *different* value, so a read that serves 0x0048
+        // proves the notification never landed, while 0x0051 proves it did.
+        vec![(CHARACTERISTIC_SHORT.to_string(), vec![0x00, 0x48])],
+    ));
+
+    let request = PeripheralRequest {
+        client: "test-central".to_string(),
+        service: uuid::Uuid::parse_str(SERVICE)?,
+        characteristic: uuid::Uuid::parse_str(CHARACTERISTIC)?,
+    };
+
+    event_tx
+        .send(PeripheralEvent::CharacteristicSubscriptionUpdate {
+            request: request.clone(),
+            subscribed: true,
+        })
+        .await?;
+
+    let (responder, response) = oneshot::channel();
+    event_tx
+        .send(PeripheralEvent::ReadRequest {
+            request,
+            offset: 0,
+            responder,
+        })
+        .await?;
+
+    let reply = tokio::time::timeout(Duration::from_secs(20), response)
+        .await
+        .map_err(|_| "No ATT read response within 20s")??;
+
+    assert_eq!(
+        reply.value,
+        vec![0x00, 0x51],
+        "the read must serve the value send_notification stored. 0x0048 here means the \
+         notification was filed under a key the read could not find, so the stored value never \
+         moved"
+    );
+    mock.verify_calls().await?;
+    Ok(())
+}
