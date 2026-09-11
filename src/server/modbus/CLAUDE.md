@@ -6,7 +6,13 @@ Modbus TCP server. The LLM plays the device: it decides what a coil or register 
 whether a write is accepted, and which exception to raise when it is not. NetGet owns the wire
 format, so the model never sees a transaction id, a byte count or a bit-packing rule.
 
-**Status**: Experimental
+**Status**: Beta — `metadata()` says so, and the evidence is
+`test_modbus_reads_writes_and_exceptions_against_tokio_modbus`, which drives the real
+`tokio-modbus` 0.17 client, is not `#[ignore]`d, and has no skip-when-missing gate.
+`tokio-modbus` is an **unconditional** dev-dependency, so the evidence compiles wherever the
+suite does. (This line said "Experimental" while the code said `Beta` — the code was right.)
+Note that the blocking CI `test` job runs `tcp,http,dns,udp,redis,mcp-stdio` only, so it does
+not execute this test; run it yourself.
 **Spec**: MODBUS Application Protocol Specification V1.1b3; MODBUS Messaging on TCP/IP
 Implementation Guide V1.0b
 **Port**: 502, declared as `PrivilegeRequirement::PrivilegedPort(502)`
@@ -98,10 +104,51 @@ header from the request it parsed. Consequences:
 - no usable action came back;
 - the model returned the wrong *kind* of answer (bits for a register read, a write-ack for a
   read);
-- the model returned the wrong *number* of values for the requested quantity.
+- the model returned the wrong *number* of values for the requested quantity;
+- a register value was outside 0-65535, which drops it and so makes the count wrong.
 
 None of those produces a plausible-looking response. A truncated register block would be worse
 than an exception: the client would believe it.
+
+**Silence is the wrong answer here, and that is not the general rule.** ~20 protocols in this
+project are deliberately silent on LLM failure because every reply they define is a positive
+assertion. Modbus is not one of them: it has an exception response, 0x04 means exactly "an
+unrecoverable fault occurred while handling this request", and a client that receives it
+retries or alarms instead of blocking until its own timeout. What must never happen is a
+*value* — a fabricated register read is an assertion about plant state.
+
+### 4b. `decision=` distinguishes the three ways 0x04 reaches the wire
+
+The wire cannot carry the distinction: a model that deliberately refuses with exception 0x04
+and a model that never answered at all both put `04` in the PDU. So every request logs a
+stable `decision=` token, as `src/server/radius/` does:
+
+| token | meaning | level |
+|---|---|---|
+| `model_answer` | the model supplied the values, or accepted the write | DEBUG |
+| `model_reject` | the model chose an exception itself | DEBUG |
+| `spec_reject` | `parse_request` decided; the model was never asked | DEBUG |
+| `unit_mismatch` | addressed to another unit id | WARN |
+| `fail_closed_llm_error` | the LLM backend failed | **ERROR** |
+| `fail_closed_no_action` | the model was asked and returned nothing usable | **ERROR** |
+| `fail_closed_wrong_shape` | wrong kind of answer, or wrong number of values | **ERROR** |
+
+`grep 'decision=fail_closed_'` finds every request the model did not actually answer. The
+error text itself never reaches the wire — only the exception code does.
+
+### 4c. Model-supplied numbers are refused, never narrowed
+
+`execute_action` rejects a register value outside 0-65535 and an `exception_code` outside the
+set the specification defines (1-6, 8, 10, 11), rather than casting. `65736 as u16` is `200`,
+which on this protocol is a plausible-looking tank level with no error anywhere; `0x104 as u8`
+is `0x04`, a fail-closed answer manufactured out of a typo. `pdu_from_results` filters rather
+than casts for the same reason, so a value that somehow arrived out of range makes the count
+wrong and becomes an exception instead of a reading.
+
+Addresses and quantities cannot wrap at all: they are `u16` straight off the wire, never
+model-supplied, and `check_range` rejects `start + quantity > 0x10000` in `u32` arithmetic.
+`tests/server/modbus/e2e_test.rs::test_out_of_range_model_values_are_refused_not_narrowed`
+pins all of this.
 
 ### 5. Connection state machine
 
@@ -118,7 +165,16 @@ task is spawned, for the same reason TCP does it: a client that writes immediate
 
 A framing error (`protocol_id != 0`, or an MBAP length outside 2..=254) closes the connection.
 Neither is answerable — we no longer know where the next frame starts — and the buffer is capped
-at eight ADUs' worth so a peer that never sends a parseable frame cannot grow it without bound.
+at `MAX_BUFFERED` (eight ADUs' worth) so a peer that never sends a parseable frame cannot grow
+it without bound.
+
+**That cap is enforced on append as well as in the framing loop, and the loop alone was not
+enough.** While a request is with the model, `handle_data` appends the new bytes and returns
+early; the loop-side check does not run again until the LLM call returns. At the shipped
+`--llm-queue-timeout` of 120s that left the queue unbounded for two minutes per request, which
+is long enough for a flooding peer to push gigabytes into it. Both sites now check, and both
+close the connection rather than trimming — a peer that overruns the frame accumulator has
+desynchronised anyway.
 
 ### 6. Dashboard injection (peer handle)
 
@@ -169,8 +225,10 @@ decision 2.
 - `send_modbus_registers { values: [int 0..65535] }` — answers FC 3/4. Length must equal
   `quantity`.
 - `send_modbus_write_ack {}` — accepts a write; the echo is built from the request.
-- `send_modbus_exception { exception_code }` — refuses. Accepts a number (1-4, 6, ...) or a
-  name (`"illegal_data_address"`, ...).
+- `send_modbus_exception { exception_code }` — refuses. Accepts a number the specification
+  defines (1, 2, 3, 4, 5, 6, 8, 10, 11) or a name (`"illegal_data_address"`, ...). Anything
+  else is refused with a message listing the real set, because an undefined code is one no
+  client can interpret.
 
 ## Startup parameters
 
