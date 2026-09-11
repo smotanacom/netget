@@ -5,7 +5,12 @@
 RSS (Really Simple Syndication) feed server implementing RSS 2.0 XML generation served over HTTP. The LLM **dynamically
 generates feed content** on every request - no in-memory storage.
 
-**Status**: Experimental
+**Status**: Beta — `metadata()` says so and this file said Experimental for months. The
+evidence is `tests/server/rss/e2e_test.rs`, which parses the served bytes with **feed-rs**, a
+second implementation; parsing them back with the `rss` crate (which is what the server
+*writes* with) proved only that one crate round-trips through itself. RSS has no session, so
+fetch-and-parse is the whole protocol and an independent reader is the strongest evidence the
+protocol admits.
 **RFC**: RSS 2.0 Specification
 
 ## Library Choices
@@ -93,10 +98,51 @@ All RSS operations use dual logging:
 
 ### 6. Error Handling
 
-- **Feed Not Generated**: Return 404 with "Feed Not Found"
-- **Method Not Allowed**: Return 405 for non-GET requests
-- **LLM Error**: Return 500 Internal Server Error
-- **XML Generation**: Handled by `rss` crate with fallbacks
+Four outcomes, deliberately kept apart. Three of them could be 404 and must not be: a reader
+told 404 stops polling, so netget failing has to look different from the model deciding there
+is no feed here.
+
+| Outcome | Wire | `decision=` tag |
+|---|---|---|
+| A feed was built | 200 + `application/rss+xml` | `model_feed` |
+| The model produced no `generate_rss_feed` | 404 `Feed Not Found` | `model_no_feed` |
+| It produced one netget refused (missing `title`/`link`/`description`, non-array `items`) | 500 | `fail_closed_unusable_feed` |
+| The backend failed | 503 + `Retry-After` when saturated, else 500 | `fail_closed_llm_error` |
+| Not a GET | 405 | — |
+
+The peer gets a `crate::utils::WireFailure` **category**, never the error text; the error goes
+to the log. The `decision=` tag is what tells the three failure shapes apart, because the status
+code alone cannot — the same rule `src/server/radius/` follows.
+
+A refused action never reaches `protocol_results`, so the handler reads
+`ExecutionResult::failures` too. Without that, a `generate_rss_feed` missing its title was
+answered 404 — the model's own vocabulary for "no feed here" — and the reason lived only in the
+log.
+
+### 7. Model content cannot forge feed structure
+
+The feed is XML built from strings the model wrote, which is the CR/LF-injection class in an XML
+costume. It does not work, and `tests/server/rss/injection_test.rs` measures it rather than
+assuming it:
+
+- text elements go through `quick_xml`'s `BytesText::new`, which escapes on write;
+- an item's `<description>` is CDATA via `BytesCData::escaped`, which **splits** on `]]>` rather
+  than escaping it, so the terminator cannot appear inside a section;
+- a category `domain` is an attribute, and attribute values are escaped.
+
+What escaping cannot reach is the set of characters XML 1.0 §2.2 forbids outright — there is no
+entity for NUL, and one in a title yields a 200 carrying a document every conforming reader
+rejects. `xml_safe` in `mod.rs` drops exactly those (keeping tab, LF and CR, which are legal).
+Check this again on any `rss`/`quick-xml` bump.
+
+### 8. Required channel fields are refused, not defaulted
+
+`title`, `link` and `description` are declared `required: true` and the executor enforces it.
+They used to be read with `unwrap_or("Untitled Feed")` / `unwrap_or("http://localhost")` /
+`unwrap_or("No description")`, so an answer naming none of the three produced a
+complete-looking feed and nothing recorded that the model had not supplied one — a required
+field whose default asserts a result. `items` is required but may be empty: a feed with no
+entries is a legitimate answer, a feed with no title is not a feed.
 
 ## LLM Integration
 
@@ -177,25 +223,31 @@ All RSS operations use dual logging:
 - No `/` endpoint showing all feeds
 - Could add as future enhancement
 
-### 3. No Authentication
+### 3. No connection-level rate limit
+
+Every GET is one LLM call and nothing bounds the rate, so an unauthenticated fetch loop is an
+unauthenticated model-call loop. `src/server/tuntap/` is the protocol in this tree that solves
+the equivalent problem (a filter plus a rolling per-minute window); RSS has no such bound.
+
+### 4. No Authentication
 
 - All feeds publicly accessible
 - No access control or authentication
 - Anyone can read any feed
 
-### 4. No Pagination
+### 5. No Pagination
 
 - All items returned in single response
 - Large feeds may be slow to generate/transmit
 - No support for paging or item limits
 
-### 5. No Atom Support
+### 6. No Atom Support
 
 - Only RSS 2.0 format
 - No Atom 1.0 feeds
 - Could add Atom support via `atom_syndication` crate
 
-### 6. No Conditional Requests
+### 7. No Conditional Requests
 
 - No If-Modified-Since support (server side)
 - No ETag generation
