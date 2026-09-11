@@ -23,16 +23,66 @@ use tracing::debug;
 /// LDAP protocol action handler
 pub struct LdapProtocol;
 
+/// Read the model's `result_code`, refusing anything the one-byte ENUMERATED cannot carry.
+///
+/// This was `as_u64()… as u8`, which wraps in silence, and for LDAP the wrap lands exactly on
+/// the worst value: **`result_code: 256` encodes `0`, and `0` is `success`**. Every refusal
+/// the model can express is a multiple of 256 away from telling the client the operation
+/// succeeded — a directory asserting a bind, a write or a search completed when it did not.
+///
+/// Refusing beats clamping: 255 is not what the model asked for either, and the message is
+/// what the repair loop reads. RFC 4511 §4.1.9 makes resultCode extensible, so the honest
+/// bound is what this encoder can put on the wire rather than a list of named codes.
+fn parse_result_code(action: &serde_json::Value, default: u8) -> Result<u8> {
+    let value = match action.get("result_code") {
+        None => return Ok(default),
+        Some(v) if v.is_null() => return Ok(default),
+        Some(v) => v,
+    };
+    let raw = value
+        .as_u64()
+        .with_context(|| format!("'result_code' must be a number, got {value}"))?;
+    if raw > u8::MAX as u64 {
+        return Err(anyhow::anyhow!(
+            "'result_code' {raw} does not fit the LDAP resultCode this server encodes \
+             (0-255). 0 is success, 32 noSuchObject, 49 invalidCredentials, 50 \
+             insufficientAccessRights, 68 entryAlreadyExists."
+        ));
+    }
+    Ok(raw as u8)
+}
+
+/// Read the model's `message_id`, refusing anything outside LDAP's `INTEGER (0 .. maxInt)`.
+///
+/// `as i64 … as i32` wraps, so `4294967297` becomes `1` and the response is correlated with
+/// whichever request happened to carry that id. A client matches replies by messageID alone,
+/// so a wrapped one is answered to the wrong question or to none at all.
+fn parse_message_id(action: &serde_json::Value) -> Result<i32> {
+    let value = match action.get("message_id") {
+        None => return Ok(1),
+        Some(v) if v.is_null() => return Ok(1),
+        Some(v) => v,
+    };
+    let raw = value
+        .as_i64()
+        .with_context(|| format!("'message_id' must be a number, got {value}"))?;
+    if !(0..=i32::MAX as i64).contains(&raw) {
+        return Err(anyhow::anyhow!(
+            "'message_id' {raw} is outside LDAP's INTEGER (0 .. maxInt) range of \
+             0-2147483647. Echo the message_id from the triggering event so the client can \
+             match the reply to its request."
+        ));
+    }
+    Ok(raw as i32)
+}
+
 impl LdapProtocol {
     pub fn new() -> Self {
         Self
     }
 
     fn execute_ldap_bind_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let message_id = action
-            .get("message_id")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1) as i32;
+        let message_id = parse_message_id(&action)?;
 
         let success = action
             .get("success")
@@ -53,10 +103,7 @@ impl LdapProtocol {
     }
 
     fn execute_ldap_search_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let message_id = action
-            .get("message_id")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1) as i32;
+        let message_id = parse_message_id(&action)?;
 
         let entries = action
             .get("entries")
@@ -64,10 +111,7 @@ impl LdapProtocol {
             .cloned()
             .unwrap_or_default();
 
-        let result_code = action
-            .get("result_code")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u8;
+        let result_code = parse_result_code(&action, 0)?;
 
         debug!(
             "LDAP sending search response: {} entries, result_code={}",
@@ -98,10 +142,7 @@ impl LdapProtocol {
     }
 
     fn execute_ldap_add_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let message_id = action
-            .get("message_id")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1) as i32;
+        let message_id = parse_message_id(&action)?;
 
         // Not defaulted to `true`. `success` is only consulted to pick a resultCode when the
         // model names none, so a forgotten field used to encode resultCode 0 - the directory
@@ -112,10 +153,8 @@ impl LdapProtocol {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let result_code = action
-            .get("result_code")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(if success { 0 } else { 68 }) as u8; // 68 = entryAlreadyExists
+        // 68 = entryAlreadyExists
+        let result_code = parse_result_code(&action, if success { 0 } else { 68 })?;
 
         let message = action.get("message").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -129,10 +168,7 @@ impl LdapProtocol {
     }
 
     fn execute_ldap_modify_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let message_id = action
-            .get("message_id")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1) as i32;
+        let message_id = parse_message_id(&action)?;
 
         // See `execute_ldap_add_response`: an omitted `success` must not encode resultCode 0.
         let success = action
@@ -140,10 +176,8 @@ impl LdapProtocol {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let result_code = action
-            .get("result_code")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(if success { 0 } else { 32 }) as u8; // 32 = noSuchObject
+        // 32 = noSuchObject
+        let result_code = parse_result_code(&action, if success { 0 } else { 32 })?;
 
         let message = action.get("message").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -157,10 +191,7 @@ impl LdapProtocol {
     }
 
     fn execute_ldap_delete_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let message_id = action
-            .get("message_id")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1) as i32;
+        let message_id = parse_message_id(&action)?;
 
         // See `execute_ldap_add_response`: an omitted `success` must not encode resultCode 0.
         let success = action
@@ -168,10 +199,8 @@ impl LdapProtocol {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let result_code = action
-            .get("result_code")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(if success { 0 } else { 32 }) as u8; // 32 = noSuchObject
+        // 32 = noSuchObject
+        let result_code = parse_result_code(&action, if success { 0 } else { 32 })?;
 
         let message = action.get("message").and_then(|v| v.as_str()).unwrap_or("");
 
