@@ -402,7 +402,7 @@ impl Protocol for OllamaProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("hyper with Ollama-compatible HTTP endpoints")
             .llm_control(
                 "Every endpoint is a model decision: /api/generate, /api/chat, /api/tags, \
@@ -417,7 +417,17 @@ impl Protocol for OllamaProtocol {
                  expose. An earlier version of this field claimed an \"ollama Python \
                  library\"; no Python was ever involved.",
             )
-            .notes("Mock Ollama API server for testing and honeypot purposes")
+            .notes(
+                "Mock Ollama API server for testing and honeypot purposes. Beta rests on \
+                 real_client_test.rs: ollama-rs deserialises our /api/tags, /api/generate \
+                 and /api/chat envelopes for itself, it is an unconditional dependency so \
+                 the evidence runs wherever --features ollama compiles, and it is not \
+                 circular - this server frames with hyper and serde_json, never with \
+                 ollama-rs. Not Stable: streaming is assembled whole in memory rather than \
+                 chunked, no client has driven the four model-management endpoints, and \
+                 nothing validates an Authorization header (none is read, so the model \
+                 cannot make that call either).",
+            )
             .build()
     }
 
