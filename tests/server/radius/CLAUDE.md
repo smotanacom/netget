@@ -95,8 +95,36 @@ the MD5 is genuinely right, not merely self-consistent.
 | `freeradius_radclient_accepts_our_access_accept` | 2 | An accept a foreign client accepts, with the attributes decoded by its own dictionary |
 | `freeradius_radclient_sees_a_valid_reject_when_the_model_is_silent` | 2 | The fail-closed reject is *also* well-signed and readable by a foreign client |
 
-Both skip with an explicit message when `radclient` is absent, rather than failing or —
-worse — silently passing.
+### FreeRADIUS is a hard requirement, not a nicety
+
+**Both tests FAIL when `radclient` is absent.** `require_radclient()` returns `Err`; it does
+not print SKIPPED and return `Ok(())`, which is what it used to do. That single line is the
+whole reason RADIUS may be rated `Beta` — the root `CLAUDE.md` is explicit that a
+skip-when-missing gate is a silent pass rather than evidence, and it names four protocols
+(`kubernetes`, `oci_registry`, `maven`, `websocket`) held back from `Beta` for exactly this.
+`tests/server/npm/e2e_test.rs` is the shape copied.
+
+`require_radclient()` additionally runs `radclient -v` and asserts the banner, so a broken or
+architecture-mismatched install fails there with its own message rather than three assertions
+later as an unexplained timeout. It asserts the banner rather than the exit status because
+some builds exit non-zero from `-v` while still printing it.
+
+**So FreeRADIUS must be installed wherever the `radius` feature's suite runs:**
+
+```bash
+brew install freeradius-server            # macOS
+sudo apt-get install -y freeradius-utils  # Debian/Ubuntu — radclient only, not the daemon
+```
+
+Searched in order: `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, then `$PATH`.
+
+**This costs the CI gate nothing.** `radius` is not in `CI_FEATURES`
+(`tcp,http,dns,udp,redis,mcp-stdio`), and the file is `#![cfg(feature = "radius")]`, so the
+blocking `test` job never compiles it. Nor does `single-feature`, whose list is
+`tcp udp dns http redis tls telnet ftp ldap syslog ntp tftp socks5 mqtt`. The only
+`--all-features` job, `registry-audit`, names its `--test` targets explicitly and `server` is
+not among them. If `radius` is ever added to `CI_FEATURES`, the workflow must install
+`freeradius-utils` the same way it already installs `bind9-dnsutils` for the `dig` test.
 
 Note that `radclient` sends a **Message-Authenticator** (attribute 80) by default. NetGet
 neither verifies nor returns one; `radclient` 3.2.x does not require it, so the exchange

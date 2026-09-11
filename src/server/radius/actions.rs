@@ -663,7 +663,13 @@ impl Protocol for RadiusProtocol {
 
         ProtocolMetadataV2::builder()
             .connectionless()
-            .state(DevelopmentState::Experimental)
+            // Beta, September 2026. The bar this file's own CLAUDE.md sets is a real
+            // third-party client, not #[ignore]d, that FAILS rather than skips when the
+            // client is missing. tests/server/radius/real_client_test.rs is now all three:
+            // it drives FreeRADIUS `radclient`, and `require_radclient()` returns Err when
+            // the binary is absent. It was Experimental purely because that gate used to
+            // print SKIPPED and return Ok(()).
+            .state(DevelopmentState::Beta)
             // 1812/1813 are above 1023, so PrivilegedPort would be dead code here.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
@@ -681,13 +687,28 @@ impl Protocol for RadiusProtocol {
                  Session-Timeout, Filter-Id, Class, vendor-specific).",
             )
             .e2e_testing(
-                "Validated against FreeRADIUS 3.2.10 radclient, an independent \
-                 implementation, which accepts the Response Authenticator and decrypts \
-                 User-Password. Codec additionally checked against RFC 2865 §7.1/§7.2 \
-                 literal example bytes. NOTE: tests/server/radius/real_client_test.rs prints \
-                 SKIPPED and passes when radclient is absent, so on a runner without \
-                 FreeRADIUS this evidence is not actually produced. That soft gate is the \
-                 only thing between this rating and Beta — see the file header.",
+                "Validated against FreeRADIUS radclient, an independent implementation that \
+                 NetGet did not write and does not link. It verifies our Response \
+                 Authenticator itself and refuses the reply with 'invalid Response \
+                 Authenticator' if the MD5 is wrong, so it checks the one thing that \
+                 matters. Two tests in tests/server/radius/real_client_test.rs, neither \
+                 #[ignore]d: radclient accepts a model-authorised Access-Accept and decodes \
+                 the model's Reply-Message, Framed-IP-Address and Session-Timeout from its \
+                 own dictionary; and radclient reads the FAIL-CLOSED Access-Reject produced \
+                 when the model answers nothing, which must also be correctly signed (a \
+                 denial the client discards as corrupt is a timeout, not a denial). Both \
+                 FAIL, not skip, when radclient is absent — a skip-when-missing gate is a \
+                 silent pass rather than evidence, and that gate was the only thing keeping \
+                 this protocol at Experimental. FreeRADIUS is therefore required wherever \
+                 the `radius` feature's suite runs (`brew install freeradius-server` / \
+                 `apt-get install -y freeradius-utils`); it is not in CI's CI_FEATURES, so \
+                 the CI gate neither compiles nor runs these tests. The codec is \
+                 additionally pinned to RFC 2865 §7.1/§7.2 literal example bytes, checked \
+                 with a separate MD5 implementation. NOT covered: radclient sends a \
+                 Message-Authenticator (attr 80) which NetGet neither verifies nor returns \
+                 — radclient 3.2.x does not require one, but a NAS configured to demand it \
+                 would reject our replies. CHAP, MS-CHAP and EAP are unimplemented and \
+                 untested.",
             )
             .notes(
                 "FAILS CLOSED: no LLM answer, an unusable answer, or an LLM error all \
