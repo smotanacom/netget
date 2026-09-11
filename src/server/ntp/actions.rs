@@ -416,42 +416,22 @@ impl NtpProtocol {
     }
 }
 
-/// Build a Kiss-o'-Death packet (RFC 5905 §7.4) for a request we cannot answer.
-///
-/// NTP has no error message, but it does have a defined way for a server to say
-/// "do not use me": stratum 0, leap indicator 3 (unsynchronized), and a
-/// four-character kiss code in the reference identifier. `chrony`, `ntpd` and
-/// `ntpdate` all recognise it, refuse to take time from the packet, and stop
-/// polling — which is exactly right when the backend that would have decided the
-/// answer is unavailable. Writing nothing instead leaves the client retrying
-/// against a server it believes is merely slow.
-///
-/// It also fails closed: a KoD can never be mistaken for a time sample, so an
-/// outage cannot silently hand a client a fabricated clock reading.
-///
-/// The client's transmit timestamp is echoed as the origin timestamp for the
-/// same reason a normal reply echoes it — a reply that fails that check is
-/// discarded, which would put us back at silence.
-///
-/// `kiss_code` should be one of the registered codes; this server uses `RATE`
-/// (reduce your polling rate) when the failure is capacity exhaustion and `INIT`
-/// (association not yet synchronized) for every other failure.
-pub fn build_kod_packet(version: u8, origin_timestamp: Option<u64>, kiss_code: &str) -> Vec<u8> {
-    NtpProtocol::build_ntp_packet(
-        version,
-        3,         // LI = 3, unsynchronized
-        0,         // stratum 0 — this is what marks the packet as a KoD
-        0,         // poll
-        0,         // precision
-        0.0,       // root delay
-        0.0,       // root dispersion
-        kiss_code, // reference identifier carries the kiss code
-        None,      // reference timestamp: now
-        origin_timestamp,
-        None, // receive timestamp: now
-        None, // transmit timestamp: now
-    )
-}
+// A `build_kod_packet` used to live here, with a long doc comment explaining why a
+// Kiss-o'-Death (RFC 5905 §7.4 — stratum 0, LI 3, a four-character kiss code) is the right
+// answer on LLM failure, and `src/server/ntp/CLAUDE.md` documented that behaviour as if it
+// were live. **Nothing ever called it.** The real failure path is
+// `mod.rs::send_static_time_response`, and `tests/server/ntp/llm_failure_test.rs` asserts
+// exactly that — `buf[1] == 2`, "the static default answers as stratum 2, not a
+// Kiss-o'-Death (stratum 0)". Two of the three descriptions of this server's failure
+// behaviour were therefore fiction, and the third was the one under test.
+//
+// The function is gone rather than wired up, because the tested behaviour is the better one:
+// an NTP reply is fully determined by the request plus this machine's own clock, so the true
+// current time is an answer NetGet can make truthfully with no model involved. It fails
+// closed — an operator who opted into the LLM to skew the clock gets the truth instead of a
+// lie in their favour — while a KoD would refuse a request NetGet is perfectly able to
+// answer. If a KoD is ever wanted, it should arrive with a test and a caller, not as a
+// function the docs describe and no code reaches.
 
 fn send_ntp_time_response_action() -> ActionDefinition {
     ActionDefinition {

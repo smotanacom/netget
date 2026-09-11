@@ -20,10 +20,24 @@ not invoked on the default path.
 **RFC**: RFC 5905 (NTPv4), RFC 1305 (NTPv3)
 **Port**: 123 (UDP)
 **Privilege**: declares `PrivilegeRequirement::PrivilegedPort(123)`; any port above 1023 needs none.
-**Test coverage**: `tests/server/ntp/test.rs` (note the file is `test.rs`, not `e2e_test.rs`). It
-drives the server with `rsntp` and falls back to a raw 48-byte packet — but the fallback only prints
-its outcome and never asserts, so the suite passes even if the client rejects every reply. Treat it
-as a smoke test, not proof of client compatibility.
+**Test coverage**: `tests/server/ntp/test.rs` (note the file is `test.rs`, not `e2e_test.rs`),
+plus `static_default_test.rs` and `llm_failure_test.rs`. It drives the server with **`rsntp`, a
+third-party SNTP client**, and `rsntp` must now *succeed* — its own checks (origin-timestamp echo,
+mode, leap indicator, stratum sanity) are the interoperability evidence. The raw 48-byte path
+decodes every field by hand alongside it.
+
+**This paragraph used to say the opposite** — "the fallback only prints its outcome and never
+asserts… treat it as a smoke test". That was true of an earlier `test.rs` and was fixed when the
+file was rewritten; the description outlived it. `tests/server/ntp/CLAUDE.md` describes the current
+behaviour correctly, so the two files disagreed, and this one was the stale side.
+
+**What Beta rests on, and where it does not get checked**: `rsntp` is a genuine independent
+implementation, the tests are not `#[ignore]`d, and nothing skips when something is missing —
+`rsntp` is a Cargo dependency of the `ntp` feature itself, so it is always present when the tests
+compile. But `ntp` is **not** in `CI_FEATURES` (`tcp,http,dns,udp,redis,mcp-stdio`), the only set
+the blocking `test` job runs; `single-feature` includes `ntp` but only `cargo check --tests`, which
+compiles the evidence and never executes it. **No CI job runs NTP's interop test.** Same hole as
+AMQP's optional `lapin`, reached by a different route.
 
 ## Library Choices
 
@@ -368,19 +382,36 @@ When scripting enabled:
 - [NTP Stratum Levels](https://www.ntp.org/reflib/book/ch11/)
 - [ntpd-rs (Rust NTP daemon)](https://github.com/pendulum-project/ntpd-rs)
 
-## Failure behaviour: Kiss-o'-Death
+## Failure behaviour: the true current time, and a `decision=` tag
 
-When `call_llm` returns `Err`, the request is answered with a **Kiss-o'-Death packet**
-(RFC 5905 §7.4) rather than dropped: LI 3 (unsynchronized), stratum 0, and a four-character
-kiss code in the reference identifier — `RATE` when `crate::llm::is_overload_error` says the
-failure was capacity exhaustion, `INIT` otherwise. `actions::build_kod_packet` builds it and
-the client's transmit timestamp is echoed as the origin timestamp, without which the reply is
-discarded as unrelated.
+When `call_llm` returns `Err`, the request is answered with `send_static_time_response`
+(`mod.rs`): the ordinary mechanical reply — stratum 2, reference id `LOCL`, and this machine's
+real clock — with the client's transmit timestamp echoed as the origin timestamp, without which
+the client discards the reply as unrelated.
 
-`chrony`, `ntpd` and `ntpdate` recognise a KoD, refuse to take time from it, and stop polling.
-That matters twice: silence looks like a merely slow server so the client keeps retrying, and a
-KoD can never be mistaken for a time sample, so an outage cannot hand anyone a fabricated clock
-reading. Note this makes the "No Kiss-of-Death" limitation above only half true — KoD is not
-available to the *model*, but the server emits one on its own failure path.
+This **fails closed**. An NTP reply is fully determined by the request plus the server's own
+clock, so the true time is an answer NetGet can make truthfully with no model involved. An
+operator who opted into the LLM to skew the clock gets the truth instead of a lie in their
+favour, and no client is ever handed a fabricated reading. Silence would be worse here than for
+the other deliberately-silent protocols: it looks like a merely slow server, so the client keeps
+polling, and unlike ARP or DHCP there is no fabricated assertion to worry about.
 
-Covered by `tests/server/ntp/llm_failure_test.rs`, which decodes all 48 bytes by hand.
+Because the reply is the same shape as one the model produced, the **log** is the only place the
+difference shows — the `radius` convention:
+
+| tag | what happened |
+|---|---|
+| `decision=model_answer` | the model produced a reply and it was sent |
+| `decision=model_silent` | the model answered with `ignore_request`, or with nothing |
+| `decision=fail_closed_llm_error` | the LLM call failed; the static time response was sent |
+| `decision=fail_closed_llm_overload` | the same, and `is_overload_error` matched |
+
+Covered by `tests/server/ntp/llm_failure_test.rs`, which decodes all 48 bytes by hand and
+asserts the stratum, the origin echo, and that the transmit timestamp is within 300 seconds of
+the real clock.
+
+**This section used to describe a Kiss-o'-Death packet** (stratum 0, LI 3, `RATE`/`INIT` kiss
+codes) built by `actions::build_kod_packet`. That function existed and **nothing ever called
+it** — the running code has always sent the static time response, and the test above has always
+asserted `buf[1] == 2`, "not a Kiss-o'-Death (stratum 0)". The function has been deleted; the
+"No Kiss-of-Death" entry under Known Limitations is simply true, in both directions.

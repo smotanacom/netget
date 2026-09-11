@@ -32,13 +32,37 @@ impl NtpClient {
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
     ) -> Result<SocketAddr> {
-        // Parse remote address
-        let remote_sock_addr: SocketAddr = remote_addr
-            .parse()
-            .context(format!("Invalid NTP server address: {}", remote_addr))?;
+        // Resolve the target. `str::parse::<SocketAddr>()` performs **no** name lookup — it
+        // accepts a literal `IP:port` and nothing else — so every hostname target this
+        // protocol advertises failed at connect. Its own `example_prompt` is "Query
+        // time.google.com:123 …" and all three `get_startup_examples()` use
+        // `time.google.com:123` / `pool.ntp.org:123`; none of them could ever have worked.
+        //
+        // The parse is still tried first, and only a failure falls through to `lookup_host`:
+        // a literal address must not pay for a `getaddrinfo`, which on macOS serialises
+        // through mDNSResponder and has been measured here at seconds under concurrency.
+        let remote_sock_addr: SocketAddr = match remote_addr.parse::<SocketAddr>() {
+            Ok(addr) => addr,
+            Err(_) => tokio::net::lookup_host(remote_addr.as_str())
+                .await
+                .with_context(|| format!("Could not resolve NTP server address: {remote_addr}"))?
+                .next()
+                .with_context(|| {
+                    format!("'{remote_addr}' resolved to no addresses; NTP needs a host and port, e.g. 127.0.0.1:123")
+                })?,
+        };
 
         // Bind to any local port for UDP
-        let socket = UdpSocket::bind("0.0.0.0:0")
+        // Bind the family the target actually resolved to. A v4 socket cannot send to a v6
+        // address, and `localhost` resolves to `::1` before `127.0.0.1` on most systems — so
+        // hardcoding `0.0.0.0:0` would have turned the name-resolution fix above into a
+        // different failure rather than a working client. `syslog`'s UDP arm already does this.
+        let local_bind = if remote_sock_addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
+        let socket = UdpSocket::bind(local_bind)
             .await
             .context("Failed to bind UDP socket")?;
 

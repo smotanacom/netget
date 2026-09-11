@@ -206,6 +206,21 @@ impl NtpServer {
                                         execution_result.protocol_results.len()
                                     ));
 
+                                    // NTP's wire format cannot carry the difference between
+                                    // "the model chose not to answer" and "NetGet could not
+                                    // reach the model", so — as `radius` does — the log has to.
+                                    // An `ignore_request` and a crashed process look identical
+                                    // to the peer.
+                                    if !execution_result
+                                        .protocol_results
+                                        .iter()
+                                        .any(|r| !r.get_all_output().is_empty())
+                                    {
+                                        Log::new(Some(&status_clone)).info(format!(
+                                            "NTP not answering {peer_addr} decision=model_silent"
+                                        ));
+                                    }
+
                                     for protocol_result in execution_result.protocol_results {
                                         if let Some(output_data) =
                                             protocol_result.get_all_output().first()
@@ -227,7 +242,7 @@ impl NtpServer {
                                             log.trace(format!("NTP sent (hex): {}", hex_str));
 
                                             log.info(format!(
-                                                "NTP response to {} ({} bytes)",
+                                                "NTP response to {} ({} bytes) decision=model_answer",
                                                 peer_addr,
                                                 output_data.len()
                                             ));
@@ -245,9 +260,19 @@ impl NtpServer {
                                     // never be a lie in the operator's favour — so send it and
                                     // say so, rather than dropping the request or inventing a
                                     // clock reading.
+                                    //
+                                    // The `decision=` tag is the only place that shows: on the
+                                    // wire this reply is the same shape as one the model
+                                    // produced, so an operator has no other way to tell a
+                                    // served answer from a backend outage.
+                                    let decision = if crate::llm::is_overload_error(&e) {
+                                        "fail_closed_llm_overload"
+                                    } else {
+                                        "fail_closed_llm_error"
+                                    };
                                     Log::new(Some(&status_clone)).warn(format!(
-                                        "NTP LLM error: {} — sending static time response",
-                                        e
+                                        "NTP request from {peer_addr} decision={decision}, \
+                                         sending the static time response instead: {e}"
                                     ));
                                     send_static_time_response(
                                         &protocol,

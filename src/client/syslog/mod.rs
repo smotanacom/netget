@@ -162,10 +162,29 @@ impl SyslogClient {
             "udp" => {
                 info!("Syslog client {} using UDP to {}", client_id, remote_addr);
 
-                // Parse remote address
-                let remote_sock_addr: SocketAddr = remote_addr
-                    .parse()
-                    .context(format!("Invalid address: {}", remote_addr))?;
+                // Resolve the target. `str::parse::<SocketAddr>()` performs **no** name lookup
+                // — it accepts a literal `IP:port` and nothing else — so UDP mode could not
+                // reach a hostname, including the `localhost:514` this protocol uses in all
+                // three of its own `get_startup_examples()` and in its CLAUDE.md. The TCP arm
+                // above was never affected: `TcpStream::connect` resolves through
+                // `ToSocketAddrs`.
+                //
+                // The parse is tried first and only a failure falls through to `lookup_host`,
+                // so a literal address does not pay for a `getaddrinfo` — which on macOS
+                // serialises through mDNSResponder and has been measured here at seconds
+                // under concurrency.
+                let remote_sock_addr: SocketAddr = match remote_addr.parse::<SocketAddr>() {
+                    Ok(addr) => addr,
+                    Err(_) => tokio::net::lookup_host(remote_addr.as_str())
+                        .await
+                        .with_context(|| {
+                            format!("Could not resolve syslog target: {remote_addr}")
+                        })?
+                        .next()
+                        .with_context(|| {
+                            format!("'{remote_addr}' resolved to no addresses; syslog needs a host and port, e.g. 127.0.0.1:514")
+                        })?,
+                };
 
                 // Bind to local port (ephemeral)
                 let local_bind = if remote_sock_addr.is_ipv6() {
