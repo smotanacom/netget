@@ -154,6 +154,12 @@ connections are one request long.
   storage of any kind. The model answers every selector.
 - A selector line longer than 8 KB with no line ending is refused; RFC 1436 sets
   no limit, but an unbounded read is a memory hole anyone with a socket can reach.
+- The wait is capped at 30s (`SELECTOR_READ_TIMEOUT`), which the size cap does
+  nothing about: a peer that connects and stays quiet, or sends a byte a minute,
+  otherwise holds a task, a socket and a connection row indefinitely without
+  having authenticated. Nothing is written on expiry — no selector arrived, so
+  there is no request to answer. Only the read is bounded; once the selector is
+  in, a manual handler may park the event for its own full timeout.
 
 ## Example prompts
 

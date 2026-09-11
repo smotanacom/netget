@@ -18,6 +18,7 @@ use actions::GOPHER_REQUEST_EVENT;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
@@ -25,6 +26,14 @@ use tokio::sync::{mpsc, Mutex};
 /// A selector line longer than this is not a Gopher request. RFC 1436 puts no limit on it,
 /// but an unbounded read is a memory hole reachable by anyone who can open a socket.
 const MAX_REQUEST_BYTES: usize = 8192;
+
+/// How long to wait for the selector line.
+///
+/// The size cap alone does not bound a peer that connects and stays quiet, or one that sends
+/// a byte every minute: both hold a task, a socket and a connection row indefinitely, and
+/// neither has authenticated. Gopher's exchange is one line in and one reply out, so a client
+/// with nothing to say has nothing to wait for.
+const SELECTOR_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct GopherServer;
 
@@ -249,7 +258,22 @@ async fn run_gopher_session<R, W>(
     let mut request = Vec::new();
     let mut chunk = vec![0u8; 1024];
     let line_end = loop {
-        match reader.read(&mut chunk).await {
+        let read = match tokio::time::timeout(SELECTOR_READ_TIMEOUT, reader.read(&mut chunk)).await
+        {
+            Err(_) => {
+                // Nothing to answer: no selector arrived, so there is no request. Returning
+                // closes the socket, which is the only thing the peer was owed.
+                log.info(format!(
+                    "Gopher client {} sent no selector within {}s; closing",
+                    peer_addr,
+                    SELECTOR_READ_TIMEOUT.as_secs()
+                ));
+                return;
+            }
+            Ok(read) => read,
+        };
+
+        match read {
             Ok(0) => {
                 log.info(format!(
                     "Gopher client {} disconnected before sending a selector",

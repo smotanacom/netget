@@ -599,16 +599,21 @@ impl Server for S3Protocol {
                 // Every field is optional: the four operations this answers differ in which
                 // headers they carry, and a model that supplies none still gets a valid 200.
                 // What is NOT optional is emitting the action at all — that is the point.
+                // Range-check before narrowing. This check used to sit *after* `as u16`, and
+                // `65736 as u16` is 200 — a wrapped value passed it and was then
+                // indistinguishable from a model that legitimately asked for 200, so an
+                // explicit refusal arrived at the peer as a successful write.
                 let status_code = action
                     .get("status_code")
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(200) as u16;
+                    .unwrap_or(200);
                 if !(100..=599).contains(&status_code) {
                     anyhow::bail!(
                         "send_s3_write_result status_code {} is outside 100-599",
                         status_code
                     );
                 }
+                let status_code = status_code as u16;
                 let mut data = json!({ "status_code": status_code });
                 for field in ["etag", "location", "content_type", "last_modified"] {
                     if let Some(v) = action.get(field).and_then(|v| v.as_str()) {

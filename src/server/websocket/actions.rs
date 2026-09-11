@@ -258,6 +258,25 @@ impl Default for WebSocketProtocol {
 }
 
 impl WebSocketProtocol {
+    /// The server an action scopes to: the model's `server_id` if it named one, otherwise
+    /// whichever server this executor is bound to (`None` = every WebSocket server).
+    ///
+    /// This used to be `.map(|v| v as u32)`, which wraps in silence — `4294967297` becomes
+    /// `1`, so a push or a close aimed at a server that does not exist is delivered to
+    /// whichever server happens to be number 1 instead of failing.
+    fn scope_server_id(&self, action: &serde_json::Value) -> Result<Option<u32>> {
+        if let Some(raw) = action.get("server_id").and_then(|v| v.as_u64()) {
+            let id = u32::try_from(raw).map_err(|_| {
+                anyhow::anyhow!(
+                    "server_id {raw} is not a NetGet server id (0-4294967295); take it from \
+                     the server list rather than inventing one"
+                )
+            })?;
+            return Ok(Some(id));
+        }
+        Ok(self.server_id.map(|s| s.as_u32()))
+    }
+
     /// Registry-wide instance: no connection bound, so only async actions can execute.
     pub fn new() -> Self {
         Self {
@@ -465,11 +484,7 @@ impl WebSocketProtocol {
                 "Missing 'connection_id': name the connection to write to (see \
                  list_websocket_connections), or \"*\" to broadcast to every open connection",
             )?;
-        let server_id = action
-            .get("server_id")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .or_else(|| self.server_id.map(|s| s.as_u32()));
+        let server_id = self.scope_server_id(&action)?;
 
         let (msg, summary) = if binary {
             let data = action
@@ -519,11 +534,7 @@ impl WebSocketProtocol {
             .get("connection_id")
             .and_then(|v| v.as_str())
             .context("Missing 'connection_id' (or \"*\" to close every open connection)")?;
-        let server_id = action
-            .get("server_id")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .or_else(|| self.server_id.map(|s| s.as_u32()));
+        let server_id = self.scope_server_id(&action)?;
         let (code, reason) = close_fields(&action)?;
 
         let delivered = deliver(target, server_id, WsOut::Close { code, reason });
@@ -541,11 +552,7 @@ impl WebSocketProtocol {
     }
 
     fn execute_list(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let server_id = action
-            .get("server_id")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .or_else(|| self.server_id.map(|s| s.as_u32()));
+        let server_id = self.scope_server_id(&action)?;
         Ok(ActionResult::Custom {
             name: "list_websocket_connections".to_string(),
             data: json!({ "connections": list_connections(server_id) }),

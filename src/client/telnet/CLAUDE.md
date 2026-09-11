@@ -30,7 +30,7 @@ servers, send commands, handle option negotiations, and interpret server respons
          │   - Extract actual text data
          │   - Call LLM with data_received event
          │   - Execute actions (send_command, send_text)
-         │   - State machine (Idle/Processing/Accumulating)
+         │   - Strictly sequential: the LLM call happens inline
          │
          └─► Write Half (Arc<Mutex<WriteHalf>>)
              - Shared for sending data
@@ -66,42 +66,55 @@ SE = 240 (0xF0) - Subnegotiation end
 - WINDOW_SIZE (31)
 - And others (see `get_option_name()`)
 
-### Connection State Machine
+### There is no connection state machine, and there never was one
 
-**States:**
+This section used to describe an `Idle`/`Processing`/`Accumulating` machine with a
+`queued_data` buffer, copied from the TCP *server*. **Nothing could reach any of it.**
+The read loop is one sequential task: it reads, handles the data inline — LLM call
+included — and only then comes back to read again. So the state was always `Idle` at
+the point it was examined, `queued_data` was never appended to, and the `Processing`
+and `Accumulating` arms were unreachable code. The line clearing `queued_data` after
+every turn read as "data arriving mid-call is dropped", when in fact no data can
+arrive mid-call.
 
-1. **Idle** - No LLM processing happening
-2. **Processing** - LLM is being called, new data queued
-3. **Accumulating** - LLM still processing, accumulating more data
+The server-side machine exists because a server has two LLM entry points and can
+genuinely be re-entered. Copying its shape here bought nothing and described a
+concurrency this client does not have. The struct now holds the model's memory and
+nothing else.
 
-**Transitions:**
+(The root `CLAUDE.md` records the same shape one level up: `state/machine.rs` defines
+a generic `StateMachine<S>` that nothing uses, and every protocol hand-rolls a copy.)
 
-- Idle → Processing: Data received, call LLM
-- Processing → Accumulating: More data arrives during LLM call
-- Accumulating → Accumulating: More data while LLM processing
-- Processing/Accumulating → Idle: LLM returns, process queue
+**Backpressure still works**, because it is TCP's: while an LLM call is in flight this
+task is not reading, so the kernel receive buffer fills and the server is slowed. That
+is what the queue was pretending to do.
 
 ### LLM Control
 
-**Async Actions** (user-triggered):
+**Actions** — `send_command` (newline appended), `send_text` (exact bytes, no
+newline), `wait_for_more` (say nothing, read again), `disconnect`.
 
-- `send_command` - Send command with newline appended (`cmd\r\n`)
-- `send_text` - Send raw text without newline
-- `disconnect` - Close connection
+All four are declared in **both** `get_async_actions` and `get_sync_actions`, and are
+attached to both events. That is not redundancy for its own sake: a client has one LLM
+entry point, so the async/sync split cannot express a narrowing and
+`client_llm_action_set` unions them anyway — but
+`events::handler::action_catalog_for_pattern` builds the `event_handlers` validation
+catalog from the **sync** list plus the matching event's own actions, and reads the
+async list not at all. `disconnect` was async-only, so a static handler naming it was
+rejected at startup as an unknown action.
 
-**Sync Actions** (in response to received data):
+**Events** — `telnet_connected` (`remote_addr`) and `telnet_data_received` (`data`).
 
-- `send_command` - Send command as response
-- `send_text` - Send text as response
-- `wait_for_more` - Don't respond yet, accumulate data
-
-**Events:**
-
-- `telnet_connected` - Fired when connection established
-- `telnet_data_received` - Fired when text data received
-    - `data` field: UTF-8 text (Telnet commands stripped)
-    - `raw_hex` field: Raw bytes including IAC commands
-- `telnet_option_negotiated` - Fired when option negotiation occurs (informational)
+`get_event_types()` returns the two `LazyLock<EventType>` statics that `mod.rs`
+actually emits. It used to build three `EventType`s inline instead: two duplicating the
+statics' ids but with no parameters and `{"type": "placeholder"}` as the example
+action, and a third — `telnet_option_negotiated` — that **nothing in `src/` ever
+raised**. A routing rule on it could never match, and the model was told to expect
+something that does not exist. It is gone rather than emitted: option negotiation is
+answered here in Rust, deliberately, and the model has no say in it, so an event per
+option would be noise with nothing to decide. `event_emit_sites_test` misses a case
+like that precisely because the `EventType` was built inline rather than as a named
+static it can find.
 
 ### Data Encoding
 
@@ -109,10 +122,15 @@ SE = 240 (0xF0) - Subnegotiation end
 
 ```json
 {
-  "data": "login: ",
-  "raw_hex": "ff fb 01 ff fb 03 6c 6f 67 69 6e 3a 20"
+  "data": "login: "
 }
 ```
+
+`raw_hex` — the whole read, hex-encoded, up to 16 KB of hex per turn — used to sit
+alongside it. The repo's action/event rules forbid exactly that ("never put raw bytes
+or base64 in action parameters or event data"): models cannot reliably parse hex, the
+negotiation it exposed is answered in Rust rather than by the model, and it doubled the
+prompt for nothing.
 
 **Sent Actions:**
 

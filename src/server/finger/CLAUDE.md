@@ -118,10 +118,19 @@ are printed under their own heading where an extra line is not a forgery.
 unbounded one is a memory sink for anything that connects and never sends a
 newline. Over the cap the connection gets `finger: query too long` and closes.
 
-There is **no idle timeout**: a peer that connects and sends nothing holds its
-task until it disconnects or the server stops. `stop_server` reaches it — every
-connection task is registered with `register_server_task`, not just the accept
-loop, because aborting a task does not abort tasks it spawned.
+`QUERY_READ_TIMEOUT` (30s) caps the **wait**, which the size cap does nothing
+about: a peer that connects and stays quiet, or sends a byte a minute, otherwise
+holds a task, a socket and a connection row indefinitely without having
+authenticated. The timeout bounds the wait for more bytes rather than the whole
+line, so a client on a slow link keeps its connection while it is still sending.
+Nothing is written on expiry — no query arrived, so there is no request to
+answer; the socket simply closes.
+
+Only the *read* is bounded. Once the query has arrived, a manual handler may park
+the event for as long as its own timeout allows. `stop_server` reaches a parked
+connection anyway — every connection task is registered with
+`register_server_task`, not just the accept loop, because aborting a task does
+not abort tasks it spawned.
 
 ### Dashboard injection (peer handle)
 

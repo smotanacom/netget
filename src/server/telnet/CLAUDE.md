@@ -13,12 +13,32 @@ terminal emulation, no filesystem behind it.
 
 ## What this is not
 
-**No IAC option negotiation.** RFC 854's `IAC WILL/WONT/DO/DONT` sequences are not parsed and
-not answered — they arrive as ordinary bytes inside the first `telnet_message_received`
-message. A real `telnet(1)` client opens by sending several negotiation sequences, so the first
-message a handler sees will contain 0xFF-prefixed junk and the client will never get the echo
-and line-mode settings it asked for. **Test with `nc`, not `telnet`.** The previous version of
-this document claimed the `telnet` CLI "works"; that is only true in the sense that bytes flow.
+**IAC sequences are stripped, never answered.** RFC 854's `IAC WILL/WONT/DO/DONT`, and
+subnegotiations (`IAC SB … IAC SE`), are recognised only well enough to be removed from the
+data stream. The handler sees the text the user typed and nothing else; the client gets no
+reply to its offers and therefore stays in its default line mode, which is the mode this
+server can serve. A real `telnet(1)` client works in that mode; `nc` works too.
+
+**This used to be worse than "not negotiated", and the difference is worth knowing.** The read
+loop was `BufReader::read_line`, which validates UTF-8 across the whole line and returns
+`InvalidData` when it fails. A real client opens with negotiation, whose bytes are not valid
+UTF-8, so the first line the user typed arrived behind that junk, failed to decode, and the
+loop treated the error as a reason to close — the connection died on the first line rather
+than delivering the junk. `actions.rs` told the model those bytes "arrive as part of the first
+message"; they never did. `tests/server/telnet/line_framing_test.rs` sends a real preamble and
+asserts the handler received the typed line alone.
+
+Stripping runs on the byte stream **before** lines are split out, and that ordering is load
+bearing: an option byte can itself be `0x0A` (`IAC DO NAOCRD` is `FF FD 0A`), so a reader that
+cut at newlines first would split a sequence in half. It also means a sequence straddling two
+TCP reads is handled, because the machine's state survives between them.
+
+The machine cannot be driven into unbounded state: its entire memory is one `IacState` plus a
+buffer capped at `MAX_LINE_BYTES` (8 KiB), and a subnegotiation that never sends `IAC SE`
+discards bytes as they arrive rather than accumulating them. **Lines are capped**, too — a
+peer that streams bytes with no newline among them is answered `[netget] line too long` and
+hung up on, where `read_line` previously grew its `String` for as long as the peer kept
+sending. Nothing authenticates before that loop.
 
 Also absent: character-at-a-time mode, server-side line editing, terminal type / window size
 (`TTYPE`, `NAWS`), ANSI handling (colour codes are just bytes you emit), TLS or any encryption,
@@ -45,7 +65,8 @@ edit to `Cargo.toml`, which this module does not own.
    executor the handlers use. The handle is removed on the close path.
 4. If started with `send_first: true`, raise `telnet_connection_opened` and write the result —
    this is the only way to greet before the client types.
-5. `read_line` in a loop; per line, raise `telnet_message_received`, write the result.
+5. `TelnetLineReader::next_line` in a loop; per line, raise `telnet_message_received`, write
+   the result. An oversize line is refused and closes the connection rather than raising it.
 6. `close_connection` sets a flag that breaks the read loop and shuts the socket down.
 7. Mark the connection closed in `ServerInstance`.
 
@@ -74,7 +95,10 @@ queueing. (Earlier revisions of this file described a state machine that does no
 - Responses were round-tripped through `String::from_utf8_lossy` before being written, which
   silently replaced any non-UTF-8 byte with U+FFFD. Bytes are now written verbatim.
 - `read_line` errors (non-UTF-8 input) were swallowed by `while let Ok(..)` and looked like a
-  clean disconnect; they are now logged.
+  clean disconnect; they were then logged, and no longer happen at all — see the IAC note
+  above, which is what was producing them.
+- `read_line` buffered without limit, so an unauthenticated peer sending bytes with no newline
+  among them made the server allocate for every one of them. Lines are now capped at 8 KiB.
 
 ## LLM Integration
 
@@ -117,14 +141,29 @@ the handler's own memory.
 
 ## Testing
 
-**There is no E2E test under `tests/server/telnet/`** (the directory does not exist).
-`tests/client_handle_test.rs` covers the dashboard flow end to end without a model: a telnet
-server and a telnet client both on the `*` → manual rule, the human's answer to the client's
-parked `telnet_connected` arriving as `telnet_message_received` on the server, the connection
-surviving the idle sweep while that question waits, and the server's answer reaching the client.
-Verify anything else by hand with a raw client, which avoids the IAC problem:
+`tests/server/telnet/` holds three suites, all declared in its own `mod.rs` and all running.
+(This section used to say the directory did not exist; it did, and `tests/server/mod.rs` had
+declared it all along.)
+
+| File | Covers |
+|---|---|
+| `test.rs` | echo, prompt, multiple lines on one connection, concurrent connections |
+| `llm_failure_test.rs` | the notice written when the backend fails, and that it carries no error text |
+| `line_framing_test.rs` | a real `telnet(1)` negotiation preamble leaving the handler exactly the typed line, and an 8 KiB run with no newline being refused |
+
+`line_framing_test.rs` asserts the *content* the handler received (`[hello]`), not merely that
+a reply arrived — a static reply would have proved only that the connection survived.
+
+`tests/client_handle_test.rs` additionally covers the dashboard flow end to end without a
+model: a telnet server and a telnet client both on the `*` → manual rule, the human's answer to
+the client's parked `telnet_connected` arriving as `telnet_message_received` on the server, the
+connection surviving the idle sweep while that question waits, and the server's answer reaching
+the client.
+
+By hand, either client works:
 
 ```
+telnet localhost 2323     # negotiation is stripped; line mode
 nc localhost 2323
 help
 exit

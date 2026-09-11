@@ -11,11 +11,81 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::LazyLock;
 
+/// Send a line, with the newline appended for you.
+fn send_command_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "send_command".to_string(),
+        description: "Send a text command to the Telnet server (a newline is appended)".to_string(),
+        parameters: vec![Parameter {
+            name: "command".to_string(),
+            type_hint: "string".to_string(),
+            description: "The command text to send (newline will be appended)".to_string(),
+            required: true,
+        }],
+        example: json!({
+            "type": "send_command",
+            "command": "ls -la"
+        }),
+        log_template: None,
+    }
+}
+
+/// Send exact bytes, for a prompt that does not want a line ending.
+fn send_text_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "send_text".to_string(),
+        description: "Send raw text to the Telnet server, exactly as given and with no newline \
+                      added. Use it where the server is waiting mid-line."
+            .to_string(),
+        parameters: vec![Parameter {
+            name: "text".to_string(),
+            type_hint: "string".to_string(),
+            description: "The text to send".to_string(),
+            required: true,
+        }],
+        example: json!({
+            "type": "send_text",
+            "text": "yes"
+        }),
+        log_template: None,
+    }
+}
+
+/// Say nothing and read again.
+fn wait_for_more_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "wait_for_more".to_string(),
+        description: "Send nothing and wait for the server's next write. Use it when what \
+                      arrived is only part of a prompt or a banner."
+            .to_string(),
+        parameters: vec![],
+        example: json!({
+            "type": "wait_for_more"
+        }),
+        log_template: None,
+    }
+}
+
+/// Hang up.
+fn disconnect_action() -> ActionDefinition {
+    ActionDefinition {
+        name: "disconnect".to_string(),
+        description: "Disconnect from the Telnet server".to_string(),
+        parameters: vec![],
+        example: json!({
+            "type": "disconnect"
+        }),
+        log_template: None,
+    }
+}
+
 /// Telnet client connected event
 pub static TELNET_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "telnet_connected",
-        "Telnet client successfully connected to server",
+        "Telnet client successfully connected to server. Nothing has arrived yet - many \
+         servers send a banner or a login prompt unprompted, so wait_for_more is often the \
+         right first answer.",
         json!({
             "type": "wait_for_more"
         }),
@@ -26,28 +96,44 @@ pub static TELNET_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(||
         description: "Remote server address".to_string(),
         required: true,
     }])
+    .with_actions(vec![
+        send_command_action(),
+        send_text_action(),
+        wait_for_more_action(),
+        disconnect_action(),
+    ])
 });
 
 /// Telnet client data received event
 pub static TELNET_CLIENT_DATA_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "telnet_data_received",
-        "Data received from Telnet server",
-        json!({"type": "placeholder", "event_id": "telnet_data_received"}),
+        "Data received from Telnet server, with option negotiation already stripped and \
+         answered. Reply with send_command or send_text, or wait_for_more if this looks like \
+         part of a prompt you have not finished reading.",
+        // Rendered verbatim into the documentation the model reads, so it has to be an action
+        // the executor accepts. This was `{"type": "placeholder"}`.
+        json!({
+            "type": "send_command",
+            "command": "whoami"
+        }),
     )
-    .with_parameters(vec![
-        Parameter {
-            name: "data".to_string(),
-            type_hint: "string".to_string(),
-            description: "The text data received (Telnet commands stripped)".to_string(),
-            required: true,
-        },
-        Parameter {
-            name: "raw_hex".to_string(),
-            type_hint: "string".to_string(),
-            description: "Raw data including Telnet commands (as hex)".to_string(),
-            required: false,
-        },
+    // `raw_hex` used to be here too — the whole read, hex-encoded, up to 16 KB of hex per
+    // turn. The repo's action/event rules forbid it ("never put raw bytes or base64 in action
+    // parameters or event data"): models cannot reliably parse hex, the negotiation it
+    // exposed is answered in Rust rather than by the model, and it doubled the prompt for
+    // nothing.
+    .with_parameters(vec![Parameter {
+        name: "data".to_string(),
+        type_hint: "string".to_string(),
+        description: "The text the server sent, with Telnet IAC sequences removed".to_string(),
+        required: true,
+    }])
+    .with_actions(vec![
+        send_command_action(),
+        send_text_action(),
+        wait_for_more_action(),
+        disconnect_action(),
     ])
 });
 
@@ -64,110 +150,48 @@ impl TelnetClientProtocol {
 impl Protocol for TelnetClientProtocol {
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         vec![
-            ActionDefinition {
-                name: "send_command".to_string(),
-                description: "Send a text command to the Telnet server".to_string(),
-                parameters: vec![Parameter {
-                    name: "command".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "The command text to send (newline will be appended)".to_string(),
-                    required: true,
-                }],
-                example: json!({
-                    "type": "send_command",
-                    "command": "ls -la"
-                }),
-                log_template: None,
-            },
-            ActionDefinition {
-                name: "send_text".to_string(),
-                description: "Send raw text to the Telnet server (no newline added)".to_string(),
-                parameters: vec![Parameter {
-                    name: "text".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "The text to send".to_string(),
-                    required: true,
-                }],
-                example: json!({
-                    "type": "send_text",
-                    "text": "yes"
-                }),
-                log_template: None,
-            },
-            ActionDefinition {
-                name: "disconnect".to_string(),
-                description: "Disconnect from the Telnet server".to_string(),
-                parameters: vec![],
-                example: json!({
-                    "type": "disconnect"
-                }),
-                log_template: None,
-            },
+            send_command_action(),
+            send_text_action(),
+            wait_for_more_action(),
+            disconnect_action(),
         ]
     }
+    /// The same four.
+    ///
+    /// A client has one LLM entry point, so the async/sync split cannot express a narrowing
+    /// and `client_llm_action_set` unions them anyway — but
+    /// `events::handler::action_catalog_for_pattern` builds the `event_handlers` validation
+    /// catalog from the **sync** list plus the matching event's own actions, and reads the
+    /// async list not at all. `disconnect` was async-only, so a static handler naming it was
+    /// rejected as an unknown action.
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![
-            ActionDefinition {
-                name: "send_command".to_string(),
-                description: "Send command in response to server output".to_string(),
-                parameters: vec![Parameter {
-                    name: "command".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "The command text to send".to_string(),
-                    required: true,
-                }],
-                example: json!({
-                    "type": "send_command",
-                    "command": "whoami"
-                }),
-                log_template: None,
-            },
-            ActionDefinition {
-                name: "send_text".to_string(),
-                description: "Send raw text in response to server output".to_string(),
-                parameters: vec![Parameter {
-                    name: "text".to_string(),
-                    type_hint: "string".to_string(),
-                    description: "The text to send".to_string(),
-                    required: true,
-                }],
-                example: json!({
-                    "type": "send_text",
-                    "text": "password123"
-                }),
-                log_template: None,
-            },
-            ActionDefinition {
-                name: "wait_for_more".to_string(),
-                description: "Wait for more data before responding".to_string(),
-                parameters: vec![],
-                example: json!({
-                    "type": "wait_for_more"
-                }),
-                log_template: None,
-            },
+            send_command_action(),
+            send_text_action(),
+            wait_for_more_action(),
+            disconnect_action(),
         ]
     }
     fn protocol_name(&self) -> &'static str {
         "Telnet"
     }
+    /// The statics above, which are the ones `mod.rs` emits.
+    ///
+    /// This used to build three `EventType`s inline: two duplicating the statics' ids but
+    /// with no parameters and `{"type": "placeholder"}` as the example action — so the model
+    /// was shown `placeholder` as the way to answer, and `remote_addr`/`data` were documented
+    /// nowhere it could read — plus a third, `telnet_option_negotiated`, that **nothing in
+    /// `src/` ever raised**. An `event_handlers` rule on it could never match and the model
+    /// was told to expect something that does not exist. It is gone rather than emitted:
+    /// option negotiation is answered here in Rust, deliberately, and the model has no say in
+    /// it, so an event per option would be noise with nothing to decide.
+    ///
+    /// `event_emit_sites_test` misses a case like that precisely because the `EventType` is
+    /// built inline instead of being a named static it can find.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "telnet_connected",
-                "Triggered when Telnet client connects to server",
-                json!({"type": "placeholder", "event_id": "telnet_connected"}),
-            ),
-            EventType::new(
-                "telnet_data_received",
-                "Triggered when Telnet client receives data from server",
-                json!({"type": "placeholder", "event_id": "telnet_data_received"}),
-            ),
-            EventType::new(
-                "telnet_option_negotiated",
-                "Triggered when Telnet option negotiation occurs",
-                json!({"type": "placeholder", "event_id": "telnet_option_negotiated"}),
-            ),
+            TELNET_CLIENT_CONNECTED_EVENT.clone(),
+            TELNET_CLIENT_DATA_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {

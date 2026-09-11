@@ -185,16 +185,17 @@ not exact formatting.
 
 **Reason**: LLM output is variable; strict prompt validation would cause false failures.
 
-### 3. No Telnet Protocol Testing
+### 3. Telnet Protocol Testing Covers Stripping, Not Negotiation
 
-Tests don't validate Telnet-specific features:
+`line_framing_test.rs` sends the preamble a real `telnet(1)` client opens with — `IAC DO
+TERMINAL-TYPE`, `IAC WILL NAWS`, `IAC DO NAOCRD` (whose option byte is `0x0A`, so it doubles
+as the newline-splitting trap) and a subnegotiation containing an embedded `0x0A` — and
+asserts the handler was given the typed line **alone**, quoted back in brackets. It also
+asserts an 8 KiB run with no newline is refused rather than buffered.
 
-- IAC escape sequences
-- Option negotiation (WILL/WONT/DO/DONT)
-- Special character handling
-
-**Reason**: Current implementation is simplified Telnet (text-only, no protocol negotiation). Tests match implementation
-reality.
+What is still untested, because the server does not do it: answering `WILL/WONT/DO/DONT`,
+terminal type (`TTYPE`), window size (`NAWS`), echo control. The server strips those sequences
+and never replies, so a real client stays in its default line mode.
 
 ### 4. Concurrent Test Variability
 

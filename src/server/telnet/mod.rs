@@ -33,6 +33,178 @@ fn preview(text: &str, max: usize) -> String {
     format!("{}...", &text[..end])
 }
 
+/// A telnet line longer than this is not a line anyone typed.
+///
+/// `BufReader::read_line` grows its `String` until a newline arrives, so before this cap
+/// existed an unauthenticated peer could hold the connection open and stream gigabytes with
+/// no `\n` among them, and the server buffered every byte. Nothing authenticates before this
+/// loop, and telnet is the protocol an operator is most likely to point at a real device.
+#[cfg(feature = "telnet")]
+const MAX_LINE_BYTES: usize = 8192;
+
+#[cfg(feature = "telnet")]
+mod iac {
+    pub const IAC: u8 = 255;
+    pub const SE: u8 = 240;
+    pub const SB: u8 = 250;
+    pub const WILL: u8 = 251;
+    pub const DONT: u8 = 254;
+}
+
+/// Where the IAC state machine is between reads.
+///
+/// The whole machine is this one enum plus a buffer capped at [`MAX_LINE_BYTES`], which is
+/// what makes "can option negotiation be driven into unbounded state?" answerable: it cannot.
+/// A subnegotiation that never sends `IAC SE` discards bytes as they arrive rather than
+/// accumulating them, and no arm can panic.
+#[cfg(feature = "telnet")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IacState {
+    /// Ordinary data.
+    Data,
+    /// `IAC` seen; the next byte is the command.
+    Command,
+    /// `IAC WILL/WONT/DO/DONT` seen; the next byte is the option, and is consumed.
+    Option,
+    /// Inside `IAC SB …`; everything is consumed until `IAC SE`.
+    Subnegotiation,
+    /// `IAC` inside a subnegotiation: `SE` ends it, `IAC` is an escaped 0xFF.
+    SubnegotiationIac,
+}
+
+/// What one attempt to read a line produced.
+#[cfg(feature = "telnet")]
+enum LineRead {
+    /// A line with its terminator stripped, and the wire bytes it consumed.
+    Line(Vec<u8>, usize),
+    /// The peer hung up with nothing pending.
+    Eof,
+    /// [`MAX_LINE_BYTES`] of data arrived with no newline in it.
+    TooLong,
+    /// The socket errored.
+    Failed(std::io::Error),
+}
+
+/// Reads `\n`-terminated lines with IAC sequences removed and a hard size cap.
+///
+/// Two defects this replaced, both reachable from any peer:
+///
+/// * **Unbounded buffering.** See [`MAX_LINE_BYTES`].
+/// * **A real `telnet(1)` client was dropped on its first line.** `read_line` validates UTF-8
+///   across the whole line and returns `InvalidData` when that fails. A real client opens by
+///   sending `IAC DO/WILL …` negotiation, whose bytes are not valid UTF-8, so the first line
+///   the user typed arrived with that junk in front of it, failed to decode, and the read loop
+///   treated the error as a reason to close. `actions.rs` told the model those bytes "arrive
+///   as part of the first message", which was never what happened — the connection died
+///   instead. Sequences are now removed from the stream and what is left is decoded lossily,
+///   so the client survives and the model sees what was typed.
+///
+/// Stripping has to happen on the byte stream *before* lines are split out, not on a line
+/// already cut at a newline: an option byte can itself be `0x0A` (`IAC DO NAOCRD` is
+/// `FF FD 0A`), and a sequence may straddle two reads.
+///
+/// Negotiation is still **not answered**: options are recognised only well enough to be
+/// skipped, so a real client gets no reply to its offers and stays in its default line mode,
+/// which is the mode this server can serve.
+#[cfg(feature = "telnet")]
+struct TelnetLineReader<R> {
+    reader: R,
+    /// Data bytes received and not yet returned as a line.
+    pending: Vec<u8>,
+    chunk: Vec<u8>,
+    state: IacState,
+}
+
+#[cfg(feature = "telnet")]
+impl<R: tokio::io::AsyncRead + Unpin> TelnetLineReader<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            pending: Vec::new(),
+            chunk: vec![0u8; 4096],
+            state: IacState::Data,
+        }
+    }
+
+    /// Feed raw bytes through the IAC machine, appending only data bytes to `pending`.
+    fn absorb(&mut self, raw: &[u8]) {
+        for &byte in raw {
+            self.state = match self.state {
+                IacState::Data => {
+                    if byte == iac::IAC {
+                        IacState::Command
+                    } else {
+                        self.pending.push(byte);
+                        IacState::Data
+                    }
+                }
+                IacState::Command => match byte {
+                    // `IAC IAC` is a literal 0xFF in the data stream.
+                    iac::IAC => {
+                        self.pending.push(iac::IAC);
+                        IacState::Data
+                    }
+                    iac::SB => IacState::Subnegotiation,
+                    iac::WILL..=iac::DONT => IacState::Option,
+                    // Every other command (NOP, DM, BRK, AYT, GA …) is two bytes in total.
+                    _ => IacState::Data,
+                },
+                IacState::Option => IacState::Data,
+                IacState::Subnegotiation => {
+                    if byte == iac::IAC {
+                        IacState::SubnegotiationIac
+                    } else {
+                        IacState::Subnegotiation
+                    }
+                }
+                IacState::SubnegotiationIac => match byte {
+                    iac::SE => IacState::Data,
+                    // Anything else, including an escaped 0xFF, is still payload we discard.
+                    _ => IacState::Subnegotiation,
+                },
+            };
+        }
+    }
+
+    async fn next_line(&mut self) -> LineRead {
+        use tokio::io::AsyncReadExt;
+        loop {
+            if let Some(idx) = self.pending.iter().position(|b| *b == b'\n') {
+                let mut line: Vec<u8> = self.pending.drain(..=idx).collect();
+                let consumed = line.len();
+                line.pop();
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                return LineRead::Line(line, consumed);
+            }
+            if self.pending.len() > MAX_LINE_BYTES {
+                return LineRead::TooLong;
+            }
+
+            let n = match self.reader.read(&mut self.chunk).await {
+                Ok(0) => {
+                    if self.pending.is_empty() {
+                        return LineRead::Eof;
+                    }
+                    // A final line with no terminator: answer it rather than discarding what
+                    // the peer said on its way out.
+                    let mut line = std::mem::take(&mut self.pending);
+                    let consumed = line.len();
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                    return LineRead::Line(line, consumed);
+                }
+                Ok(n) => n,
+                Err(e) => return LineRead::Failed(e),
+            };
+            let raw = self.chunk[..n].to_vec();
+            self.absorb(&raw);
+        }
+    }
+}
+
 /// Telnet server that forwards messages to LLM
 pub struct TelnetServer;
 
@@ -181,19 +353,36 @@ impl TelnetServer {
                                 }
                             }
 
-                            // Line-based reading. Note: Telnet option negotiation (IAC) is not
-                            // implemented, so negotiation bytes are delivered as ordinary data.
-                            use tokio::io::{AsyncBufReadExt, BufReader};
-                            let mut reader = BufReader::new(read_half);
-                            let mut line = String::new();
+                            // Bounded, IAC-stripping line reading. Option negotiation is still
+                            // not *answered* — sequences are recognised only well enough to be
+                            // removed, so a real telnet client survives instead of being
+                            // dropped when its negotiation fails to decode as UTF-8.
+                            let mut reader = TelnetLineReader::new(read_half);
                             let mut close_requested = false;
 
                             loop {
-                                let n = match reader.read_line(&mut line).await {
-                                    Ok(n) => n,
-                                    Err(e) => {
-                                        // read_line fails on non-UTF-8 input; log it instead of
-                                        // treating it as a clean disconnect.
+                                let (line_bytes, n) = match reader.next_line().await {
+                                    LineRead::Line(bytes, n) => (bytes, n),
+                                    LineRead::Eof => break,
+                                    LineRead::TooLong => {
+                                        // No error frame exists in telnet, so say it in words
+                                        // on their own line and hang up. A category, never an
+                                        // error string: see `telnet_failure_notice`.
+                                        log.warn(format!(
+                                            "Telnet connection {} sent more than {} bytes with \
+                                             no newline; closing",
+                                            connection_id, MAX_LINE_BYTES
+                                        ));
+                                        use tokio::io::AsyncWriteExt;
+                                        let mut write = write_half_arc.lock().await;
+                                        let _ = write
+                                            .write_all(b"\r\n[netget] line too long\r\n")
+                                            .await;
+                                        let _ = write.flush().await;
+                                        let _ = write.shutdown().await;
+                                        break;
+                                    }
+                                    LineRead::Failed(e) => {
                                         log.debug(format!(
                                             "Telnet read error on connection {}: {}",
                                             connection_id, e
@@ -201,9 +390,10 @@ impl TelnetServer {
                                         break;
                                     }
                                 };
-                                if n == 0 {
-                                    break;
-                                }
+                                // Decoded lossily: after IAC stripping whatever is left is
+                                // what the peer typed, and a stray non-UTF-8 byte must not
+                                // cost them the connection.
+                                let line = String::from_utf8_lossy(&line_bytes).into_owned();
 
                                 // Counters and last_activity: the rail shows ↓/↑ per peer,
                                 // and until this was added every telnet peer read 0/0.
@@ -333,7 +523,6 @@ impl TelnetServer {
                                         let _ = write.flush().await;
                                     }
                                 }
-                                line.clear();
 
                                 if close_requested {
                                     log.info(format!(

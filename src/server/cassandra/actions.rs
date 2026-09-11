@@ -350,10 +350,22 @@ impl CassandraProtocol {
     }
 
     fn execute_cassandra_error(&self, action: serde_json::Value) -> Result<ActionResult> {
+        // Range-check before narrowing. `as u32` wraps, and 0x1_0000_1000 becomes 0x1000 —
+        // the driver is told the cluster was Unavailable when the model said something else
+        // entirely. The wire field is a 4-byte int, so that is the honest bound.
         let error_code = action
             .get("error_code")
             .and_then(|v| v.as_u64())
-            .unwrap_or(0x0000) as u32;
+            .unwrap_or(0x0000);
+        if error_code > u32::MAX as u64 {
+            return Err(anyhow::anyhow!(
+                "error_code {error_code} does not fit the 4-byte code a Cassandra ERROR frame \
+                 carries. Native protocol v4 §9: 0x0000 server error, 0x000A protocol error, \
+                 0x0100 bad credentials, 0x1000 unavailable, 0x1001 overloaded, 0x2000 syntax \
+                 error, 0x2100 unauthorized, 0x2200 invalid, 0x2400 already exists."
+            ));
+        }
+        let error_code = error_code as u32;
 
         let message = action
             .get("message")

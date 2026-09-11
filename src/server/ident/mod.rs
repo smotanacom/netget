@@ -114,10 +114,8 @@ impl IdentServer {
                         let status_clone = status_tx.clone();
                         let protocol_clone = protocol.clone();
 
-                        // Per-connection tasks are not registered individually — the repo
-                        // has no per-connection handle store — but the accept loop below is,
-                        // which is what `stop_server` needs to release the socket.
-                        tokio::spawn(async move {
+                        let registrar = app_state.clone();
+                        let conn_handle = tokio::spawn(async move {
                             handle_ident_connection(
                                 socket,
                                 peer_addr,
@@ -130,6 +128,17 @@ impl IdentServer {
                             )
                             .await
                         });
+
+                        // Register every task we spawn, not just the accept loop. Aborting a
+                        // task does not abort tasks it spawned, so an unregistered connection
+                        // task survives `stop_server` with its socket — and an ident query
+                        // parked on a manual handler can sit there for its full timeout.
+                        // `register_server_task` prunes finished handles on every call, and
+                        // an ident connection is one exchange long, so nothing accumulates.
+                        //
+                        // (A comment here claimed the repo has no per-connection handle
+                        // store. It does, and `finger` and `gopher` next door both use it.)
+                        registrar.register_server_task(server_id, conn_handle).await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("IDENT accept error: {}", e));

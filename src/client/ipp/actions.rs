@@ -377,11 +377,21 @@ impl Client for IppClientProtocol {
                 })
             }
             "get_job_attributes" => {
+                // Range-check before narrowing. `as i32` wraps, so `4294967297` becomes `1`
+                // and the client asks the printer about a completely different job — one it
+                // may well have, so the answer looks like a real answer. RFC 8011 §5.3.2
+                // types job-id as integer(1:MAX), which is exactly what this can carry.
                 let job_id = action
                     .get("job_id")
                     .and_then(|v| v.as_i64())
-                    .context("Missing or invalid 'job_id' field")?
-                    as i32;
+                    .context("Missing or invalid 'job_id' field")?;
+                if !(1..=i32::MAX as i64).contains(&job_id) {
+                    return Err(anyhow::anyhow!(
+                        "job_id {job_id} is not an IPP job-id (1-2147483647, RFC 8011 §5.3.2). \
+                         Use the job-id the printer returned from print_job."
+                    ));
+                }
+                let job_id = job_id as i32;
 
                 Ok(ClientActionResult::Custom {
                     name: "ipp_get_job_attributes".to_string(),

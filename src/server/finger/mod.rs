@@ -22,6 +22,7 @@ use actions::{FingerQuery, FINGER_QUERY_EVENT, MAX_QUERY_BYTES};
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
@@ -34,6 +35,16 @@ const QUERY_TOO_LONG: &[u8] = b"finger: query too long\r\n";
 
 /// The model (or a handler) answered without producing anything for the wire.
 const NO_INFORMATION: &[u8] = b"finger: no information available\r\n";
+
+/// How long to wait for the query line.
+///
+/// [`MAX_QUERY_BYTES`] caps what a peer can make the server *hold*; it does nothing about a
+/// peer that connects and stays quiet, or sends a byte a minute. Either way a task, a socket
+/// and a connection row are held indefinitely by something that has not authenticated — and
+/// RFC 1288 is one line in, one answer out, so a client with nothing to say has nothing to
+/// wait for. Only the read is bounded: once the query has arrived, a manual handler may park
+/// the event for as long as its own timeout allows.
+const QUERY_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct FingerServer;
 
@@ -244,6 +255,8 @@ enum QueryRead {
     Eof,
     /// More than [`MAX_QUERY_BYTES`] arrived with no terminator.
     TooLong,
+    /// Nothing arrived within [`QUERY_READ_TIMEOUT`].
+    TimedOut,
     /// The socket errored.
     Failed(std::io::Error),
 }
@@ -253,6 +266,9 @@ enum QueryRead {
 /// Lenient about the terminator: a bare LF is accepted, and so is EOF after a partial line —
 /// RFC 1288 requires CRLF and every real client sends it, but a hand-typed `nc` session or a
 /// script using `printf` without `\r` is not worth refusing.
+///
+/// The timeout bounds the wait for *more bytes*, not the whole line, so a client on a slow
+/// link keeps its connection for as long as it is still sending.
 async fn read_query_line<R>(reader: &mut R) -> QueryRead
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -261,7 +277,12 @@ where
     let mut chunk = [0u8; 256];
 
     loop {
-        match reader.read(&mut chunk).await {
+        let read = match tokio::time::timeout(QUERY_READ_TIMEOUT, reader.read(&mut chunk)).await {
+            Err(_) => return QueryRead::TimedOut,
+            Ok(read) => read,
+        };
+
+        match read {
             Ok(0) => {
                 return if accumulated.is_empty() {
                     QueryRead::Eof
@@ -331,6 +352,16 @@ async fn run_finger_session<R, W>(
                 connection_id,
             )
             .await;
+            return;
+        }
+        QueryRead::TimedOut => {
+            // Nothing to answer: no query arrived, so there is no request. Returning closes
+            // the socket, which is all the peer was owed.
+            log.info(format!(
+                "FINGER client {} sent no query within {}s; closing",
+                peer_addr,
+                QUERY_READ_TIMEOUT.as_secs()
+            ));
             return;
         }
         QueryRead::Failed(e) => {

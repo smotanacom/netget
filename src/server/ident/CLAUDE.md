@@ -59,6 +59,22 @@ nothing else the client could match on.
 **3. Whitespace around the comma is tolerated.** `   113   ,   49152   ` parses. The grammar
 allows it and real queries carry it; rejecting it would be a gratuitous `INVALID-PORT`.
 
+### Bounds and task registration
+
+The query read is capped both ways: `MAX_QUERY_BYTES` (1024, RFC 1413 §5's own limit) and
+`QUERY_READ_TIMEOUT` (30s). An oversize line is *returned* rather than dropped, so the parser
+rejects it and the client still gets `INVALID-PORT`; a timeout returns nothing, because a peer
+that never sent a query is not waiting for a reply. Only the read is bounded — once the query
+has arrived, a manual handler may park the event for its own full timeout.
+
+**Both** the accept loop and each per-connection task are registered with
+`register_server_task`. Aborting a task does not abort tasks it spawned, so before the
+connection task was registered it survived `stop_server` holding its socket — and an ident
+query parked on a manual handler could sit there for minutes. A comment in `mod.rs` used to
+justify the omission by saying the repo had no per-connection handle store; it does, and
+`finger` and `gopher` next door both use it. `register_server_task` prunes finished handles on
+every call and an ident connection is one exchange long, so nothing accumulates.
+
 ### Everything the model supplies is sanitised
 
 The reply is a single CRLF-terminated line with `:`-separated fields. A `userid` containing

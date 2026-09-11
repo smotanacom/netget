@@ -1,139 +1,159 @@
-//! E2E tests for WHOIS client
+//! E2E tests for the WHOIS client, against NetGet's own WHOIS server on loopback.
 //!
-//! These tests verify WHOIS client functionality by connecting to real WHOIS servers
-//! and querying well-known domains.
-//! Test strategy: Query public WHOIS servers, < 5 LLM calls total.
+//! **These three tests used to query `whois.iana.org` and `whois.verisign-grs.com`.** They
+//! were `#[ignore]`d for it, correctly — the repo's testing rules are "bind to localhost only;
+//! never contact external endpoints", and a test with no `.with_mock()` also needs a real
+//! Ollama. So they ran nowhere, asserted nothing, and still sat in the tree looking like
+//! coverage of the client's model-driven path, which had none.
+//!
+//! They are now one test that runs, following the shape of
+//! `tests/client/finger/e2e_test.rs::test_finger_client_round_trip_against_netget_server`:
+//! a NetGet WHOIS server and a NetGet WHOIS client, both on mocked models, on loopback. The
+//! mock's response generator runs *inside* this test, so what it captures is the model's
+//! actual view of the event — which is the only way to assert the fields the client puts on
+//! `whois_response_received`.
+//!
+//! LLM calls: 4 (two startups, one server-side query, one client-side response).
 
 #[cfg(all(test, feature = "whois"))]
 mod whois_client_tests {
     use crate::helpers::*;
-    use std::time::Duration;
+    use std::sync::{Arc, Mutex};
 
-    /// Test WHOIS client query to IANA root server
-    /// LLM calls: 2 (client connection + response processing)
+    /// The client must send the query, read the reply to EOF, and hand the model an event
+    /// naming both the record and the query that produced it.
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real whois.iana.org and requires --use-ollama.
-              // Under default strict-mock CI mode the LLM call 500s immediately and this
-              // assertion never passes. Follows the precedent set by tests/client/npm.
-    async fn test_whois_query_example_com() -> E2EResult<()> {
-        // Connect to IANA WHOIS server and query example.com
-        let client_config = NetGetConfig::new(
-            "Connect to whois.iana.org:43 via WHOIS. Query 'example.com' and show the registrar information."
-        );
+    async fn test_whois_client_round_trip_against_netget_server() -> E2EResult<()> {
+        let server_config = NetGetConfig::new("Listen on port {AVAILABLE_PORT} via whois")
+            .with_log_level("info")
+            .with_mock(|mock| {
+                mock.on_instruction_containing("Listen on port")
+                    .and_instruction_containing("whois")
+                    .respond_with_actions(serde_json::json!([
+                        {
+                            "type": "open_server",
+                            "port": 0,
+                            "base_stack": "whois",
+                            "instruction": "Answer example.com with a record, then close"
+                        }
+                    ]))
+                    .expect_calls(1)
+                    .and()
+                    .on_event("whois_query")
+                    .and_event_data_contains("query", "example.com")
+                    .respond_with_actions(serde_json::json!([
+                        {
+                            "type": "send_whois_record",
+                            "domain": "example.com",
+                            "registrar": "Round Trip Registrar",
+                            "registrant": "Round Trip Org",
+                            "name_servers": ["ns1.example.com", "ns2.example.com"]
+                        },
+                        // RFC 3912: the client reads to EOF, so the server has to close.
+                        {"type": "close_connection"}
+                    ]))
+                    .expect_calls(1)
+                    .and()
+            });
 
-        let mut client = start_netget_client(client_config).await?;
+        let server = start_netget_server(server_config).await?;
+        let target = format!("127.0.0.1:{}", server.port);
 
-        // Give client time to connect and receive response
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // The event the client hands the model, captured in-process.
+        let observed: Arc<Mutex<Vec<serde_json::Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_mock = observed.clone();
 
-        // Verify client output shows connection
-        client.wait_for_any(&["connected"], 30).await;
-        assert!(
-            client.output_contains("connected").await,
-            "Client should show connection message. Output: {:?}",
-            client.get_output().await
-        );
+        let target_for_mock = target.clone();
+        let client_config = NetGetConfig::new(format!(
+            "Connect to {target} via whois and ask about example.com"
+        ))
+        .with_log_level("info")
+        .with_mock(move |mock| {
+            mock.on_instruction_containing("Connect to")
+                .and_instruction_containing("whois")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_client",
+                        "protocol": "whois",
+                        "remote_addr": target_for_mock,
+                        "instruction": "Ask about example.com and report the registrar",
+                        "event_handlers": [{
+                            "event_pattern": "whois_connected",
+                            "handler": {
+                                "type": "static",
+                                "actions": [{
+                                    "type": "query_whois",
+                                    "query": "example.com"
+                                }]
+                            }
+                        }]
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+                .on_event("whois_response_received")
+                .respond_with_actions_from_event(move |event| {
+                    observed_for_mock
+                        .lock()
+                        .expect("observed lock")
+                        .push(event.clone());
+                    serde_json::json!([{"type": "disconnect"}])
+                })
+                .expect_calls(1)
+                .and()
+        });
 
-        // Verify response received (WHOIS server sends "refer:" or domain info)
-        let output = client.get_output().await;
-        assert!(
-            output.iter().any(|l| l.contains("refer"))
-                || output.iter().any(|l| l.contains("domain"))
-                || output.iter().any(|l| l.contains("whois")),
-            "Client should receive WHOIS response. Output: {:?}",
-            output
-        );
+        let client = start_netget_client(client_config).await?;
 
-        println!("✅ WHOIS client queried example.com successfully");
-
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
+        server.wait_for_mocks(30).await;
         client.wait_for_mocks(30).await;
+        server.verify_mocks().await?;
         client.verify_mocks().await?;
-        client.stop().await?;
 
-        Ok(())
-    }
-
-    /// Test WHOIS client query to .com registry
-    /// LLM calls: 2 (client connection + response processing)
-    #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real whois.verisign-grs.com and requires
-              // --use-ollama. See test_whois_query_example_com for details.
-    async fn test_whois_query_verisign() -> E2EResult<()> {
-        // Connect to Verisign WHOIS server (authoritative for .com/.net)
-        let client_config = NetGetConfig::new(
-            "Connect to whois.verisign-grs.com:43 via WHOIS. Query 'example.com' and extract the registrar name."
+        let events = observed.lock().expect("observed lock").clone();
+        assert_eq!(
+            events.len(),
+            1,
+            "exactly one whois_response_received should have reached the model: {events:?}"
         );
+        let event = &events[0];
 
-        let mut client = start_netget_client(client_config).await?;
-
-        // Give client time to connect and receive response
-        tokio::time::sleep(Duration::from_secs(3)).await;
-
-        // Verify protocol is WHOIS
-        assert_eq!(client.protocol, "WHOIS", "Client should be WHOIS protocol");
-
-        // Verify response contains domain information
-        let output = client.get_output().await;
+        let response = event["response"].as_str().unwrap_or_default();
         assert!(
-            output.iter().any(|l| l.contains("Domain Name"))
-                || output.iter().any(|l| l.contains("Registrar"))
-                || output.iter().any(|l| l.contains("EXAMPLE.COM")),
-            "Client should receive domain information. Output: {:?}",
-            output
+            response.contains("Domain Name: example.com"),
+            "the server's record should reach the model verbatim: {response:?}"
         );
-
-        println!("✅ WHOIS client queried Verisign successfully");
-
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(30).await;
-        client.verify_mocks().await?;
-        client.stop().await?;
-
-        Ok(())
-    }
-
-    /// Test WHOIS client handles disconnection
-    /// LLM calls: 2 (client connection + response)
-    #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real whois.iana.org and requires --use-ollama.
-              // See test_whois_query_example_com for details.
-    async fn test_whois_auto_disconnect() -> E2EResult<()> {
-        // WHOIS servers close the connection after sending response
-        let client_config =
-            NetGetConfig::new("Connect to whois.iana.org:43 via WHOIS and query 'com'.");
-
-        let mut client = start_netget_client(client_config).await?;
-
-        // Give client time to complete query cycle
-        tokio::time::sleep(Duration::from_secs(3)).await;
-
-        // Verify client shows disconnection (WHOIS is one-shot)
-        let output = client.get_output().await;
         assert!(
-            output.iter().any(|l| l.contains("disconnected"))
-                || output.iter().any(|l| l.contains("closed"))
-                || output.iter().any(|l| l.contains("complete")),
-            "Client should show disconnection after response. Output: {:?}",
-            output
+            response.contains("Registrar: Round Trip Registrar"),
+            "the registrar line should survive into the event: {response:?}"
+        );
+        assert!(
+            response.contains("Name Server: ns1.example.com")
+                && response.contains("Name Server: ns2.example.com"),
+            "the client read only part of the reply before EOF: {response:?}"
+        );
+        assert_eq!(
+            event["query"].as_str(),
+            Some("example.com"),
+            "the event should name the query that produced it - the client tracks the query \
+             it actually put on the wire, whether the model or an injected action sent it: \
+             {event:?}"
         );
 
-        println!("✅ WHOIS client handled auto-disconnection");
+        // A record this size is nowhere near the 1 MB cap, so `truncated` must be false. It
+        // is on the event at all because a model that read half a record and believed it had
+        // the whole one would answer confidently and wrongly - and how much a WHOIS server
+        // sends is the server's choice, not ours.
+        assert_eq!(
+            event["truncated"].as_bool(),
+            Some(false),
+            "a short record must not be reported as truncated: {event:?}"
+        );
 
-        // Cleanup
-        // Wait for the exchange the mocks describe, rather than trusting a fixed
-        // sleep to have covered it. Under load the last response routinely lands
-        // after the sleep expires, and the test reports it as never having happened.
-        client.wait_for_mocks(30).await;
-        client.verify_mocks().await?;
+        println!("✅ WHOIS client round trip against NetGet's own WHOIS server");
+
         client.stop().await?;
-
+        server.stop().await?;
         Ok(())
     }
 }
