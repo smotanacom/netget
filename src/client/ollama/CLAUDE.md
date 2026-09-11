@@ -9,7 +9,45 @@ responses. This is useful for testing, automation, and LLM-driven interactions w
 
 ### HTTP Client
 
-Uses `reqwest` for HTTP requests to Ollama API endpoints.
+`reqwest`, through `crate::llm::ollama_client::client_for_endpoint_with_timeout`, built **once
+per endpoint** on `spawn_blocking` and cached. Every `perform_*` used to call
+`reqwest::Client::new()` for each request, which cost two things on every call:
+
+- `Client::builder().build()` sets up the rustls stack and loads the platform root store. On
+  macOS that reads the keychain through Security.framework, synchronously and serialised
+  across processes; on the async runtime it parks a tokio worker.
+- `reqwest` hands the URL host to its resolver unconditionally and `GaiResolver` does not
+  special-case a dotted quad, so `http://127.0.0.1:11434` — which is where this client points
+  more often than anywhere else — performed a real `getaddrinfo("127.0.0.1")`. Measured at
+  8.25 s with ~100 processes asking at once. `client_for_endpoint_with_timeout` applies a
+  resolver override when, and only when, the host parses as an `IpAddr`; a hostname is left
+  to the resolver, because `/etc/hosts` or split-horizon DNS may legitimately redirect it.
+
+The cache is keyed by endpoint, because the resolver override is per-host.
+
+### Bounds
+
+- **300 s per request.** `reqwest::Client::new()` has no timeout at all, and the
+  injected-command loop awaits each request in turn — so one endpoint that accepted the
+  connection and never answered wedged the dashboard's `[ send ]` for this client for the life
+  of the process. Generous rather than tight, because generation legitimately takes minutes.
+- **8 MiB per response.** `response.json()` buffers the whole body with no limit, and
+  `/api/generate` with `stream: true` is an arbitrarily long NDJSON stream by design — so the
+  endpoint decided how much memory NetGet spent. `json_bounded` refuses as soon as the cap is
+  passed.
+
+### The endpoint
+
+`remote_addr`, and nothing else. This protocol declares **no startup parameters**, so there is
+no `base_url` to pass and no vendor default to fall back to: a scheme-qualified address is
+used as given, and a bare `host:port` has `http://` prepended (reqwest needs an absolute URL,
+and a bare `127.0.0.1:11434` failed every request with "relative URL without a base").
+
+That matters more here than it looks. This client is the one that speaks to whatever NetGet
+itself uses as a model backend, so "lost the target and fell back to a default" is not a
+cosmetic bug — it is the DynamoDB defect in `CLAUDE.md`, aimed at the operator's own Ollama.
+`tests/client/ollama/endpoint_targeting_test.rs` pins it against a stub on an ephemeral
+loopback port that no default could name.
 
 ### API Endpoints
 
@@ -18,13 +56,28 @@ The client supports:
 - `GET /api/tags` - List models
 - `POST /api/generate` - Text generation
 - `POST /api/chat` - Chat completion
-- `POST /api/embeddings` - Embeddings (future)
+- `POST /api/embeddings` - Embeddings (`generate_embeddings`; not "future" — it has an
+  executor, an `apply_action` arm and a follow-up arm)
 
 ### Library Choices
 
 - **HTTP Client**: `reqwest` (already in dependencies)
 - **JSON**: `serde_json` for request/response parsing
 - **No Ollama-specific Library**: Direct HTTP calls keep it simple
+
+## Testing honesty
+
+The five mocked tests in `tests/client/ollama/e2e_test.rs` each passed `base_url` in
+`startup_params`. This protocol declares no startup parameters, so `StartupParams::new`
+rejected the whole `open_client` with "Undeclared startup parameter 'base_url'" and **no
+client was ever created** — in any of them. They passed because their only assertion was that
+the output contained the word "Ollama", which that error message itself contains.
+
+They now assert the client's own readiness line, which is printed only after `connect()` has
+stored the endpoint and registered the command channel, and they point at dead loopback ports
+rather than `localhost:11434`. Pointing a test for *this* protocol at 11434 aims it at
+whatever real Ollama the machine is running. The `#[ignore]`d `*_real` variants still use
+11434 deliberately and call `require_ollama()` first.
 
 ## Connection Model
 

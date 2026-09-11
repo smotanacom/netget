@@ -259,10 +259,30 @@ impl Protocol for OllamaClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("reqwest HTTP client with Ollama API")
-            .llm_control("LLM decides when to send requests and what to do with responses")
-            .e2e_testing("Ollama API server or mock server")
-            .notes("Client for Ollama HTTP API endpoints")
+            .implementation(
+                "reqwest against Ollama's HTTP API. One client per endpoint, built once on \
+                 spawn_blocking through client_for_endpoint_with_timeout, so the platform \
+                 root store is not loaded on the async runtime and a literal-IP host skips \
+                 the system resolver.",
+            )
+            .llm_control(
+                "LLM decides when to send requests and what to do with responses; every \
+                 verb is also injectable from the dashboard through the command channel.",
+            )
+            .e2e_testing(
+                "tests/client/ollama/. endpoint_targeting_test proves all four verbs reach \
+                 the endpoint the operator named - an ephemeral loopback port no default \
+                 could produce - and that an endless response body is refused rather than \
+                 buffered. command_channel_test drives the injected-action path against a \
+                 loopback HTTP stub. e2e_test starts the real binary against dead loopback \
+                 ports. No real Ollama is contacted by any non-ignored test; the peer is \
+                 always a stub, so this is not validation against a real Ollama server.",
+            )
+            .notes(
+                "Client for Ollama HTTP API endpoints. Requests are bounded at 300s and \
+                 responses at 8 MiB; the endpoint comes from remote_addr only and this \
+                 protocol declares no startup parameters.",
+            )
             .build()
     }
 

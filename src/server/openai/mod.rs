@@ -150,6 +150,41 @@ impl OpenAiServer {
     }
 }
 
+/// How much of a request body is read before the request is refused with 413.
+///
+/// Same value and same reasoning as `http_common::handler::MAX_REQUEST_BODY_BYTES`, declared
+/// here rather than imported because the `openai` feature does not pull in `http`, so that
+/// module is configured out of an `--features openai` build.
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// An OpenAI-shaped `{"error": {...}}` body at the given status.
+///
+/// `message` is always a fixed string or a `WireFailure` category — never an error's own
+/// text. A peer gets the category; the log gets the error.
+fn error_response(
+    status: StatusCode,
+    message: &str,
+    error_type: &str,
+    code: &str,
+) -> Response<Full<Bytes>> {
+    let body = json!({
+        "error": { "message": message, "type": error_type, "code": code }
+    })
+    .to_string();
+
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .body(Full::new(Bytes::from(body.clone())))
+        .unwrap_or_else(|_| {
+            // Never fall back to `Response::new`, which is a 200: that would turn a refusal
+            // into a success.
+            let mut response = Response::new(Full::new(Bytes::from(body)));
+            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            response
+        })
+}
+
 /// Handle a single OpenAI API request with LLM actions
 async fn handle_openai_request(
     req: Request<Incoming>,
@@ -166,24 +201,30 @@ async fn handle_openai_request(
 
     Log::new(Some(&status_tx)).debug(format!("OpenAI API request: {} {}", method, path));
 
-    // Read request body
-    let body_bytes = match req.collect().await {
+    // Read the request body, bounded. `Incoming` has no default limit, so `req.collect()`
+    // buffered whatever the peer chose to send — and this endpoint is unauthenticated, so a
+    // single `POST /v1/chat/completions` with an endless chunked body was enough to walk the
+    // process out of memory. `Limited` errors as soon as the cap is passed, so an oversized
+    // upload costs at most the cap rather than all of it.
+    //
+    // The cap is small because the body is handed to the model as prompt text: a model
+    // cannot read 8 MiB, so every byte past that is cost without benefit. 413 rather than an
+    // empty body, because a truncated body looks complete to the model and it would answer a
+    // request it never saw.
+    let limited = http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES);
+    let body_bytes = match limited.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            Log::new(Some(&status_tx)).error(format!("Failed to read request body: {}", e));
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .header("Content-Type", "application/json")
-                .body(Full::new(Bytes::from(
-                    json!({
-                        "error": {
-                            "message": "Failed to read request body",
-                            "type": "invalid_request_error"
-                        }
-                    })
-                    .to_string(),
-                )))
-                .unwrap());
+            Log::new(Some(&status_tx)).warn(format!(
+                "OpenAI {} {} decision=fail_closed_body_too_large: {} (limit {} bytes)",
+                method, path, e, MAX_REQUEST_BODY_BYTES
+            ));
+            return Ok(error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "request body too large",
+                "invalid_request_error",
+                "request_too_large",
+            ));
         }
     };
 
@@ -227,24 +268,33 @@ async fn handle_openai_request(
             )
         }
         Err(e) => {
-            // Non-fatal: a wire fallback (JSON error response) is still delivered and the
-            // HTTP connection continues.
-            Log::new(Some(&status_tx)).warn(format!("OpenAI LLM call failed: {}", e));
+            // The peer gets a category and the log gets the error. `Overloaded` is
+            // transient, so it is a 503 and a client backs off; anything else is a 500 so it
+            // is not retried forever. The connection itself continues.
+            let failure = crate::utils::WireFailure::classify(&e);
+            let status = if failure.is_overloaded() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Log::new(Some(&status_tx)).warn(format!(
+                "OpenAI {} {} decision=fail_closed_llm_error category={}: {}",
+                method,
+                path,
+                if failure.is_overloaded() {
+                    "overloaded"
+                } else {
+                    "unavailable"
+                },
+                e
+            ));
 
-            Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header("Content-Type", "application/json")
-                .body(Full::new(Bytes::from(
-                    json!({
-                        "error": {
-                            "message": crate::utils::WireFailure::classify(&e).text(),
-                            "type": "server_error",
-                            "code": "internal_error"
-                        }
-                    })
-                    .to_string(),
-                )))
-                .unwrap())
+            Ok(error_response(
+                status,
+                failure.text(),
+                "server_error",
+                "internal_error",
+            ))
         }
     }
 }
@@ -260,8 +310,26 @@ fn build_openai_response(
     for result in &protocol_results {
         if let ActionResult::Custom { name, data } = result {
             if name == "openai_response" {
-                // Extract response data
-                let status = data.get("status").and_then(|v| v.as_u64()).unwrap_or(200) as u16;
+                // `as u16` wrapped. The executors bound `status` to 100-599 before it gets
+                // here, so nothing can reach this with 65736 today — but the narrowing sat
+                // one careless executor away from turning a refusal into a 200, which is the
+                // defect this protocol's `status_range_test` exists for. Read it without
+                // narrowing, and treat anything unusable as a server error rather than as
+                // the 200 the old default supplied.
+                let status = match data.get("status").and_then(|v| v.as_u64()) {
+                    None => 200,
+                    Some(code) => u16::try_from(code)
+                        .ok()
+                        .filter(|code| (100..=599).contains(code))
+                        .unwrap_or_else(|| {
+                            error!(
+                                "OpenAI executor produced status {} which is not an HTTP \
+                                 status; answering 500",
+                                code
+                            );
+                            500
+                        }),
+                };
 
                 let headers = data
                     .get("headers")
@@ -274,41 +342,53 @@ fn build_openai_response(
                 Log::new(Some(status_tx))
                     .debug(format!("OpenAI {} {} -> {}", method, path, status));
 
-                // Build response
+                // Every header name and value here came out of an action's data, so this
+                // must not end in `.unwrap()`: a name with a space in it, or a value
+                // carrying CR/LF (a response-splitting attempt), makes the builder return
+                // Err and would panic the connection task. Drop the individual bad header
+                // and keep the response.
                 let mut response_builder = Response::builder().status(status);
-
-                // Add headers
                 for header in headers {
                     if let (Some(name_val), Some(value_val)) = (
                         header.get(0).and_then(|v| v.as_str()),
                         header.get(1).and_then(|v| v.as_str()),
                     ) {
-                        response_builder = response_builder.header(name_val, value_val);
+                        let candidate = Response::builder().header(name_val, value_val);
+                        if candidate.headers_ref().is_some() {
+                            response_builder = response_builder.header(name_val, value_val);
+                        } else {
+                            error!("OpenAI dropping unusable response header {:?}", name_val);
+                        }
                     }
                 }
 
                 return Ok(response_builder
                     .body(Full::new(Bytes::from(body.to_string())))
-                    .unwrap());
+                    .unwrap_or_else(|e| {
+                        error!("OpenAI could not build the response ({e}); answering 500");
+                        error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            crate::utils::WireFailure::Unavailable.text(),
+                            "server_error",
+                            "internal_error",
+                        )
+                    }));
             }
         }
     }
 
-    // No openai_response action found - return error
-    Log::new(Some(status_tx)).error("No openai_response action in LLM results");
+    // The model was consulted and produced no response action. "LLM did not return valid
+    // response" named netget's own internals on a stranger's terminal; the peer gets a
+    // category and the reason stays in the log.
+    Log::new(Some(status_tx)).warn(format!(
+        "OpenAI {} {} decision=fail_closed_no_action: no openai_response action in the result",
+        method, path
+    ));
 
-    Ok(Response::builder()
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(
-            json!({
-                "error": {
-                    "message": "LLM did not return valid response",
-                    "type": "server_error",
-                    "code": "internal_error"
-                }
-            })
-            .to_string(),
-        )))
-        .unwrap())
+    Ok(error_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        crate::utils::WireFailure::Unavailable.text(),
+        "server_error",
+        "internal_error",
+    ))
 }

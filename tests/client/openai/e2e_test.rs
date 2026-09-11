@@ -3,7 +3,10 @@
 //! These tests verify OpenAI client functionality by spawning the actual NetGet binary
 //! and testing client behavior as a black-box using mocked LLM responses.
 //!
-//! **Note**: These tests use mocks by default and do NOT require OpenAI API keys.
+//! **Note**: mocked throughout. No test contacts api.openai.com — every client points at
+//! a dead loopback port and answers its own events with a no-action static rule, so no
+//! key is needed and none could be used. The `api_key` values below are dummies present
+//! only because the protocol declares the parameter required.
 
 #[cfg(all(test, feature = "openai"))]
 mod openai_client_tests {
@@ -26,7 +29,15 @@ mod openai_client_tests {
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "open_client",
-                        "remote_addr": "api.openai.com:443",
+                        "remote_addr": "http://127.0.0.1:1/v1",
+                        // A no-action `*` rule answers every client event without an
+                        // LLM call, so nothing here can produce a chat action - and a
+                        // chat action against `api.openai.com:443`, which this field
+                        // used to hold, would be a real request to real OpenAI signed
+                        // with whatever key the test passed.
+                        "event_handlers": [
+                            {"event_pattern": "*", "handler": {"type": "static", "actions": []}}
+                        ],
                         "protocol": "OpenAI",
                         "instruction": "Send chat completion: 'Say hello in exactly 3 words'",
                         "startup_params": {
@@ -86,7 +97,15 @@ mod openai_client_tests {
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "open_client",
-                        "remote_addr": "api.openai.com:443",
+                        "remote_addr": "http://127.0.0.1:1/v1",
+                        // A no-action `*` rule answers every client event without an
+                        // LLM call, so nothing here can produce a chat action - and a
+                        // chat action against `api.openai.com:443`, which this field
+                        // used to hold, would be a real request to real OpenAI signed
+                        // with whatever key the test passed.
+                        "event_handlers": [
+                            {"event_pattern": "*", "handler": {"type": "static", "actions": []}}
+                        ],
                         "protocol": "OpenAI",
                         "instruction": "Ask: 'What is 2+2?' using gpt-4",
                         "startup_params": {
@@ -138,7 +157,15 @@ mod openai_client_tests {
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "open_client",
-                        "remote_addr": "api.openai.com:443",
+                        "remote_addr": "http://127.0.0.1:1/v1",
+                        // A no-action `*` rule answers every client event without an
+                        // LLM call, so nothing here can produce a chat action - and a
+                        // chat action against `api.openai.com:443`, which this field
+                        // used to hold, would be a real request to real OpenAI signed
+                        // with whatever key the test passed.
+                        "event_handlers": [
+                            {"event_pattern": "*", "handler": {"type": "static", "actions": []}}
+                        ],
                         "protocol": "OpenAI",
                         "instruction": "Generate embeddings for: 'The quick brown fox'",
                         "startup_params": {
@@ -191,7 +218,15 @@ mod openai_client_tests {
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "open_client",
-                        "remote_addr": "api.openai.com:443",
+                        "remote_addr": "http://127.0.0.1:1/v1",
+                        // A no-action `*` rule answers every client event without an
+                        // LLM call, so nothing here can produce a chat action - and a
+                        // chat action against `api.openai.com:443`, which this field
+                        // used to hold, would be a real request to real OpenAI signed
+                        // with whatever key the test passed.
+                        "event_handlers": [
+                            {"event_pattern": "*", "handler": {"type": "static", "actions": []}}
+                        ],
                         "protocol": "OpenAI",
                         "instruction": "Ask: 'Hello'",
                         "startup_params": {

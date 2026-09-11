@@ -121,6 +121,22 @@ Tests use **no scripting** to ensure LLM interprets OpenAPI operations.
 - Request to undefined path returns 404
 - Error response in JSON format
 
+### 6. Body limit (`body_limit_test.rs`)
+
+**Validates**: an oversized body is refused before the model sees it
+
+- A 9 MiB POST is refused with 413 — the route is reachable pre-auth and `Incoming` has no
+  default limit, so `req.into_body().collect()` used to buffer whatever the peer sent
+- An ordinary POST on the same route still returns 201, so the guard is not simply refusing
+  everything
+- The `openapi_request` event is answered by a static rule, so the whole test costs one LLM
+  call and an accidental extra one would show as a mock mismatch
+
+It waits for the port to accept a connection before the large POST. `start_netget_server`
+returns when startup has been *parsed*, not when the socket is bound, and a 9 MiB POST failing
+that way surfaces as a transport error — which reads exactly like the cap not working. That
+was observed intermittently at `--test-threads=100` before the probe was added.
+
 ## Known Issues
 
 ### Spec Generation Variability

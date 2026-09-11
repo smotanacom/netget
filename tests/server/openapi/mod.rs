@@ -11,3 +11,6 @@ pub mod fail_closed_test;
 
 #[cfg(all(test, feature = "openapi"))]
 mod status_range_test;
+
+#[cfg(all(test, feature = "openapi"))]
+mod body_limit_test;

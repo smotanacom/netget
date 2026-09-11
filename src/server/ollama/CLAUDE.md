@@ -166,23 +166,68 @@ refused). It used to reply with a fabricated Modelfile (`FROM {name}`), a hardco
 "this instance serves only llama2" cheerfully described every model a client asked about,
 including ones it had just refused to pull.
 
-**`/api/embeddings` is deliberately still canned**, and that is a judgement rather than an
-oversight. An embedding is a few hundred to a few thousand floats; asking a language model to
-emit them would produce plausible-looking noise at best, and it is the numeric equivalent of
-the raw-bytes-in-actions problem the root `CLAUDE.md` forbids — models cannot reliably produce
-or parse that shape. The sequential floats are an honest stub. If an operator ever needs real
-control here the answer is a script handler, not an action.
+`/api/embeddings` was the last endpoint still answering without asking, and the argument that
+defended it was wrong in one load-bearing detail. The argument: an embedding is a few hundred
+to a few thousand floats, asking a language model to emit them would produce plausible-looking
+noise, and that is the numeric equivalent of the raw-bytes-in-actions rule the root
+`CLAUDE.md` forbids. All true. The conclusion it drew — "if an operator ever needs real
+control here the answer is a script handler, not an action" — was not: **the endpoint raised
+no event, so a script handler could not reach it either.** Neither could a static rule, nor
+the instruction, nor anything else an operator can write. It was not a stub with an escape
+hatch; it was a hardcoded 768-element ramp with no way in at all.
 
-### 3. Static Embeddings
+It now raises **`ollama_embeddings_request`** (`model`, `prompt`) and answers only on
+**`ollama_embeddings_response`**, refusing otherwise — the same shape as `/api/show`. The
+float problem is solved by not asking for floats: the action takes `dimensions` and the
+executor builds the ramp, so what the model decides is *whether* to embed and *how wide*, not
+what the numbers are. `embedding` remains available for a handler that does have a real
+vector. Both are bounded at 4096 elements, because the vector is serialised into the reply and
+the width is model-supplied.
 
-`/api/embeddings` returns mock embeddings (sequential floats). Real embeddings would require:
+A `dimensions`-only answer is still numerically meaningless, and both the action description
+and this paragraph say so. That is a different thing from meaninglessness nobody chose.
 
-- Actual embedding model
-- Or LLM-controlled embedding generation
+### 3. Embeddings are shaped, not computed
+
+`/api/embeddings` returns a deterministic ramp of the width the handler asked for. Producing a
+vector that actually encodes the prompt would need a real embedding model behind NetGet; there
+is none, and nothing here pretends otherwise. What the handler controls is the decision and
+the shape.
 
 ### 4. No Authentication
 
 Real Ollama has no auth, but a production mock server might want API keys for access control.
+Note that this makes every endpoint below reachable pre-auth, which is why the body cap
+matters.
+
+### 5. Request bodies are capped at 8 MiB
+
+`hyper`'s `Incoming` has no default limit, so `req.collect()` buffers whatever the peer sends.
+Every endpoint here is unauthenticated, so a single `POST /api/generate` with an endless
+chunked body was enough to walk the process out of memory. `read_body_limited` uses
+`http_body_util::Limited`, which errors as soon as the cap is passed rather than after
+buffering, and answers 413. The cap is deliberately small: the body is parsed and then
+embedded in an LLM prompt, and a model cannot read 8 MiB.
+
+A distinct 413 rather than an empty body is the point — a truncated body handed to the model
+looks like a complete one, and the model would answer a request it never saw. The constant is
+declared locally rather than imported from `http_common`, because the `ollama` feature does
+not pull in `http` and that module is configured out of an `--features ollama` build.
+
+## A refusal must not arrive as a success
+
+`model_error_response` is the only path that turns `ollama_error_response` into an HTTP reply,
+and it read the model's `status_code` with `StatusCode::from_u16(code as u16)`. `as u16` wraps:
+`65736` narrows to `200`, `from_u16(200)` succeeds, and the refusal reached the client as a
+200 whose body happens to carry an `error` key — which every Ollama client reads as an answered
+request. The function's own doc comment already said a refusal and an outage must stay
+distinguishable; arithmetic was quietly erasing a third distinction, refusal versus success.
+
+The conversion is now checked, the range is 100–599 (not `StatusCode`'s own 100–999 — 600+ is
+syntactically valid and means nothing), and a 2xx is rejected even when written literally,
+because this path only ever builds refusals. Anything unusable falls back to 400 with a WARN
+rather than failing the request: the refusal itself is the part that must survive.
+`tests/server/ollama/refusal_status_test.rs` pins all four cases.
 
 ## Testing Strategy
 

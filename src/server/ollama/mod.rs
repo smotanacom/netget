@@ -17,7 +17,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::ollama_client::OllamaClient;
@@ -206,7 +206,18 @@ async fn handle_ollama_request(
             )
             .await
         }
-        (Method::POST, "/api/embeddings") => handle_embeddings(req, status_tx).await,
+        (Method::POST, "/api/embeddings") => {
+            handle_embeddings(
+                req,
+                connection_id,
+                llm_client,
+                app_state,
+                status_tx,
+                protocol,
+                server_id,
+            )
+            .await
+        }
         (Method::POST, "/api/show") => {
             handle_show(
                 req,
@@ -383,23 +394,14 @@ async fn handle_generate_v2(
     connection_id: ConnectionId,
     llm_client: OllamaClient,
     app_state: Arc<AppState>,
-    _status_tx: mpsc::UnboundedSender<String>,
+    status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<OllamaProtocol>,
     server_id: crate::state::ServerId,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    // Read request body
-    let body_bytes = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            error!("Failed to read request body: {}", e);
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .header("Content-Type", "application/json")
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Failed to read body"}).to_string(),
-                )))
-                .unwrap());
-        }
+    // Read request body, bounded.
+    let body_bytes = match read_body_limited(req, "/api/generate", &status_tx).await {
+        Ok(bytes) => bytes,
+        Err(response) => return Ok(response),
     };
 
     // Parse JSON
@@ -522,22 +524,14 @@ async fn handle_chat_v2(
     connection_id: ConnectionId,
     llm_client: OllamaClient,
     app_state: Arc<AppState>,
-    _status_tx: mpsc::UnboundedSender<String>,
+    status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<OllamaProtocol>,
     server_id: crate::state::ServerId,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    // Read request body
-    let body_bytes = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            error!("Failed to read request body: {}", e);
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Failed to read body"}).to_string(),
-                )))
-                .unwrap());
-        }
+    // Read request body, bounded.
+    let body_bytes = match read_body_limited(req, "/api/chat", &status_tx).await {
+        Ok(bytes) => bytes,
+        Err(response) => return Ok(response),
     };
 
     // Parse JSON
@@ -667,7 +661,7 @@ async fn handle_chat_v2(
 /// The status defaults to 400 rather than 500 because the refusal is a statement about the
 /// request, not about this server; `status_code` lets the model pick the Ollama-accurate one
 /// (404 for an unknown model).
-fn model_error_response(raw_actions: &[serde_json::Value]) -> Option<Response<Full<Bytes>>> {
+pub fn model_error_response(raw_actions: &[serde_json::Value]) -> Option<Response<Full<Bytes>>> {
     let action = raw_actions.iter().find(|action| {
         action.get("type").and_then(|v| v.as_str()) == Some("ollama_error_response")
     })?;
@@ -677,11 +671,32 @@ fn model_error_response(raw_actions: &[serde_json::Value]) -> Option<Response<Fu
         .and_then(|v| v.as_str())
         .unwrap_or("request refused");
 
-    let status = action
-        .get("status_code")
-        .and_then(|v| v.as_u64())
-        .and_then(|code| StatusCode::from_u16(code as u16).ok())
-        .unwrap_or(StatusCode::BAD_REQUEST);
+    // `code as u16` wrapped, and this is the one field carrying the model's refusal:
+    // `status_code: 65736` narrows to `200`, `StatusCode::from_u16(200)` succeeds, and the
+    // refusal below reaches the client as a success whose body happens to contain an
+    // `error` key. A 2xx is refused for the same reason even when it is written literally —
+    // this function only ever builds refusals, so a success status is self-contradictory.
+    // Out of range falls back to the 400 default rather than failing the request outright:
+    // the refusal itself is the part that must survive.
+    let status = match action.get("status_code").and_then(|v| v.as_u64()) {
+        None => StatusCode::BAD_REQUEST,
+        // 100..=599 rather than `StatusCode`'s own 100..=999: the http crate accepts 600-999
+        // as syntactically valid, but no such status exists and a client will not know what
+        // to do with one. Same range the openai and openapi executors enforce.
+        Some(code) => u16::try_from(code)
+            .ok()
+            .filter(|code| (100..=599).contains(code))
+            .and_then(|code| StatusCode::from_u16(code).ok())
+            .filter(|status| !status.is_success())
+            .unwrap_or_else(|| {
+                warn!(
+                    "Ollama ollama_error_response status_code {} is not a refusal status; \
+                     answering 400 (use 4xx/5xx, e.g. 404 for an unknown model)",
+                    code
+                );
+                StatusCode::BAD_REQUEST
+            }),
+    };
 
     let body = json!({ "error": error_message }).to_string();
 
@@ -776,49 +791,120 @@ fn build_streaming_chat_response(model: &str, content: &str) -> Response<Full<By
         .unwrap()
 }
 
-// Keep the simple endpoints unchanged
+/// Answer `/api/embeddings` from the model, or refuse.
+///
+/// This used to return a hardcoded 768-element ramp for every request, with no event and no
+/// `call_llm` anywhere in the path — the last endpoint on this server that answered without
+/// asking. A server told "this instance serves only llama2, refuse anything else" embedded
+/// happily for every model name, and its `status_tx` was the only argument it took, which is
+/// what made the omission easy to miss. Nothing is invented now: no
+/// `ollama_embeddings_response` means the request is refused.
+#[allow(clippy::too_many_arguments)]
 async fn handle_embeddings(
     req: Request<Incoming>,
+    connection_id: ConnectionId,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<OllamaProtocol>,
+    server_id: crate::state::ServerId,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    let body_bytes = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Failed to read body"}).to_string(),
-                )))
-                .unwrap());
-        }
+    let log = Log::new(Some(&status_tx));
+
+    let body_bytes = match read_body_limited(req, "/api/embeddings", &status_tx).await {
+        Ok(bytes) => bytes,
+        Err(response) => return Ok(response),
     };
 
-    let _request_json: Value = match serde_json::from_slice(&body_bytes) {
+    let request_json: Value = match serde_json::from_slice(&body_bytes) {
         Ok(json) => json,
-        Err(_) => {
-            return Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from(
-                    json!({"error": "Invalid JSON"}).to_string(),
-                )))
-                .unwrap());
-        }
+        Err(_) => return Ok(bad_request("Invalid JSON")),
     };
 
-    Log::new(Some(&status_tx)).debug("Embeddings request received");
+    let model = request_json
+        .get("model")
+        .or_else(|| request_json.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let prompt = request_json
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    // Return mock embeddings (768 dimensions)
-    let embedding: Vec<f32> = (0..768).map(|i| (i as f32) / 768.0).collect();
+    let event = Event::new(
+        &actions::OLLAMA_EMBEDDINGS_REQUEST_EVENT,
+        json!({ "model": model, "prompt": prompt }),
+    );
 
-    let response = json!({
-        "embedding": embedding
-    });
+    match call_llm(
+        &llm_client,
+        &app_state,
+        server_id,
+        Some(connection_id),
+        &event,
+        protocol.as_ref(),
+    )
+    .await
+    {
+        Ok(result) => {
+            for msg in result.messages {
+                let _ = status_tx.send(msg);
+            }
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(response.to_string())))
-        .unwrap())
+            // A deliberate refusal first: it must not be collapsed into the no-answer path.
+            if let Some(response) = model_error_response(&result.raw_actions) {
+                log.info(format!(
+                    "Ollama embeddings refused for '{}' (decision=model_reject)",
+                    model
+                ));
+                return Ok(response);
+            }
+
+            use crate::llm::actions::protocol_trait::ActionResult;
+            if let Some(data) = result.protocol_results.iter().find_map(|r| match r {
+                ActionResult::Custom { name, data } if name == "ollama_embeddings_response" => {
+                    Some(data)
+                }
+                _ => None,
+            }) {
+                log.debug(format!("Ollama embeddings answered for '{}'", model));
+                return Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(Full::new(Bytes::from(data.to_string())))
+                    .unwrap());
+            }
+
+            log.warn(format!(
+                "Ollama embeddings refused for '{}' (decision=fail_closed_no_action): the \
+                 handler produced no ollama_embeddings_response",
+                model
+            ));
+            Ok(server_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                crate::utils::WireFailure::Unavailable.text(),
+            ))
+        }
+        Err(e) => {
+            let failure = crate::utils::WireFailure::classify(&e);
+            error!(
+                "Ollama embeddings for '{}' decision=fail_closed_llm_error category={:?}: {:#}",
+                model, failure, e
+            );
+            log.warn(format!(
+                "Ollama embeddings refused for '{}' (decision=fail_closed_llm_error)",
+                model
+            ));
+            let status = if failure.is_overloaded() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Ok(server_error(status, failure.text()))
+        }
+    }
 }
 
 /// Answer `/api/show` from the model, or refuse.
@@ -840,9 +926,9 @@ async fn handle_show(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let log = Log::new(Some(&status_tx));
 
-    let body_bytes = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => return Ok(bad_request("Failed to read body")),
+    let body_bytes = match read_body_limited(req, "/api/show", &status_tx).await {
+        Ok(bytes) => bytes,
+        Err(response) => return Ok(response),
     };
     let request_json: Value = serde_json::from_slice(&body_bytes).unwrap_or(Value::Null);
     let model = request_json
@@ -942,11 +1028,9 @@ async fn handle_admin(
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let log = Log::new(Some(&status_tx));
 
-    let body_bytes = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => {
-            return Ok(bad_request("Failed to read body"));
-        }
+    let body_bytes = match read_body_limited(req, operation, &status_tx).await {
+        Ok(bytes) => bytes,
+        Err(response) => return Ok(response),
     };
 
     // DELETE may legitimately arrive with no body; the others carry JSON. An unparseable body
@@ -1049,6 +1133,46 @@ async fn handle_admin(
                 StatusCode::INTERNAL_SERVER_ERROR
             };
             Ok(server_error(status, failure.text()))
+        }
+    }
+}
+
+/// How much of a request body is read before the request is refused with 413.
+///
+/// Same value and same reasoning as `http_common::handler::MAX_REQUEST_BODY_BYTES`, declared
+/// here rather than imported because the `ollama` feature does not pull in `http`, so that
+/// module is configured out of an `--features ollama` build.
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// Read a request body, refusing anything over [`MAX_REQUEST_BODY_BYTES`] with 413.
+///
+/// `Incoming` has no default limit, so `req.collect()` buffers whatever the peer chooses to
+/// send — and every one of these endpoints is reachable without authentication, so a single
+/// `POST /api/generate` with an endless chunked body was enough to walk the process out of
+/// memory. `Limited` errors as soon as the cap is passed, so an oversized upload costs at
+/// most the cap rather than all of it.
+///
+/// The cap is small because the body is parsed and then embedded in an LLM prompt: a model
+/// cannot read 8 MB of prompt, so every byte past that is cost without benefit. Returning a
+/// distinct 413 rather than an empty body matters — a truncated body handed to the model
+/// looks like a complete one, and the model would answer a request it never saw.
+async fn read_body_limited(
+    req: Request<Incoming>,
+    endpoint: &str,
+    status_tx: &mpsc::UnboundedSender<String>,
+) -> Result<Bytes, Response<Full<Bytes>>> {
+    let limited = http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES);
+    match limited.collect().await {
+        Ok(collected) => Ok(collected.to_bytes()),
+        Err(e) => {
+            Log::new(Some(status_tx)).warn(format!(
+                "Ollama {} decision=fail_closed_body_too_large: {} (limit {} bytes)",
+                endpoint, e, MAX_REQUEST_BODY_BYTES
+            ));
+            Err(server_error(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "request body too large",
+            ))
         }
     }
 }
