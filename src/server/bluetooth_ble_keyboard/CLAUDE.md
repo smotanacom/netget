@@ -58,12 +58,22 @@ Script and static handlers registered against these ids are dispatched by
 Nothing enforces this — the LLM (or a static handler) builds the services with `add_service`. It is what the startup examples in `actions.rs` construct and what the instruction preamble asks for.
 
 - **`00001812-0000-1000-8000-00805f9b34fb`**
-  - `00002a4a-0000-1000-8000-00805f9b34fb` [read] — initial value `01110002`
-  - `00002a4b-0000-1000-8000-00805f9b34fb` [read] — initial value `05010906a101050719e029e71500250175019508810295017508810105067508950815002565050719002965810003c0`
+  - `00002a4a-0000-1000-8000-00805f9b34fb` [read] — initial value `11010002`
+    (HID Information: bcdHID `0x0111` = v1.11 as a little-endian uint16, then bCountryCode
+    `0x00` and Flags `0x02` NormallyConnectable)
+  - `00002a4b-0000-1000-8000-00805f9b34fb` [read] — initial value `05010906a101050719e029e71500250175019508810295017508810195067508150025650507190029658100c0`
+    (the Report Map; `hex::encode(HID_KEYBOARD_REPORT_DESCRIPTOR)`, not a second copy)
   - `00002a4d-0000-1000-8000-00805f9b34fb` [read, notify] — initial value `0000000000000000`
+    (8 bytes: exactly what the report map describes)
   - `00002a4c-0000-1000-8000-00805f9b34fb` [write_without_response]
 
-**HID-over-GATT caveat:** a host only treats a peripheral as an input device after bonding, and `ble-peripheral-rust` 0.2 exposes no pairing or bonding control. The layout above is a correct, readable HID service; whether a given OS accepts it as a real input device is platform dependent and untested here.
+**These bytes are generated, not transcribed.** `get_startup_examples()` hex-encodes
+`HID_KEYBOARD_REPORT_DESCRIPTOR` and sizes the report from
+`HID_KEYBOARD_INPUT_REPORT_LEN`, so the example a model copies cannot drift from the
+descriptor this profile documents. It could before, and had: every one of the four BLE HID
+profiles shipped a startup example whose report map a host would have rejected.
+
+**HID-over-GATT caveat:** a host only treats a peripheral as an input device after bonding, and `ble-peripheral-rust` 0.2 exposes no pairing or bonding control. The report map above is well formed — `report_descriptor_test.rs` walks every item of it — but no host has ever been shown it, so whether a given OS accepts this as a real input device is untested. Do not read "the descriptor parses" as "the device works".
 
 ## UUIDs must be written in full 128-bit form
 
@@ -130,8 +140,31 @@ gets. The refusal is clear, but the message attributes all three causes to "not 
 
 - `device_name` (string, optional) — advertised name, default `NetGet-Keyboard`
 
-Declared in `get_startup_parameters()`. That is not optional: `StartupParams` **panics** on an undeclared key, and the JSON comes from the LLM or an MCP client.
+Declared in `get_startup_parameters()`. That is not optional: an undeclared key is
+**rejected**, and the JSON comes from the LLM or an MCP client. `StartupParams::new` and
+every `get_*` accessor return `Result<_, StartupParamError>`, and `spawn` propagates with
+`?`, so an unknown key produces a clean error naming it and listing the allowed ones and
+leaves no half-registered server behind. (They used to panic, which over MCP killed the
+per-request task before it could reply; that is fixed, and this file said otherwise until
+September 2026.)
 
 ## Testing
 
-There is no test directory for this protocol, and none is declared in `tests/server/mod.rs`. Meaningful coverage needs a real adapter and a BLE central (nRF Connect, `btleplug`), which CI runners do not have. A mocked E2E test would only exercise the base stack's LLM plumbing, which the base's own tests should cover.
+`tests/server/bluetooth_ble_keyboard/` exists and is declared in `tests/server/mod.rs`. It holds
+two things:
+
+- **`report_descriptor_test.rs`** — pure unit tests over the HID report descriptor and the GATT
+  values in `get_startup_examples()`. No adapter, no radio, no `#[ignore]`. It decodes every
+  item of `HID_KEYBOARD_REPORT_DESCRIPTOR` against the USB HID 1.11 item encoding, asserts
+  the descriptor is byte-aligned and describes exactly `HID_KEYBOARD_INPUT_REPORT_LEN` bytes,
+  and asserts the startup examples publish those same bytes rather than a second transcription.
+  This is the only thing in the tree that validates a report map: the base stack carries one as
+  an opaque byte string and never parses it, so before these tests the first parser to see it
+  was a real host on someone else's machine.
+- **`e2e_test.rs`** — starts the server against a mocked model and asserts the
+  `bluetooth_ble_started` round trip. That proves startup and the base's LLM plumbing, and
+  **nothing about HID**.
+
+Neither is evidence for a rating above `Experimental`. Proving a host accepts this as a real
+input device needs an adapter and an independent central (nRF Connect, `btleplug`), and the
+bonding that HID-over-GATT requires is not something `ble-peripheral-rust` 0.2 can drive.
