@@ -70,43 +70,76 @@ const MAX_TRACKER_BODY_BYTES: usize = 1024 * 1024;
 /// waiting on its outcome — for as long as the peer cares to hold it open.
 const TRACKER_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
 /// One `reqwest::Client` per tracker URL, built once and reused.
 ///
-/// Two reasons, both recorded in the root `CLAUDE.md` as costing real debugging time.
-/// Building a client is *blocking* — it loads the platform root store, which on macOS reads
-/// the keychain through Security.framework — so doing it per request parks a tokio worker.
-/// And `reqwest` hands even a dotted quad to `getaddrinfo`, which serialises through
-/// mDNSResponder on macOS and was measured at 8.25s under load;
-/// [`client_for_endpoint_with_timeout`] installs the literal-IP bypass, and it needs the URL
-/// to decide whether to, which is why this is keyed by URL rather than a single global.
-fn tracker_http_client(tracker_url: &str) -> reqwest::Client {
-    use std::collections::HashMap;
-    use std::sync::{LazyLock, Mutex};
+/// Three things here, all of which the root `CLAUDE.md` records as having cost real debugging
+/// time:
+///
+/// * **Build it once.** `reqwest::get` built a fresh client per request.
+/// * **Build it off the runtime.** `Client::builder().build()` sets up the rustls stack and
+///   loads the platform root store, which on macOS reads the keychain through
+///   Security.framework — synchronously, and serialised across processes. On an async worker
+///   that parks the whole thread, so it goes through `spawn_blocking`.
+/// * **Key it by URL.** `reqwest` hands even a dotted quad to `getaddrinfo`, which serialises
+///   through mDNSResponder on macOS and was measured at 8.25s under load.
+///   [`client_for_endpoint_with_timeout`] installs the literal-IP bypass and needs the URL to
+///   decide whether to, so a single global client would not do.
+///
+/// The lock is **never** held across the build. A first version did exactly that — the
+/// blocking keychain read happened inside `or_insert_with` while holding this `Mutex` — which
+/// parked a worker *and* serialised every tracker client in the process behind it. Two
+/// callers racing for the same URL may now both build, and the loser's client is dropped;
+/// that is far cheaper than what it replaces.
+static TRACKER_CLIENTS: LazyLock<Mutex<HashMap<String, reqwest::Client>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-    static CLIENTS: LazyLock<Mutex<HashMap<String, reqwest::Client>>> =
-        LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Lock, look, clone, drop. A poisoned mutex means another thread panicked mid-insert; the map
+/// is still structurally sound and building a fresh client is always correct, so it is taken
+/// rather than propagated.
+fn cached_tracker_client(tracker_url: &str) -> Option<reqwest::Client> {
+    match TRACKER_CLIENTS.lock() {
+        Ok(cache) => cache.get(tracker_url).cloned(),
+        Err(poisoned) => poisoned.into_inner().get(tracker_url).cloned(),
+    }
+}
 
-    let mut cache = match CLIENTS.lock() {
+async fn tracker_http_client(tracker_url: &str) -> reqwest::Client {
+    if let Some(client) = cached_tracker_client(tracker_url) {
+        return client;
+    }
+
+    let url = tracker_url.to_string();
+    let timeout = TRACKER_REQUEST_TIMEOUT;
+    let built = tokio::task::spawn_blocking(move || {
+        crate::llm::ollama_client::client_for_endpoint_with_timeout(&url, timeout)
+    })
+    .await
+    // The closure cannot panic and the task is never aborted, but a default client is a
+    // correct answer rather than a reason to fail the announce.
+    .unwrap_or_else(|_| reqwest::Client::new());
+
+    let mut cache = match TRACKER_CLIENTS.lock() {
         Ok(guard) => guard,
-        // A poisoned mutex here means another thread panicked mid-insert; the map is still
-        // structurally sound and a fresh client is always correct, so do not propagate.
         Err(poisoned) => poisoned.into_inner(),
     };
+    // Whoever inserted first wins, so every later request shares one client.
     cache
         .entry(tracker_url.to_string())
-        .or_insert_with(|| {
-            crate::llm::ollama_client::client_for_endpoint_with_timeout(
-                tracker_url,
-                TRACKER_REQUEST_TIMEOUT,
-            )
-        })
+        .or_insert(built)
         .clone()
 }
 
 /// GET `url` and return at most [`MAX_TRACKER_BODY_BYTES`] of body, refusing anything longer
 /// *while it arrives* rather than after it has all been buffered.
 async fn fetch_tracker_body(tracker_url: &str, url: &str) -> Result<Vec<u8>> {
-    let mut response = tracker_http_client(tracker_url).get(url).send().await?;
+    let mut response = tracker_http_client(tracker_url)
+        .await
+        .get(url)
+        .send()
+        .await?;
 
     // Content-Length is a hint, not a promise — it may be absent, or a lie — so it is used
     // only to refuse early, and the streaming check below is what actually holds.
