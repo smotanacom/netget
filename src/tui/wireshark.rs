@@ -183,6 +183,11 @@ pub fn wire_for(protocol: &str) -> Wire {
         // display filter admits either; without an arm they defaulted to plain TCP.
         "openidconnect" => with_display(tcp("http"), "http || tls"),
         "saml" => with_display(tcp("http"), "http || tls"),
+        // finger and gopher have real dissectors (verified present in `tshark -G protocols`
+        // on this machine). `ident` deliberately has NO entry: this Wireshark build ships no
+        // ident dissector, so naming one would be a lie and plain TCP is the honest answer.
+        "finger" => tcp("finger"),
+        "gopher" => tcp("gopher"),
         "ssdp" => udp("ssdp"),
         "llmnr" => udp("llmnr"),
         "netbios_ns" => udp("nbns"),

@@ -497,7 +497,11 @@ impl WireguardClient {
         event_id: &str,
     ) {
         for action in actions {
-            let described = action.get("type").and_then(|t| t.as_str()).unwrap_or("?").to_string();
+            let described = action
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or("?")
+                .to_string();
             match Self::apply_wireguard_action(client, action, client_id, app_state, status_tx)
                 .await
             {

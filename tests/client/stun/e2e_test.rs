@@ -30,20 +30,22 @@ mod stun_client_tests {
     async fn stun_client_discovers_its_address_from_a_local_server() -> E2EResult<()> {
         // A NetGet STUN server with an EMPTY instruction: its binding responses are purely
         // mechanical, so nothing here depends on a second model answering correctly.
-        let server_config = NetGetConfig::new_no_scripts("listen on port {AVAILABLE_PORT} via stun")
-            .with_mock(|mock| {
-                mock.on_instruction_containing("via stun")
-                    .respond_with_actions(serde_json::json!([
-                        {
-                            "type": "open_server",
-                            "port": 0,
-                            "base_stack": "STUN",
-                            "instruction": ""
-                        }
-                    ]))
-                    .expect_calls(1)
-                    .and()
-            });
+        let server_config = NetGetConfig::new_no_scripts(
+            "listen on port {AVAILABLE_PORT} via stun",
+        )
+        .with_mock(|mock| {
+            mock.on_instruction_containing("via stun")
+                .respond_with_actions(serde_json::json!([
+                    {
+                        "type": "open_server",
+                        "port": 0,
+                        "base_stack": "STUN",
+                        "instruction": ""
+                    }
+                ]))
+                .expect_calls(1)
+                .and()
+        });
 
         let server = start_netget_server(server_config).await?;
         server.wait_for_log("STUN receive loop started", 5).await?;
