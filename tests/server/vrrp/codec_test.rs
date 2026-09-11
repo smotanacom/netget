@@ -729,8 +729,16 @@ fn hmac_sha1_matches_the_rfc_2202_vectors() {
 ///
 /// The construction is derived from reading OpenBSD's `sys/netinet/ip_carp.c`; there is no
 /// CARP RFC and no live `carp` interface has ever accepted a packet from this code. What is
-/// pinned here is that our `carp_hmac` really is HMAC-SHA1 over exactly those bytes, computed
-/// with an independent hash.
+/// pinned here is that our `carp_hmac` really is HMAC-SHA1 over exactly those bytes — the
+/// *input ordering*, which is the only part this repository authors.
+///
+/// **Not** "computed with an independent hash", which is what this comment used to claim.
+/// `reference_hmac_sha1` runs on the same `sha1` crate `codec::hmac_sha1` does, so comparing
+/// the two says nothing whatever about SHA-1; the helper's own doc comment says so and this one
+/// contradicted it. What makes the comparison worth anything is one step earlier:
+/// `hmac_sha1_matches_the_rfc_2202_vectors` puts the published RFC 2202 vectors through **both**
+/// functions, so the specification — not either implementation — is the oracle before either is
+/// used here.
 #[test]
 fn the_carp_hmac_is_hmac_sha1_over_the_openbsd_input() {
     let addresses = [Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(10, 0, 0, 1)];

@@ -7,8 +7,11 @@
 //! and derived from the published layout, not from the implementation.**
 //!
 //! Round-tripping the encoder through the decoder would prove only that one function inverts
-//! the other. The root `CLAUDE.md` names that circular evidence, so it appears here exactly
-//! once, at the end, as a consistency check and not as the argument.
+//! the other. The root `CLAUDE.md` names that circular evidence, so where it appears it is
+//! labelled a consistency check and never the argument — in
+//! `encode_and_decode_agree_but_this_proves_nothing_on_its_own`, and in
+//! `a_newline_in_system_description_is_allowed_because_a_real_banner_has_one`, where the round
+//! trip is the point (the claim being that a multi-line banner survives unchanged).
 //!
 //! Sources for every literal below:
 //!
@@ -680,8 +683,7 @@ fn event_data_carries_no_octets_anywhere() {
 }
 
 /// Consistency check, and **not** the evidence for anything: the literal-byte cases above are.
-/// It is here because an asymmetry between the two directions would be a real bug, and it is
-/// deliberately the last test in the file so nobody mistakes it for the argument.
+/// It is here because an asymmetry between the two directions would be a real bug.
 #[test]
 fn encode_and_decode_agree_but_this_proves_nothing_on_its_own() {
     let original = Lldpdu {

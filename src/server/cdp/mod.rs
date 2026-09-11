@@ -27,8 +27,17 @@
 //! LLM failure a fabricated advertisement would be strictly worse than nothing: it poisons a
 //! neighbour table with a device that does not exist. The wire therefore carries nothing, no
 //! `WireFailure` text is ever interpolated into a frame, and the distinction survives only in the
-//! log, tagged `decision=model_reject` / `model_silent` / `fail_closed_llm_error`, in the same
-//! shape `src/server/radius/` uses.
+//! log, in the same shape `src/server/radius/` uses. The six tokens this file actually emits,
+//! and the whole set — grep them, do not guess, because a token that does not exist is worse
+//! than none:
+//!
+//! `decision=passive_no_policy` · `model_reject` · `model_silent` · `model_invalid_action` ·
+//! `fail_closed_llm_error_overloaded` · `fail_closed_llm_error_unavailable`
+//!
+//! Note the last two: there is no bare `fail_closed_llm_error`. The `WireFailure` category is
+//! folded into the token so that "the backend is saturated, retry" and "the backend is broken"
+//! stay greppable apart, which is the one thing an operator wants from a log line that says
+//! nothing went on the wire.
 
 pub mod actions;
 pub mod codec;

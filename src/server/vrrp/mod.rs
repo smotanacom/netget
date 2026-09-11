@@ -813,8 +813,13 @@ async fn operator_wants_dynamic(state: &AppState, server_id: ServerId, event_id:
 /// Create the raw IP-protocol-112 socket, joined to `224.0.0.18` on `interface_addr`.
 ///
 /// NEVER EXECUTED in this tree: `SOCK_RAW` needs `CAP_NET_RAW` on Linux and root elsewhere,
-/// and nothing here runs privileged. Shaped after `create_ospf_raw_socket`, with a multicast
-/// TTL of 1 because VRRP is strictly link-local (RFC 5798 §5.1.1.3).
+/// and nothing here runs privileged. Shaped after `create_ospf_raw_socket`.
+///
+/// The multicast TTL is **255, not 1** — RFC 5798 §5.1.1.3 requires a VRRP sender to use 255
+/// and a receiver to discard anything else, which is what keeps an advertisement from being
+/// accepted off-link: a router more than one hop away could not have sent it with 255 intact.
+/// A TTL of 1 would be the obvious way to say "link-local" and is precisely wrong here; every
+/// conformant peer would drop the packet. See the call to `set_multicast_ttl_v4` below.
 fn create_vrrp_raw_socket(interface_addr: Ipv4Addr) -> Result<socket2::Socket> {
     use std::os::unix::io::FromRawFd;
 

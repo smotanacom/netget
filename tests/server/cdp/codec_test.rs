@@ -298,6 +298,22 @@ mod tests {
             0x9c61,
             "odd length, last byte 0x80"
         );
+        // The other two readings, so the choice is pinned rather than merely stated. All three
+        // were recomputed by hand from the prose — RFC 1071's own text, Wireshark's
+        // "Compensate off-by-one error" comment, scapy's `_check_len` — and not by running this
+        // codec, which would make the assertion circular.
+        assert_ne!(
+            codec::checksum(&boundary),
+            0x1be1,
+            "0x1be1 is the RFC 1071 answer; CDP is not RFC 1071 even at this boundary"
+        );
+        assert_ne!(
+            codec::checksum(&boundary),
+            0x9b61,
+            "0x9b61 is scapy's answer for this payload. It is the ONLY input on which scapy and \
+             Wireshark disagree, so it is the only place a silent switch to scapy's `last <= \
+             0x80` test would be invisible — which is exactly why it has to be asserted here."
+        );
 
         // An even-length payload is the plain IP checksum, so the two agree.
         let even = [
