@@ -99,7 +99,7 @@ impl Protocol for BluetoothBleFileTransferProtocol {
                 "Base BLE GATT control (add_service, start_advertising, stop_advertising, respond_to_read, respond_to_write, send_notification); the LLM builds the custom file transfer service itself.",
             )
             .e2e_testing(
-                "Requires a real Bluetooth LE adapter and a central such as nRF Connect; no automated coverage",
+                "Two automated suites, neither of which is evidence for a rating above Experimental. tests/server/bluetooth_ble_file_transfer/e2e_test.rs covers the wiring only: open_server reaches this protocol's spawn, the base brings the radio up, and a bluetooth_ble_started event is raised and answered - it builds no service and puts no byte on the wire, and it claims the machine's Bluetooth adapter. gatt_examples_test.rs needs no adapter and checks the startup examples for internal coherence (this profile's UUIDs are custom, so there is no SIG layout to check the bytes against). Proving the profile works still needs a real central (nRF Connect, btleplug) exercising a service this profile built; nothing in the tree does that.",
             )
             .notes(
                 "Thin profile wrapper over the bluetooth-ble base stack. It prepends an instruction describing the custom file transfer service and otherwise reuses the base entirely: the base hardcodes BluetoothBleProtocol when it calls the LLM, so the action vocabulary, the event types and the executor are the base's. This protocol deliberately declares no actions or events of its own - one that did would be documented to the model but never reachable at runtime.",
@@ -136,7 +136,8 @@ impl Protocol for BluetoothBleFileTransferProtocol {
                     "device_name": "NetGet-FileTransfer"
                 }
             }),
-            // Script mode: a read is answered in-process, with no model call.
+            // Script mode: a write is acknowledged in-process, with no model call. Neither
+            // characteristic is readable, so there is no read to answer here.
             json!({
                 "type": "open_server",
                 "port": 0,
@@ -146,16 +147,17 @@ impl Protocol for BluetoothBleFileTransferProtocol {
                 },
                 "event_handlers": [
                     {
-                        "event_pattern": "bluetooth_read_request",
+                        "event_pattern": "bluetooth_write_request",
                         "handler": {
                             "type": "script",
                             "language": "python",
-                            "code": "actions = [{'type': 'respond_to_read', 'value': '00'}]"
+                            "code": "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'actions':[{'type':'respond_to_write','status':'success'}]}))"
                         }
                     }
                 ]
             }),
-            // Static mode: fixed GATT layout and a fixed read response, with no model call.
+            // Static mode: a fixed GATT layout and a fixed write acknowledgement, with no model
+            // call. Nothing here is readable, so there is no read to answer.
             json!({
                 "type": "open_server",
                 "port": 0,
@@ -206,14 +208,25 @@ impl Protocol for BluetoothBleFileTransferProtocol {
                             ]
                         }
                     },
+                    // A write handler, not a read one. Neither characteristic above is
+                    // readable — both are write/notify, which is what a file-transfer
+                    // control point and data pipe are — so the `bluetooth_read_request`
+                    // handler this example used to carry could never match anything. It
+                    // validated at startup and then sat there, an answer to a question the
+                    // service cannot be asked, in the example a model copies verbatim.
+                    //
+                    // `respond_to_write` acknowledges the write; the transfer's own
+                    // progress goes back over the notify characteristic with
+                    // `send_notification`, which needs the model (or a script) to decide
+                    // what to say, so it is not part of a static example.
                     {
-                        "event_pattern": "bluetooth_read_request",
+                        "event_pattern": "bluetooth_write_request",
                         "handler": {
                             "type": "static",
                             "actions": [
                                 {
-                                    "type": "respond_to_read",
-                                    "value": "00"
+                                    "type": "respond_to_write",
+                                    "status": "success"
                                 }
                             ]
                         }

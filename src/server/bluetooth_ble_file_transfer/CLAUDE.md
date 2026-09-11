@@ -61,17 +61,26 @@ Nothing enforces this — the LLM (or a static handler) builds the services with
   - `00008ec9-0000-1000-8000-00805f9b34fb` [write, notify]
   - `00008ec8-0000-1000-8000-00805f9b34fb` [write_without_response, notify]
 
-## UUIDs must be written in full 128-bit form
+## UUIDs: the 16-bit shorthand works, and the examples use the full form anyway
 
-The base parses every service and characteristic UUID with `uuid::Uuid::parse_str`, which
-accepts the 36-character hyphenated form (and the 32-character simple form) and **rejects the
-16-bit Bluetooth SIG shorthand**. `"180D"` does not parse, and `add_service` fails with
-"Invalid service UUID". There is no expansion helper anywhere in the tree, despite
-`src/server/bluetooth_ble/CLAUDE.md` claiming `"180D"` is "expanded to"
-`0000180d-0000-1000-8000-00805f9b34fb`.
+The base parses every service and characteristic UUID with `parse_ble_uuid`
+(`src/server/bluetooth_ble/mod.rs`), which **does** accept the 16-bit Bluetooth SIG shorthand: a
+4- or 8-character hex string is left-padded to 32 bits and spliced into the BLE base UUID, so
+`"180D"` becomes `0000180d-0000-1000-8000-00805f9b34fb`. Anything else is handed to
+`Uuid::parse_str`. All four call sites go through it — `add_service` for the service and for
+each characteristic, `start_advertising` for the advertised service list, and
+`send_notification`.
 
-Every UUID in this protocol's startup examples is therefore written out in full. Alias `XXXX`
-expands to `0000XXXX-0000-1000-8000-00805f9b34fb`.
+This section used to say the exact opposite: that the shorthand is rejected, that `add_service`
+fails with "Invalid service UUID", that no expansion helper exists anywhere in the tree, and
+that `src/server/bluetooth_ble/CLAUDE.md` was wrong to claim `"180D"` is "expanded to" the full
+form. Every part of that was false and the base's own documentation was right. Read
+`parse_ble_uuid` before repeating any of it.
+
+The startup examples here are still written out in full, deliberately: a 128-bit literal can be
+checked against the SIG assigned-numbers list without expanding it in your head, and it is the
+form nRF Connect and a `tshark` display filter show. Alias `XXXX` expands to
+`0000XXXX-0000-1000-8000-00805f9b34fb`.
 
 ## Data format: hex, and why that is not a rule violation
 
@@ -87,6 +96,40 @@ the executor agree, in both directions.
 
 Hex is a deliberate choice over base64: models handle short hex well, and it maps one-to-one
 onto the byte layouts printed in the SIG specifications.
+
+## Reading a characteristic: what the startup examples do, and why
+
+Two things about the `bluetooth_read_request` examples are easy to get wrong, and both were
+wrong here.
+
+**A Python script handler must read stdin and print its answer.** `python3 -c <code>` is run
+unwrapped (`src/scripting/executor.rs`), and the executor requires stdout to be exactly one JSON
+value. Every script example in the BLE profiles used to be `actions = [{...}]`, which assigns a
+local, prints nothing and exits 0 — so the handler was recorded as having failed and the event
+**fell back to the LLM**, the opposite of what the comment above it promised. The shape that
+works is:
+
+```python
+import json,sys
+e=json.load(sys.stdin)['event']
+v={'<characteristic-uuid>':'<hex>'}.get(str(e.get('characteristic_uuid','')).lower())
+print(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))
+```
+
+**A `static` handler cannot tell one characteristic from another.** A fixed
+`respond_to_read` answers *every* readable characteristic with the same bytes, which on a
+multi-characteristic service hands the central the wrong value under the right field's units —
+invisible until real hardware reads it. A script can see `characteristic_uuid`, costs no LLM
+call either, and answering an unrecognised characteristic with `[]` is a real answer:
+`read_decision` maps it to `ReadDecision::UseStored`, so the base serves that characteristic's
+own `initial_value`.
+
+`tests/server/bluetooth_ble_file_transfer/gatt_examples_test.rs` pins both rules.
+
+This profile has **no readable characteristic at all** — both are write/notify, which is what a
+file-transfer control point and data pipe are — so its examples route `bluetooth_write_request`
+rather than `bluetooth_read_request`. They used to route the latter, which validated at startup
+and then matched nothing, sitting in the example a model copies verbatim as if it worked.
 
 ## No storage
 
@@ -126,8 +169,44 @@ gets. The refusal is clear, but the message attributes all three causes to "not 
 
 - `device_name` (string, optional) — advertised name, default `NetGet-FileTransfer`
 
-Declared in `get_startup_parameters()`. That is not optional: `StartupParams` **panics** on an undeclared key, and the JSON comes from the LLM or an MCP client.
+Declared in `get_startup_parameters()`. That is not optional: an undeclared key is rejected, and
+the JSON comes from the LLM or an MCP client. It is **rejected, not fatal** — `StartupParams::new`
+and every `get_*` accessor return `Result<_, StartupParamError>`, and parameters are validated
+before `add_server`, so an undeclared key or a wrong-typed value produces a clean error naming
+the key and listing the allowed ones, and leaves no half-registered server behind. Propagate it
+with `?`; never `unwrap()`.
+
+They used to panic, which over MCP killed the per-request task before it could reply. This file
+asserted that long after it was fixed, which is the wrong direction for a doc to rot in: it tells
+the next person to write defensive code around a hazard that is not there.
 
 ## Testing
 
-There is no test directory for this protocol, and none is declared in `tests/server/mod.rs`. Meaningful coverage needs a real adapter and a BLE central (nRF Connect, `btleplug`), which CI runners do not have. A mocked E2E test would only exercise the base stack's LLM plumbing, which the base's own tests should cover.
+`tests/server/bluetooth_ble_file_transfer/` exists, is declared in `tests/server/mod.rs`, and its
+tests run and pass. This file previously said no test directory existed and that none was
+declared — wrong in both halves. That is the dangerous direction for a doc to rot in: it tells
+the next person a capability is missing, so they build a second copy around an absence that is
+not there. Re-derive before trusting any "there is no test" claim here.
+
+**What `e2e_test.rs` proves, exactly.** That `open_server` with `base_stack:
+"BLUETOOTH_BLE_FILE_TRANSFER"` reaches this protocol's `spawn`, that the base brings the radio up, and that a
+`bluetooth_ble_started` event is raised and answered by the mocked model. That is real coverage
+of the *wiring* and **no coverage of the profile**: nothing in it builds the custom file-transfer service, puts a byte
+on the wire, or reads one back. It also claims the machine's Bluetooth adapter, so it needs one
+present and powered — it is not adapter-free, it simply is not `#[ignore]`d.
+
+**What `gatt_examples_test.rs` proves.** Not value bytes: this profile's startup examples use
+**custom** UUIDs with no Bluetooth SIG layout behind them, so there is no independent
+specification to check them against and a test restating them would assert only that the
+literals equal themselves. What it checks instead is the example's internal coherence — that
+every event it routes can actually be raised by the service it builds, and that a static
+`respond_to_read` is not answering several readable characteristics with one set of bytes. That
+caught a real defect: the file-transfer example routed `bluetooth_read_request` while both its
+characteristics were write/notify, so the handler validated at startup and then never matched,
+sitting in the example a model copies as though it worked. The profiles with SIG-assigned
+characteristics (battery, heart_rate, thermometer, environmental, weight_scale, cycling,
+running, presenter) additionally pin every value byte against the published layout.
+
+**Neither test is evidence for a rating above `Experimental`.** Meaningful coverage of the
+profile needs a real adapter and a real BLE central (nRF Connect, `btleplug`) completing a read
+or a subscription against a service this profile actually built — no test in the tree does that.

@@ -101,7 +101,7 @@ impl Protocol for BluetoothBleEnvironmentalProtocol {
                 "Base BLE GATT control (add_service, start_advertising, stop_advertising, respond_to_read, respond_to_write, send_notification); the LLM builds the Environmental Sensing Service (0x181A) itself.",
             )
             .e2e_testing(
-                "Requires a real Bluetooth LE adapter and a central such as nRF Connect; no automated coverage",
+                "Two automated suites, neither of which is evidence for a rating above Experimental. tests/server/bluetooth_ble_environmental/e2e_test.rs covers the wiring only: open_server reaches this protocol's spawn, the base brings the radio up, and a bluetooth_ble_started event is raised and answered - it builds no service and puts no byte on the wire, and it claims the machine's Bluetooth adapter. gatt_examples_test.rs needs no adapter and pins every UUID and value byte in the startup examples against the Bluetooth SIG layout, byte order included. Proving the profile works still needs a real central (nRF Connect, btleplug) completing a read or a subscription against a service this profile built; nothing in the tree does that.",
             )
             .notes(
                 "Thin profile wrapper over the bluetooth-ble base stack. It prepends an instruction describing the Environmental Sensing Service (0x181A) and otherwise reuses the base entirely: the base hardcodes BluetoothBleProtocol when it calls the LLM, so the action vocabulary, the event types and the executor are the base's. This protocol deliberately declares no actions or events of its own - one that did would be documented to the model but never reachable at runtime.",
@@ -152,12 +152,14 @@ impl Protocol for BluetoothBleEnvironmentalProtocol {
                         "handler": {
                             "type": "script",
                             "language": "python",
-                            "code": "actions = [{'type': 'respond_to_read', 'value': '6a08'}]"
+                            "code": "import json,sys\ne=json.load(sys.stdin)['event']\nv={'00002a6e-0000-1000-8000-00805f9b34fb':'6a08','00002a6f-0000-1000-8000-00805f9b34fb':'c012'}.get(str(e.get('characteristic_uuid','')).lower())\nprint(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))"
                         }
                     }
                 ]
             }),
-            // Static mode: fixed GATT layout and a fixed read response, with no model call.
+            // Static mode: a fixed GATT layout, with no model call. The read itself goes to a
+            // script rather than a static handler because this service has two readable
+            // characteristics and a static handler cannot tell them apart.
             json!({
                 "type": "open_server",
                 "port": 0,
@@ -210,16 +212,25 @@ impl Protocol for BluetoothBleEnvironmentalProtocol {
                             ]
                         }
                     },
+                    // This is the same dispatching script the script-mode example uses, and
+                    // it is here rather than a static handler because a static one cannot
+                    // tell the two readable characteristics apart. It used to be a fixed
+                    // `respond_to_read` naming "6a08", so a central reading Humidity
+                    // (0x2A6F) got 0x086A back and decoded it as 21.54 %RH: the
+                    // temperature, wearing the humidity field's units. Nothing about
+                    // that looks wrong until real hardware reads it.
+                    //
+                    // A script costs no LLM call either, and an unrecognised
+                    // characteristic answers with `[]`, which `read_decision` maps to
+                    // `ReadDecision::UseStored` so the base serves that characteristic's
+                    // own `initial_value`. The layout above stays static, which is what
+                    // the static-mode example is for.
                     {
                         "event_pattern": "bluetooth_read_request",
                         "handler": {
-                            "type": "static",
-                            "actions": [
-                                {
-                                    "type": "respond_to_read",
-                                    "value": "6a08"
-                                }
-                            ]
+                            "type": "script",
+                            "language": "python",
+                            "code": "import json,sys\ne=json.load(sys.stdin)['event']\nv={'00002a6e-0000-1000-8000-00805f9b34fb':'6a08','00002a6f-0000-1000-8000-00805f9b34fb':'c012'}.get(str(e.get('characteristic_uuid','')).lower())\nprint(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))"
                         }
                     }
                 ]

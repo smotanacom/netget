@@ -15,7 +15,28 @@ impl BluetoothBleDataStream {
         id: crate::state::ServerId,
         inst: String,
     ) -> Result<std::net::SocketAddr> {
-        crate::server::bluetooth_ble::BluetoothBle::spawn_with_llm_actions(device_name, llm, state, tx, id, format!("{}. Configure as BLE data streaming service with custom GATT characteristics for real-time sensor data.", inst)).await
+        // The user's instruction leads and the profile sentence is appended to it; an empty
+        // instruction gets the sentence alone. This was `format!("{}. Configure as ...", inst)`,
+        // which put a stray leading period in front of the sentence when the instruction was
+        // empty and a doubled one after it when the instruction already ended in a full stop —
+        // in the prompt the model actually reads.
+        const SENTENCE: &str = "Configure as a BLE data streaming service with custom GATT \
+                                characteristics for real-time sensor data.";
+        let inst = inst.trim().trim_end_matches('.').trim();
+        let instruction = if inst.is_empty() {
+            SENTENCE.to_string()
+        } else {
+            format!("{inst}. {SENTENCE}")
+        };
+        crate::server::bluetooth_ble::BluetoothBle::spawn_with_llm_actions(
+            device_name,
+            llm,
+            state,
+            tx,
+            id,
+            instruction,
+        )
+        .await
     }
 }
 #[cfg(not(feature = "bluetooth-ble-data-stream"))]

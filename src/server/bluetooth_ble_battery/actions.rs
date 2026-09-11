@@ -53,7 +53,7 @@ impl Protocol for BluetoothBleBatteryProtocol {
             ParameterDefinition {
                 name: "initial_level".to_string(),
                 type_hint: "number".to_string(),
-                description: "Initial battery level 0-100, folded into the instruction given to the LLM (default: 100)".to_string(),
+                description: "Initial battery level as a percentage, 0-100, folded into the instruction given to the LLM (default: 100). A value above 100 is refused, not clamped: the Battery Level characteristic reserves everything past 100.".to_string(),
                 required: false,
                 example: json!(80),
             },
@@ -103,7 +103,7 @@ impl Protocol for BluetoothBleBatteryProtocol {
                 "Base BLE GATT control (add_service, start_advertising, stop_advertising, respond_to_read, respond_to_write, send_notification); the LLM builds the Battery Service (0x180F) itself.",
             )
             .e2e_testing(
-                "Requires a real Bluetooth LE adapter and a central such as nRF Connect; no automated coverage",
+                "Two automated suites, neither of which is evidence for a rating above Experimental. tests/server/bluetooth_ble_battery/e2e_test.rs covers the wiring only: open_server reaches this protocol's spawn, the base brings the radio up, and a bluetooth_ble_started event is raised and answered - it builds no service and puts no byte on the wire, and it claims the machine's Bluetooth adapter. gatt_examples_test.rs needs no adapter and pins every UUID and value byte in the startup examples against the Bluetooth SIG layout, byte order included. Proving the profile works still needs a real central (nRF Connect, btleplug) completing a read or a subscription against a service this profile built; nothing in the tree does that.",
             )
             .notes(
                 "Thin profile wrapper over the bluetooth-ble base stack. It prepends an instruction describing the Battery Service (0x180F) and otherwise reuses the base entirely: the base hardcodes BluetoothBleProtocol when it calls the LLM, so the action vocabulary, the event types and the executor are the base's. This protocol deliberately declares no actions or events of its own - one that did would be documented to the model but never reachable at runtime.",
@@ -155,7 +155,7 @@ impl Protocol for BluetoothBleBatteryProtocol {
                         "handler": {
                             "type": "script",
                             "language": "python",
-                            "code": "actions = [{'type': 'respond_to_read', 'value': '64'}]"
+                            "code": "import json,sys\ne=json.load(sys.stdin)['event']\nv={'00002a19-0000-1000-8000-00805f9b34fb':'64'}.get(str(e.get('characteristic_uuid','')).lower())\nprint(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))"
                         }
                     }
                 ]
@@ -235,14 +235,28 @@ impl Server for BluetoothBleBatteryProtocol {
                 .flatten()
                 .unwrap_or_else(|| "NetGet-Battery".to_string());
 
-            let initial_level = ctx
+            // `initial_level` is a Battery Level percentage, so 0-100 is the whole of its
+            // range and anything else is a caller error. Refuse it rather than narrow it:
+            // this was `.unwrap_or(100).min(100) as u8`, which started a server claiming a
+            // full battery when asked for 150 or 4000, with nothing in any log to say the
+            // number had been changed. A clamped percentage is a lie that reads as a fact.
+            let initial_level = match ctx
                 .startup_params
                 .as_ref()
                 .map(|p| p.get_optional_u64("initial_level"))
                 .transpose()?
                 .flatten()
-                .unwrap_or(100)
-                .min(100) as u8;
+            {
+                None => 100u8,
+                // Range-checked before the conversion, and the conversion is checked too, so
+                // no value can reach the wire by being truncated into one.
+                Some(level) if level <= 100 => u8::try_from(level).unwrap_or(100),
+                Some(level) => anyhow::bail!(
+                    "initial_level is a Battery Level (0x2A19) percentage and must be 0-100; \
+                     got {level}. The Bluetooth SIG reserves every value above 100, so there \
+                     is no battery level this server could honestly advertise."
+                ),
+            };
 
             // The user's own instruction must reach the base stack; the profile preamble is
             // added there, not substituted for it.
