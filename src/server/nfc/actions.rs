@@ -317,9 +317,10 @@ fn set_ndef_message_action() -> ActionDefinition {
 fn respond_to_apdu_action() -> ActionDefinition {
     ActionDefinition {
         name: "respond_to_apdu".to_string(),
-        description: "Answer the command APDU with an optional response body and a two-byte \
-                      status word. This is the only way to reply; if you do not use it the tag \
-                      answers 6F00 (card error)."
+        description: "Answer the command APDU with an optional response body and a REQUIRED \
+                      two-byte status word. This is the only way to reply; if you do not use \
+                      it, or you use it without naming sw1 and sw2, the tag answers 6F00 \
+                      (card error)."
             .to_string(),
         parameters: vec![
             Parameter {
@@ -341,17 +342,21 @@ fn respond_to_apdu_action() -> ActionDefinition {
             Parameter {
                 name: "sw1".to_string(),
                 type_hint: "string".to_string(),
-                description: "Status byte 1 as two hex digits (default '90'). Refuse with '69' \
-                              (security), '6A' (wrong parameters) or '6D' (unsupported)."
+                description: "Status byte 1 as two hex digits. REQUIRED - there is no default, \
+                              because the only plausible default is success. Approve with '90'; \
+                              refuse with '69' (security), '6A' (wrong parameters) or '6D' \
+                              (unsupported)."
                     .to_string(),
-                required: false,
+                required: true,
             },
             Parameter {
                 name: "sw2".to_string(),
                 type_hint: "string".to_string(),
-                description: "Status byte 2 as two hex digits (default '00'; 9000 means success)"
+                description: "Status byte 2 as two hex digits. REQUIRED. '90' '00' together mean \
+                              success; naming both bytes is what makes approving a command a \
+                              deliberate act rather than an omission."
                     .to_string(),
-                required: false,
+                required: true,
             },
         ],
         example: json!({
@@ -679,8 +684,26 @@ impl Server for NfcServerProtocol {
                     }
                 };
 
-                let sw1 = action.get("sw1").and_then(|v| v.as_str()).unwrap_or("90");
-                let sw2 = action.get("sw2").and_then(|v| v.as_str()).unwrap_or("00");
+                // No default, deliberately. A tag is an access-control device and the
+                // only status word a default could reasonably be is 9000 - success. That
+                // would mean the most degenerate thing a model can emit, a bare
+                // `{"type": "respond_to_apdu"}`, approves a VERIFY. Success has to be
+                // named, the same way `eapol` gives EAP-Success its own eight literal
+                // octets rather than a boolean anything could flip. A missing status word
+                // is an error here, and reaches the wire as 6F00 through
+                // `decision=fail_closed_no_action`.
+                let sw1 = action.get("sw1").and_then(|v| v.as_str()).ok_or_else(|| {
+                    anyhow!(
+                        "respond_to_apdu requires an explicit 'sw1' (two hex digits): there is \
+                         no default, because the default would be success"
+                    )
+                })?;
+                let sw2 = action.get("sw2").and_then(|v| v.as_str()).ok_or_else(|| {
+                    anyhow!(
+                        "respond_to_apdu requires an explicit 'sw2' (two hex digits): there is \
+                         no default, because the default would be success"
+                    )
+                })?;
                 parse_status_byte("sw1", sw1)?;
                 parse_status_byte("sw2", sw2)?;
 
