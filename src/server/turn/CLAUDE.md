@@ -194,9 +194,10 @@ Send and Data indications have **no event and no action**, by design (see the ta
 ## Limitations
 
 1. **No authentication.** REALM / NONCE / MESSAGE-INTEGRITY are not implemented, so this is an
-   open relay to anyone who can reach the port, bounded only by the model's grant decisions
-   and the 256-allocation cap. Real deployments must not expose it. This is the single largest
-   gap between this and a usable TURN server.
+   open relay to anyone who can reach the port, bounded only by the model's grant decisions,
+   the 256-allocation cap and the `peer_scope` parameter. Real deployments must not expose it.
+   This is the single largest gap between this and a usable TURN server. See
+   `## Security notes`.
 2. **Never tested against a real TURN client** (`turnutils_uclient`, libwebrtc, Pion). The E2E
    suite encodes and decodes the wire format itself.
 3. **UDP relays only.** No TCP allocations, no `REQUESTED-ADDRESS-FAMILY` (IPv4 relay
@@ -212,14 +213,59 @@ Send and Data indications have **no event and no action**, by design (see the ta
 
 ## Security notes
 
-**Open relay / amplification**: TURN relays are an amplification vector and, unauthenticated,
-a free proxy. The cap and the per-IP permission checks limit the blast radius; authentication
-is what would actually fix it.
+A relay's destination set is its blast radius. The three questions this protocol should
+always be asked, answered plainly:
+
+### Can an unauthenticated peer allocate a relay?
+
+**With a policy configured, yes.** There is no authentication of any kind: REALM, NONCE and
+MESSAGE-INTEGRITY are not implemented and no action can add them, so "who may allocate" is
+entirely whatever answers `turn_allocate_request`. An instruction like "grant allocations"
+means any host that can reach the port gets a relay, with no identity at all.
+
+**With no policy, no.** No server instruction and no event handler means every control
+request is fail-closed — grant nothing, no LLM round-trip, no reply — so an unconfigured TURN
+server is safe and a configured one is exactly as safe as its policy.
+
+### Can it be aimed at loopback or a private address?
+
+**By default yes, and that is what the `peer_scope` startup parameter is about.** The default
+`peer_scope=any` places no restriction: a permitted client can relay to `127.0.0.1`, to RFC
+1918 space, to `169.254.169.254`. That is a UDP path from a stranger into whatever this host
+can reach, with the answers relayed back — an SSRF-shaped hole whose only bound is the
+protocol's UDP-ness.
+
+The default is deliberate, not an oversight: this protocol exists to be pointed at by things
+under test, the E2E suite next door relays between two loopback sockets, and a honeypot TURN
+server that refuses private destinations is not a TURN server. It is announced with a WARN at
+startup rather than left implicit.
+
+`peer_scope=public` refuses loopback, private, link-local, multicast, broadcast, unspecified,
+documentation and carrier-grade-NAT destinations, for IPv4 and IPv6 including IPv4-mapped
+forms. **Set it on any reachable interface.**
+
+Two properties worth preserving:
+
+- The check sits at **both** permission gates. CreatePermission is the obvious one;
+  ChannelBind grants a permission as a side effect (`bind_channel` calls `permit`) and is the
+  second way to point a relay.
+- It **overrules the model**. A policy that permits `127.0.0.1` under `peer_scope=public` is
+  logged `decision=peer_scope_reject` and dropped — destination scope is the operator's
+  decision, not a policy question. `tests/server/turn/peer_scope_test.rs` pins both
+  directions, with a real loopback UDP socket standing in for the victim.
+
+### What is not gated on the model at all?
+
+The 256-allocation cap, the 3600s maximum lifetime, `peer_scope`, and RFC 8656's fixed
+permission (5 min) and channel (10 min) lifetimes. **There is no per-source rate limit and no
+cap on relayed bytes**, so amplification and free-proxy use are bounded by the policy and by
+`peer_scope`, not by anything counting.
 
 **Fail-closed points** worth preserving if you refactor: no allocation without an explicit
-grant action; no relaying to or from an unpermitted IP; a mismatched relay address refuses
-rather than confirms; an LLM error grants nothing (and answers 500/508 rather than going
-silent, without putting the error itself on the wire).
+grant action; no relaying to or from an unpermitted IP; a peer the request did not name is
+never permitted, so a hallucinated address cannot open a hole; a mismatched relay address
+refuses rather than confirms; an LLM error grants nothing (and answers 500/508 rather than
+going silent, without putting the error itself on the wire).
 
 ## Example prompts
 

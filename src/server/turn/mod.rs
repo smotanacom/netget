@@ -68,6 +68,85 @@ const ATTR_XOR_PEER_ADDRESS: u16 = 0x0012;
 const ATTR_DATA: u16 = 0x0013;
 const ATTR_REQUESTED_TRANSPORT: u16 = 0x0019;
 
+/// Which peer addresses this relay may be pointed at.
+///
+/// **TURN is a relay, so its destination set is its blast radius**, and until now
+/// there was no destination set: whatever peer a client named and the policy
+/// permitted, the relay socket sent to. `127.0.0.1:8080`, `10.0.0.5:161`,
+/// `169.254.169.254` — a UDP path from anyone who can reach the TURN port into
+/// whatever the operator's host can reach, with the answers relayed back.
+///
+/// The default stays `Any`, deliberately and not by oversight. This protocol
+/// exists to be pointed at by things under test, its own e2e tests relay between
+/// two loopback sockets, and a honeypot TURN server that refuses private
+/// destinations is not a TURN server. But "deliberate" is only true if it is said
+/// out loud and there is a lever, which is what `Public` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PeerScope {
+    /// No restriction. Loopback and private destinations are relayed.
+    #[default]
+    Any,
+    /// Refuse loopback, private, link-local, multicast, broadcast, unspecified
+    /// and documentation-range destinations.
+    Public,
+}
+
+impl PeerScope {
+    /// Parse the `peer_scope` startup parameter. `None` means the default.
+    pub fn parse(value: Option<&str>) -> Result<Self> {
+        match value.map(str::trim) {
+            None | Some("") | Some("any") => Ok(Self::Any),
+            Some("public") => Ok(Self::Public),
+            Some(other) => Err(anyhow::anyhow!(
+                "Invalid peer_scope '{other}': expected \"any\" or \"public\""
+            )),
+        }
+    }
+
+    /// True if traffic may be relayed to `ip`.
+    pub fn allows(&self, ip: IpAddr) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Public => match ip {
+                IpAddr::V4(v4) => {
+                    !(v4.is_loopback()
+                        || v4.is_private()
+                        || v4.is_link_local()
+                        || v4.is_multicast()
+                        || v4.is_broadcast()
+                        || v4.is_unspecified()
+                        || v4.is_documentation()
+                        // 100.64.0.0/10, carrier-grade NAT. `is_shared` is
+                        // unstable, so it is spelled out.
+                        || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])))
+                }
+                IpAddr::V6(v6) => {
+                    !(v6.is_loopback()
+                        || v6.is_multicast()
+                        || v6.is_unspecified()
+                        // Unique local (fc00::/7) and link-local (fe80::/10).
+                        // `is_unique_local` and `is_unicast_link_local` are
+                        // unstable, so they are spelled out.
+                        || (v6.segments()[0] & 0xfe00) == 0xfc00
+                        || (v6.segments()[0] & 0xffc0) == 0xfe80
+                        // An IPv4-mapped address would otherwise bypass every
+                        // IPv4 rule above.
+                        || v6.to_ipv4_mapped().is_some_and(|v4| {
+                            !PeerScope::Public.allows(IpAddr::V4(v4))
+                        }))
+                }
+            },
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::Public => "public",
+        }
+    }
+}
+
 /// Everything about an allocation that both the request path and the relay task
 /// need: when it dies, which peers it may talk to, and its channel bindings.
 ///
@@ -223,6 +302,8 @@ struct TurnContext {
     /// IP reported to clients in XOR-RELAYED-ADDRESS. Differs from
     /// `relay_bind_ip` when the server sits behind NAT (`relay_ip` parameter).
     advertised_relay_ip: IpAddr,
+    /// Which peer addresses may be relayed to (`peer_scope` parameter).
+    peer_scope: PeerScope,
     llm_client: OllamaClient,
     state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
@@ -246,6 +327,7 @@ impl TurnServer {
         status_tx: mpsc::UnboundedSender<String>,
         server_id: ServerId,
         relay_ip: Option<String>,
+        peer_scope: PeerScope,
     ) -> Result<SocketAddr> {
         let advertised_relay_ip = match relay_ip {
             Some(ip) => Some(
@@ -273,12 +355,26 @@ impl TurnServer {
         let server = Arc::new(Self::new());
         Self::spawn_cleanup_task(&server, status_tx.clone());
 
+        match peer_scope {
+            PeerScope::Any => Log::new(Some(&status_tx)).warn(
+                "TURN peer_scope=any: this relay will forward to ANY address a permitted \
+                 client names, loopback and RFC 1918 included, which is a UDP path into \
+                 whatever this host can reach. Correct for a honeypot or a local test; set \
+                 peer_scope=public anywhere else",
+            ),
+            PeerScope::Public => Log::new(Some(&status_tx)).info(
+                "TURN peer_scope=public: loopback, private, link-local, multicast and \
+                 broadcast destinations will be refused",
+            ),
+        }
+
         let ctx = TurnContext {
             server,
             socket: socket.clone(),
             local_addr,
             relay_bind_ip,
             advertised_relay_ip,
+            peer_scope,
             llm_client,
             state: app_state.clone(),
             status_tx: status_tx.clone(),
@@ -1171,6 +1267,27 @@ async fn handle_create_permission_request(
             None => requested_peers.iter().map(|p| p.ip()).collect(),
         };
 
+        // The operator's destination policy outranks the model's. `peer_scope` is
+        // the only thing standing between a granted allocation and a UDP path into
+        // whatever this host can reach, so a model that permits 127.0.0.1 under
+        // peer_scope=public is overruled rather than trusted.
+        let chosen: Vec<IpAddr> = chosen
+            .into_iter()
+            .filter(|ip| {
+                let allowed = ctx.peer_scope.allows(*ip);
+                if !allowed {
+                    Log::new(Some(&ctx.status_tx)).warn(format!(
+                        "TURN decision=peer_scope_reject: refusing permission for {} \
+                         requested by {} (peer_scope={})",
+                        ip,
+                        peer_addr,
+                        ctx.peer_scope.as_str()
+                    ));
+                }
+                allowed
+            })
+            .collect();
+
         if let Some((id, _, state)) = ctx.server.allocation_for_client(peer_addr).await {
             let mut state = state.lock().await;
             for ip in &chosen {
@@ -1229,6 +1346,23 @@ async fn handle_channel_bind_request(
             peer_addr, channel_number
         );
         send_local_error(ctx, &msg.transaction_id, 9, 400, "Bad Request", peer_addr).await;
+        return;
+    }
+
+    // ChannelBind grants a permission as a side effect (`bind_channel` calls
+    // `permit`), so it is a second way to point the relay somewhere and needs the
+    // same destination policy. Refused before the model is asked: whether a
+    // destination is in scope is the operator's decision, not a policy question.
+    if !ctx.peer_scope.allows(peer.ip()) {
+        Log::new(Some(&ctx.status_tx)).warn(format!(
+            "TURN channel_bind decision=peer_scope_reject: {} asked to bind channel {} to {} \
+             (peer_scope={})",
+            peer_addr,
+            channel_number,
+            peer,
+            ctx.peer_scope.as_str()
+        ));
+        send_local_error(ctx, &msg.transaction_id, 9, 403, "Forbidden", peer_addr).await;
         return;
     }
 
