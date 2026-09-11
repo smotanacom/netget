@@ -639,6 +639,22 @@ impl SnmpClient {
         socket: &Arc<UdpSocket>,
         config: &Arc<SnmpConfig>,
     ) -> Result<()> {
+        // The response side has the same fatal decoder as the agent side: `rasn`'s BER parser
+        // recurses once per level of constructed nesting with no bound, and a stack overflow
+        // is a `SIGABRT` that takes the whole NetGet process with it. A client is if anything
+        // more exposed — the bytes come from whatever the operator pointed it at, and UDP means
+        // an off-path attacker can beat the real agent to the reply. Screen before decoding.
+        if let Err(reason) = crate::server::snmp::check_ber_structure(
+            response_data,
+            crate::server::snmp::MAX_BER_DEPTH,
+        ) {
+            return Err(anyhow::anyhow!(
+                "Rejected malformed SNMP response ({} bytes): {}",
+                response_data.len(),
+                reason
+            ));
+        }
+
         // Try parsing as v2c first
         let (variables, error_status) =
             if let Ok(msg) = ber::decode::<v2c::Message<v2::Pdus>>(response_data) {
