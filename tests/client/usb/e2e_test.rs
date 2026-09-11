@@ -172,4 +172,81 @@ mod usb_client_tests {
         assert_eq!(action["index"], 0);
         assert_eq!(action["length"], 18);
     }
+
+    /// Every field that becomes a USB wire value is range-checked before it narrows.
+    ///
+    /// Each was `as_u64()? as u8` or `as u16`, which wraps in silence: `request_type: 384`
+    /// reached the device as 128 -- a device-to-host standard request, an entirely different
+    /// transfer from the one the model asked for -- with nothing in the log to say so.
+    #[tokio::test]
+    async fn out_of_range_transfer_fields_are_refused_rather_than_wrapped() {
+        use ::netget::client::usb::actions::UsbClientProtocol;
+        use ::netget::llm::actions::client_trait::Client;
+
+        let protocol = UsbClientProtocol::new();
+
+        for (label, action) in [
+            (
+                "request_type past a byte",
+                serde_json::json!({
+                    "type": "control_transfer", "request_type": 384, "request": 6,
+                    "value": 0, "index": 0
+                }),
+            ),
+            (
+                "value past 16 bits",
+                serde_json::json!({
+                    "type": "control_transfer", "request_type": 0x80, "request": 6,
+                    "value": 70000, "index": 0
+                }),
+            ),
+            (
+                "bulk endpoint past a byte",
+                serde_json::json!({
+                    "type": "bulk_transfer_in", "endpoint": 300, "length": 8
+                }),
+            ),
+            (
+                "interface number past a byte",
+                serde_json::json!({"type": "claim_interface", "interface_number": 256}),
+            ),
+        ] {
+            assert!(
+                protocol.execute_action(action).is_err(),
+                "{label}: must be refused rather than silently narrowed"
+            );
+        }
+    }
+
+    /// A transfer length is bounded before it reaches the allocator.
+    ///
+    /// `length` was handed to `nusb::transfer::RequestBuffer::new`, which allocates it up
+    /// front, after being read as `as_u64().unwrap() as usize` -- so one action asking for
+    /// four gigabytes was four gigabytes, per call, from whatever the model happened to say.
+    #[tokio::test]
+    async fn an_unbounded_transfer_length_is_refused_before_it_allocates() {
+        use ::netget::client::usb::actions::{UsbClientProtocol, MAX_TRANSFER_BYTES};
+        use ::netget::llm::actions::client_trait::Client;
+
+        let protocol = UsbClientProtocol::new();
+
+        for verb in ["bulk_transfer_in", "interrupt_transfer_in"] {
+            assert!(
+                protocol
+                    .execute_action(serde_json::json!({
+                        "type": verb, "endpoint": 0x81, "length": 4_000_000_000u64
+                    }))
+                    .is_err(),
+                "{verb}: a four-gigabyte request must be refused"
+            );
+
+            // The limit itself is still accepted -- a guard that refused everything would
+            // pass the assertion above while making the client useless.
+            protocol
+                .execute_action(serde_json::json!({
+                    "type": verb, "endpoint": 0x81, "length": MAX_TRANSFER_BYTES
+                }))
+                .unwrap_or_else(|e| panic!("{verb} at exactly the limit must be accepted: {e}"));
+        }
+    }
 }

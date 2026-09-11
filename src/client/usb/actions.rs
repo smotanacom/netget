@@ -11,6 +11,60 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::LazyLock;
 
+/// Most bytes one transfer may carry in either direction.
+///
+/// `length` is handed straight to `nusb::transfer::RequestBuffer::new`, which allocates it up
+/// front, and it was read as `as_u64().unwrap() as usize` with nothing between the model and
+/// the allocator: `{"type": "bulk_transfer_in", "length": 4000000000}` asked for four gigabytes
+/// per call. 64 KiB is larger than any single USB transfer a device will complete in one go
+/// and leaves a wrong answer costing nothing.
+pub const MAX_TRANSFER_BYTES: usize = 64 * 1024;
+
+/// Read a field that becomes a single byte on the wire, refusing a value that would wrap.
+///
+/// Each of these used to be `as_u64()? as u8`, which is silent: `request_type: 384` reached the
+/// device as 128 -- a device-to-host standard request, a different transfer entirely from what
+/// the model asked for -- and no error said so.
+fn byte_field(action: &serde_json::Value, field: &str, action_type: &str) -> Result<u8> {
+    let value = action
+        .get(field)
+        .and_then(|v| v.as_u64())
+        .with_context(|| format!("Missing '{field}' field"))?;
+    u8::try_from(value).map_err(|_| {
+        anyhow::anyhow!("{action_type} '{field}' is {value}, outside the 0..=255 a USB byte holds")
+    })
+}
+
+/// Read a field that becomes a 16-bit wire value, refusing a value that would wrap.
+fn word_field(action: &serde_json::Value, field: &str, action_type: &str) -> Result<u16> {
+    let value = action
+        .get(field)
+        .and_then(|v| v.as_u64())
+        .with_context(|| format!("Missing '{field}' field"))?;
+    u16::try_from(value).map_err(|_| {
+        anyhow::anyhow!(
+            "{action_type} '{field}' is {value}, outside the 0..=65535 a USB 16-bit field holds"
+        )
+    })
+}
+
+/// Read a transfer length, bounded by [`MAX_TRANSFER_BYTES`].
+///
+/// `required_default` is used when the field is absent; pass 0 where the field is optional.
+fn transfer_length(action: &serde_json::Value, action_type: &str, default: u64) -> Result<usize> {
+    let value = action
+        .get("length")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(default);
+    if value as u128 > MAX_TRANSFER_BYTES as u128 {
+        return Err(anyhow::anyhow!(
+            "{action_type} 'length' is {value}; at most {MAX_TRANSFER_BYTES} bytes may be \
+             requested in one transfer"
+        ));
+    }
+    Ok(value as usize)
+}
+
 /// USB device opened event
 pub static USB_DEVICE_OPENED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
@@ -460,36 +514,29 @@ impl Client for UsbClientProtocol {
 
         match action_type {
             "control_transfer" => {
-                let request_type = action
-                    .get("request_type")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'request_type' field")?
-                    as u8;
-
-                let request = action
-                    .get("request")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'request' field")? as u8;
-
-                let value = action
-                    .get("value")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'value' field")? as u16;
-
-                let index = action
-                    .get("index")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'index' field")? as u16;
+                let request_type = byte_field(&action, "request_type", action_type)?;
+                let request = byte_field(&action, "request", action_type)?;
+                let value = word_field(&action, "value", action_type)?;
+                let index = word_field(&action, "index", action_type)?;
 
                 let data_hex = action
                     .get("data_hex")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                let length = action.get("length").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let length = transfer_length(&action, action_type, 0)?;
 
                 let data = if !data_hex.is_empty() {
-                    hex::decode(data_hex).context("Invalid hex data")?
+                    let bytes = hex::decode(data_hex).context("Invalid hex data")?;
+                    if bytes.len() > MAX_TRANSFER_BYTES {
+                        return Err(anyhow::anyhow!(
+                            "control_transfer 'data_hex' decodes to {} bytes; at most {} are \
+                             accepted",
+                            bytes.len(),
+                            MAX_TRANSFER_BYTES
+                        ));
+                    }
+                    bytes
                 } else {
                     Vec::new()
                 };
@@ -507,10 +554,7 @@ impl Client for UsbClientProtocol {
                 })
             }
             "bulk_transfer_out" => {
-                let endpoint = action
-                    .get("endpoint")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'endpoint' field")? as u8;
+                let endpoint = byte_field(&action, "endpoint", action_type)?;
 
                 let data_hex = action
                     .get("data_hex")
@@ -518,6 +562,14 @@ impl Client for UsbClientProtocol {
                     .context("Missing 'data_hex' field")?;
 
                 let data = hex::decode(data_hex).context("Invalid hex data")?;
+                if data.len() > MAX_TRANSFER_BYTES {
+                    return Err(anyhow::anyhow!(
+                        "bulk_transfer_out 'data_hex' decodes to {} bytes; at most {} are \
+                         accepted",
+                        data.len(),
+                        MAX_TRANSFER_BYTES
+                    ));
+                }
 
                 Ok(ClientActionResult::Custom {
                     name: "bulk_transfer_out".to_string(),
@@ -528,15 +580,8 @@ impl Client for UsbClientProtocol {
                 })
             }
             "bulk_transfer_in" => {
-                let endpoint = action
-                    .get("endpoint")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'endpoint' field")? as u8;
-
-                let length = action
-                    .get("length")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'length' field")? as usize;
+                let endpoint = byte_field(&action, "endpoint", action_type)?;
+                let length = transfer_length(&action, action_type, 64)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "bulk_transfer_in".to_string(),
@@ -547,15 +592,8 @@ impl Client for UsbClientProtocol {
                 })
             }
             "interrupt_transfer_in" => {
-                let endpoint = action
-                    .get("endpoint")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'endpoint' field")? as u8;
-
-                let length = action
-                    .get("length")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'length' field")? as usize;
+                let endpoint = byte_field(&action, "endpoint", action_type)?;
+                let length = transfer_length(&action, action_type, 64)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "interrupt_transfer_in".to_string(),
@@ -566,11 +604,7 @@ impl Client for UsbClientProtocol {
                 })
             }
             "claim_interface" => {
-                let interface_number = action
-                    .get("interface_number")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'interface_number' field")?
-                    as u8;
+                let interface_number = byte_field(&action, "interface_number", action_type)?;
 
                 Ok(ClientActionResult::Custom {
                     name: "claim_interface".to_string(),
