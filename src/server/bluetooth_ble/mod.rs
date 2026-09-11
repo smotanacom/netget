@@ -37,15 +37,6 @@ use ble_peripheral_rust::{Peripheral, PeripheralImpl};
 #[cfg(feature = "bluetooth-ble")]
 use uuid::Uuid;
 
-/// Connection state for LLM processing
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
-enum ConnectionState {
-    Idle,
-    Processing,
-    Accumulating,
-}
-
 /// Per-characteristic data for tracking pending requests
 #[derive(Debug)]
 struct CharacteristicData {
@@ -65,10 +56,8 @@ struct ServerData {
     /// This server's own slice of the shared event stream, used to register characteristic
     /// routes with the hub as services are added. `None` in the radio-free test loop.
     event_tx: Option<mpsc::Sender<PeripheralEvent>>,
-    state: ConnectionState,
     memory: String,
     characteristics: HashMap<String, CharacteristicData>,
-    queued_events: Vec<PeripheralEvent>,
 }
 
 /// Parse a BLE UUID, expanding the 16- and 32-bit shorthands.
@@ -193,6 +182,42 @@ pub fn parse_ble_uuid(s: &str) -> Result<Uuid> {
     })
 }
 
+/// The single key a characteristic is filed and looked up under.
+///
+/// Always the canonical lowercase-hyphenated 128-bit form, which is exactly what
+/// `request.characteristic.to_string()` yields on the radio's read/write/subscribe events. So
+/// every spelling of the same characteristic — the `"2A37"` shorthand every documented example
+/// in this protocol uses, the 32-bit form, and the full 128-bit UUID — lands on one entry.
+///
+/// Three different spellings were in play before, and none of the tests noticed because every
+/// one of them used the full form:
+///
+/// * `add_service` filed the stored value under **the model's own spelling**
+///   (`characteristics.insert(char_uuid_str, ..)`), while the read and write paths looked it up
+///   under **the radio's canonical form**. So a service added with the protocol's own
+///   documented `"uuid": "2A37"` was unreachable: a read the handler declined to answer fell
+///   through to `decision=fail_closed_model_silent_no_value` and replied ATT Unlikely Error
+///   although `initial_value` had supplied one, and a write never updated the stored value.
+/// * `send_notification` used the model's spelling again, a third variant that agreed with
+///   `add_service` only when both happened to be written the same way.
+/// * [`BleRouter::register_characteristic`] lowercased without expanding, so a route registered
+///   as `"2a37"` was never found by a lookup for `"00002a37-0000-1000-8000-00805f9b34fb"`. That
+///   one failed quietly into the "newest live server" fallback, which is why it survived: with
+///   a single BLE server the fallback is the right answer anyway. With two — a base server and
+///   any of the fifteen profiles that delegate to this event loop — the second server captured
+///   the first server's characteristic traffic.
+///
+/// An unparseable UUID falls back to the trimmed lowercase input rather than panicking.
+/// `add_service` rejects those before they can be filed, so this is only reachable from a
+/// lookup for a characteristic that was never added, where a miss is the correct outcome.
+#[cfg(feature = "bluetooth-ble")]
+pub fn characteristic_key(uuid: &str) -> String {
+    match parse_ble_uuid(uuid) {
+        Ok(parsed) => parsed.to_string(),
+        Err(_) => uuid.trim().to_lowercase(),
+    }
+}
+
 /// Process-wide shared BLE radio.
 ///
 /// `ble-peripheral-rust`'s CoreBluetooth backend funnels *every* `Peripheral` through a single
@@ -256,11 +281,15 @@ impl BleRouter {
     }
 
     /// Point a characteristic's future read/write/subscribe events at the server that owns it.
+    ///
+    /// Keyed through [`characteristic_key`], so a route registered from the `"2A37"` shorthand
+    /// is found by a lookup for the canonical form the radio reports. Lowercasing alone was not
+    /// enough and failed silently — see [`characteristic_key`].
     pub fn register_characteristic(&self, char_uuid: &str, tx: mpsc::Sender<PeripheralEvent>) {
         self.routes
             .lock()
             .unwrap()
-            .insert(char_uuid.to_lowercase(), tx);
+            .insert(characteristic_key(char_uuid), tx);
     }
 
     /// Choose where a characteristic event goes: its registered owner, else the newest live
@@ -311,7 +340,7 @@ impl BleRouter {
                     PeripheralEvent::ReadRequest { request, .. }
                     | PeripheralEvent::WriteRequest { request, .. }
                     | PeripheralEvent::CharacteristicSubscriptionUpdate { request, .. } => {
-                        request.characteristic.to_string().to_lowercase()
+                        characteristic_key(&request.characteristic.to_string())
                     }
                     PeripheralEvent::StateUpdate { .. } => unreachable!(),
                 };
@@ -374,10 +403,8 @@ impl BluetoothBle {
         let server_data = Arc::new(Mutex::new(ServerData {
             hub: Some(hub.clone()),
             event_tx: Some(event_tx.clone()),
-            state: ConnectionState::Idle,
             memory: String::new(),
             characteristics: HashMap::new(),
-            queued_events: Vec::new(),
         }));
 
         let protocol = Arc::new(BluetoothBleProtocol::new());
@@ -654,10 +681,12 @@ impl BluetoothBle {
             // model instead of baking it into the GATT database.
             let initial_value = parse_initial_value(&char_uuid_str, &char_json["initial_value"])?;
 
-            // Store characteristic data for tracking
+            // Store characteristic data for tracking, keyed canonically so the read, write and
+            // notification paths can find it whatever spelling the model used here.
             server_data_guard.characteristics.insert(
-                char_uuid_str.to_string(),
+                characteristic_key(char_uuid_str),
                 CharacteristicData {
+                    // The model's own spelling, kept for diagnostics.
                     uuid: char_uuid_str.to_string(),
                     properties: props_json
                         .iter()
@@ -852,7 +881,10 @@ impl BluetoothBle {
         // Update stored value and capture the shared radio, then drop the guard before I/O.
         let hub = {
             let mut server_data_guard = server_data.lock().await;
-            if let Some(char_data) = server_data_guard.characteristics.get_mut(char_uuid_str) {
+            if let Some(char_data) = server_data_guard
+                .characteristics
+                .get_mut(&characteristic_key(char_uuid_str))
+            {
                 char_data.current_value = value.clone();
             }
             server_data_guard.hub.clone()
@@ -909,12 +941,13 @@ impl BluetoothBle {
             .into_iter()
             .map(|(uuid, current_value)| {
                 (
-                    // Stored verbatim, exactly as the production `add_service` path does at
-                    // the insert site — normalising here and not there would make the seeded
-                    // table behave differently from a real one, which is the opposite of what
-                    // a test loop is for. Pass the canonical lowercase-hyphenated form, which
-                    // is what `request.characteristic.to_string()` yields on the read path.
-                    uuid.clone(),
+                    // Keyed through `characteristic_key`, exactly as the production
+                    // `add_service` path does at its insert site — so a test may seed in any
+                    // spelling a model could use and gets the same table a real `add_service`
+                    // would build. That symmetry is the point: seeding pre-canonicalised was
+                    // what hid the key mismatch `characteristic_key` documents, because the
+                    // tests then only ever exercised the one spelling that happened to work.
+                    characteristic_key(&uuid),
                     CharacteristicData {
                         uuid: uuid.clone(),
                         properties: vec!["read".to_string(), "write".to_string()],
@@ -928,10 +961,8 @@ impl BluetoothBle {
         let server_data = Arc::new(Mutex::new(ServerData {
             hub: None,
             event_tx: None,
-            state: ConnectionState::Idle,
             memory: String::new(),
             characteristics,
-            queued_events: Vec::new(),
         }));
 
         Self::event_loop(
@@ -1007,65 +1038,76 @@ impl BluetoothBle {
                         char_uuid_str, offset
                     ));
 
-                    // Check current state
-                    let current_state = {
-                        let guard = server_data.lock().await;
-                        guard.state.clone()
-                    };
+                    // Create read request event
+                    let llm_event = Event::new(
+                        &BLUETOOTH_READ_REQUEST_EVENT,
+                        serde_json::json!({
+                            "characteristic_uuid": char_uuid_str,
+                            "offset": offset,
+                        }),
+                    );
 
-                    match current_state {
-                        ConnectionState::Idle => {
-                            // Update state to Processing
-                            server_data.lock().await.state = ConnectionState::Processing;
-
-                            // Create read request event
-                            let llm_event = Event::new(
-                                &BLUETOOTH_READ_REQUEST_EVENT,
-                                serde_json::json!({
-                                    "characteristic_uuid": char_uuid_str,
-                                    "offset": offset,
-                                }),
-                            );
-
-                            // Call LLM
-                            match Self::call_llm_for_event(
-                                &server_id,
-                                &llm_client,
-                                &app_state,
-                                &status_tx,
-                                &server_data,
-                                &protocol,
-                                llm_event,
-                            )
-                            .await
-                            {
-                                Ok(llm_result) => {
-                                    // Three outcomes, kept apart on purpose. ATT carries only
-                                    // "here is a value" or an error code, so what the wire
-                                    // cannot distinguish the log must: every branch below names
-                                    // its `decision=`.
-                                    //
-                                    // The stored-value fallback is deliberate and is *not* an
-                                    // invented answer: the characteristic's current value is
-                                    // this server's own state, set by `add_service`'s
-                                    // `initial_value`, by `send_notification`, or by the last
-                                    // write. Serving it when the handler declined to name a
-                                    // value is ordinary GATT behaviour. What is not allowed is
-                                    // conjuring a value where there is none, or substituting the
-                                    // stored value for an answer we failed to decode.
-                                    //
-                                    // The lookup is `.await`ed, not
-                                    // `futures::executor::block_on(server_data.lock())` inside a
-                                    // synchronous closure as it once was — a blocking lock on a
-                                    // tokio worker thread, which can panic ("Cannot block the
-                                    // current thread from within a runtime") into the
-                                    // `tokio::spawn` that swallows it, leaving the server
-                                    // looking healthy while the read died.
-                                    let reply = match read_decision(&llm_result.raw_actions) {
-                                        ReadDecision::Value(value) => {
-                                            Log::new(Some(&status_tx)).debug(format!(
-                                                "BLE read of {} answered by handler \
+                    // Call LLM
+                    match Self::call_llm_for_event(
+                        &server_id,
+                        &llm_client,
+                        &app_state,
+                        &status_tx,
+                        &server_data,
+                        &protocol,
+                        llm_event,
+                    )
+                    .await
+                    {
+                        Ok(llm_result) => {
+                            // Three outcomes, kept apart on purpose. ATT carries only
+                            // "here is a value" or an error code, so what the wire
+                            // cannot distinguish the log must: every branch below names
+                            // its `decision=`.
+                            //
+                            // The stored-value fallback is deliberate and is *not* an
+                            // invented answer: the characteristic's current value is
+                            // this server's own state, set by `add_service`'s
+                            // `initial_value`, by `send_notification`, or by the last
+                            // write. Serving it when the handler declined to name a
+                            // value is ordinary GATT behaviour. What is not allowed is
+                            // conjuring a value where there is none, or substituting the
+                            // stored value for an answer we failed to decode.
+                            //
+                            // The lookup is `.await`ed, not
+                            // `futures::executor::block_on(server_data.lock())` inside a
+                            // synchronous closure as it once was — a blocking lock on a
+                            // tokio worker thread, which can panic ("Cannot block the
+                            // current thread from within a runtime") into the
+                            // `tokio::spawn` that swallows it, leaving the server
+                            // looking healthy while the read died.
+                            let reply = match read_decision(&llm_result.raw_actions) {
+                                ReadDecision::Value(value) => {
+                                    Log::new(Some(&status_tx)).debug(format!(
+                                        "BLE read of {} answered by handler \
                                                  (decision=model_value, {} bytes)",
+                                        char_uuid_str,
+                                        value.len()
+                                    ));
+                                    ReadRequestResponse {
+                                        value,
+                                        response: RequestResponse::Success,
+                                    }
+                                }
+                                ReadDecision::UseStored => {
+                                    let stored = {
+                                        let guard = server_data.lock().await;
+                                        guard
+                                            .characteristics
+                                            .get(&characteristic_key(&char_uuid_str))
+                                            .map(|c| c.current_value.clone())
+                                    };
+                                    match stored {
+                                        Some(value) => {
+                                            Log::new(Some(&status_tx)).debug(format!(
+                                                "BLE read of {} not answered by the \
+                                                         handler (decision=model_silent); \
+                                                         serving the stored value ({} bytes)",
                                                 char_uuid_str,
                                                 value.len()
                                             ));
@@ -1074,116 +1116,69 @@ impl BluetoothBle {
                                                 response: RequestResponse::Success,
                                             }
                                         }
-                                        ReadDecision::UseStored => {
-                                            let stored = {
-                                                let guard = server_data.lock().await;
-                                                guard
-                                                    .characteristics
-                                                    .get(&char_uuid_str)
-                                                    .map(|c| c.current_value.clone())
-                                            };
-                                            match stored {
-                                                Some(value) => {
-                                                    Log::new(Some(&status_tx)).debug(format!(
-                                                        "BLE read of {} not answered by the \
-                                                         handler (decision=model_silent); \
-                                                         serving the stored value ({} bytes)",
-                                                        char_uuid_str,
-                                                        value.len()
-                                                    ));
-                                                    ReadRequestResponse {
-                                                        value,
-                                                        response: RequestResponse::Success,
-                                                    }
-                                                }
-                                                None => {
-                                                    // Nothing was said and nothing is stored:
-                                                    // an empty Success here would assert that
-                                                    // this characteristic holds zero bytes,
-                                                    // which nothing is in a position to claim.
-                                                    console_error!(
-                                                        status_tx,
-                                                        "BLE read of {} could not be answered \
+                                        None => {
+                                            // Nothing was said and nothing is stored:
+                                            // an empty Success here would assert that
+                                            // this characteristic holds zero bytes,
+                                            // which nothing is in a position to claim.
+                                            console_error!(
+                                                status_tx,
+                                                "BLE read of {} could not be answered \
                                                          (decision=fail_closed_model_silent_no_\
                                                          value): the handler named no value and \
                                                          this characteristic has none stored. \
                                                          Replying ATT Unlikely Error (0x0E).",
-                                                        char_uuid_str
-                                                    );
-                                                    ReadRequestResponse {
-                                                        value: Vec::new(),
-                                                        response: RequestResponse::UnlikelyError,
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        ReadDecision::Unusable(reason) => {
-                                            console_error!(
-                                                status_tx,
-                                                "BLE read of {} could not be answered \
-                                                 (decision=fail_closed_bad_value): {}. Replying \
-                                                 ATT Unlikely Error (0x0E); the stored value is \
-                                                 NOT substituted for an answer that failed to \
-                                                 decode.",
-                                                char_uuid_str,
-                                                reason
+                                                char_uuid_str
                                             );
                                             ReadRequestResponse {
                                                 value: Vec::new(),
                                                 response: RequestResponse::UnlikelyError,
                                             }
                                         }
-                                    };
-
-                                    let _ = responder.send(reply);
+                                    }
                                 }
-                                Err(e) => {
-                                    // Fail closed, and say so on both channels. ATT has no
-                                    // "try again later"; `UnlikelyError` (0x0E) is the generic
-                                    // "the server could not do it" the central will surface as
-                                    // a failed read. This is a *backend* failure and stays
-                                    // distinct from the Ok branch's decisions above: no handler
-                                    // ran, so not even the stored value is served — it would be
-                                    // a claim about the characteristic that nothing here is in
-                                    // a position to make.
+                                ReadDecision::Unusable(reason) => {
                                     console_error!(
                                         status_tx,
                                         "BLE read of {} could not be answered \
+                                                 (decision=fail_closed_bad_value): {}. Replying \
+                                                 ATT Unlikely Error (0x0E); the stored value is \
+                                                 NOT substituted for an answer that failed to \
+                                                 decode.",
+                                        char_uuid_str,
+                                        reason
+                                    );
+                                    ReadRequestResponse {
+                                        value: Vec::new(),
+                                        response: RequestResponse::UnlikelyError,
+                                    }
+                                }
+                            };
+
+                            let _ = responder.send(reply);
+                        }
+                        Err(e) => {
+                            // Fail closed, and say so on both channels. ATT has no
+                            // "try again later"; `UnlikelyError` (0x0E) is the generic
+                            // "the server could not do it" the central will surface as
+                            // a failed read. This is a *backend* failure and stays
+                            // distinct from the Ok branch's decisions above: no handler
+                            // ran, so not even the stored value is served — it would be
+                            // a claim about the characteristic that nothing here is in
+                            // a position to make.
+                            console_error!(
+                                status_tx,
+                                "BLE read of {} could not be answered \
                                          (decision=fail_closed_llm_error): the handler failed \
                                          ({}). Replying ATT Unlikely Error (0x0E); no \
                                          characteristic value is being invented.",
-                                        char_uuid_str,
-                                        e
-                                    );
-                                    let _ = responder.send(ReadRequestResponse {
-                                        value: Vec::new(),
-                                        response: RequestResponse::UnlikelyError,
-                                    });
-                                }
-                            }
-
-                            // Back to Idle
-                            server_data.lock().await.state = ConnectionState::Idle;
-                        }
-                        ConnectionState::Processing => {
-                            // Queue the event
-                            server_data.lock().await.queued_events.push(
-                                PeripheralEvent::ReadRequest {
-                                    request,
-                                    offset,
-                                    responder,
-                                },
+                                char_uuid_str,
+                                e
                             );
-                        }
-                        ConnectionState::Accumulating => {
-                            // Also queue
-                            server_data.lock().await.queued_events.push(
-                                PeripheralEvent::ReadRequest {
-                                    request,
-                                    offset,
-                                    responder,
-                                },
-                            );
+                            let _ = responder.send(ReadRequestResponse {
+                                value: Vec::new(),
+                                response: RequestResponse::UnlikelyError,
+                            });
                         }
                     }
                 }
@@ -1203,128 +1198,91 @@ impl BluetoothBle {
                     ));
                     console_trace!(status_tx, "BLE write data (hex): {}", value_hex);
 
-                    // Check current state
-                    let current_state = {
-                        let guard = server_data.lock().await;
-                        guard.state.clone()
-                    };
+                    // Update stored value
+                    {
+                        let mut guard = server_data.lock().await;
+                        if let Some(char_data) = guard
+                            .characteristics
+                            .get_mut(&characteristic_key(&char_uuid_str))
+                        {
+                            char_data.current_value = value.clone();
+                        }
+                    }
 
-                    match current_state {
-                        ConnectionState::Idle => {
-                            // Update state to Processing
-                            server_data.lock().await.state = ConnectionState::Processing;
+                    // Create write request event
+                    let llm_event = Event::new(
+                        &BLUETOOTH_WRITE_REQUEST_EVENT,
+                        serde_json::json!({
+                            "characteristic_uuid": char_uuid_str,
+                            "value": value_hex,
+                            "offset": offset,
+                        }),
+                    );
 
-                            // Update stored value
-                            {
-                                let mut guard = server_data.lock().await;
-                                if let Some(char_data) =
-                                    guard.characteristics.get_mut(&char_uuid_str)
-                                {
-                                    char_data.current_value = value.clone();
-                                }
-                            }
-
-                            // Create write request event
-                            let llm_event = Event::new(
-                                &BLUETOOTH_WRITE_REQUEST_EVENT,
-                                serde_json::json!({
-                                    "characteristic_uuid": char_uuid_str,
-                                    "value": value_hex,
-                                    "offset": offset,
-                                }),
-                            );
-
-                            // Call LLM
-                            match Self::call_llm_for_event(
-                                &server_id,
-                                &llm_client,
-                                &app_state,
-                                &status_tx,
-                                &server_data,
-                                &protocol,
-                                llm_event,
-                            )
-                            .await
-                            {
-                                Ok(llm_result) => {
-                                    // `respond_to_write` declares a `status` of 'success' or
-                                    // 'error', and nothing read it: every answered write was
-                                    // acknowledged Success, so a model rejecting a value -
-                                    // out of range, wrong length, not writable right now -
-                                    // was told the peer it had been accepted. The ATT Write
-                                    // Response is the only signal the central gets.
-                                    let response = write_response_status(&llm_result.raw_actions);
-                                    if matches!(response, RequestResponse::UnlikelyError) {
-                                        Log::new(Some(&status_tx)).info(format!(
-                                            "BLE write to {} rejected by handler \
+                    // Call LLM
+                    match Self::call_llm_for_event(
+                        &server_id,
+                        &llm_client,
+                        &app_state,
+                        &status_tx,
+                        &server_data,
+                        &protocol,
+                        llm_event,
+                    )
+                    .await
+                    {
+                        Ok(llm_result) => {
+                            // `respond_to_write` declares a `status` of 'success' or
+                            // 'error', and nothing read it: every answered write was
+                            // acknowledged Success, so a model rejecting a value -
+                            // out of range, wrong length, not writable right now -
+                            // was told the peer it had been accepted. The ATT Write
+                            // Response is the only signal the central gets.
+                            let response = write_response_status(&llm_result.raw_actions);
+                            if matches!(response, RequestResponse::UnlikelyError) {
+                                Log::new(Some(&status_tx)).info(format!(
+                                    "BLE write to {} rejected by handler \
                                              (decision=model_reject); replying ATT Unlikely \
                                              Error (0x0E)",
-                                            char_uuid_str
-                                        ));
-                                    } else if !llm_result.raw_actions.iter().any(|a| {
-                                        matches!(
-                                            a.get("type").and_then(|v| v.as_str()),
-                                            Some("respond_to_write") | Some("send_write_response")
-                                        )
-                                    }) {
-                                        // The write itself already took effect above — the
-                                        // stored value was updated before the handler ran — so
-                                        // acknowledging it is accurate rather than permissive.
-                                        // But silence and an explicit success are the same
-                                        // Write Response on the wire, so the log has to hold
-                                        // them apart from each other and from `model_reject`.
-                                        Log::new(Some(&status_tx)).debug(format!(
-                                            "BLE write to {} not answered by the handler \
+                                    char_uuid_str
+                                ));
+                            } else if !llm_result.raw_actions.iter().any(|a| {
+                                matches!(
+                                    a.get("type").and_then(|v| v.as_str()),
+                                    Some("respond_to_write") | Some("send_write_response")
+                                )
+                            }) {
+                                // The write itself already took effect above — the
+                                // stored value was updated before the handler ran — so
+                                // acknowledging it is accurate rather than permissive.
+                                // But silence and an explicit success are the same
+                                // Write Response on the wire, so the log has to hold
+                                // them apart from each other and from `model_reject`.
+                                Log::new(Some(&status_tx)).debug(format!(
+                                    "BLE write to {} not answered by the handler \
                                              (decision=model_silent); the value was stored, so \
                                              replying ATT Success",
-                                            char_uuid_str
-                                        ));
-                                    }
-                                    let _ = responder.send(WriteRequestResponse { response });
-                                }
-                                Err(e) => {
-                                    // Fail closed: the central must be told the write did not
-                                    // take effect. An ATT Write Response is an acknowledgement,
-                                    // so answering Success here would tell the peer its value
-                                    // was accepted by a handler that never ran.
-                                    console_error!(
-                                        status_tx,
-                                        "BLE write to {} could not be answered: the handler \
+                                    char_uuid_str
+                                ));
+                            }
+                            let _ = responder.send(WriteRequestResponse { response });
+                        }
+                        Err(e) => {
+                            // Fail closed: the central must be told the write did not
+                            // take effect. An ATT Write Response is an acknowledgement,
+                            // so answering Success here would tell the peer its value
+                            // was accepted by a handler that never ran.
+                            console_error!(
+                                status_tx,
+                                "BLE write to {} could not be answered: the handler \
                                          failed ({}). Replying ATT Unlikely Error (0x0E); the \
                                          write is NOT acknowledged.",
-                                        char_uuid_str,
-                                        e
-                                    );
-                                    let _ = responder.send(WriteRequestResponse {
-                                        response: RequestResponse::UnlikelyError,
-                                    });
-                                }
-                            }
-
-                            // Back to Idle
-                            server_data.lock().await.state = ConnectionState::Idle;
-                        }
-                        ConnectionState::Processing => {
-                            // Queue the event
-                            server_data.lock().await.queued_events.push(
-                                PeripheralEvent::WriteRequest {
-                                    request,
-                                    value,
-                                    offset,
-                                    responder,
-                                },
+                                char_uuid_str,
+                                e
                             );
-                        }
-                        ConnectionState::Accumulating => {
-                            // Also queue
-                            server_data.lock().await.queued_events.push(
-                                PeripheralEvent::WriteRequest {
-                                    request,
-                                    value,
-                                    offset,
-                                    responder,
-                                },
-                            );
+                            let _ = responder.send(WriteRequestResponse {
+                                response: RequestResponse::UnlikelyError,
+                            });
                         }
                     }
                 }

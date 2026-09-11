@@ -115,8 +115,7 @@ async fn test_bluetooth_heart_rate_server() -> E2EResult<()> {
                             "base_stack": "BLUETOOTH_BLE",
                             "instruction": "Create the Heart Rate Service with Heart Rate Measurement characteristic. Set initial BPM to 72. Start advertising as 'NetGet-HeartRate'",
                             "startup_params": {
-                                "device_name": "NetGet-HeartRate",
-                                "auto_advertise": false
+                                "device_name": "NetGet-HeartRate"
                             }
                         }
                     ]))
@@ -317,8 +316,7 @@ async fn test_bluetooth_battery_service() -> E2EResult<()> {
                             "base_stack": "BLUETOOTH_BLE",
                             "instruction": "Create Battery Service with Battery Level characteristic. Set battery level to 95%. Start advertising as 'NetGet-Battery'",
                             "startup_params": {
-                                "device_name": "NetGet-Battery",
-                                "auto_advertise": false
+                                "device_name": "NetGet-Battery"
                             }
                         }
                     ]))
@@ -485,8 +483,7 @@ async fn test_bluetooth_ble_startup() -> E2EResult<()> {
                             "base_stack": "BLUETOOTH_BLE",
                             "instruction": "Create custom service with characteristic. Set value to 'TEST'. Start advertising as 'NetGet-Test'",
                             "startup_params": {
-                                "device_name": "NetGet-Test",
-                                "auto_advertise": false
+                                "device_name": "NetGet-Test"
                             }
                         }
                     ]))
