@@ -117,6 +117,15 @@ mod usb_fido2_llm_failure {
         // says `deny_request` does not log this line; only a failed call does.
         server.wait_for_log(FAIL_CLOSED_LOG, 10).await?;
 
+        // An outage and a policy refusal both reach the host as
+        // CTAP2_ERR_OPERATION_DENIED, so the wire cannot tell them apart and the log has to --
+        // the discipline `src/server/radius/` sets. Without the tag, "the model said no" and
+        // "the model could not be reached" are indistinguishable after the fact, and on an
+        // authenticator that is the difference between a decision and an incident.
+        server
+            .wait_for_log("decision=fail_closed_llm_error", 10)
+            .await?;
+
         // Nothing may have been created along the way. If a key pair had been generated before
         // the decision, this would find it.
         let after = key

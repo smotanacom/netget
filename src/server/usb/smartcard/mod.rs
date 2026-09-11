@@ -514,9 +514,13 @@ impl UsbSmartCardServer {
         {
             Ok(execution) => execution,
             Err(e) => {
+                // `decision=` tags, as `src/server/radius/` does. 6F00 is what the card
+                // answers whether the model refused, said nothing, or could not be reached,
+                // so the wire cannot carry the distinction and the log must.
                 console_error!(
                     status_tx,
-                    "USB smart card handler failed for {} on {}: {}; answering 6F00",
+                    "USB smart card handler failed for {} on {} \
+                     decision=fail_closed_llm_error, answering 6F00: {}",
                     event.id(),
                     connection_id,
                     e
@@ -568,8 +572,8 @@ impl UsbSmartCardServer {
             None => {
                 console_error!(
                     status_tx,
-                    "USB smart card handler produced no respond_to_apdu for {} on {}; \
-                     answering 6F00",
+                    "USB smart card handler produced no respond_to_apdu for {} on {} \
+                     decision=model_silent, answering 6F00",
                     event.id(),
                     connection_id
                 );

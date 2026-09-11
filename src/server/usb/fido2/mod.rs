@@ -987,9 +987,20 @@ impl UsbFido2Server {
         // approve from the TUI — and denies when it expires.
         let decision = handle.approvals.wait(approval_id, rx).await;
 
+        // `decision=` tags, as `src/server/radius/` does. CTAP2 answers
+        // CTAP2_ERR_OPERATION_DENIED whether the model refused, said nothing, or could not be
+        // reached, so the wire cannot carry the distinction and the log must -- and on an
+        // authenticator that distinction is the difference between a policy decision and an
+        // outage that looked like one.
+        let tag = match (decision, answered) {
+            (ApprovalDecision::Approved, _) => "model_approve",
+            (ApprovalDecision::Denied, false) => "fail_closed_llm_error",
+            (ApprovalDecision::Denied, true) => "model_reject_or_silent",
+        };
+
         info!(
-            "FIDO2 {} request {} on connection {}: {:?}",
-            what, approval_id, connection_id, decision
+            "FIDO2 {} request {} on connection {} decision={} ({:?})",
+            what, approval_id, connection_id, tag, decision
         );
 
         let mut guard = hid_handler.lock().unwrap_or_else(|p| p.into_inner());

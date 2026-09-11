@@ -517,13 +517,17 @@ impl UsbMscServer {
             // The event kind comes before the id so a test can wait on one specific event
             // with a substring match.
             Ok(_) => info!(
-                "USB MSC LLM call completed ({}) for connection {}",
+                "USB MSC LLM call completed ({}) for connection {} decision=model_answered",
                 what, connection_id
             ),
             Err(e) => {
+                // `decision=` tags, as `src/server/radius/` does. SCSI cannot distinguish a
+                // refusal from an outage -- both leave the host with NOT READY -- so the log
+                // has to, or the two are indistinguishable after the fact.
                 console_error!(
                     status_tx,
-                    "LLM call failed for USB MSC connection {} ({}): {}",
+                    "LLM call failed for USB MSC connection {} ({}) \
+                     decision=fail_closed_llm_error: {}",
                     connection_id,
                     what,
                     e

@@ -397,13 +397,17 @@ impl UsbSerialServer {
 
         match result {
             Ok(_) => info!(
-                "USB serial LLM call completed for connection {} ({})",
+                "USB serial LLM call completed for connection {} ({}) decision=model_answered",
                 connection_id, what
             ),
             Err(e) => {
+                // `decision=` tags, as `src/server/radius/` does. A CDC overrun is all the
+                // wire can carry and it says nothing about *why* the data was dropped, so
+                // the distinction has to live in the log.
                 console_error!(
                     status_tx,
-                    "LLM call failed for USB serial connection {} ({}): {}",
+                    "LLM call failed for USB serial connection {} ({}) \
+                     decision=fail_closed_llm_error: {}",
                     connection_id,
                     what,
                     e
