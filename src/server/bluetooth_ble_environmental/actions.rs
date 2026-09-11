@@ -152,12 +152,14 @@ impl Protocol for BluetoothBleEnvironmentalProtocol {
                         "handler": {
                             "type": "script",
                             "language": "python",
-                            "code": "actions = [{'type': 'respond_to_read', 'value': '6a08'}]"
+                            "code": "import json,sys\ne=json.load(sys.stdin)['event']\nv={'00002a6e-0000-1000-8000-00805f9b34fb':'6a08','00002a6f-0000-1000-8000-00805f9b34fb':'c012'}.get(str(e.get('characteristic_uuid','')).lower())\nprint(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))"
                         }
                     }
                 ]
             }),
-            // Static mode: fixed GATT layout and a fixed read response, with no model call.
+            // Static mode: a fixed GATT layout, with no model call. The read itself goes to a
+            // script rather than a static handler because this service has two readable
+            // characteristics and a static handler cannot tell them apart.
             json!({
                 "type": "open_server",
                 "port": 0,
@@ -210,16 +212,25 @@ impl Protocol for BluetoothBleEnvironmentalProtocol {
                             ]
                         }
                     },
+                    // This is the same dispatching script the script-mode example uses, and
+                    // it is here rather than a static handler because a static one cannot
+                    // tell the two readable characteristics apart. It used to be a fixed
+                    // `respond_to_read` naming "6a08", so a central reading Humidity
+                    // (0x2A6F) got 0x086A back and decoded it as 21.54 %RH: the
+                    // temperature, wearing the humidity field's units. Nothing about
+                    // that looks wrong until real hardware reads it.
+                    //
+                    // A script costs no LLM call either, and an unrecognised
+                    // characteristic answers with `[]`, which `read_decision` maps to
+                    // `ReadDecision::UseStored` so the base serves that characteristic's
+                    // own `initial_value`. The layout above stays static, which is what
+                    // the static-mode example is for.
                     {
                         "event_pattern": "bluetooth_read_request",
                         "handler": {
-                            "type": "static",
-                            "actions": [
-                                {
-                                    "type": "respond_to_read",
-                                    "value": "6a08"
-                                }
-                            ]
+                            "type": "script",
+                            "language": "python",
+                            "code": "import json,sys\ne=json.load(sys.stdin)['event']\nv={'00002a6e-0000-1000-8000-00805f9b34fb':'6a08','00002a6f-0000-1000-8000-00805f9b34fb':'c012'}.get(str(e.get('characteristic_uuid','')).lower())\nprint(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))"
                         }
                     }
                 ]

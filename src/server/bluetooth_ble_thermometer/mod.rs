@@ -21,7 +21,19 @@ impl BluetoothBleThermometer {
             state,
             tx,
             id,
-            format!("{}. Configure as BLE Health Thermometer (0x1809).", inst),
+            {
+                // The user's instruction leads and the profile sentence is appended to it; an empty
+                // instruction gets the sentence alone. This was `format!("{}. Configure as ...",
+                // inst)`, which put a stray leading period in front of the sentence when the
+                // instruction was empty and a doubled one after it when the instruction already
+                // ended in a full stop — in the prompt the model actually reads.
+                let inst = inst.trim().trim_end_matches('.').trim();
+                if inst.is_empty() {
+                    "Configure as a BLE Health Thermometer Service (0x1809).".to_string()
+                } else {
+                    format!("{inst}. Configure as a BLE Health Thermometer Service (0x1809).")
+                }
+            },
         )
         .await
     }

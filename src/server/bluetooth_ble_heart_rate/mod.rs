@@ -22,11 +22,16 @@ impl BluetoothBleHeartRate {
         info!("Starting BLE Heart Rate Service: {}", device_name);
         // The user's instruction leads; the profile preamble is appended. This previously
         // discarded the instruction entirely, so "start at 60 BPM" never reached the model.
-        let hr_instruction = format!(
-            "{}. Configure as a BLE Heart Rate Service (0x180D) with a Heart Rate Measurement \
-             characteristic (0x2A37).",
-            instruction.trim_end_matches('.')
-        );
+        // The empty case is handled separately so a server created with no instruction does
+        // not get a prompt beginning with a stray period.
+        const SENTENCE: &str = "Configure as a BLE Heart Rate Service (0x180D) with a Heart \
+                                Rate Measurement characteristic (0x2A37).";
+        let trimmed = instruction.trim().trim_end_matches('.').trim();
+        let hr_instruction = if trimmed.is_empty() {
+            SENTENCE.to_string()
+        } else {
+            format!("{trimmed}. {SENTENCE}")
+        };
         crate::server::bluetooth_ble::BluetoothBle::spawn_with_llm_actions(
             device_name,
             llm_client,

@@ -136,7 +136,8 @@ impl Protocol for BluetoothBleFileTransferProtocol {
                     "device_name": "NetGet-FileTransfer"
                 }
             }),
-            // Script mode: a read is answered in-process, with no model call.
+            // Script mode: a write is acknowledged in-process, with no model call. Neither
+            // characteristic is readable, so there is no read to answer here.
             json!({
                 "type": "open_server",
                 "port": 0,
@@ -146,16 +147,17 @@ impl Protocol for BluetoothBleFileTransferProtocol {
                 },
                 "event_handlers": [
                     {
-                        "event_pattern": "bluetooth_read_request",
+                        "event_pattern": "bluetooth_write_request",
                         "handler": {
                             "type": "script",
                             "language": "python",
-                            "code": "actions = [{'type': 'respond_to_read', 'value': '00'}]"
+                            "code": "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'actions':[{'type':'respond_to_write','status':'success'}]}))"
                         }
                     }
                 ]
             }),
-            // Static mode: fixed GATT layout and a fixed read response, with no model call.
+            // Static mode: a fixed GATT layout and a fixed write acknowledgement, with no model
+            // call. Nothing here is readable, so there is no read to answer.
             json!({
                 "type": "open_server",
                 "port": 0,
@@ -206,14 +208,25 @@ impl Protocol for BluetoothBleFileTransferProtocol {
                             ]
                         }
                     },
+                    // A write handler, not a read one. Neither characteristic above is
+                    // readable — both are write/notify, which is what a file-transfer
+                    // control point and data pipe are — so the `bluetooth_read_request`
+                    // handler this example used to carry could never match anything. It
+                    // validated at startup and then sat there, an answer to a question the
+                    // service cannot be asked, in the example a model copies verbatim.
+                    //
+                    // `respond_to_write` acknowledges the write; the transfer's own
+                    // progress goes back over the notify characteristic with
+                    // `send_notification`, which needs the model (or a script) to decide
+                    // what to say, so it is not part of a static example.
                     {
-                        "event_pattern": "bluetooth_read_request",
+                        "event_pattern": "bluetooth_write_request",
                         "handler": {
                             "type": "static",
                             "actions": [
                                 {
-                                    "type": "respond_to_read",
-                                    "value": "00"
+                                    "type": "respond_to_write",
+                                    "status": "success"
                                 }
                             ]
                         }

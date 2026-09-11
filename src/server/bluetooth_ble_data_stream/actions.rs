@@ -149,7 +149,7 @@ impl Protocol for BluetoothBleDataStreamProtocol {
                         "handler": {
                             "type": "script",
                             "language": "python",
-                            "code": "actions = [{'type': 'respond_to_read', 'value': '01'}]"
+                            "code": "import json,sys\ne=json.load(sys.stdin)['event']\nv={'0000f00f-0000-1000-8000-00805f9b34fb':'00'}.get(str(e.get('characteristic_uuid','')).lower())\nprint(json.dumps({'actions':[{'type':'respond_to_read','value':v}] if v else []}))"
                         }
                     }
                 ]

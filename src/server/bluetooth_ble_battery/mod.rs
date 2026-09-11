@@ -36,18 +36,26 @@ impl BluetoothBleBattery {
 
         // The user's instruction leads; the profile preamble is appended to it. Replacing it
         // outright would silently discard whatever the user actually asked the server to do.
+        // The empty case is handled separately so a server created with no instruction does
+        // not get a prompt beginning with a stray period.
+        let sentence = format!(
+            "Configure as a BLE Battery Service (0x180F) with a Battery Level characteristic \
+             (0x2A19) starting at {initial_level}%."
+        );
+        let trimmed = instruction.trim().trim_end_matches('.').trim();
+        let instruction = if trimmed.is_empty() {
+            sentence
+        } else {
+            format!("{trimmed}. {sentence}")
+        };
+
         BluetoothBle::spawn_with_llm_actions(
             device_name,
             llm_client,
             app_state,
             status_tx,
             server_id,
-            format!(
-                "{}. Configure as a BLE Battery Service (0x180F) with a Battery Level \
-                 characteristic (0x2A19) starting at {}%.",
-                instruction.trim_end_matches('.'),
-                initial_level
-            ),
+            instruction,
         )
         .await
     }
