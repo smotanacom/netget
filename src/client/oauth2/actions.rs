@@ -381,11 +381,29 @@ impl Protocol for OAuth2ClientProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-                .state(DevelopmentState::Experimental)
-                .implementation("oauth2 crate for multiple OAuth2 flows")
-                .llm_control("Full control over OAuth2 flows (password, device code, client credentials, authorization code)")
-                .e2e_testing("Mock OAuth2 server or public OAuth2 provider")
-                .build()
+            .state(DevelopmentState::Experimental)
+            .implementation(
+                "oauth2 crate 4.4 for the password, client-credentials and \
+                     authorization-code flows; device code (RFC 8628) by direct HTTP, which \
+                     the crate does not expose. token_url is required and connect() refuses \
+                     without it, so the SDK's own endpoint defaults can never decide where \
+                     traffic goes.",
+            )
+            .llm_control("Which flow to run, when to refresh, and what to do with the result")
+            .e2e_testing(
+                "tests/client/oauth2/command_channel_test.rs drives the injected-action \
+                     path against a provider served in-process, and is the only part that \
+                     runs. Four of the five tests in e2e_test.rs are #[ignore]d for Ollama \
+                     AND carry a skip-when-missing gate on the `mcp` feature (for axum), so \
+                     they are a silent pass twice over; the fifth is a construction smoke \
+                     test that contacts nothing.",
+            )
+            .notes(
+                "Tokens reach the model only as \"[REDACTED]\" - the values live in \
+                     protocol_data and the actions read them back. No token is verified: an \
+                     access token is an opaque string to this client.",
+            )
+            .build()
     }
     fn description(&self) -> &'static str {
         "OAuth2 client for authentication and token management"

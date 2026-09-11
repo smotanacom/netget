@@ -1,6 +1,37 @@
 # OAuth2 Client E2E Testing
 
-## Test Strategy
+## What actually runs
+
+**One file, and it is not this one's subject.** `command_channel_test.rs` drives the
+dashboard's injected-action path against an OAuth2 provider served in-process, and it is the
+only real coverage this client has.
+
+In `e2e_test.rs`, four of the five tests are dead **twice over**:
+
+- each carries `#[ignore] // Requires Ollama to be running`, so a normal run skips them; and
+- each opens with `#[cfg(not(feature = "mcp"))] { println!("Skipping test …"); return; }`,
+  because the axum mock server they need arrives with the `mcp` feature. That is the
+  skip-when-missing shape the root `CLAUDE.md` calls out: on a build without `mcp` it is a
+  *silent pass*, not a skip, so even `--include-ignored` proves nothing there.
+
+The fifth, `test_oauth2_client_initialization`, constructs a `ClientInstance` and asserts it
+was added to `AppState`. It contacts nothing and exercises no OAuth2 code.
+
+So the budget and runtime figures below describe tests that do not run. They are kept because
+they document what the four *would* cover if converted, which is the useful part — but do not
+read them as coverage.
+
+**To convert them**, copy `start_provider` from
+`tests/client/openidconnect/command_channel_test.rs`: ~50 lines of `tokio::net::TcpListener`
+speaking HTTP/1.1, needing no `mcp` feature and no Ollama, driven through
+`AppState::send_to_client` rather than through the model. That removes both gates at once.
+Whatever else changes, a skip must **fail** rather than return `Ok(())` — `npm`'s real-CLI
+test is the shape.
+
+Unlike the `openidconnect` client's deleted suite, nothing here points at a public provider:
+every URL is `localhost`. These are dead, not dangerous.
+
+## Test Strategy (aspirational — see above)
 
 **Approach**: Black-box E2E testing with mock OAuth2 server
 
