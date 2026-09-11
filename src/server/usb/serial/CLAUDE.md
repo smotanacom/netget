@@ -68,6 +68,34 @@ raised from the connection task in `mod.rs` on the LLM-failure path. `pending_no
 exposes the queue depth for tests. This is currently the **only** serial-state bit the device
 ever sets.
 
+## Both buffers are bounded, and each was unbounded in a different direction
+
+**Host to device.** The connection loop coalesces the whole backlog on every event:
+
+```rust
+while data.len() < MAX_EVENT_BYTES { ... rx_rx.try_recv() ... }
+```
+
+What is being coalesced is precisely what accumulated while the previous LLM call was in
+flight, so with no cap an attached host writing at line rate for the length of a model
+round-trip decided the size of that buffer — and then of the `from_utf8_lossy` copy of it, and
+of the event JSON built from that, all of which the model then reads. `MAX_EVENT_BYTES` is
+8 KiB; the excess is reported to the host as a `SERIAL_STATE` overrun (below) rather than
+dropped in silence.
+
+**Device to host.** `queue_tx` appended without limit while only the host's bulk IN URBs
+drained it, so the model's pace decided how much memory a port held and a host that never polls
+never gave any back. `MAX_TX_BUFFER` is 64 KiB — several seconds at 115200 baud, the port's own
+default. `send_data` reports the refusal to the model instead of letting it believe bytes went
+out; a real UART drops on a full transmit buffer and says so.
+
+## `set_line_coding` is range-checked, not narrowed
+
+`baud_rate` was read as `as_u64()? as u32` and `data_bits` as `as u8`, both silent: 5000000000
+became 705032704 and 264 became 8, after which `GET_LINE_CODING` handed the host a
+configuration nobody had asked for. Both are checked at full width now, `data_bits` against the
+five values CDC PSTN 1.2 table 17 defines (5, 6, 7, 8, 16).
+
 ## LLM Actions
 
 **send_data**: queue text for the host's next read.

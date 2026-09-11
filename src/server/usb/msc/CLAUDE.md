@@ -182,6 +182,24 @@ is queued when the task wakes is folded into one read event and one write event;
 call is in flight the task is not draining the channel, so a burst does not become a burst of
 round-trips.
 
+## Sector arithmetic is `usize`, and the drive size is bounded
+
+`read_sectors`, `write_sectors` and `zero_sectors` each computed their byte offset as
+`(lba * self.bytes_per_sector) as usize` — a `u32` multiply that overflows at exactly 4 GiB,
+which is well inside what `mount_disk` accepted. In a debug or test build that panicked inside
+a URB callback, where `tokio::spawn` swallows it and the server goes on reporting `Running`; in
+release it wrapped to a small offset and served the wrong sectors as though they were the right
+ones. The `lba.checked_add(count)` bounds check above it was already correct and did not help,
+because the overflow is in the multiply that follows. All three compute in `usize` now; the LBA
+itself stays 32 bits, which is what SCSI READ(10) defines.
+
+`mount_disk`'s `size_mb` was only checked to fit in `u32`, so 4294967295 was accepted: a 4 PiB
+`set_len` whose sector count then had to be truncated by `as u32` to be storable, leaving the
+device advertising a capacity with no relation to the mapping behind it. It is bounded by what
+a 32-bit LBA can address at 512 bytes per sector, checked before anything touches the
+filesystem, and `DiskImage::open_or_create` refuses rather than truncates if it is ever reached
+with more.
+
 ## Known limitations
 
 - **`serve_files` content is text only.** No binary files, and no way to express one.

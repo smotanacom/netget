@@ -186,6 +186,39 @@ project rule forbids.
 reversible, so it is reported as `u2f-app:<first 8 hex>` and the parameter description says so
 rather than pretending to know the domain.
 
+## Hostile input
+
+Everything on the interrupt OUT endpoint arrives from whoever attached over USB/IP, before any
+user-presence decision has been made. Two bounds in `ctaphid.rs` exist because it was not:
+
+- **`MAX_MESSAGE_SIZE` (7609).** `BCNT` is 16 bits, so a host may declare 65535 bytes, but a
+  CTAPHID message is one initialization packet plus at most 128 continuations — the sequence
+  number is 7 bits — and 57 + 128 * 59 is the specification's own `MAX_MSG_SIZE`. A larger
+  declaration is malformed by that arithmetic and is refused with `CTAP1_ERR_INVALID_LEN`.
+- **`MAX_ASSEMBLING_CHANNELS` (4).** The channel id is a field in the packet, not something the
+  device hands out, so a peer may invent as many as it likes. Only a *partially* assembled
+  message retains anything, so only that path is capped; re-initializing a channel that is
+  already assembling replaces its buffer and is free.
+
+Together these close a memory-exhaustion route that cost the attacker almost nothing:
+`CtapHidMessage::new` called `Vec::with_capacity(bcnt)` before a single continuation packet
+arrived, and the buffer lived until the message completed — which a host that simply stops
+sending never does. One 64-byte packet reserved up to 64 KiB, on unlimited channels,
+indefinitely. Nothing is pre-allocated from the declared size now; the buffer grows with the
+bytes that actually arrive.
+
+The same arithmetic bounds the outbound direction. `fragment_response` refuses a reply past
+`MAX_MESSAGE_SIZE` with one `INVALID_LEN` frame rather than wrapping `seq` back to 0 and
+truncating `BCNT` through `as u16`, which produced a well-formed-looking answer that decoded to
+something else. And a refusal now carries the channel and the code it belongs to
+(`CtapHidRejection`, read back with `ctaphid::rejection_of`) instead of being reported as
+`INVALID_SEQ` on the broadcast channel, which is the wrong code on a channel the host is not
+listening to.
+
+`tests/server/usb_fido2/e2e_test.rs` pins both bounds, and pins that a message *at* the maximum
+still fragments into its 129 packets — a guard that refused everything would satisfy the first
+assertion while breaking the protocol.
+
 ## What is and is not verified
 
 **Verified**, by `tests/server/usb_fido2/e2e_test.rs` driving USB/IP and CTAPHID directly over
@@ -203,7 +236,9 @@ TCP, with all CBOR decoded independently by `serde_cbor`:
   something — it can only pass if the private key was really generated, stored and used.
 - U2F REGISTER and AUTHENTICATE under model approval, with the signature likewise verified;
   check-only authentication raising **no** approval.
-- Denial produces 0x27 and stores nothing; silence produces 0x27 and stores nothing.
+- Denial produces 0x27 and stores nothing; silence produces 0x27 and stores nothing, and an
+  LLM outage is tagged `decision=fail_closed_llm_error` in the log — the wire cannot tell the
+  three apart, so the log has to.
 - KEEPALIVE is actually sent while the model decides (`keepalives > 0`).
 
 **Not verified.** Nothing here has ever spoken to a real client:

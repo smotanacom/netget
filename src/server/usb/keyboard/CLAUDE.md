@@ -248,6 +248,13 @@ was dropped. `connection_id` is optional now and all three forms are accepted (n
 string, `conn-N`); with one host attached it is inferred, and with several, omitting it is an
 error naming the candidates.
 
+The repair left one half of the problem behind for a while, and it was the dangerous half: the
+resolved value went through `ConnectionId::new(id as u32)`, which **wraps**. A model naming
+connection 4294967298 therefore got connection *2* — on a keyboard, keystrokes typed into
+somebody else's window. It is read at full width and refused now, quoting the value back so the
+model's repair loop can see what was wrong. The same cast was present in `usb-mouse`,
+`usb-msc` and `usb-serial` and is fixed in all four.
+
 **2. `usb_keyboard_led_status` could never fire.** It was declared, carried the full action
 vocabulary, and had no emit site: a host sets keyboard LEDs with a class `SET_REPORT` on the
 control endpoint, and the crate's `UsbHidKeyboardHandler` never sees output reports.
@@ -281,7 +288,9 @@ disconnect the keyboard.
 - `type_text` **refuses** characters the US HID layout cannot produce rather than typing a
   different string; a partial send is indistinguishable from success.
 - `typing_speed_ms` paces on a spawned task, not `thread::sleep` — `execute_action` is a
-  synchronous trait method on a runtime worker.
+  synchronous trait method on a runtime worker. It is capped at 5 seconds a keystroke, because
+  that task is **not** registered with `register_server_task`: an unbounded interval left it
+  alive long past the server it belongs to.
 
 ### What is not verified
 
