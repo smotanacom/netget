@@ -1,4 +1,14 @@
-//! WHOIS client implementation
+//! WHOIS client implementation.
+//!
+//! **The peer here is somebody else's server, and it decides how much it says.** A WHOIS
+//! reply has no length field: the server writes until it is done and then closes, so the
+//! client reads until EOF. That makes "read until EOF" the protocol *and* an unbounded
+//! allocation controlled entirely by the remote end — a server that streams, or simply never
+//! stops, grows this process's memory for as long as it keeps sending. Both read paths are
+//! therefore capped by [`MAX_RESPONSE_BYTES`] and bounded by [`RESPONSE_READ_TIMEOUT`], and
+//! an over-long reply is truncated and answered rather than abandoned: the head of a WHOIS
+//! record is the part with the registrar in it.
+
 pub mod actions;
 
 pub use actions::WhoisClientProtocol;
@@ -7,10 +17,105 @@ use crate::llm::actions::client_trait::{Client, ClientActionResult};
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
+
+/// The most of a WHOIS reply this client will hold.
+///
+/// Generous — a thick registry record with a legal notice attached is a few tens of KB — and
+/// far below what an unbounded read costs. The remote server chooses how much it sends; this
+/// is the only thing that chooses how much is kept.
+const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// How long to wait for more of a reply before giving up on the server.
+///
+/// Bounds the gap between reads rather than the whole transfer, so a server that is still
+/// sending keeps the connection. Without it a server that accepts, says nothing and never
+/// closes parks this client forever — and the model is waiting on the response event.
+const RESPONSE_READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Strip control characters from a query before it goes on the wire.
+///
+/// RFC 3912 is one line, one query. A `query` containing CR or LF would put a *second* query
+/// line on the wire that the model never asked for, and the client would then attribute the
+/// server's reply to the first — so what reaches the response event would not describe what
+/// was actually asked. `finger`'s client (`strip_controls`) and `gopher`'s (which refuses a
+/// selector containing CR or LF outright) both guard this; WHOIS did not.
+///
+/// ESC goes with them: a query is echoed into the log and onto the operator's dashboard.
+fn sanitize_query(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// A WHOIS reply as it came off the socket.
+struct Reply {
+    /// Decoded lossily on purpose: registry servers still emit Latin-1, and `read_to_string`
+    /// (which this replaced on one path) fails a whole transfer over a single byte.
+    text: String,
+    /// [`MAX_RESPONSE_BYTES`] cut the reply short.
+    truncated: bool,
+    /// The socket errored. Reported separately from the text, because the bytes that did
+    /// arrive are still the head of the record.
+    error: Option<std::io::Error>,
+}
+
+/// Read a WHOIS reply to EOF, the cap, or the timeout.
+async fn read_reply<R>(reader: &mut R, client_id: ClientId) -> Reply
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut response: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; 4096];
+    let mut truncated = false;
+    let mut error = None;
+
+    loop {
+        let read = match tokio::time::timeout(RESPONSE_READ_TIMEOUT, reader.read(&mut buf)).await {
+            Err(_) => {
+                warn!(
+                    "WHOIS client {} saw no further data for {}s; treating the reply as \
+                     complete",
+                    client_id,
+                    RESPONSE_READ_TIMEOUT.as_secs()
+                );
+                break;
+            }
+            Ok(read) => read,
+        };
+
+        match read {
+            Ok(0) => break,
+            Ok(n) => {
+                let room = MAX_RESPONSE_BYTES.saturating_sub(response.len());
+                if n > room {
+                    response.extend_from_slice(&buf[..room]);
+                    truncated = true;
+                    warn!(
+                        "WHOIS client {} reply exceeded {} bytes; keeping the head and \
+                         stopping. A WHOIS reply has no length field, so how much arrives is \
+                         the remote server's choice, not ours.",
+                        client_id, MAX_RESPONSE_BYTES
+                    );
+                    break;
+                }
+                response.extend_from_slice(&buf[..n]);
+            }
+            Err(e) => {
+                error = Some(e);
+                break;
+            }
+        }
+    }
+
+    Reply {
+        text: String::from_utf8_lossy(&response).into_owned(),
+        truncated,
+        error,
+    }
+}
 
 use crate::client::llm_budget::call_llm_for_client;
 use crate::client::whois::actions::{
@@ -227,24 +332,19 @@ impl WhoisClient {
 
         // Read the full response: WHOIS servers close after sending it (RFC 3912). A
         // cancellation-safe `read()` loop rather than `read_to_string`, so the shape stays
-        // compatible with a `select!` arm if one is ever needed.
-        let mut response = Vec::new();
-        let mut buf = vec![0u8; 4096];
-        loop {
-            match read_half.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => response.extend_from_slice(&buf[..n]),
-                Err(e) => {
-                    error!("WHOIS client {} read error: {}", client_id, e);
-                    app_state
-                        .update_client_status(client_id, ClientStatus::Error(e.to_string()))
-                        .await;
-                    let _ = status_tx.send("__UPDATE_UI__".to_string());
-                    return;
-                }
-            }
+        // compatible with a `select!` arm if one is ever needed — and capped, because how
+        // much arrives is the remote server's choice (see the module note).
+        let reply = read_reply(&mut read_half, client_id).await;
+        if let Some(e) = reply.error {
+            error!("WHOIS client {} read error: {}", client_id, e);
+            app_state
+                .update_client_status(client_id, ClientStatus::Error(e.to_string()))
+                .await;
+            let _ = status_tx.send("__UPDATE_UI__".to_string());
+            return;
         }
-        let response = String::from_utf8_lossy(&response).into_owned();
+        let response = reply.text;
+        let truncated = reply.truncated;
         debug!(
             "WHOIS client {} received {} bytes",
             client_id,
@@ -256,11 +356,14 @@ impl WhoisClient {
         match query {
             Some(query) => {
                 // Call LLM with response
+                // `truncated` is on the event because a model that read half a record and
+                // thought it had the whole one would answer confidently and wrongly.
                 let event = Event::new(
                     &WHOIS_CLIENT_RESPONSE_RECEIVED_EVENT,
                     serde_json::json!({
                         "response": response,
                         "query": query,
+                        "truncated": truncated,
                     }),
                 );
 
@@ -307,7 +410,7 @@ impl WhoisClient {
                             let Some(q) = data.get("query").and_then(|v| v.as_str()) else {
                                 continue;
                             };
-                            match Self::run_query_once(&remote_addr, q).await {
+                            match Self::run_query_once(&remote_addr, q, client_id).await {
                                 Ok(resp) => info!(
                                     "WHOIS client {} follow-up query {:?} returned {} bytes",
                                     client_id,
@@ -359,16 +462,24 @@ impl WhoisClient {
     ///
     /// Raising no event also bounds the chain and keeps the async type non-recursive,
     /// which is what tokio::spawn's Send bound requires.
-    async fn run_query_once(remote_addr: &str, query: &str) -> Result<String> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn run_query_once(remote_addr: &str, query: &str, client_id: ClientId) -> Result<String> {
+        use tokio::io::AsyncWriteExt;
         let mut stream = TcpStream::connect(remote_addr)
             .await
             .with_context(|| format!("WHOIS follow-up could not reach {remote_addr}"))?;
+        let query = sanitize_query(query);
         stream.write_all(format!("{query}\r\n").as_bytes()).await?;
         stream.flush().await?;
-        let mut response = String::new();
-        stream.read_to_string(&mut response).await?;
-        Ok(response)
+
+        // Was `read_to_string`, which is unbounded *and* fails the whole transfer on the
+        // first non-UTF-8 byte — and a referral chase points this at registrars nobody here
+        // chose, several of which still emit Latin-1. `read_reply` caps it and decodes
+        // lossily; see the module note.
+        let reply = read_reply(&mut stream, client_id).await;
+        if let Some(e) = reply.error {
+            return Err(e).with_context(|| format!("WHOIS follow-up read from {remote_addr}"));
+        }
+        Ok(reply.text)
     }
 
     async fn apply_action<W>(
@@ -382,11 +493,11 @@ impl WhoisClient {
     {
         match result {
             ClientActionResult::Custom { name, data } if name == "whois_query" => {
-                let query = data
-                    .get("query")
-                    .and_then(|v| v.as_str())
-                    .context("Missing query in action data")?
-                    .to_string();
+                let query = sanitize_query(
+                    data.get("query")
+                        .and_then(|v| v.as_str())
+                        .context("Missing query in action data")?,
+                );
                 debug!("WHOIS client {} querying: {}", client_id, query);
                 let query_bytes = format!("{}\r\n", query);
                 {

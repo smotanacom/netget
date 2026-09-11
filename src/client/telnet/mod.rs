@@ -31,18 +31,21 @@ const DONT: u8 = 254;
 const SB: u8 = 250; // Subnegotiation Begin
 const SE: u8 = 240; // Subnegotiation End
 
-/// Connection state for LLM processing
-#[derive(Debug, Clone, PartialEq)]
-enum ConnectionState {
-    Idle,
-    Processing,
-    Accumulating,
-}
-
-/// Per-client data for LLM handling
+/// Per-client data for LLM handling.
+///
+/// There used to be an `Idle`/`Processing`/`Accumulating` state machine and a `queued_data`
+/// buffer here, copied from the TCP *server*. **Nothing could reach either.** The read loop is
+/// one sequential task: it reads, handles the data inline — LLM call included — and only then
+/// comes back to read again, so the state was always `Idle` at the point it was examined and
+/// `queued_data` was never appended to. The `Processing` and `Accumulating` arms were
+/// unreachable, and the line clearing `queued_data` after every turn read as "data arriving
+/// mid-call is dropped" when in fact no data could arrive mid-call at all.
+///
+/// The server-side machine exists because a server has two LLM entry points and genuinely can
+/// be re-entered. Copying its shape here bought nothing and described a concurrency this
+/// client does not have. (The root `CLAUDE.md` notes the same thing about
+/// `state/machine.rs`: a generic `StateMachine<S>` nothing uses, hand-rolled everywhere.)
 struct ClientData {
-    state: ConnectionState,
-    queued_data: Vec<u8>,
     memory: String,
 }
 
@@ -87,8 +90,6 @@ impl TelnetClient {
 
         // Initialize client data
         let client_data = Arc::new(Mutex::new(ClientData {
-            state: ConnectionState::Idle,
-            queued_data: Vec::new(),
             memory: String::new(),
         }));
 
@@ -255,17 +256,21 @@ impl TelnetClient {
                                 client_id,
                                 &status_tx_for_negotiation,
                             ) {
-                                if let Ok(_) = write_half_for_negotiation
+                                match write_half_for_negotiation
                                     .lock()
                                     .await
                                     .write_all(&response)
                                     .await
                                 {
-                                    trace!(
+                                    Ok(()) => trace!(
                                         "Telnet client {} sent negotiation response: {:?}",
                                         client_id,
                                         response
-                                    );
+                                    ),
+                                    Err(e) => error!(
+                                        "Telnet client {} could not answer negotiation: {}",
+                                        client_id, e
+                                    ),
                                 }
                             }
                         }
@@ -275,99 +280,96 @@ impl TelnetClient {
                             continue;
                         }
 
-                        // Handle data with LLM
-                        let mut client_data_lock = client_data.lock().await;
+                        // Handle the data. Strictly sequential: the LLM call happens inline,
+                        // so nothing else reads this socket meanwhile and there is no state
+                        // to keep between turns beyond the model's memory.
+                        if let Some(instruction) =
+                            app_state.get_instruction_for_client(client_id).await
+                        {
+                            let protocol = Arc::new(
+                                crate::client::telnet::actions::TelnetClientProtocol::new(),
+                            );
 
-                        match client_data_lock.state {
-                            ConnectionState::Idle => {
-                                // Process immediately
-                                client_data_lock.state = ConnectionState::Processing;
-                                drop(client_data_lock);
+                            // Lossy: after IAC stripping what is left is the server's text,
+                            // and a stray byte must not cost the model the whole line.
+                            let data_str = String::from_utf8_lossy(&data).to_string();
 
-                                // Call LLM with received data
-                                if let Some(instruction) =
-                                    app_state.get_instruction_for_client(client_id).await
-                                {
-                                    let protocol = Arc::new(
-                                        crate::client::telnet::actions::TelnetClientProtocol::new(),
-                                    );
+                            // `data` only. This event used to carry `raw_hex` as well - the
+                            // whole read hex-encoded, up to 16 KB of hex per turn - which the
+                            // repo's action/event rules forbid outright ("never put raw bytes
+                            // or base64 in action parameters or event data"): models cannot
+                            // reliably parse it, the negotiation it exposed is handled here
+                            // rather than by the model, and it doubled the prompt for
+                            // nothing.
+                            let event = Event::new(
+                                &TELNET_CLIENT_DATA_RECEIVED_EVENT,
+                                serde_json::json!({ "data": data_str }),
+                            );
 
-                                    // Convert data to UTF-8 string (lossy)
-                                    let data_str = String::from_utf8_lossy(&data).to_string();
+                            let memory = client_data.lock().await.memory.clone();
+                            match call_llm_for_client(
+                                &llm_client,
+                                &app_state,
+                                client_id.to_string(),
+                                &instruction,
+                                &memory,
+                                Some(&event),
+                                protocol.as_ref(),
+                                &status_tx,
+                            )
+                            .await
+                            {
+                                Ok(ClientLlmResult {
+                                    actions,
+                                    memory_updates,
+                                }) => {
+                                    if let Some(mem) = memory_updates {
+                                        client_data.lock().await.memory = mem;
+                                    }
 
-                                    let event = Event::new(
-                                        &TELNET_CLIENT_DATA_RECEIVED_EVENT,
-                                        serde_json::json!({
-                                            "data": data_str,
-                                            "raw_hex": hex::encode(&raw_data),
-                                        }),
-                                    );
-
-                                    match call_llm_for_client(
-                                        &llm_client,
-                                        &app_state,
-                                        client_id.to_string(),
-                                        &instruction,
-                                        &client_data.lock().await.memory,
-                                        Some(&event),
-                                        protocol.as_ref(),
-                                        &status_tx,
-                                    )
-                                    .await
-                                    {
-                                        Ok(ClientLlmResult {
-                                            actions,
-                                            memory_updates,
-                                        }) => {
-                                            // Update memory
-                                            if let Some(mem) = memory_updates {
-                                                client_data.lock().await.memory = mem;
-                                            }
-
-                                            // Execute actions
-                                            for action in actions {
-                                                use crate::llm::actions::client_trait::Client;
-                                                match protocol.as_ref().execute_action(action) {
-                                                    Ok(crate::llm::actions::client_trait::ClientActionResult::SendData(bytes)) => {
-                                                        let mut write_guard = write_half_arc.lock().await;
-                                                        if let Ok(_) = write_guard.write_all(&bytes).await {
-                                                            if let Ok(_) = write_guard.flush().await {
-                                                                trace!("Telnet client {} sent {} bytes", client_id, bytes.len());
-                                                            }
-                                                        }
-                                                    }
-                                                    Ok(crate::llm::actions::client_trait::ClientActionResult::Disconnect) => {
-                                                        info!("Telnet client {} disconnecting", client_id);
-                                                        break;
-                                                    }
-                                                    _ => {}
+                                    for action in actions {
+                                        use crate::llm::actions::client_trait::Client;
+                                        use crate::llm::actions::client_trait::ClientActionResult;
+                                        match protocol.as_ref().execute_action(action) {
+                                            Ok(ClientActionResult::SendData(bytes)) => {
+                                                // A failed write was silently swallowed here,
+                                                // so the model's command vanished and the
+                                                // client went on waiting for a reply to
+                                                // something that never left the host.
+                                                let mut write_guard = write_half_arc.lock().await;
+                                                if let Err(e) = write_guard.write_all(&bytes).await
+                                                {
+                                                    error!(
+                                                        "Telnet client {} failed to send {} \
+                                                         bytes: {}",
+                                                        client_id,
+                                                        bytes.len(),
+                                                        e
+                                                    );
+                                                } else if let Err(e) = write_guard.flush().await {
+                                                    error!(
+                                                        "Telnet client {} failed to flush: {}",
+                                                        client_id, e
+                                                    );
+                                                } else {
+                                                    trace!(
+                                                        "Telnet client {} sent {} bytes",
+                                                        client_id,
+                                                        bytes.len()
+                                                    );
                                                 }
                                             }
-                                        }
-                                        Err(e) => {
-                                            error!(
-                                                "LLM error for Telnet client {}: {}",
-                                                client_id, e
-                                            );
+                                            Ok(ClientActionResult::Disconnect) => {
+                                                info!("Telnet client {} disconnecting", client_id);
+                                                break;
+                                            }
+                                            _ => {}
                                         }
                                     }
                                 }
-
-                                // Process queued data if any
-                                let mut client_data_lock = client_data.lock().await;
-                                if !client_data_lock.queued_data.is_empty() {
-                                    client_data_lock.queued_data.clear();
+                                Err(e) => {
+                                    error!("LLM error for Telnet client {}: {}", client_id, e);
                                 }
-                                client_data_lock.state = ConnectionState::Idle;
-                            }
-                            ConnectionState::Processing => {
-                                // Queue data
-                                client_data_lock.queued_data.extend_from_slice(&data);
-                                client_data_lock.state = ConnectionState::Accumulating;
-                            }
-                            ConnectionState::Accumulating => {
-                                // Continue queuing
-                                client_data_lock.queued_data.extend_from_slice(&data);
                             }
                         }
                     }

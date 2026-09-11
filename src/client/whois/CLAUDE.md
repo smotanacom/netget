@@ -76,9 +76,24 @@ Unlike TCP/HTTP clients, WHOIS has no ongoing state:
 
 **Sync Actions (response to events):**
 
-- None (WHOIS is one-shot, no response to responses)
+- The same two. A client has one LLM entry point, so the async/sync split cannot
+  express a narrowing and `client_llm_action_set` unions them anyway — but
+  `events::handler::action_catalog_for_pattern` builds the `event_handlers`
+  validation catalog from the **sync** list plus the matching event's own actions,
+  and reads the async list not at all. Declaring async-only meant
+  `{"type": "query_whois"}` in a static handler was rejected as an unknown
+  action, so a whois client could not be routed deterministically at all.
 
 ### Events
+
+Both are declared as `LazyLock<EventType>` statics in `actions.rs`, and
+`get_event_types()` returns **those statics**. It used to build two *different*
+`EventType`s inline with the same ids, no parameters, no actions and
+`{"type": "placeholder"}` as the example action — so the model was shown
+`placeholder` as the way to answer, the real parameters were documented nowhere,
+and the validation catalog above was the common actions alone. The WHOIS *server*
+had the identical example bug and fixed it with a comment saying the example is
+rendered verbatim into the documentation.
 
 1. **whois_connected** - Triggers after connection established
     - LLM responds with `query_whois` action
@@ -86,7 +101,12 @@ Unlike TCP/HTTP clients, WHOIS has no ongoing state:
 
 2. **whois_response_received** - Triggers when full response received
     - LLM parses text response
-    - Parameters: `response` (text), `query` (original query)
+    - Parameters: `response` (text), `query` (the query that actually went on the
+      wire, model's or injected), `truncated` (bool)
+    - `truncated` is true when the server sent more than `MAX_RESPONSE_BYTES`
+      (1 MB) and only the head is in `response`. A WHOIS reply carries no length
+      field, so a model that read half a record and believed it had the whole one
+      would answer confidently and wrongly.
 
 ### Custom Action Results
 
@@ -202,6 +222,17 @@ refer: whois.verisign-grs.com
 4. **Server Availability:** Some WHOIS servers are unreliable
     - Timeouts, connection refused, incomplete responses
     - LLM should handle gracefully
+    - **How much a server sends is entirely its choice**, because a WHOIS reply
+      has no length field — "read until EOF" is the framing. Both read paths are
+      therefore capped at `MAX_RESPONSE_BYTES` (1 MB) and bounded by
+      `RESPONSE_READ_TIMEOUT` (60s between reads, so a server still sending keeps
+      its connection). An over-long reply is truncated, flagged and answered
+      rather than abandoned: the head of a WHOIS record is the part with the
+      registrar in it. Before that, the main loop grew a `Vec` for as long as the
+      remote end kept writing, and the follow-up path used `read_to_string`,
+      which is unbounded *and* fails the whole transfer on the first non-UTF-8
+      byte — a real hazard on a referral chase, which points this client at
+      registrars nobody here chose and several of which still emit Latin-1.
 
 5. **Single Query Per Connection:** WHOIS closes after one response
     - Cannot reuse connection for multiple queries
@@ -241,17 +272,26 @@ Query whois.iana.org for "example.com", then follow the referral to query the au
 
 ## Testing Notes
 
-**E2E Testing:**
+**Everything runs on loopback against NetGet's own WHOIS server.** No test here
+contacts a public WHOIS server, and none may: the repo rule is "bind to localhost
+only; never contact external endpoints".
 
-- Uses public WHOIS servers (whois.iana.org)
-- Simple domain queries (example.com)
-- No mock servers needed (real protocol)
+| File | Covers |
+|---|---|
+| `tests/client/whois/e2e_test.rs` | the model-driven round trip — connect event → `query_whois` static handler → the record read to EOF → the `whois_response_received` event the model actually sees, asserted field by field |
+| `tests/client/whois/command_channel_test.rs` | dashboard injection (`[ query_whois ]` / `[ disconnect ]`), zero LLM calls |
 
-**Rate Limit Concerns:**
+`e2e_test.rs` used to hold three tests that queried `whois.iana.org` and
+`whois.verisign-grs.com`. They were `#[ignore]`d for it — correctly, since they
+also had no `.with_mock()` and so needed a real Ollama — which meant they ran
+nowhere and asserted nothing while still reading as coverage of the client's
+model-driven path, which had none. They are now one test that runs.
 
-- Keep test queries minimal (< 5 per test run)
-- Use well-known domains (example.com, example.org)
-- Avoid automated repeated testing
+The event assertion is possible because the mock's response generator executes
+**inside** the test, so what it captures is the model's actual view rather than a
+reconstruction of it. That is what caught the placeholder/validation defects
+above: the static handler naming `query_whois` was *rejected* until the events
+declared their actions.
 
 ## Future Enhancements
 
