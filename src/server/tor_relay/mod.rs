@@ -822,10 +822,37 @@ impl TorRelaySession {
             target
         ));
 
-        // Create stream in circuit manager
-        self.circuit_manager
+        // Create stream in circuit manager.
+        //
+        // A refusal here is a per-stream condition, not a per-circuit one: the peer has hit
+        // MAX_STREAMS_PER_CIRCUIT, or reused a live stream id. Answer END/RESOURCE_LIMIT and
+        // keep the circuit up. Propagating with `?` would take the whole connection down
+        // through the DESTROY path in `handle()`, which hands a peer that opens too many
+        // streams a way to kill everything else riding the same circuit.
+        if let Err(e) = self
+            .circuit_manager
             .create_stream(circuit_id, stream_id, target.clone())
-            .await?;
+            .await
+        {
+            Log::new(Some(&self.status_tx)).warn(format!(
+                "Refusing BEGIN stream {} on circuit {}: {}",
+                stream_id.as_u16(),
+                circuit_id.as_u32(),
+                e
+            ));
+            let end_cell = build_relay_cell(
+                circuit_id.as_u32(),
+                stream_id.as_u16(),
+                relay_command::END,
+                &[end_reason::RESOURCE_LIMIT],
+            );
+            let mut encrypted = end_cell.clone();
+            self.circuit_manager
+                .encrypt_relay_cell(circuit_id, &mut encrypted[5..514])
+                .await?;
+            let _ = self.circuit_manager.record_sent(circuit_id, 509).await;
+            return Ok(Some(encrypted));
+        }
 
         // Attempt to connect to target
         match connect_to_target(&target).await {

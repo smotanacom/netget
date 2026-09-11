@@ -18,6 +18,31 @@ use serde_json::json;
 use std::sync::LazyLock;
 
 /// Bitcoin protocol action handler
+/// The network magic for a name the model supplied, or an error naming the accepted values.
+///
+/// Five executors each carried their own copy of this match, and every copy ended
+/// `_ => Magic::BITCOIN`. So `"testnet4"`, `"Testnet"` or any typo produced **mainnet**
+/// magic silently: the reply went out with the wrong four leading bytes, the peer dropped it
+/// as a foreign network, and nothing anywhere said why. Refusing names the mistake and gives
+/// the model something to correct — and refusing is the safe direction here, because the
+/// failure it replaces is "answer on mainnet when asked for anything else".
+///
+/// A *missing* `network` still defaults to mainnet; the parameter is `required: false` and
+/// its description says so. It is only an unrecognised value that is an error.
+fn magic_for_network(network: &str) -> Result<Magic> {
+    match network {
+        "mainnet" | "main" => Ok(Magic::BITCOIN),
+        "testnet" | "test" => Ok(Magic::TESTNET3),
+        "signet" => Ok(Magic::SIGNET),
+        "regtest" => Ok(Magic::REGTEST),
+        other => Err(anyhow::anyhow!(
+            "unknown Bitcoin network '{}': expected one of mainnet (or main), testnet (or \
+             test), signet, regtest",
+            other
+        )),
+    }
+}
+
 pub struct BitcoinProtocol;
 
 impl BitcoinProtocol {
@@ -72,8 +97,8 @@ impl Protocol for BitcoinProtocol {
                 .state(DevelopmentState::Experimental)
                 .implementation("Bitcoin P2P protocol using rust-bitcoin crate for message parsing")
                 .llm_control("LLM decides how to respond to all P2P messages (version, getdata, ping, etc.)")
-                .e2e_testing("Bitcoin P2P client (TBD)")
-                .notes("Not a real full node - LLM controls all responses. Supports mainnet/testnet/signet/regtest networks.")
+                .e2e_testing("tests/server/bitcoin/{e2e_test,peer_inject_test}.rs, 17 LLM calls, none #[ignore]d. The peer is a raw TcpStream; the `bitcoin` crate encodes and decodes the messages on the test's side, which makes it a **codec, not a peer completing a session** - the same situation as dhcp's in-test RFC 2131 decoder, and why this is not Beta. No bitcoind, no third-party node. This field read 'Bitcoin P2P client (TBD)'. Covered: version/verack handshake, ping/pong, getaddr, a testnet magic check, and the dashboard's injected message and disconnect. Not tested: a real Bitcoin node, block or transaction relay, anything past the handshake.")
+                .notes("Not a real full node - LLM controls all responses. Supports mainnet/testnet/signet/regtest; an unrecognised network name is now an error rather than silently answering on mainnet. Stores nothing: no chain, no mempool, no peer database. Message framing is bounded (24-byte header validated before the length field is trusted, 4 MB body cap matching Bitcoin Core), and the `bitcoin` crate's consensus decoding caps its own var-int-counted allocations.")
                 .build()
     }
     fn description(&self) -> &'static str {
@@ -228,13 +253,7 @@ impl BitcoinProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("mainnet");
 
-        let magic = match network {
-            "mainnet" | "main" => Magic::BITCOIN,
-            "testnet" | "test" => Magic::TESTNET3,
-            "signet" => Magic::SIGNET,
-            "regtest" => Magic::REGTEST,
-            _ => Magic::BITCOIN,
-        };
+        let magic = magic_for_network(network)?;
 
         // Get optional parameters with defaults
         let version = action
@@ -308,13 +327,7 @@ impl BitcoinProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("mainnet");
 
-        let magic = match network {
-            "mainnet" | "main" => Magic::BITCOIN,
-            "testnet" | "test" => Magic::TESTNET3,
-            "signet" => Magic::SIGNET,
-            "regtest" => Magic::REGTEST,
-            _ => Magic::BITCOIN,
-        };
+        let magic = magic_for_network(network)?;
 
         let raw_msg = RawNetworkMessage::new(magic, NetworkMessage::Verack);
         let mut bytes = Vec::new();
@@ -332,13 +345,7 @@ impl BitcoinProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("mainnet");
 
-        let magic = match network {
-            "mainnet" | "main" => Magic::BITCOIN,
-            "testnet" | "test" => Magic::TESTNET3,
-            "signet" => Magic::SIGNET,
-            "regtest" => Magic::REGTEST,
-            _ => Magic::BITCOIN,
-        };
+        let magic = magic_for_network(network)?;
 
         let nonce = action
             .get("nonce")
@@ -361,13 +368,7 @@ impl BitcoinProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("mainnet");
 
-        let magic = match network {
-            "mainnet" | "main" => Magic::BITCOIN,
-            "testnet" | "test" => Magic::TESTNET3,
-            "signet" => Magic::SIGNET,
-            "regtest" => Magic::REGTEST,
-            _ => Magic::BITCOIN,
-        };
+        let magic = magic_for_network(network)?;
 
         let nonce = action
             .get("nonce")
@@ -390,13 +391,7 @@ impl BitcoinProtocol {
             .and_then(|v| v.as_str())
             .unwrap_or("mainnet");
 
-        let magic = match network {
-            "mainnet" | "main" => Magic::BITCOIN,
-            "testnet" | "test" => Magic::TESTNET3,
-            "signet" => Magic::SIGNET,
-            "regtest" => Magic::REGTEST,
-            _ => Magic::BITCOIN,
-        };
+        let magic = magic_for_network(network)?;
 
         let raw_msg = RawNetworkMessage::new(magic, NetworkMessage::GetAddr);
         let mut bytes = Vec::new();

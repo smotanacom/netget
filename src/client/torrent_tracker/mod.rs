@@ -55,6 +55,201 @@ struct ScrapeResponse {
 /// the recursion possible, so it is bounded rather than avoided by staying silent.
 const MAX_FOLLOWUP_DEPTH: u8 = 6;
 
+/// Ceiling on a tracker reply before it is refused, applied while the body streams in.
+///
+/// A tracker answer is a small bencoded dictionary — a compact peer list of a thousand peers
+/// is six kilobytes. `bytes()` would have read whatever the far end chose to send, with no
+/// cap at all, so a hostile or broken tracker could hand this client gigabytes and the first
+/// sign of it would be the allocator.
+const MAX_TRACKER_BODY_BYTES: usize = 1024 * 1024;
+
+/// Wall-clock bound on one announce or scrape.
+///
+/// `reqwest::get` applies no timeout of any kind, so a tracker that accepts the connection
+/// and then says nothing parks the action — and with it whatever injected `[ send ]` is
+/// waiting on its outcome — for as long as the peer cares to hold it open.
+const TRACKER_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
+/// One `reqwest::Client` per tracker URL, built once and reused.
+///
+/// Three things here, all of which the root `CLAUDE.md` records as having cost real debugging
+/// time:
+///
+/// * **Build it once.** `reqwest::get` built a fresh client per request.
+/// * **Build it off the runtime.** `Client::builder().build()` sets up the rustls stack and
+///   loads the platform root store, which on macOS reads the keychain through
+///   Security.framework — synchronously, and serialised across processes. On an async worker
+///   that parks the whole thread, so it goes through `spawn_blocking`.
+/// * **Key it by URL.** `reqwest` hands even a dotted quad to `getaddrinfo`, which serialises
+///   through mDNSResponder on macOS and was measured at 8.25s under load.
+///   [`client_for_endpoint_with_timeout`] installs the literal-IP bypass and needs the URL to
+///   decide whether to, so a single global client would not do.
+///
+/// The lock is **never** held across the build. A first version did exactly that — the
+/// blocking keychain read happened inside `or_insert_with` while holding this `Mutex` — which
+/// parked a worker *and* serialised every tracker client in the process behind it. Two
+/// callers racing for the same URL may now both build, and the loser's client is dropped;
+/// that is far cheaper than what it replaces.
+static TRACKER_CLIENTS: LazyLock<Mutex<HashMap<String, reqwest::Client>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Lock, look, clone, drop. A poisoned mutex means another thread panicked mid-insert; the map
+/// is still structurally sound and building a fresh client is always correct, so it is taken
+/// rather than propagated.
+fn cached_tracker_client(tracker_url: &str) -> Option<reqwest::Client> {
+    match TRACKER_CLIENTS.lock() {
+        Ok(cache) => cache.get(tracker_url).cloned(),
+        Err(poisoned) => poisoned.into_inner().get(tracker_url).cloned(),
+    }
+}
+
+async fn tracker_http_client(tracker_url: &str) -> reqwest::Client {
+    if let Some(client) = cached_tracker_client(tracker_url) {
+        return client;
+    }
+
+    let url = tracker_url.to_string();
+    let timeout = TRACKER_REQUEST_TIMEOUT;
+    let built = tokio::task::spawn_blocking(move || {
+        crate::llm::ollama_client::client_for_endpoint_with_timeout(&url, timeout)
+    })
+    .await
+    // The closure cannot panic and the task is never aborted, but a default client is a
+    // correct answer rather than a reason to fail the announce.
+    .unwrap_or_else(|_| reqwest::Client::new());
+
+    let mut cache = match TRACKER_CLIENTS.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    // Whoever inserted first wins, so every later request shares one client.
+    cache
+        .entry(tracker_url.to_string())
+        .or_insert(built)
+        .clone()
+}
+
+/// GET `url` and return at most [`MAX_TRACKER_BODY_BYTES`] of body, refusing anything longer
+/// *while it arrives* rather than after it has all been buffered.
+async fn fetch_tracker_body(tracker_url: &str, url: &str) -> Result<Vec<u8>> {
+    let mut response = tracker_http_client(tracker_url)
+        .await
+        .get(url)
+        .send()
+        .await?;
+
+    // Content-Length is a hint, not a promise — it may be absent, or a lie — so it is used
+    // only to refuse early, and the streaming check below is what actually holds.
+    if let Some(len) = response.content_length() {
+        if len > MAX_TRACKER_BODY_BYTES as u64 {
+            return Err(anyhow::anyhow!(
+                "tracker declared a {} byte reply, over the {} byte limit",
+                len,
+                MAX_TRACKER_BODY_BYTES
+            ));
+        }
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > MAX_TRACKER_BODY_BYTES {
+            return Err(anyhow::anyhow!(
+                "tracker reply exceeded the {} byte limit",
+                MAX_TRACKER_BODY_BYTES
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// Percent-encode bytes for a query-parameter value, escaping everything but RFC 3986's
+/// unreserved set.
+fn percent_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 3);
+    for byte in bytes {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            other => out.push_str(&format!("%{:02X}", other)),
+        }
+    }
+    out
+}
+
+/// Undo percent-encoding. A stray `%` that is not followed by two hex digits is kept as a
+/// literal `%`, which is what every lenient decoder does and what re-encoding then escapes.
+/// Works on bytes throughout rather than slicing the `&str`: `&value[i + 1..i + 3]` would
+/// panic if a `%` were followed by a multi-byte UTF-8 character, and this value comes from
+/// the model. That is the byte-index-slicing defect `crate::utils::truncate` exists for.
+fn percent_decode(value: &str) -> Vec<u8> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Normalise a model-supplied `info_hash` or `peer_id` into the percent-encoded form BEP 3
+/// carries in the query string.
+///
+/// These are twenty raw bytes, and their value comes from the model. They used to be
+/// interpolated into the URL with `format!` and nothing else, so an `&` or a `#` in one
+/// inserted **extra query parameters** into the announce: a model told to announce one
+/// info_hash could append its own `&event=completed`, overwrite `port`, or truncate the whole
+/// query with a fragment. The parameter description told the model to send the value already
+/// URL-encoded — which is not a thing to leave to the component being constrained.
+///
+/// Three input spellings are accepted because all three are what a model actually produces,
+/// and each is reduced to the same twenty bytes before being encoded exactly once:
+///
+/// * 40 hex characters — the form NetGet's own tracker *server* reports an inbound
+///   `info_hash`/`peer_id` in, so it is what a model echoing an event will send.
+/// * already percent-encoded (`%12%34…`) — decoded and re-encoded, which normalises it and
+///   strips any separator that was sitting in it unescaped.
+/// * anything else — raw text, e.g. a literal peer id like `-TR2940-abcdefghijkl`.
+///
+/// Blind escaping would have been wrong for the second case: `%12` would become `%2512` and
+/// the tracker would read the three characters `%12` rather than the byte `0x12`.
+fn encode_binary_query_value(value: &str) -> String {
+    let bytes = if value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        hex::decode(value).unwrap_or_else(|_| value.as_bytes().to_vec())
+    } else if value.contains('%') {
+        percent_decode(value)
+    } else {
+        value.as_bytes().to_vec()
+    };
+    percent_encode(&bytes)
+}
+
+/// Refuse a bencoded tracker reply whose nesting would recurse `serde_bencode` off the stack.
+///
+/// `serde_bencode` counts no depth, and a derived struct is no safer than a raw `Value`
+/// because serde skips unknown fields through `IgnoredAny`, which lands back in
+/// `deserialize_any`. A reply body of `l` bytes therefore recurses once per byte; a stack
+/// overflow is `SIGSEGV`, so it aborts the whole netget process rather than failing this one
+/// action. The tracker is whatever address the operator or the model pointed this client at.
+fn screen_tracker_body(body: &[u8]) -> Result<()> {
+    crate::utils::bencode::check_bencode_structure(body)
+        .map_err(|e| anyhow::anyhow!("tracker reply refused before decoding: {}", e))
+}
+
 /// BitTorrent Tracker client
 pub struct TorrentTrackerClient;
 
@@ -485,16 +680,38 @@ impl TorrentTrackerClient {
                         .context("Missing port")? as u16;
                     let uploaded = data.get("uploaded").and_then(|v| v.as_u64()).unwrap_or(0);
                     let downloaded = data.get("downloaded").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let left = data.get("left").and_then(|v| v.as_u64()).unwrap_or(0);
+                    // `left` is not a neutral counter: BEP 3 defines `left=0` as "I have the
+                    // complete torrent", and trackers use it to decide who is a seeder. A
+                    // model that says nothing about it should not be announcing itself as
+                    // having everything, so the default is the opposite claim. An explicit 0
+                    // still means seeder, which is the point.
+                    let left = data
+                        .get("left")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(u64::MAX);
                     let event_type = data
                         .get("event")
                         .and_then(|v| v.as_str())
                         .unwrap_or("started");
 
-                    // Build announce URL
+                    // Build announce URL.
+                    //
+                    // `info_hash`, `peer_id` and `event` come from the model and are
+                    // percent-encoded rather than interpolated raw: an `&` in any of them
+                    // used to insert extra query parameters into the announce, so a model
+                    // told to announce one info_hash could append its own `event=completed`
+                    // or overwrite `port`. The numeric fields are `u64` already and cannot
+                    // carry a separator.
                     let announce_url = format!(
                         "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&event={}",
-                        tracker_url, info_hash, peer_id, port, uploaded, downloaded, left, event_type
+                        tracker_url,
+                        encode_binary_query_value(info_hash),
+                        encode_binary_query_value(peer_id),
+                        port,
+                        uploaded,
+                        downloaded,
+                        left,
+                        percent_encode(event_type.as_bytes())
                     );
 
                     trace!(
@@ -503,9 +720,15 @@ impl TorrentTrackerClient {
                         announce_url
                     );
 
-                    // Make HTTP GET request
-                    let response = reqwest::get(&announce_url).await?;
-                    let body = response.bytes().await?;
+                    // Bounded fetch: a shared client with a timeout, a body cap applied as
+                    // the bytes arrive, and a nesting screen before serde_bencode sees them.
+                    let body = fetch_tracker_body(tracker_url, &announce_url).await?;
+                    if let Err(e) = screen_tracker_body(&body) {
+                        warn!("Tracker client {} refused announce reply: {}", client_id, e);
+                        return Ok(Applied::Executed(format!(
+                            "tracker_announce sent; the tracker's reply was refused: {e}"
+                        )));
+                    }
 
                     // Parse bencode response
                     match serde_bencode::from_bytes::<TrackerResponse>(&body) {
@@ -546,14 +769,24 @@ impl TorrentTrackerClient {
                         .and_then(|v| v.as_str())
                         .context("Missing info_hash")?;
 
-                    // Build scrape URL
-                    let scrape_url = format!("{}?info_hash={}", tracker_url, info_hash);
+                    // Build scrape URL. Percent-encoded for the same reason as the announce
+                    // above: an `&` in a model-supplied info_hash is otherwise a separator.
+                    let scrape_url = format!(
+                        "{}?info_hash={}",
+                        tracker_url,
+                        encode_binary_query_value(info_hash)
+                    );
 
                     trace!("Tracker client {} scraping: {}", client_id, scrape_url);
 
-                    // Make HTTP GET request
-                    let response = reqwest::get(&scrape_url).await?;
-                    let body = response.bytes().await?;
+                    // Same bounded fetch and nesting screen as the announce path above.
+                    let body = fetch_tracker_body(tracker_url, &scrape_url).await?;
+                    if let Err(e) = screen_tracker_body(&body) {
+                        warn!("Tracker client {} refused scrape reply: {}", client_id, e);
+                        return Ok(Applied::Executed(format!(
+                            "tracker_scrape sent; the tracker's reply was refused: {e}"
+                        )));
+                    }
 
                     // Parse bencode response
                     match serde_bencode::from_bytes::<ScrapeResponse>(&body) {

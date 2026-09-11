@@ -392,6 +392,14 @@ impl TorrentDhtServer {
     fn parse_krpc_message(data: &[u8]) -> Result<(String, serde_json::Value)> {
         use serde_bencode::value::Value;
 
+        // Bound the nesting before serde_bencode sees it. `serde_bencode` recurses once per
+        // `l`/`d` with no depth counter, so a datagram of 65,000 `l` bytes — which is what
+        // fits in one UDP packet and costs an attacker one sendto() — overflows the worker
+        // thread's stack. That is a SIGSEGV, not a panic: the task this runs in cannot
+        // contain it and the whole netget process dies. Measured against 0.2.4.
+        crate::utils::bencode::check_bencode_structure(data)
+            .map_err(|e| anyhow::anyhow!("Rejected KRPC datagram: {}", e))?;
+
         // Decode bencode
         let value: Value = serde_bencode::from_bytes(data)?;
 

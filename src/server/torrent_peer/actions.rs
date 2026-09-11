@@ -65,8 +65,8 @@ impl Protocol for TorrentPeerProtocol {
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation("TCP peer wire protocol with binary encoding")
             .llm_control("Piece transfer, choke/unchoke, bitfield")
-            .e2e_testing("Real BitTorrent clients")
-            .notes("Binary protocol, peer-to-peer data transfer")
+            .e2e_testing("tests/server/torrent_peer/{e2e_test,peer_inject_test,llm_failure_test}.rs, 7 LLM calls, none #[ignore]d. NO third-party BitTorrent client is involved: the peer is a raw TcpStream with hand-built 68-byte handshakes and length-prefixed frames, which is an independent *reading* of BEP 3 rather than an independent implementation. This field claimed 'Real BitTorrent clients' and no such client appears anywhere in the tree. Covered: handshake + bitfield, a request/piece exchange, the dashboard's injected peer message and disconnect, and the LLM-failure reply (a choke frame, then half-close for the non-transient category). Not tested: any real client, a full piece transfer, cancel/have handling, the extension protocol.")
+            .notes("Binary protocol, peer-to-peer data transfer. Stores nothing - no pieces, no bitfield state; the model answers every request, so it decides what this peer claims to have.")
             .build()
     }
     fn description(&self) -> &'static str {
@@ -387,10 +387,16 @@ pub static PEER_REQUEST_MESSAGE_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         "peer_request_message",
         "Peer requested a block of a piece. Answer with send_piece, or with send_choke to \
          refuse.",
+        // Concrete numbers, not `"{{event.index}}"`. `execute_send_piece` reads both with
+        // `.as_u64()`, so the quoted placeholder fails as `Missing index` — and this is a
+        // `response_example`, which is shown to the *model*, where `{{...}}` is not
+        // interpolated at all (only static handlers get that). `SEND_HANDSHAKE_ACTION`'s
+        // own comment records dodging exactly this trap by using real hex in its example;
+        // this event reintroduced it. Copy the event's own numeric `index` and `begin`.
         json!({
             "type": "send_piece",
-            "index": "{{event.index}}",
-            "begin": "{{event.begin}}",
+            "index": 0,
+            "begin": 0,
             "block_hex": "48656c6c6f20576f726c64"
         }),
     )

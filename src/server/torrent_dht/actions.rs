@@ -61,8 +61,8 @@ impl Protocol for TorrentDhtProtocol {
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation("UDP KRPC protocol with bencode encoding")
             .llm_control("DHT query responses (ping, find_node, get_peers)")
-            .e2e_testing("Real BitTorrent clients with DHT")
-            .notes("Kademlia DHT, BEP 5")
+            .e2e_testing("tests/server/torrent_dht/{e2e_test,llm_failure_test,bencode_depth_guard_test}.rs, 7 LLM calls, none #[ignore]d. NO third-party DHT client is involved: every query is bencode hand-built with serde_bencode over a raw UdpSocket, which is an independent *reading* of BEP 5 rather than an independent implementation. This field claimed 'Real BitTorrent clients with DHT' and no such client appears anywhere in the tree. Covered: ping/find_node/get_peers round trips, the KRPC error reply on an LLM failure (code 201 vs 202, asserted to leak nothing from netget's internals), and that a bencode depth bomb no longer kills the process. Not tested: a real DHT node, iterative lookup, token validation, IPv6/BEP 32.")
+            .notes("Kademlia DHT, BEP 5. Stores nothing - no routing table, no peer table, no announced-peer record; the model answers every query, so a get_peers after an announce_peer knows nothing about it unless the model remembers. A small query can be answered with a large `nodes` or `values` list, so this is a UDP amplifier by construction: replies go only to the datagram's source address, which bounds it to whoever can receive at that address, but the amplification factor itself is whatever the model returns.")
             .build()
     }
     fn description(&self) -> &'static str {
@@ -80,11 +80,24 @@ impl Protocol for TorrentDhtProtocol {
         use serde_json::json;
 
         // Deterministic: answer every DHT ping with a pong, no LLM call.
+        //
+        // `transaction_id` is echoed from the event, and both halves of that matter. It is
+        // `required: true`, so `{"type": "send_ping_response"}` — which is what this example
+        // used to be — is rejected outright by `execute_send_ping_response` and the script
+        // answers nothing at all. And because KRPC correlates only on `t`, a reply carrying
+        // anything other than the querying node's own value is discarded by it, so the node
+        // waits out its own timeout exactly as if we had stayed silent. This is the
+        // UDP-protocol echo rule the root CLAUDE.md states for DNS, STUN and NTP; it applies
+        // here for the same reason.
         let script = r#"import json, sys
 data = json.load(sys.stdin)
 event = data["event"]
 if data["event_type_id"] == "dht_ping_query":
-    actions = [{"type": "send_ping_response"}]
+    actions = [{
+        "type": "send_ping_response",
+        "transaction_id": event["transaction_id"],
+        "node_id": "0123456789abcdef0123456789abcdef01234567",
+    }]
 else:
     actions = []
 print(json.dumps({"actions": actions}))"#;
@@ -119,10 +132,15 @@ print(json.dumps({"actions": actions}))"#;
                 "event_handlers": [{
                     "event_pattern": "dht_ping_query",
                     "handler": {
+                        // `{{event.transaction_id}}`, not a hardcoded "aa". A static
+                        // handler IS interpolated, and a KRPC reply that does not echo the
+                        // querying node's own `t` is discarded by it — so a fixed id means
+                        // every client times out, which looks like the server never
+                        // answered rather than like a wrong answer.
                         "type": "static",
                         "actions": [{
                             "type": "send_ping_response",
-                            "transaction_id": "aa",
+                            "transaction_id": "{{event.transaction_id}}",
                             "node_id": "0123456789abcdef0123456789abcdef01234567"
                         }]
                     }

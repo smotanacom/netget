@@ -231,18 +231,18 @@ impl Protocol for TorClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "Tor"
     }
+    /// Clone the statics the client actually emits, rather than rebuilding them.
+    ///
+    /// The two rebuilt copies carried `{"type": "placeholder", ...}` — an example
+    /// `execute_action` refuses outright as `Unknown Tor client action: placeholder` — and
+    /// no parameters at all. `get_event_types()` is the copy the model is shown, so it was
+    /// given no fields and one example that cannot work, while the correct `send_tor_data`
+    /// examples sat unused in the statics three screens above. The bootstrap event below
+    /// was already cloned properly, which made the drift visible in the same function.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "tor_connected",
-                "Triggered when Tor client connects through Tor network",
-                json!({"type": "placeholder", "event_id": "tor_connected"}),
-            ),
-            EventType::new(
-                "tor_data_received",
-                "Triggered when Tor client receives data from destination",
-                json!({"type": "placeholder", "event_id": "tor_data_received"}),
-            ),
+            TOR_CLIENT_CONNECTED_EVENT.clone(),
+            TOR_CLIENT_DATA_RECEIVED_EVENT.clone(),
             // Emitted but never advertised until now: mod.rs raises it once the Tor
             // directory bootstrap finishes, and nothing told the model it existed, so no
             // handler could be written for the one event that says the circuit is usable.

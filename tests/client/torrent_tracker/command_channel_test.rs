@@ -211,6 +211,126 @@ async fn injected_announce_reaches_the_tracker() {
     .await;
 }
 
+/// A model-supplied `info_hash` cannot add query parameters of its own.
+///
+/// The announce URL is built with `format!`, so before these values were percent-encoded an
+/// `&` in one of them was a separator: the model was asked to announce a torrent and could
+/// instead append `&event=completed`, overwrite `port`, or cut the query short with a `#`.
+/// The value is normalised to twenty bytes and encoded exactly once, whichever of the three
+/// spellings a model uses.
+#[tokio::test]
+async fn a_model_supplied_info_hash_cannot_inject_query_parameters() {
+    let (port, seen) = spawn_http_stub(tracker_stub_body).await;
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let client_id = open_client(&state, port, tx.clone()).await;
+    wait_for_client_handle(&state, client_id).await;
+
+    state
+        .send_to_client(
+            client_id,
+            serde_json::json!({
+                "type": "tracker_announce",
+                // Separators, and a fragment that would truncate everything after it.
+                "info_hash": "abc&event=completed&port=1#x",
+                "peer_id": "-NG0001-abcdefghijkl",
+                "port": 6881
+            }),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("send_to_client");
+
+    let requests = seen.lock().await.clone();
+    let announce = requests
+        .iter()
+        .find(|r| r.contains("/announce?"))
+        .unwrap_or_else(|| panic!("stub tracker never saw the announce: {requests:?}"))
+        .clone();
+    let line = announce.lines().next().unwrap_or_default().to_string();
+
+    // The injected text is escaped, so it is one parameter value and not four.
+    assert!(
+        line.contains("%26event%3Dcompleted"),
+        "the `&` and `=` must be escaped, not passed through as separators: {line}"
+    );
+    assert!(
+        line.contains("%23x"),
+        "the `#` must be escaped or it truncates the query: {line}"
+    );
+    assert_eq!(
+        line.matches("event=").count(),
+        1,
+        "exactly one `event=` parameter -- the injected one must not have become a second: \
+         {line}"
+    );
+    assert_eq!(
+        line.matches("port=").count(),
+        1,
+        "exactly one `port=` parameter: {line}"
+    );
+
+    // `left` is omitted above. BEP 3 reads `left=0` as "I have the complete torrent", so a
+    // model that says nothing must not be announced as a seeder.
+    assert!(
+        !line.contains("left=0&") && !line.contains("left=0 "),
+        "an omitted `left` must not default to 0, which claims a complete torrent: {line}"
+    );
+}
+
+/// Whichever of the three spellings the model uses, the same twenty bytes reach the tracker.
+#[tokio::test]
+async fn info_hash_spellings_all_normalise_to_the_same_twenty_bytes() {
+    let (port, seen) = spawn_http_stub(tracker_stub_body).await;
+    let state = new_state().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let client_id = open_client(&state, port, tx.clone()).await;
+    wait_for_client_handle(&state, client_id).await;
+
+    // The same twenty bytes written as 40 hex characters, and pre-percent-encoded. Blind
+    // escaping would have turned the second into `%2512...`, i.e. the literal characters.
+    for spelling in [
+        "123456789abcdef0123456789abcdef012345678",
+        "%12%34%56%78%9a%bc%de%f0%12%34%56%78%9a%bc%de%f0%12%34%56%78",
+    ] {
+        let hash = if spelling.len() == 40 {
+            "123456789abcdef0123456789abcdef012345678"
+        } else {
+            spelling
+        };
+        state
+            .send_to_client(
+                client_id,
+                serde_json::json!({
+                    "type": "tracker_announce",
+                    "info_hash": hash,
+                    "peer_id": "-NG0001-abcdefghijkl",
+                    "port": 6881
+                }),
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("send_to_client");
+    }
+
+    let requests = seen.lock().await.clone();
+    let hashes: Vec<String> = requests
+        .iter()
+        .filter_map(|r| r.lines().next())
+        .filter_map(|line| {
+            let start = line.find("info_hash=")? + "info_hash=".len();
+            let rest = &line[start..];
+            let end = rest.find('&').unwrap_or(rest.len());
+            Some(rest[..end].to_string())
+        })
+        .collect();
+    assert_eq!(hashes.len(), 2, "expected two announces, got {requests:?}");
+    assert_eq!(
+        hashes[0], hashes[1],
+        "40 hex characters and the pre-encoded form must produce the same bytes on the wire"
+    );
+}
+
 #[tokio::test]
 async fn injected_unknown_action_is_rejected_and_disconnect_drops_the_handle() {
     let (port, _seen) = spawn_http_stub(tracker_stub_body).await;

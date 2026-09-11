@@ -68,9 +68,19 @@ returned was rejected as unknown.
     - **`compact`**: BEP 23. When truthy, `peers` is encoded as a byte string of 6-byte
       entries (4-byte IPv4 + 2-byte big-endian port) instead of a list of dictionaries.
       Nearly every real client asks for `compact=1` and several refuse the dictionary
-      form, so pass the request's own flag through: `"compact": "{{event.compact}}"`.
+      form, so send `1` unless you have a reason not to.
       Accepts `true`, `1`, `"1"`, `"true"`, `"yes"`, `"on"`. IPv6 peers are dropped in
       compact form (they need BEP 7's separate `peers6` key, which is not implemented).
+    - **`{{event.compact}}` works in a static handler and NOWHERE ELSE.** `{{...}}` is
+      interpolated by the static-handler path only. On the LLM path the placeholder arrives
+      as literal text, `is_compact` matches none of its accepted spellings, and the tracker
+      answers in the dictionary form real clients refuse — with no error anywhere, which is
+      how it went unnoticed. This file, the action's `example` and the event's
+      `response_example` all recommended it to the model.
+    - **`peer_id`** in a peer entry is decoded from hex when it is 40 hex characters, which
+      is the form the announce *event* reports an inbound peer_id in. Anything else is sent
+      as literal text. Echoing the event's value used to put 40 bytes on the wire where
+      BEP 3 wants 20.
     - Output: HTTP 200 + `Connection: close` + bencode body
     - Example:
    ```json
@@ -79,7 +89,7 @@ returned was rejected as unknown.
      "interval": 1800,
      "complete": 10,
      "incomplete": 5,
-     "compact": "{{event.compact}}",
+     "compact": 1,
      "peers": [{"ip": "192.168.1.100", "port": 51413}]
    }
    ```
@@ -91,20 +101,29 @@ returned was rejected as unknown.
       The executor previously accepted only the object form, so the array form documented
       here (and used by the E2E test) silently produced an empty `files` dictionary.
       Entries whose key is not valid hex are dropped.
-    - The key is the *correlation*: it must be the info_hash the client asked about.
-      Interpolate it: `{"{{event.info_hash}}": {...}}`.
+    - The info_hash is the *correlation*: it must be the one the client asked about, as
+      the event's own 40-character hex. **Do not use `{{event.info_hash}}` as an object
+      key on the LLM path** — it is not interpolated there, `hex::decode` rejects it, the
+      entry is dropped, and the client gets an empty `files` dictionary under a 200 OK. The
+      array form avoids the whole question by putting the hash in a value.
     - Example:
    ```json
    {
      "type": "send_scrape_response",
-     "files": {"{{event.info_hash}}": {"complete": 10, "downloaded": 100, "incomplete": 5}}
+     "files": [{
+       "info_hash": "1111111111111111111111111111111111111111",
+       "complete": 10, "downloaded": 100, "incomplete": 5
+     }]
    }
    ```
 
 3. **send_error_response** - Return a bencode `failure reason`
-    - Parameter: `failure_reason` (alias `error`). The action definition, these docs and
-      the E2E test all said `failure_reason` while the executor read `error`, so every
-      documented use produced the literal string "Unknown error". Both spellings now work.
+    - Parameter: `failure_reason` (alias `error`), and genuinely **required**. The action
+      definition, these docs and the E2E test all said `failure_reason` while the executor
+      read `error`, so every documented use produced the literal string "Unknown error".
+      Both spellings now work, and omitting both is now an error rather than a refusal
+      that tells the client nothing — the parameter was declared `required: true` while
+      being defaulted anyway.
     - Example:
    ```json
    {"type": "send_error_response", "failure_reason": "Torrent not registered"}
@@ -222,7 +241,8 @@ You are a BitTorrent tracker server. Track active peers for torrents and return 
 
 **Scrape Request**:
 
-1. LLM receives JSON: `{info_hashes: ["abc...", "def..."]}`
+1. LLM receives JSON: `{info_hash: "abc...", request_type: "scrape", path: "/scrape?..."}`
+   (a single `info_hash`, not `info_hashes` — that field does not exist)
 2. LLM looks up statistics for each torrent
 3. LLM returns:
    `{type: "send_scrape_response", files: [{info_hash: "abc...", complete: 10, incomplete: 5, downloaded: 100}]}`

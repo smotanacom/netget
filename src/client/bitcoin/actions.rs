@@ -325,18 +325,17 @@ impl Protocol for BitcoinClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "Bitcoin"
     }
+    /// Clone the statics the client actually emits, rather than rebuilding them.
+    ///
+    /// This used to construct a second, parameterless pair. `get_event_types()` is the copy
+    /// the model is shown — the statics are used only at the emit site — so every field
+    /// `with_parameters` declares on them was invisible to it. Two definitions of one event
+    /// drift; one cannot. (`torrent_tracker`'s client is the protocol that already had this
+    /// right, and says so in its own comment.)
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "bitcoin_connected",
-                "Triggered when Bitcoin RPC client is initialized",
-                json!({"type": "execute_rpc", "method": "getblockchaininfo", "params": []}),
-            ),
-            EventType::new(
-                "bitcoin_response_received",
-                "Triggered when Bitcoin RPC client receives a response",
-                json!({"type": "execute_rpc", "method": "getblock", "params": ["00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048"]}),
-            ),
+            BITCOIN_CLIENT_CONNECTED_EVENT.clone(),
+            BITCOIN_CLIENT_RESPONSE_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {

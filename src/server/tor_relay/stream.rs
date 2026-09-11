@@ -59,6 +59,15 @@ pub enum StreamState {
 pub const STREAM_WINDOW_START: u16 = 500;
 pub const STREAM_WINDOW_INCREMENT: u16 = 50;
 
+/// How many streams one circuit may hold open at once.
+///
+/// Each active stream is one outbound TCP connection to an address the peer chose, plus a
+/// forwarder task. The stream id is 16 bits, so without a cap a single circuit can ask for
+/// 65,535 of them — a file-descriptor exhaustion against this host and, pointed at one
+/// victim, an outbound connection flood with a 1:65,535 amplification from the attacker's
+/// side. Real Tor clients multiplex a handful of streams per circuit; 64 is generous.
+pub const MAX_STREAMS_PER_CIRCUIT: usize = 64;
+
 /// Stream information
 #[derive(Debug)]
 pub struct Stream {
@@ -261,6 +270,16 @@ impl StreamManager {
             return Err(anyhow::anyhow!("Stream ID already exists"));
         }
 
+        // Refused before the socket is opened, so a peer cannot turn one circuit into
+        // thousands of outbound connections. The caller answers with END/RESOURCE_LIMIT,
+        // which is tor-spec's own word for this.
+        if self.streams.len() >= MAX_STREAMS_PER_CIRCUIT {
+            return Err(anyhow::anyhow!(
+                "circuit already holds {} streams, the per-circuit limit",
+                MAX_STREAMS_PER_CIRCUIT
+            ));
+        }
+
         let stream = Stream::new(id, target);
         self.streams.insert(id, stream);
         debug!("Created stream {} in circuit", id.as_u16());
@@ -316,18 +335,45 @@ pub fn parse_begin_target(data: &[u8]) -> Result<String> {
     Ok(target_str.to_string())
 }
 
-/// Establish TCP connection to target
+/// How long a BEGIN may hold the whole session waiting for its exit connection.
+///
+/// `handle_begin_cell` awaits this inline in the cell-processing loop, so until it returns
+/// the session reads no further cells and writes none of the ones its forwarder tasks have
+/// queued. Without a bound that is the OS connect timeout — around 75 seconds on macOS — and
+/// the address is chosen by the peer, so one BEGIN to a blackholed address (any unroutable
+/// RFC 5737 or RFC 1918 address will do) freezes the connection for the whole of it. Ten
+/// seconds is well past any reachable host and short enough that the stall is a nuisance
+/// rather than a denial of service.
+pub const TARGET_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Establish TCP connection to target.
+///
+/// **The destination is whatever the peer put in its BEGIN cell, and nothing restricts it** —
+/// see this protocol's `metadata().notes`, which says so in as many words. The bound here is
+/// on *time*, not on where the connection may go.
 pub async fn connect_to_target(target: &str) -> Result<TcpStream> {
     debug!("Connecting to target: {}", target);
 
     // Parse target as SocketAddr or resolve hostname
-    let stream = if let Ok(addr) = target.parse::<SocketAddr>() {
-        // Direct IP:port connection
-        TcpStream::connect(addr).await?
-    } else {
-        // Hostname:port - let tokio resolve
-        TcpStream::connect(target).await?
+    let connect = async {
+        if let Ok(addr) = target.parse::<SocketAddr>() {
+            // Direct IP:port connection
+            TcpStream::connect(addr).await
+        } else {
+            // Hostname:port - let tokio resolve
+            TcpStream::connect(target).await
+        }
     };
+
+    let stream = tokio::time::timeout(TARGET_CONNECT_TIMEOUT, connect)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "timed out after {}s connecting to {}",
+                TARGET_CONNECT_TIMEOUT.as_secs(),
+                target
+            )
+        })??;
 
     debug!("Connected to {}", target);
     Ok(stream)
