@@ -79,6 +79,10 @@ fn is_context_rejection(message: &str) -> bool {
 struct Outcome {
     checked: usize,
     context_skipped: usize,
+    /// Registered protocols the audit walked, server and client together. The self-coverage
+    /// check below scales against this rather than against an absolute count, because the
+    /// registries only ever hold what the build compiled.
+    protocols: usize,
     offenders: BTreeSet<String>,
     detail: Vec<String>,
 }
@@ -137,11 +141,13 @@ fn audit() -> Outcome {
     let mut out = Outcome {
         checked: 0,
         context_skipped: 0,
+        protocols: 0,
         offenders: BTreeSet::new(),
         detail: Vec::new(),
     };
 
     for (_name, proto) in server_registry::registry().all_protocols() {
+        out.protocols += 1;
         let mut actions = proto.get_async_actions(&state);
         actions.extend(proto.get_sync_actions());
         for ev in proto.get_event_types() {
@@ -164,6 +170,7 @@ fn audit() -> Outcome {
     }
 
     for client in netget::protocol::CLIENT_REGISTRY.get_all() {
+        out.protocols += 1;
         let mut seen = BTreeSet::new();
         for action in client_llm_action_set(client.as_ref(), &state, None) {
             if !seen.insert(action.name.clone()) {
@@ -214,11 +221,26 @@ fn no_action_ships_an_example_its_own_executor_refuses() {
 #[test]
 fn the_example_audit_has_something_to_inspect() {
     let out = audit();
+    // Scaled against the registries, not an absolute count. This used to assert `checked >
+    // 900`, which can only hold at `--all-features`: the registries hold what the build
+    // compiled, so a two-feature build sees a dozen examples and the *self-coverage* guard
+    // failed while the ratchet it guards passed. That reads as a regression to anyone running
+    // a narrow build, and two separate passes reported it as one.
     assert!(
-        out.checked > 900,
-        "only {} examples were checked; the audit is not reaching the registries",
-        out.checked
+        out.protocols > 0,
+        "no protocols were walked at all; a registry accessor is gone"
     );
+    assert!(
+        out.checked >= out.protocols * 2,
+        "only {} examples across {} protocols; the audit is not reaching into them",
+        out.checked,
+        out.protocols
+    );
+    // The remaining two bounds describe the *mix* of results, which needs a sample big enough
+    // for a mix to exist. Below that the audit is still correct, just too small to characterise.
+    if out.checked < 100 {
+        return;
+    }
     assert!(
         out.context_skipped > 10,
         "only {} rejections were classified as needing runtime context. That number is stable \
