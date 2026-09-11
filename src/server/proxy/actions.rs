@@ -20,6 +20,31 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::LazyLock;
 
+/// Read a model-supplied HTTP status, refusing anything outside 100-599.
+///
+/// `as u16` on a `u64` wraps in silence: `status: 65736` is `200`, so a *block* — the only
+/// way the model can refuse a request — reached the client as the success it was refusing.
+/// Clamping would be a different lie, so an out-of-range value is an error the repair loop
+/// can see and correct.
+fn parse_status(action: &serde_json::Value, default: u16) -> Result<u16> {
+    let Some(value) = action.get("status") else {
+        return Ok(default);
+    };
+    if value.is_null() {
+        return Ok(default);
+    }
+    let raw = value
+        .as_u64()
+        .with_context(|| format!("'status' must be an HTTP status code, got {value}"))?;
+    if !(100..=599).contains(&raw) {
+        return Err(anyhow::anyhow!(
+            "'status' {raw} is not an HTTP status code; use 100-599 \
+             (e.g. 403 to block a request, 502 to block a response)"
+        ));
+    }
+    Ok(raw as u16)
+}
+
 /// HTTP Proxy protocol action handler
 pub struct ProxyProtocol;
 
@@ -302,7 +327,7 @@ impl ProxyProtocol {
 
     /// Block request and return error response
     fn execute_handle_request_block(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let status = action.get("status").and_then(|v| v.as_u64()).unwrap_or(403) as u16;
+        let status = parse_status(&action, 403)?;
 
         let body = action
             .get("body")
@@ -372,7 +397,7 @@ impl ProxyProtocol {
 
     /// Block response and return different one
     fn execute_handle_response_block(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let status = action.get("status").and_then(|v| v.as_u64()).unwrap_or(502) as u16;
+        let status = parse_status(&action, 502)?;
 
         let body = action
             .get("body")
@@ -388,10 +413,13 @@ impl ProxyProtocol {
 
     /// Modify response before returning to client
     fn execute_handle_response_modify(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let status = action
-            .get("status")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as u16);
+        // A modify that leaves the status alone is legitimate, so `None` stays `None` — but a
+        // status that *is* named has to be a real one.
+        let status = match action.get("status") {
+            None => None,
+            Some(v) if v.is_null() => None,
+            Some(_) => Some(parse_status(&action, 0)?),
+        };
 
         let headers = action
             .get("headers")
