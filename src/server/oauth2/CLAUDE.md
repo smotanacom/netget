@@ -81,6 +81,33 @@ POST bodies. It decodes `+` as space (a `scope=read+write` body used to arrive a
 `read+write`) and skips a pair whose key or value is not valid percent-encoding rather than
 collapsing it to an empty-string key.
 
+## The body is bounded, and refusing it is a refusal
+
+Every POST body is read through `http_body_util::Limited` at `MAX_REQUEST_BODY_BYTES` (1 MiB —
+smaller than `http_common`'s 8 MiB because nothing here uploads anything). It was
+`req.into_body().collect()`, which has no limit: `Incoming` buffers exactly what the peer
+sends, so one unauthenticated `POST /token` could take the process's memory before any
+credential was looked at.
+
+An oversized body answers `413` on all four endpoints, including `/revoke` — RFC 7009 §2.2
+fixes the *success* reply at 200, but nothing processed a request whose body was refused, and
+§2.2.1 has the client retry only when the answer is not a success. `read_bounded_body` returns
+`Err`, never a truncated body: a truncated form looks complete to the model, which would then
+answer a request it never saw. `tests/server/oauth2/body_limit_test.rs` asserts the status is
+exactly 413 (a looser "some failure" would pass with the bound removed) and that no branch
+issues a token or reports `active: true`.
+
+## The model sees the secrets; the log does not
+
+`client_secret`, `password`, `code`, `token` and `refresh_token` are handed to the model — it
+cannot judge a client without them — but `redacted_params` replaces their values before the
+parsed form reaches `Log`/`tracing`. `Log::new(..).debug("… {:?}", params)` used to print every
+one of them verbatim to `netget.log` *and* the dashboard status stream; `/introspect` and
+`/revoke` logged the bearer token itself. Both now report only whether a token was present.
+
+The event's own TRACE `log_template` (`{json_pretty(.)}`) still renders the whole event, which
+is what TRACE is for; the point is that DEBUG no longer does.
+
 ## Nothing here may panic
 
 `build_safe_response` is the only place a `Response` is built. Everything fed to it —

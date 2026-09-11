@@ -520,6 +520,16 @@ impl OpenIdServer {
     }
 }
 
+/// How much of a request body is read before the request is refused.
+///
+/// Every OIDC body this provider parses is a form: a grant type, a code, a client id and
+/// secret. Nothing an OIDC endpoint receives is large. The body is buffered whole and then
+/// embedded in an LLM prompt, so a big one is cost without benefit even when it is honest.
+/// Without a cap the buffer is whatever the peer chooses to send — `Incoming` has no default
+/// limit — so a single unauthenticated `POST /token` could exhaust the process's memory
+/// before any credential was checked.
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
 /// Handle a single OpenID Connect request
 async fn handle_openid_request(
     req: Request<Incoming>,
@@ -528,7 +538,7 @@ async fn handle_openid_request(
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<OpenIdProtocol>,
-    _openid_state: Arc<RwLock<OpenIdState>>,
+    openid_state: Arc<RwLock<OpenIdState>>,
     server_id: crate::state::ServerId,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     // Extract request details (before consuming body)
@@ -547,12 +557,31 @@ async fn handle_openid_request(
         }
     }
 
-    // Read body
-    let body_bytes = match req.into_body().collect().await {
+    // Read body, bounded. `Limited` errors as soon as the cap is passed rather than after
+    // buffering the whole thing, so an oversized request costs at most the cap.
+    //
+    // A refused body is answered, never substituted with an empty one: the old code turned an
+    // unreadable body into `Bytes::new()`, so the model was shown a `/token` request carrying
+    // no `grant_type` and no `code` and asked to decide about it.
+    let body_bytes = match http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            error!("Failed to read request body: {}", e);
-            Bytes::new()
+            warn!(
+                "OpenID {} {}: refusing request body ({}); limit is {} bytes",
+                method, path, e, MAX_REQUEST_BODY_BYTES
+            );
+            return Ok(build_safe_response(
+                413,
+                [("content-type".to_string(), "application/json".to_string())],
+                json!({
+                    "error": "invalid_request",
+                    "error_description": "request body too large"
+                })
+                .to_string(),
+            ));
         }
     };
     let body_text = String::from_utf8_lossy(&body_bytes).to_string();
@@ -600,6 +629,17 @@ async fn handle_openid_request(
         trace!("OpenID form data: {:?}", form_data);
     }
 
+    // `issuer` and `supported_scopes` are declared startup parameters, and until now they
+    // were stored in `OpenIdState` and read by nothing: the handler took `_openid_state` and
+    // never looked at it, so an operator who configured an issuer got a provider that had
+    // never heard of it and had to repeat the value in the instruction. They reach the model
+    // here, which is the only place that can act on them — the guard is released before the
+    // LLM call, per the never-hold-a-lock-across-an-await rule.
+    let (configured_issuer, configured_scopes) = {
+        let state = openid_state.read().await;
+        (state.issuer.clone(), state.supported_scopes.clone())
+    };
+
     // Create event for LLM
     let event = Event::new(
         &*crate::server::openid::actions::OPENID_REQUEST_EVENT,
@@ -611,6 +651,8 @@ async fn handle_openid_request(
             "body": if body_text.is_empty() { "" } else { &body_text },
             "form_data": form_data,
             "endpoint_type": endpoint_type,
+            "configured_issuer": configured_issuer,
+            "configured_scopes": configured_scopes,
         }),
     );
 

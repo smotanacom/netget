@@ -74,6 +74,16 @@ fn build_safe_response(
         })
 }
 
+/// How much of a request body is read before the request is refused.
+///
+/// A `SAMLResponse` is a base64-encoded assertion — kilobytes, tens of kilobytes with a
+/// certificate chain. Nothing this SP receives is large. The body is buffered whole and then
+/// embedded in an LLM prompt, so a big one is cost without benefit even when it is honest.
+/// Without a cap the buffer is whatever the peer chooses to send — `Incoming` has no default
+/// limit — so a single unauthenticated `POST /acs` could exhaust the process's memory before
+/// anything looked at it.
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
 /// SAML SP server that delegates authentication and assertion generation to LLM
 pub struct SamlSpServer;
 
@@ -224,15 +234,27 @@ async fn handle_saml_sp_request(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    // Read request body
-    let body_bytes = match req.collect().await {
+    // Read request body, bounded. `Limited` errors as soon as the cap is passed rather than
+    // after buffering the whole thing, so an oversized request costs at most the cap. A
+    // refused body is never handed on as an empty one: a truncated SAMLResponse looks
+    // complete to the model, which would then decide who the user is from a fragment.
+    let body_bytes = match http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes().to_vec(),
         Err(e) => {
-            error!("Failed to read SAML SP request body: {}", e);
+            warn!(
+                "SAML SP {} {}: refusing request body ({}); limit is {} bytes",
+                method, path, e, MAX_REQUEST_BODY_BYTES
+            );
             return Ok(build_safe_response(
-                400,
-                [],
-                "Failed to read request body".to_string(),
+                413,
+                [(
+                    "content-type".to_string(),
+                    "text/plain; charset=utf-8".to_string(),
+                )],
+                "Request body too large".to_string(),
             ));
         }
     };
@@ -333,6 +355,27 @@ async fn handle_saml_sp_request(
                     );
                     continue;
                 };
+                // Parseable JSON is not by itself an answer. `{}` — or any object carrying
+                // none of `status`/`headers`/`body` — used to open the slot below and leave
+                // it at its `200` default, so an executor whose output was JSON but not
+                // response-shaped produced an empty `200 OK`: exactly the fail-open the
+                // default status was removed to prevent, one layer further in. The slot is
+                // opened only once a field this handler can actually render is present.
+                // `saml_idp` applies the same rule under the name `produced_response`.
+                let has_status = json_value.get("status").and_then(|v| v.as_u64()).is_some();
+                let has_headers = json_value
+                    .get("headers")
+                    .and_then(|v| v.as_object())
+                    .is_some_and(|o| o.values().any(|v| v.is_string()));
+                let has_body = json_value.get("body").and_then(|v| v.as_str()).is_some();
+                if !(has_status || has_headers || has_body) {
+                    warn!(
+                        "SAML SP: ignoring action output with no status/headers/body ({} bytes)",
+                        output_data.len()
+                    );
+                    continue;
+                }
+
                 let (status_code, response_headers, response_body) =
                     answer.get_or_insert_with(|| {
                         (200u16, std::collections::HashMap::new(), String::new())

@@ -76,6 +76,15 @@ whatever the SP sent.
 
 The base64 `SAMLResponse` field is safe by construction (the alphabet excludes `"` and `<`).
 
+## The body is bounded
+
+The request body is read through `http_body_util::Limited` at `MAX_REQUEST_BODY_BYTES` (1 MiB;
+an `AuthnRequest` is a few hundred bytes deflated and base64-encoded, metadata a few kilobytes)
+and an oversized one is answered `413`. It was `req.collect()`, which has no limit — `Incoming`
+buffers whatever the peer sends, and the body then goes into an LLM prompt, so one
+unauthenticated `POST /sso` could exhaust the process's memory. A refused body is never handed
+on as an empty one: a truncated AuthnRequest looks complete to the model.
+
 ## Nothing here may panic
 
 `build_safe_response` is the only place a `Response` is built: an out-of-range status becomes

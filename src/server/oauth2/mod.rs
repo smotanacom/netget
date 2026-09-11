@@ -99,6 +99,69 @@ fn oauth2_failure_description(err: &anyhow::Error) -> &'static str {
     crate::utils::WireFailure::classify(err).prefixed_text()
 }
 
+/// How much of a request body is read before the request is refused.
+///
+/// Every OAuth2 body this server parses is `application/x-www-form-urlencoded`: a grant
+/// type, a code, a client id and secret, a token. RFC 6749 defines nothing that is large,
+/// and the body is buffered whole and then embedded in an LLM prompt, so a big one is
+/// cost without benefit even when it is honest. Without a cap the buffer is whatever the
+/// peer chooses to send — `Incoming` has no default limit — so a single unauthenticated
+/// `POST /token` could exhaust the process's memory before any credential was checked.
+/// Smaller than `http_common`'s 8 MiB because nothing here uploads anything.
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
+/// Read a request body, bounded by [`MAX_REQUEST_BODY_BYTES`].
+///
+/// `Limited` errors as soon as the cap is passed rather than after buffering the whole
+/// thing, so an oversized request costs at most the cap. `Err` means the body was refused
+/// or unreadable; it is never a truncated body, because a truncated form handed to the
+/// model looks like a complete one and the model would answer a request it never saw.
+async fn read_bounded_body(body: Incoming, endpoint: &str) -> Result<Bytes, ()> {
+    match http_body_util::Limited::new(body, MAX_REQUEST_BODY_BYTES)
+        .collect()
+        .await
+    {
+        Ok(collected) => Ok(collected.to_bytes()),
+        Err(e) => {
+            warn!(
+                "OAuth2 {endpoint}: refusing request body ({e}); limit is \
+                 {MAX_REQUEST_BODY_BYTES} bytes"
+            );
+            Err(())
+        }
+    }
+}
+
+/// Form parameters whose values must never reach the log or the TUI status stream.
+///
+/// The model is handed these — it cannot judge a client without its secret — but a log
+/// line is a different audience with a different lifetime, and `{:?}` on the whole map
+/// used to print every one of them verbatim to `netget.log` and to the dashboard.
+const SECRET_PARAMS: &[&str] = &[
+    "client_secret",
+    "password",
+    "code",
+    "token",
+    "refresh_token",
+    "assertion",
+];
+
+/// A `{:?}`-able view of parsed form parameters with the secret-bearing values replaced.
+fn redacted_params(params: &HashMap<String, String>) -> Vec<(&str, &str)> {
+    let mut pairs: Vec<(&str, &str)> = params
+        .iter()
+        .map(|(k, v)| {
+            if SECRET_PARAMS.contains(&k.as_str()) {
+                (k.as_str(), "[REDACTED]")
+            } else {
+                (k.as_str(), v.as_str())
+            }
+        })
+        .collect();
+    pairs.sort_unstable();
+    pairs
+}
+
 fn json_response(status: u16, body: String) -> Response<Full<Bytes>> {
     build_safe_response(
         status,
@@ -371,18 +434,31 @@ async fn handle_authorize_request(
     let params = if method == Method::GET {
         parse_query_params(uri.query().unwrap_or(""))
     } else {
-        // Read body for POST
-        match req.into_body().collect().await {
-            Ok(body) => {
-                let body_bytes = body.to_bytes();
+        // Read body for POST, bounded.
+        match read_bounded_body(req.into_body(), "/authorize").await {
+            Ok(body_bytes) => {
                 let body_str = String::from_utf8_lossy(&body_bytes);
                 parse_query_params(&body_str)
             }
-            Err(_) => HashMap::new(),
+            // Refused or unreadable. Not an empty form: a request whose body we never saw
+            // must not be handed to the model as though the client sent no parameters.
+            Err(()) => {
+                return Ok(json_response(
+                    413,
+                    json!({
+                        "error": "invalid_request",
+                        "error_description": "request body too large"
+                    })
+                    .to_string(),
+                ));
+            }
         }
     };
 
-    Log::new(Some(&status_tx)).debug(format!("OAuth2 authorize request: {:?}", params));
+    Log::new(Some(&status_tx)).debug(format!(
+        "OAuth2 authorize request: {:?}",
+        redacted_params(&params)
+    ));
 
     // Create LLM event
     let event = Event::new(
@@ -538,25 +614,26 @@ async fn handle_token_request(
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<OAuth2Protocol>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    // Parse form body
-    let body_bytes = match req.into_body().collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(_) => {
-            return Ok(json_response(
-                400,
-                json!({
-                    "error": "invalid_request",
-                    "error_description": "Failed to read request body"
-                })
-                .to_string(),
-            ));
-        }
+    // Parse form body, bounded.
+    let Ok(body_bytes) = read_bounded_body(req.into_body(), "/token").await else {
+        return Ok(json_response(
+            413,
+            json!({
+                "error": "invalid_request",
+                "error_description": "request body too large"
+            })
+            .to_string(),
+        ));
     };
 
     let body_str = String::from_utf8_lossy(&body_bytes);
     let params = parse_query_params(&body_str);
 
-    Log::new(Some(&status_tx)).debug(format!("OAuth2 token request: {:?}", params));
+    // `client_secret` and `password` are in here. The model gets them; the log does not.
+    Log::new(Some(&status_tx)).debug(format!(
+        "OAuth2 token request: {:?}",
+        redacted_params(&params)
+    ));
 
     // Create LLM event
     let event = Event::new(
@@ -662,18 +739,26 @@ async fn handle_introspect_request(
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<OAuth2Protocol>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    // Parse form body
-    let body_bytes = match req.into_body().collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(_) => {
-            return Ok(json_response(400, json!({"active": false}).to_string()));
-        }
+    // Parse form body, bounded.
+    let Ok(body_bytes) = read_bounded_body(req.into_body(), "/introspect").await else {
+        return Ok(json_response(
+            413,
+            json!({
+                "error": "invalid_request",
+                "error_description": "request body too large"
+            })
+            .to_string(),
+        ));
     };
 
     let body_str = String::from_utf8_lossy(&body_bytes);
     let params = parse_query_params(&body_str);
 
-    debug!("OAuth2 introspect request: token={:?}", params.get("token"));
+    // The token itself is a bearer credential: report only that one was presented.
+    debug!(
+        "OAuth2 introspect request: token_present={}",
+        params.contains_key("token")
+    );
 
     // Create LLM event
     let event = Event::new(
@@ -756,18 +841,27 @@ async fn handle_revoke_request(
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<OAuth2Protocol>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
-    // Parse form body
-    let body_bytes = match req.into_body().collect().await {
-        Ok(body) => body.to_bytes(),
-        Err(_) => {
-            return Ok(build_safe_response(200, [], String::new()));
-        }
+    // Parse form body, bounded. RFC 7009 §2.2 fixes the success reply at 200, but a body we
+    // refused was never processed, so 200 would claim a revocation that did not happen; §2.2.1
+    // has the client treat a non-200 as "the token may still exist" and retry.
+    let Ok(body_bytes) = read_bounded_body(req.into_body(), "/revoke").await else {
+        return Ok(json_response(
+            413,
+            json!({
+                "error": "invalid_request",
+                "error_description": "request body too large"
+            })
+            .to_string(),
+        ));
     };
 
     let body_str = String::from_utf8_lossy(&body_bytes);
     let params = parse_query_params(&body_str);
 
-    debug!("OAuth2 revoke request: token={:?}", params.get("token"));
+    debug!(
+        "OAuth2 revoke request: token_present={}",
+        params.contains_key("token")
+    );
 
     // Create LLM event
     let event = Event::new(

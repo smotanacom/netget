@@ -102,6 +102,25 @@ pub static OPENID_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
             description: "OIDC endpoint type: discovery, authorization, token, userinfo, jwks, or unknown".to_string(),
             required: true,
         },
+        // The two declared startup parameters, carried on every request. Until they were
+        // put here they were stored in `OpenIdState` and read by nothing, so an operator
+        // who set `issuer` got a provider that had never heard of it.
+        Parameter {
+            name: "configured_issuer".to_string(),
+            type_hint: "string".to_string(),
+            description: "The `issuer` startup parameter, or null if none was given. Use it as \
+                          the `issuer` of the discovery document and of any id_token you mint, \
+                          so the relying party's issuer check passes.".to_string(),
+            required: false,
+        },
+        Parameter {
+            name: "configured_scopes".to_string(),
+            type_hint: "array".to_string(),
+            description: "The `supported_scopes` startup parameter (default \
+                          [\"openid\", \"profile\", \"email\"]). Advertise these as \
+                          `supported_scopes` on the discovery document.".to_string(),
+            required: false,
+        },
     ])
 });
 

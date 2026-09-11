@@ -44,19 +44,29 @@ pub static SAML_CLIENT_RESPONSE_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::
         Parameter {
             name: "success".to_string(),
             type_hint: "boolean".to_string(),
-            description: "Whether authentication was successful".to_string(),
+            // Not "whether authentication was successful". NetGet checks no signature,
+            // issuer, audience or expiry, so this says only what the XML claims.
+            description: "True only when the response's top-level <StatusCode> is exactly \
+                          urn:oasis:names:tc:SAML:2.0:status:Success. NOTHING IS VERIFIED: no \
+                          signature, issuer, audience or expiry is checked, so a forged \
+                          response reports true just as readily as a genuine one."
+                .to_string(),
             required: true,
         },
         Parameter {
             name: "status_code".to_string(),
             type_hint: "string".to_string(),
-            description: "SAML status code".to_string(),
+            description: "The response's top-level SAML status URI, verbatim - a nested \
+                          second-level code never appears here."
+                .to_string(),
             required: true,
         },
         Parameter {
             name: "assertion".to_string(),
             type_hint: "object".to_string(),
-            description: "SAML assertion data if successful".to_string(),
+            description: "{subject, status_code} when success is true, otherwise absent. \
+                          `subject` is the first <NameID> in the document."
+                .to_string(),
             required: false,
         },
         Parameter {
@@ -133,7 +143,12 @@ impl Protocol for SamlClientProtocol {
             },
             ActionDefinition {
                 name: "validate_assertion".to_string(),
-                description: "Validate a SAML assertion received from IdP".to_string(),
+                description: "Read a base64-encoded SAMLResponse from the IdP and report its status, \
+                              subject and attributes. Despite the name this VALIDATES NOTHING: \
+                              no signature, issuer, audience, expiry or replay check is \
+                              performed, so a forged response is read exactly like a genuine \
+                              one. Judge the reported fields yourself."
+                    .to_string(),
                 parameters: vec![Parameter {
                     name: "saml_response".to_string(),
                     type_hint: "string".to_string(),
@@ -160,7 +175,10 @@ impl Protocol for SamlClientProtocol {
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {
         vec![ActionDefinition {
             name: "parse_assertion".to_string(),
-            description: "Parse SAML assertion from response".to_string(),
+            description: "Read a raw (not base64-encoded) SAMLResponse XML document and report its \
+                          status, subject and attributes. Nothing is verified - see \
+                          validate_assertion."
+                .to_string(),
             parameters: vec![Parameter {
                 name: "response_xml".to_string(),
                 type_hint: "string".to_string(),
@@ -181,18 +199,18 @@ impl Protocol for SamlClientProtocol {
     fn protocol_name(&self) -> &'static str {
         "SAML"
     }
+    /// The events this client raises — the real ones.
+    ///
+    /// This used to build two fresh `EventType`s here whose example action was
+    /// `{"type": "placeholder", "event_id": "saml_connected"}` and which declared no
+    /// parameters at all, while `mod.rs` raised the `LazyLock` statics above. Nothing failed:
+    /// `get_protocol_docs` and the script-template prompt read *this* list, so anyone reading
+    /// the documentation was shown a placeholder action that does not exist and told nothing
+    /// about `success`, `status_code`, `assertion` or `attributes`. Return the statics.
     fn get_event_types(&self) -> Vec<EventType> {
         vec![
-            EventType::new(
-                "saml_connected",
-                "Triggered when SAML client is initialized",
-                json!({"type": "placeholder", "event_id": "saml_connected"}),
-            ),
-            EventType::new(
-                "saml_response_received",
-                "Triggered when SAML client receives an authentication response",
-                json!({"type": "placeholder", "event_id": "saml_response_received"}),
-            ),
+            SAML_CLIENT_CONNECTED_EVENT.clone(),
+            SAML_CLIENT_RESPONSE_RECEIVED_EVENT.clone(),
         ]
     }
     fn stack_name(&self) -> &'static str {
@@ -212,13 +230,32 @@ impl Protocol for SamlClientProtocol {
 
         ProtocolMetadataV2::builder()
             .state(DevelopmentState::Experimental)
-            .implementation("Custom SAML SP client with XML parsing")
-            .llm_control("SSO initiation, assertion validation, attribute extraction")
-            .e2e_testing("SAML test IdP or simplesamlphp")
+            .implementation(
+                "Hand-written SAML 2.0 SP: builds an AuthnRequest and encodes it for the \
+                 HTTP-Redirect or HTTP-POST binding, and reads a SAMLResponse with quick-xml. \
+                 NetGet sends nothing itself - the browser carries both messages.",
+            )
+            // "assertion validation" is what this used to claim and it is the one thing that
+            // does not happen: no signature, issuer, audience, expiry or replay check exists,
+            // and there is no key here to check a signature against.
+            .llm_control(
+                "When to start SSO, with what RelayState and ForceAuthn, and what to make of \
+                 the status, subject and attributes read out of a response. Nothing is verified.",
+            )
+            .e2e_testing(
+                "Mocked model plus in-test SAMLResponse documents \
+                 (tests/client/saml/response_parsing_test.rs); no third-party SAML IdP.",
+            )
+            .notes(
+                "Accepts forged and unsigned assertions: nothing checks <ds:Signature>, Issuer, \
+                 AudienceRestriction, NotOnOrAfter, InResponseTo or assertion-ID replay. The \
+                 `success` it reports means only that the response's top-level StatusCode says \
+                 Success. Simulator and honeypot only, never an access-control boundary.",
+            )
             .build()
     }
     fn description(&self) -> &'static str {
-        "SAML Service Provider client for federated authentication"
+        "SAML 2.0 Service Provider client (reads responses; no signature is verified)"
     }
     fn example_prompt(&self) -> &'static str {
         "Connect to SAML IdP at https://idp.example.com/saml and authenticate user"
@@ -299,6 +336,13 @@ impl Client for SamlClientProtocol {
                 ctx.state,
                 ctx.status_tx,
                 ctx.client_id,
+                // `entity_id`, `acs_url` and `binding` are declared startup parameters, and
+                // this call used to drop `ctx.startup_params` on the floor — so all three
+                // were advertised knobs that did nothing, and `connect_with_llm_actions`
+                // seeded its own defaults under a comment saying they "can be overridden by
+                // startup params". `pop3:use_tls` set the precedent: the parameter list is
+                // per-protocol, so passing the params through is the whole fix.
+                ctx.startup_params,
             )
             .await
         })

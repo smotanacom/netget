@@ -911,12 +911,15 @@ impl OpenIdConnectClient {
         // Call LLM with token received event. This helper is only reached from the device
         // and authorization-code flows' own spawned tasks, which are already off any
         // command loop's critical path, so the event is raised inline there.
+        //
+        // The tokens themselves stay in `protocol_data` and never enter the event. See
+        // `store_and_notify_tokens` for why; the `oauth2` client redacts the same fields.
         let event = Event::new(
             &OIDC_CLIENT_TOKEN_RECEIVED_EVENT,
             serde_json::json!({
-                "access_token": access_token,
-                "id_token": id_token,
-                "refresh_token": refresh_token,
+                "access_token": "[REDACTED]",
+                "id_token": if id_token.is_some() { "[REDACTED]" } else { "" },
+                "refresh_token": if refresh_token.is_some() { "[REDACTED]" } else { "" },
                 "expires_in": expires_in,
                 "token_type": token_type,
             }),
@@ -1599,13 +1602,23 @@ impl OpenIdConnectClient {
             })
             .await;
 
-        // Call LLM with token received event
+        // Call LLM with token received event.
+        //
+        // The tokens are stored above and are **not** put in the event. Event data becomes
+        // part of an LLM prompt, is written to the access log, and is rendered by the event
+        // type's own log template into `netget.log` and the dashboard — so putting a live
+        // bearer token there copies a credential into three places that outlive the session,
+        // one of them a third-party backend. The model never needs it: every action that
+        // spends a token (`fetch_userinfo`, `refresh_token`) reads it back out of
+        // `protocol_data` itself. The `oauth2` client already redacted these fields; this one
+        // sent all three in the clear, `id_token` included, which additionally carries the
+        // subject's claims.
         let event = Event::new(
             &OIDC_CLIENT_TOKEN_RECEIVED_EVENT,
             serde_json::json!({
-                "access_token": access_token,
-                "id_token": id_token,
-                "refresh_token": refresh_token,
+                "access_token": "[REDACTED]",
+                "id_token": if id_token.is_some() { "[REDACTED]" } else { "" },
+                "refresh_token": if refresh_token.is_some() { "[REDACTED]" } else { "" },
                 "expires_in": expires_in,
                 "token_type": token_type,
             }),

@@ -133,6 +133,25 @@ output bytes were not JSON — produced an empty `200 OK`. There is no default a
 response is emitted only if a usable `Output` was actually parsed, and `Multiple` is flattened
 so a wrapped `Output` is not dropped.
 
+**"Usable" means carrying a field this handler renders, not merely being JSON.** The first
+version of that fix opened the response slot — at its `200` default — for *any* parseable
+JSON, so an `Output` that was valid JSON but carried none of `status`/`headers`/`body` still
+produced an empty `200 OK`: the same fail-open, one layer further in. All four SP executors
+happen to emit a `status`, so nothing reachable today hits it, which is exactly why it would
+have survived. An output with none of the three is now skipped with a `warn!` and, if nothing
+else answered, the request falls to `fail_closed_no_answer`. `saml_idp` applies the identical
+rule under the name `produced_response`.
+
+## The body is bounded
+
+The request body is read through `http_body_util::Limited` at `MAX_REQUEST_BODY_BYTES` (1 MiB;
+a `SAMLResponse` is kilobytes, tens of kilobytes with a certificate chain) and an oversized one
+is answered `413`. It was `req.collect()`, which has no limit — `Incoming` buffers whatever the
+peer sends, and the body then goes into an LLM prompt, so one unauthenticated `POST /acs` could
+exhaust the process's memory. A refused body is never handed on as an empty one: a truncated
+SAMLResponse looks complete to the model, which would then decide who the user is from a
+fragment.
+
 The body on both fail-closed rows is `WireFailure::prefixed_text()`, a `&'static str`. **Never
 interpolate the error** — it names the backend URL, the model and netget's own retry machinery,
 and the peer here is an untrusted browser. The full error goes to `tracing` and the status

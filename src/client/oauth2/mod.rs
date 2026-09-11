@@ -122,10 +122,23 @@ impl OAuth2Client {
                     .and_then(|v| v.as_str())
                     .context("Missing OAuth2 token_url startup parameter")?;
 
-                let scopes = client
-                    .get_protocol_field("scopes")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                // The `scopes` parameter is documented as "space-separated or array", and
+                // an array reached here as a `Value::Array` that `as_str()` returned `None`
+                // for — so `["read","write"]` was silently dropped and every flow ran with
+                // no scopes while the parameter list said it accepted exactly that. Both
+                // forms now normalise to the space-separated string the flows split on.
+                let scopes = client.get_protocol_field("scopes").and_then(|v| match v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Array(items) => {
+                        let joined = items
+                            .iter()
+                            .filter_map(|i| i.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        (!joined.is_empty()).then_some(joined)
+                    }
+                    _ => None,
+                });
 
                 Ok::<_, anyhow::Error>((
                     client_id_val.to_string(),

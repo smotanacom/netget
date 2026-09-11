@@ -120,13 +120,29 @@ into the redirect URL; `redirect_uri` itself is used as given.
 `scope=openid+profile` body used to reach the model as `openid+profile`) and skips pairs with
 invalid percent-encoding rather than collapsing them to an empty-string key.
 
+The body itself is read through `http_body_util::Limited` at `MAX_REQUEST_BODY_BYTES` (1 MiB;
+nothing an OIDC endpoint receives is large) and an oversized one is answered `413`. It was
+`req.into_body().collect()`, which has no limit — `Incoming` buffers whatever the peer sends —
+so one unauthenticated `POST /token` could exhaust the process's memory before any credential
+was checked. The old error arm turned an unreadable body into `Bytes::new()` and carried on,
+which is the quieter half of the same bug: the model was shown a `/token` request carrying no
+`grant_type` and no `code` and asked to decide about it.
+
 ## Startup parameters
 
-`issuer` (string) and `supported_scopes` (array). Both are stored in `OpenIdState` and, at
-present, are **only informational** — `handle_openid_request` takes `_openid_state` and does
-not read it, so neither value reaches the model or the responses. The model must be told the
-issuer through the instruction. Either wire `OpenIdState` into the event data or drop the
-parameters; do not assume they are in effect.
+`issuer` (string) and `supported_scopes` (array). Both are stored in `OpenIdState` and reach
+the model on every request, as the event fields `configured_issuer` and `configured_scopes`.
+
+They were inert for a long time and the shape of that bug is worth keeping: the values were
+parsed, validated and stored correctly, and then `handle_openid_request` took the state as
+`_openid_state` and never read it. Nothing failed — an operator who configured
+`issuer: "https://idp.example.com"` simply got a provider that had never heard of it, and had
+to repeat the value in the instruction for anything to work. The parameter list, which is what
+the dashboard builds a form field from and what the model is shown, said otherwise.
+
+The model still decides what to *do* with them: nothing in Rust forces the discovery document's
+`issuer` to match `configured_issuer`, because the deliberate-misbehaviour scenarios below
+depend on being able to mismatch it. The event's parameter descriptions say what each is for.
 
 ## Storage
 

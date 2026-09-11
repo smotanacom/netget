@@ -101,6 +101,16 @@ fn fail_closed_response(failure: crate::utils::WireFailure) -> Response<Full<Byt
     build_safe_response(status, headers, failure.prefixed_text().to_string())
 }
 
+/// How much of a request body is read before the request is refused.
+///
+/// An `AuthnRequest` is a few hundred bytes deflated and base64-encoded; SAML metadata is a
+/// few kilobytes. Nothing this IDP receives is large. The body is buffered whole and then
+/// embedded in an LLM prompt, so a big one is cost without benefit even when it is honest.
+/// Without a cap the buffer is whatever the peer chooses to send — `Incoming` has no default
+/// limit — so a single unauthenticated `POST /sso` could exhaust the process's memory before
+/// anything looked at it.
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+
 /// SAML IDP server that delegates authentication and assertion generation to LLM
 pub struct SamlIdpServer;
 
@@ -254,15 +264,27 @@ async fn handle_saml_idp_request(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    // Read request body
-    let body_bytes = match req.collect().await {
+    // Read request body, bounded. `Limited` errors as soon as the cap is passed rather than
+    // after buffering the whole thing, so an oversized request costs at most the cap. A
+    // refused body is never handed on as an empty one: a truncated AuthnRequest looks
+    // complete to the model, which would then answer a request it never saw.
+    let body_bytes = match http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes().to_vec(),
         Err(e) => {
-            error!("Failed to read SAML IDP request body: {}", e);
+            warn!(
+                "SAML IDP {} {}: refusing request body ({}); limit is {} bytes",
+                method, path, e, MAX_REQUEST_BODY_BYTES
+            );
             return Ok(build_safe_response(
-                400,
-                [],
-                "Failed to read request body".to_string(),
+                413,
+                [(
+                    "content-type".to_string(),
+                    "text/plain; charset=utf-8".to_string(),
+                )],
+                "Request body too large".to_string(),
             ));
         }
     };

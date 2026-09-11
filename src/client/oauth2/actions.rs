@@ -182,7 +182,9 @@ impl Protocol for OAuth2ClientProtocol {
             },
             ParameterDefinition {
                 name: "scopes".to_string(),
-                description: "OAuth2 scopes to request (space-separated or array)".to_string(),
+                description: "Default OAuth2 scopes for flows that do not name their own: a \
+                              space-separated string, or an array of scope names."
+                    .to_string(),
                 type_hint: "string".to_string(),
                 required: false,
                 example: json!("read write"),

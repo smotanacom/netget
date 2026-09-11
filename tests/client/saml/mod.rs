@@ -2,3 +2,5 @@
 mod command_channel_test;
 #[cfg(all(test, feature = "saml"))]
 mod e2e_test;
+#[cfg(all(test, feature = "saml"))]
+mod response_parsing_test;

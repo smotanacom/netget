@@ -64,22 +64,35 @@ pub static OIDC_CLIENT_TOKEN_RECEIVED_EVENT: LazyLock<EventType> = LazyLock::new
         }),
     )
     .with_parameters(vec![
+        // These three are reported as `[REDACTED]` (or `""` when the provider sent none),
+        // never as their real values - the event reaches an LLM prompt, the access log and
+        // netget.log, and a bearer token has no business in any of them. Say so here, or the
+        // model is told it will be handed a token and tries to use the literal string.
         Parameter {
             name: "access_token".to_string(),
             type_hint: "string".to_string(),
-            description: "OAuth access token".to_string(),
+            description: "Always \"[REDACTED]\". The client holds the real access token and \
+                          spends it itself; ask for `fetch_userinfo` rather than trying to \
+                          use this value."
+                .to_string(),
             required: true,
         },
         Parameter {
             name: "id_token".to_string(),
             type_hint: "string".to_string(),
-            description: "OpenID Connect ID token (JWT)".to_string(),
+            description: "\"[REDACTED]\" if the provider returned an ID token, \"\" if it did \
+                          not. The JWT itself is never shown - it carries the subject's claims; \
+                          `fetch_userinfo` is how to read them."
+                .to_string(),
             required: false,
         },
         Parameter {
             name: "refresh_token".to_string(),
             type_hint: "string".to_string(),
-            description: "OAuth refresh token".to_string(),
+            description: "\"[REDACTED]\" if the provider returned a refresh token, \"\" if it \
+                          did not. The `refresh_token` action uses the stored value; it takes \
+                          no token parameter."
+                .to_string(),
             required: false,
         },
         Parameter {

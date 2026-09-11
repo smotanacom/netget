@@ -59,12 +59,32 @@ validating SAML assertions.
 
 Client stores in `protocol_data`:
 
-- `idp_url`: Identity Provider endpoint URL
+- `idp_url`: Identity Provider endpoint URL (the address the client was connected to)
 - `entity_id`: Service Provider entity identifier (default: `urn:netget:sp`)
-- `acs_url`: Assertion Consumer Service URL (where IdP sends response)
-- `binding`: SAML binding type (`redirect` or `post`)
+- `acs_url`: Assertion Consumer Service URL (default: `http://localhost:8080/saml/acs`)
+- `binding`: SAML binding type (`redirect` or `post`; default `redirect`)
 - `request_id`: Generated request ID for validation
 - `sso_url`: Complete SSO URL for user redirection
+
+The first three of those come from **startup parameters**, and until recently did not:
+`connect()` dropped `ctx.startup_params` on the floor, so all three declared parameters were
+advertised knobs that did nothing, and `connect_with_llm_actions` seeded its defaults under a
+comment claiming they "can be overridden by startup params". An operator who set an
+`entity_id` got `urn:netget:sp`; one who asked for the HTTP-POST binding got a redirect.
+(`startup_param_drift_test` does not catch this shape — its rule is "the name appears nowhere
+else in the protocol's directory", and all three names appear here as `protocol_data` keys.)
+
+A `binding` that is neither `redirect` nor `post` is now an `Err` at connect rather than a
+silent downgrade: `build_sso_request` treats anything that is not `post` as `redirect`, so a
+typo would have produced a redirect binding while the operator believed otherwise.
+
+### Escaping
+
+`entity_id`, `acs_url` and the generated `request_id`/timestamp go into the AuthnRequest as
+XML attribute values and element text, and are escaped by `escape_xml` (`& < > " '`). A `"` in
+`acs_url` previously closed the `AssertionConsumerServiceURL` attribute early; the request is
+deflated and base64-encoded immediately afterwards, so a malformed one was invisible until the
+IDP rejected it.
 
 ## LLM Integration
 
@@ -148,19 +168,58 @@ Triggered when assertion is validated:
 
 ### Security Considerations
 
-1. **No Signature Verification** - Current implementation does NOT verify XML signatures
-    - SAML responses should be signed by IdP
-    - Signature verification requires `xmlsec` integration (complex)
-    - **For testing/development only** - not production-ready without signature validation
+1. **No Signature Verification** - this client verifies NOTHING
+    - No `<ds:Signature>` is checked, on the response or on any assertion inside it. There is
+      no key here to check one against: no certificate is configured, stored or fetched.
+    - Neither is the issuer, the audience restriction, `NotBefore`/`NotOnOrAfter`,
+      `InResponseTo`, nor assertion-ID replay.
+    - So **a forged assertion is accepted exactly as readily as a genuine one**, and the
+      `success: true` this client reports to the model is a statement about XML, not about
+      authentication. Say so wherever this client is described; it is the whole attack.
+    - Signature verification would need `xmlsec` integration and a trust store, neither of
+      which exists. Until then this is a simulator for exercising IdPs and a honeypot —
+      **never an access-control boundary.**
 
 2. **No Certificate Management** - No handling of X.509 certificates
     - Production SAML requires certificate-based trust
     - Would need certificate storage and validation
 
-3. **Basic XML Parsing** - Simple parsing without full SAML compliance
-    - Extracts essential fields (status, subject, attributes)
-    - Does not validate all SAML specification requirements
-    - May fail on complex SAML responses
+3. **Basic XML Parsing** - Reads a few fields; validates nothing
+    - Extracts the top-level status code, the subject's `NameID`, and attribute values
+    - Does not validate any SAML specification requirement
+    - `success` means "the document's top-level `<StatusCode>` says Success", nothing more
+
+   **What that reading has to get right, because nothing else guards it.** With no signature
+   check, the only thing standing between a forged `<samlp:Response>` and a reported sign-in
+   is that the status reported is the status the document actually carries. Three ways it
+   was not, all fixed and pinned by `tests/client/saml/response_parsing_test.rs`:
+
+    - `status_code.contains("Success")` was the success test. SAML nests `<StatusCode>` inside
+      `<StatusCode>` to carry second-level detail, and every `StatusCode` seen overwrote the
+      last, so `<StatusCode Value="…:Requester"><StatusCode Value="…:Success"/></StatusCode>`
+      — a *refusal* — was reported to the model as `success: true`. It is now an equality
+      check against `SAML_STATUS_SUCCESS`, on the `<StatusCode>` that is a direct child of
+      `<Status>`, taking the first one only.
+    - Only `Event::Empty` was matched, so the outer element of that same nesting (a `Start`)
+      was skipped entirely and the inner one became "the" status. Both are matched now.
+    - Element names were compared as raw qualified bytes (`b"saml:NameID"`). SAML fixes the
+      namespace URIs but not the prefixes, and Shibboleth and ADFS emit `saml2:` — so a
+      response from either parsed as having no subject and no attributes, silently.
+      `local_name` strips the prefix.
+
+   Also: the **first** `NameID` is the subject, so a later one — in `<Advice>`, or in a second
+   assertion appended after the real one — cannot replace it; nesting past `MAX_XML_DEPTH`
+   (64) is refused; and `MAX_ASSERTION_ATTRIBUTES` (128) bounds the map that is serialised
+   into an LLM prompt.
+
+   **Entity expansion cannot happen here, and it is worth knowing why rather than assuming.**
+   `quick_xml` never processes a DTD: a `<!DOCTYPE>` with an internal subset arrives as an
+   opaque `Event::DocType` that nothing acts on, and `unescape()` resolves only the five
+   predefined entities plus numeric character references, so `&lol9;` is an unrecognised
+   symbol rather than an expansion. Billion laughs is structurally impossible, not merely
+   unobserved, and the test asserts it so that swapping in a DTD-honouring parser fails here
+   instead of in production. Nothing in this parser recurses, so there is no stack-overflow
+   path either.
 
 4. **No Encryption** - SAML assertions are not encrypted
     - Some IdPs require encrypted assertions

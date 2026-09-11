@@ -55,6 +55,7 @@ impl SamlClient {
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
         client_id: ClientId,
+        startup_params: Option<crate::protocol::StartupParams>,
     ) -> Result<SocketAddr> {
         // For SAML, "connection" is logical - we're preparing to authenticate
         // The actual communication happens via HTTP requests to the IdP
@@ -64,6 +65,34 @@ impl SamlClient {
             client_id, remote_addr
         );
 
+        // The three declared startup parameters. `connect()` used to drop them and this
+        // function seeded its defaults regardless, under a comment claiming they "can be
+        // overridden by startup params" - so an operator who set an `entity_id` got
+        // `urn:netget:sp` and an operator who asked for the HTTP-POST binding got a redirect.
+        // `?` rather than a silent default: a wrong-typed value names itself at startup
+        // instead of being ignored.
+        let (param_entity_id, param_acs_url, param_binding) = match &startup_params {
+            Some(params) => (
+                params.get_optional_string("entity_id")?,
+                params.get_optional_string("acs_url")?,
+                params.get_optional_string("binding")?,
+            ),
+            None => (None, None, None),
+        };
+
+        // A binding this client cannot honour is refused rather than silently downgraded:
+        // `build_sso_request` treats anything that is not "post" as "redirect", so a typo
+        // would produce a redirect binding while the operator believed they had asked for
+        // POST, and nothing on the wire would say otherwise.
+        if let Some(binding) = &param_binding {
+            if binding != "redirect" && binding != "post" {
+                return Err(anyhow::anyhow!(
+                    "SAML client: unknown `binding` value '{binding}'. Expected \"redirect\" \
+                     (HTTP-Redirect, deflate + base64) or \"post\" (HTTP-POST, base64)."
+                ));
+            }
+        }
+
         // Store IdP URL in protocol_data
         app_state
             .with_client_mut(client_id, |client| {
@@ -72,18 +101,24 @@ impl SamlClient {
                     serde_json::json!("initialized"),
                 );
                 client.set_protocol_field("idp_url".to_string(), serde_json::json!(remote_addr));
-                // Default entity ID (can be overridden by startup params)
                 client.set_protocol_field(
                     "entity_id".to_string(),
-                    serde_json::json!("urn:netget:sp"),
+                    serde_json::json!(param_entity_id
+                        .clone()
+                        .unwrap_or_else(|| "urn:netget:sp".to_string())),
                 );
-                // Default ACS URL
                 client.set_protocol_field(
                     "acs_url".to_string(),
-                    serde_json::json!("http://localhost:8080/saml/acs"),
+                    serde_json::json!(param_acs_url
+                        .clone()
+                        .unwrap_or_else(|| "http://localhost:8080/saml/acs".to_string())),
                 );
-                // Default binding (redirect or post)
-                client.set_protocol_field("binding".to_string(), serde_json::json!("redirect"));
+                client.set_protocol_field(
+                    "binding".to_string(),
+                    serde_json::json!(param_binding
+                        .clone()
+                        .unwrap_or_else(|| "redirect".to_string())),
+                );
             })
             .await;
 
@@ -697,6 +732,29 @@ impl SamlClient {
         }
     }
 
+    /// Escape text for interpolation into an XML attribute value or text node.
+    ///
+    /// `entity_id` and `acs_url` are operator-supplied startup parameters that go straight
+    /// into an attribute and an element below. A `"` in either closed the attribute early and
+    /// let the rest of the value become markup; a `<` made the request unparseable to the IDP,
+    /// which is the quieter half of the same bug — the AuthnRequest is deflated and
+    /// base64-encoded immediately, so a malformed one is not visible anywhere until the IDP
+    /// rejects it.
+    pub fn escape_xml(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for ch in text.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&apos;"),
+                _ => out.push(ch),
+            }
+        }
+        out
+    }
+
     /// Generate SAML AuthnRequest XML
     fn generate_authn_request(
         request_id: &str,
@@ -710,7 +768,11 @@ impl SamlClient {
   <saml:Issuer>{}</saml:Issuer>
   <samlp:NameIDPolicy Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified" AllowCreate="true"/>
 </samlp:AuthnRequest>"#,
-            request_id, timestamp, force_authn, acs_url, issuer
+            Self::escape_xml(request_id),
+            Self::escape_xml(timestamp),
+            force_authn,
+            Self::escape_xml(acs_url),
+            Self::escape_xml(issuer)
         )
     }
 
@@ -732,8 +794,58 @@ impl SamlClient {
         Ok(urlencoding::encode(&encoded).to_string())
     }
 
-    /// Parse SAML response XML
-    fn parse_saml_response(
+    /// The one `<samlp:StatusCode>` value that means the IDP authenticated the subject.
+    ///
+    /// Compared for **equality**, never as a substring. `status_code.contains("Success")` was
+    /// the old test and it is two bugs at once: `urn:example:NotSuccessful` matches, and so
+    /// does a *second-level* status code — SAML nests `<StatusCode>` inside `<StatusCode>` to
+    /// carry detail, so an attacker who can put any XML in front of this client could send
+    /// `<StatusCode Value="…:Requester"><StatusCode Value="…:Success"/></StatusCode>` and have
+    /// the failure reported to the model as a successful sign-in.
+    pub const SAML_STATUS_SUCCESS: &'static str = "urn:oasis:names:tc:SAML:2.0:status:Success";
+
+    /// Element nesting past which a response is refused rather than walked.
+    ///
+    /// `quick_xml` is a pull parser, so this is not stack-overflow protection — nothing here
+    /// recurses. It bounds the bookkeeping below (and the work) for a document that is
+    /// pathological rather than merely wrong.
+    pub const MAX_XML_DEPTH: usize = 64;
+
+    /// How many `<saml:Attribute>` values are collected before the rest are dropped.
+    ///
+    /// The map is built from attacker-supplied XML and then serialised into an event that
+    /// becomes part of an LLM prompt. A real assertion carries a handful.
+    pub const MAX_ASSERTION_ATTRIBUTES: usize = 128;
+
+    /// The local part of a qualified XML name: `saml2:NameID` -> `NameID`.
+    ///
+    /// SAML fixes the namespace URIs but not the prefixes, and real IDPs disagree —
+    /// Shibboleth and ADFS emit `saml2:`/`saml2p:`, others `saml:`/`samlp:`. Matching the
+    /// qualified bytes (`b"saml:NameID"`) meant an assertion from either of those was parsed
+    /// as having no subject and no attributes at all, silently.
+    pub fn local_name(qname: &[u8]) -> &[u8] {
+        match qname.iter().rposition(|b| *b == b':') {
+            Some(i) => &qname[i + 1..],
+            None => qname,
+        }
+    }
+
+    /// Read a SAML Response's top-level status, subject and attributes.
+    ///
+    /// **This is a reader, not a verifier.** It checks no signature — there is no key here to
+    /// check one against — and neither the issuer, the audience restriction, `NotBefore` /
+    /// `NotOnOrAfter`, nor assertion-ID replay. A forged assertion parses exactly as readily
+    /// as a genuine one, and the `success` it returns means only "the XML says Success". The
+    /// decision about whether to believe it belongs to the model, which is why the event
+    /// carries the status URI rather than just the boolean.
+    ///
+    /// Entity expansion is not a risk here and it is worth knowing why rather than assuming:
+    /// `quick_xml` never processes a DTD. A `<!DOCTYPE>` with an internal subset arrives as an
+    /// opaque `Event::DocType` that nothing acts on, and `unescape()` resolves only the five
+    /// predefined entities plus numeric character references — an `&lol1;` is an
+    /// `UnrecognizedSymbol` error, not a expansion. Billion laughs is therefore structurally
+    /// impossible, not merely unobserved. `tests/client/saml/e2e_test.rs` pins that.
+    pub fn parse_saml_response(
         response_xml: &str,
     ) -> Result<(
         bool,
@@ -748,85 +860,139 @@ impl SamlClient {
         reader.config_mut().trim_text(true);
 
         let mut status_code = "urn:oasis:names:tc:SAML:2.0:status:Unknown".to_string();
-        let mut subject = None;
+        let mut subject: Option<String> = None;
         let mut attributes = serde_json::Map::new();
+        let mut attributes_dropped = 0usize;
+
+        // Depth of the element we are inside, and the depth at which `<Status>` opened.
+        // Only a `<StatusCode>` that is a *direct child* of `<Status>` is the top-level one;
+        // everything deeper is second-level detail and must not be able to overwrite it.
+        let mut depth = 0usize;
+        let mut status_depth: Option<usize> = None;
+        let mut top_status_seen = false;
+
+        // `<NameID>` inside the Subject is the assertion's subject. Take the first one and
+        // keep it: the last-wins behaviour this replaced let a `<NameID>` appearing later in
+        // the document — inside `<Advice>`, or in a second assertion appended after the real
+        // one — replace the subject the response actually asserted.
         let mut in_attribute = false;
-        let mut current_attr_name = None;
+        let mut current_attr_name: Option<String> = None;
+
+        /// Pull `Value="…"` (or `Name="…"`) off an element's attribute list.
+        fn attr_value(
+            e: &quick_xml::events::BytesStart<'_>,
+            reader: &Reader<&[u8]>,
+            wanted: &[u8],
+        ) -> Option<String> {
+            for attr in e.attributes().flatten() {
+                if SamlClient::local_name(attr.key.as_ref()) == wanted {
+                    if let Ok(value) = attr.decode_and_unescape_value(reader.decoder()) {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+            None
+        }
 
         let mut buf = Vec::new();
         loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => {
-                    match e.name().as_ref() {
-                        b"saml:Attribute" | b"Attribute" => {
-                            in_attribute = true;
-                            // Extract attribute name
-                            for attr in e.attributes() {
-                                if let Ok(attr) = attr {
-                                    if attr.key.as_ref() == b"Name" {
-                                        if let Ok(value) =
-                                            attr.decode_and_unescape_value(reader.decoder())
-                                        {
-                                            current_attr_name = Some(value.to_string());
-                                        }
-                                    }
+            let event = reader
+                .read_event_into(&mut buf)
+                .map_err(|e| anyhow::anyhow!("XML parse error: {}", e))?;
+
+            match event {
+                Event::Start(ref e) | Event::Empty(ref e) => {
+                    let empty = matches!(event, Event::Empty(_));
+                    let name = Self::local_name(e.name().as_ref()).to_vec();
+
+                    if !empty {
+                        depth += 1;
+                        if depth > Self::MAX_XML_DEPTH {
+                            return Err(anyhow::anyhow!(
+                                "SAML response nests deeper than {} elements; refusing to parse it",
+                                Self::MAX_XML_DEPTH
+                            ));
+                        }
+                    }
+                    // The depth this element sits *at*: an Empty element never opened a level.
+                    let here = if empty { depth + 1 } else { depth };
+
+                    match name.as_slice() {
+                        b"Status" if !empty => status_depth = Some(here),
+                        b"StatusCode" => {
+                            // Direct child of <Status> only, and only the first one.
+                            let is_top_level = status_depth == Some(here - 1);
+                            if is_top_level && !top_status_seen {
+                                if let Some(value) = attr_value(e, &reader, b"Value") {
+                                    status_code = value;
+                                    top_status_seen = true;
                                 }
                             }
                         }
-                        b"saml:NameID" | b"NameID" => {
-                            // Read subject
-                            if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                                if let Ok(text) = e.unescape() {
+                        b"NameID" if subject.is_none() && !empty => {
+                            // Read this element's text without disturbing the outer buffer:
+                            // `read_event_into(&mut buf)` while `e` still borrows `buf` is
+                            // the misuse that makes a pull parser lose its place.
+                            let mut inner = Vec::new();
+                            if let Ok(Event::Text(t)) = reader.read_event_into(&mut inner) {
+                                if let Ok(text) = t.unescape() {
                                     subject = Some(text.to_string());
                                 }
                             }
+                            // That inner read consumed events up to and including the text;
+                            // the matching </NameID> is still ahead and will close the level.
+                        }
+                        b"Attribute" if !empty => {
+                            in_attribute = true;
+                            current_attr_name = attr_value(e, &reader, b"Name");
                         }
                         _ => {}
                     }
                 }
-                Ok(Event::Empty(ref e)) => {
-                    if e.name().as_ref() == b"samlp:StatusCode"
-                        || e.name().as_ref() == b"StatusCode"
-                    {
-                        // Extract status code
-                        for attr in e.attributes() {
-                            if let Ok(attr) = attr {
-                                if attr.key.as_ref() == b"Value" {
-                                    if let Ok(value) =
-                                        attr.decode_and_unescape_value(reader.decoder())
-                                    {
-                                        status_code = value.to_string();
-                                    }
+                Event::End(ref e) => {
+                    let qname = e.name();
+                    let name = Self::local_name(qname.as_ref());
+                    if name == b"Attribute" {
+                        in_attribute = false;
+                        current_attr_name = None;
+                    }
+                    if name == b"Status" {
+                        status_depth = None;
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                Event::Text(ref e) => {
+                    if in_attribute {
+                        if let Some(name) = &current_attr_name {
+                            if let Ok(text) = e.unescape() {
+                                if attributes.len() < Self::MAX_ASSERTION_ATTRIBUTES
+                                    || attributes.contains_key(name.as_str())
+                                {
+                                    attributes
+                                        .insert(name.clone(), serde_json::json!(text.to_string()));
+                                } else {
+                                    attributes_dropped += 1;
                                 }
                             }
                         }
                     }
                 }
-                Ok(Event::End(ref e)) => match e.name().as_ref() {
-                    b"saml:Attribute" | b"Attribute" => {
-                        in_attribute = false;
-                        current_attr_name = None;
-                    }
-                    _ => {}
-                },
-                Ok(Event::Text(e)) => {
-                    if in_attribute {
-                        if let Some(name) = &current_attr_name {
-                            if let Ok(text) = e.unescape() {
-                                attributes
-                                    .insert(name.clone(), serde_json::json!(text.to_string()));
-                            }
-                        }
-                    }
-                }
-                Ok(Event::Eof) => break,
-                Err(e) => return Err(anyhow::anyhow!("XML parse error: {}", e)),
+                Event::Eof => break,
                 _ => {}
             }
             buf.clear();
         }
 
-        let success = status_code.contains("Success");
+        if attributes_dropped > 0 {
+            tracing::warn!(
+                "SAML response carried more than {} attributes; dropped {}",
+                Self::MAX_ASSERTION_ATTRIBUTES,
+                attributes_dropped
+            );
+        }
+
+        // Equality, not `contains`. See SAML_STATUS_SUCCESS.
+        let success = status_code == Self::SAML_STATUS_SUCCESS;
 
         let assertion_data = if success {
             Some(serde_json::json!({
