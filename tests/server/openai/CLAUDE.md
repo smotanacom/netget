@@ -28,7 +28,9 @@ failure instead of a 404, which they handle very differently.
 3. Error handling (404 for unknown endpoints)
 4. Full integration with official OpenAI Rust client
 
-Tests use **hardcoded server behavior** (no LLM prompting for server logic), focusing on API format compliance.
+Server behaviour is **not** hardcoded — every request raises `openai_request` and is answered
+by the model (or by a static routing rule standing in for it), which is what the LLM budget
+below counts. Tests focus on API format compliance on top of that.
 
 ## LLM Call Budget
 
@@ -48,17 +50,24 @@ fifth test.
 
 ## Scripting Usage
 
-**N/A - Scripting Not Applicable**
+Applicable, and used. `request_limits_test` answers `openai_request` with a static routing
+rule so its two HTTP requests cost no LLM calls at all — which is also what makes its 413
+assertion meaningful, since the cap has to fire before any call could happen.
 
-The OpenAI server is **hardcoded** and doesn't use LLM for server behavior generation. It directly translates between
-OpenAI API format and Ollama calls.
+This section used to say the server "is hardcoded and doesn't use LLM for server behavior
+generation … directly translates between OpenAI API format and Ollama calls". None of that is
+true: `handle_openai_request` calls `call_llm` and the server never speaks to Ollama itself.
 
 ## Client Library
 
 **Real OpenAI Clients** used for protocol correctness:
 
 - `reqwest` - Manual HTTP client for raw API testing
-- `async-openai` v0.24 - Official Rust OpenAI client for SDK compatibility testing
+- `async-openai` 0.26 (the version in `Cargo.toml`; this said 0.24 for a long time) - a real
+  third-party Rust OpenAI client, and the evidence behind the `Beta` rating. It is a normal
+  dependency of the `openai` feature rather than an `optional = true` dev-dependency, so it
+  compiles and runs wherever the feature does; it is not `#[ignore]`d and does not skip when
+  anything is missing.
 
 ## Expected Runtime
 
@@ -111,7 +120,19 @@ OpenAI API format and Ollama calls.
 - `async-openai`: `models().retrieve("no-such-model")` must fail with
   `OpenAIError::ApiError` carrying the same message and type — not a parse or transport error
 
-### 4. Rust Client Integration (`test_openai_with_rust_client`)
+### 4. Request limits and failure semantics (`request_limits_test`)
+
+**Validates**: what the server refuses
+
+- A 9 MiB body is refused with 413 in OpenAI's own error envelope, before any LLM call — the
+  endpoint is unauthenticated and `Incoming` has no default limit, so `req.collect()` used to
+  buffer whatever the peer sent
+- An ordinary request on the same endpoint still returns 200, so the guard is not just
+  refusing everything
+- A backend failure answers 5xx with a `WireFailure` category and tells the peer nothing about
+  netget: no "LLM", no backend URL, no "did not return valid response"
+
+### 5. Rust Client Integration (`test_openai_with_rust_client`)
 
 **Validates**: Full SDK compatibility
 
@@ -165,11 +186,15 @@ assert!(json.get("choices").and_then(|v| v.as_array()).is_some());
 
 ## Why This Protocol is Different
 
-Unlike most NetGet protocols:
+One thing, and it is not any of the four this section used to list — "no LLM prompting", "zero
+server startup calls", "direct Ollama integration", "bypasses NetGet's action system" were all
+false, and the budget table above contradicts them on the same page.
 
-1. **No LLM prompting** - Server behavior is hardcoded
-2. **Zero server startup calls** - No LLM initialization needed
-3. **Direct Ollama integration** - Bypasses NetGet's action system for core logic
-4. **Standard client libraries** - Uses real OpenAI SDKs
+What is actually different: **a real third-party SDK deserializes the responses.**
+`async-openai` has no lenient path, so a field we get wrong is a hard failure rather than a
+string match that happens to pass. That is why this protocol is `Beta` and its neighbours are
+not, and it is the bar any promotion in this family has to clear.
 
-This makes tests **extremely reliable** compared to LLM-driven protocols.
+The trap it invites is the family's own: this server impersonates an LLM backend while netget
+itself talks to one. A test that gets that confused - pointing a client at the operator's real
+endpoint, or asserting on output the real backend produced - proves nothing about this server.

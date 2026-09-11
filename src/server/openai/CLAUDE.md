@@ -70,21 +70,24 @@ The LLM receives the request event and decides which action to return based on t
 
 ### Action System Integration
 
-**Hybrid Model** - Combines direct implementation with action support:
+**Every request is a model decision.** This section used to say the opposite — "most logic is
+hardcoded (no LLM prompting needed)" and "empty action lists" — and none of it was true:
+`handle_openai_request` calls `call_llm` for every request that gets past routing, and
+`get_sync_actions()` returns all three response actions. Nothing here answers without asking.
 
-- Most logic is **hardcoded** (no LLM prompting needed)
-- Action system available for future extensibility
-- Protocol implements `ProtocolActions` trait with empty action lists
+The three actions the model may return are `openai_chat_response`, `openai_models_response`
+and `openai_error_response`, and all three are attached to `openai_request` with
+`.with_actions(...)` — without that, `call_llm` would offer the model nothing protocol-specific
+and reject every answer it produced.
 
 ## State Management
 
 ### Per-Connection State
 
-```rust
-ProtocolConnectionInfo::OpenAi {
-    recent_requests: Vec<String>,  // Track request endpoints
-}
-```
+None. `ProtocolConnectionInfo` is a generic `serde_json::Value` wrapper rather than an enum
+(see `state/server.rs`), and this server stores `ProtocolConnectionInfo::empty()`. The
+`ProtocolConnectionInfo::OpenAi { recent_requests }` variant this section used to show has
+never existed.
 
 ### No Session State
 
@@ -100,7 +103,33 @@ ProtocolConnectionInfo::OpenAi {
 - **Function calling** - Tools/function_call parameters ignored
 - **Embeddings endpoint** - Only chat completions supported
 - **Fine-tuning endpoints** - Not applicable to Ollama models
-- **API key authentication** - No auth layer (security out of scope)
+- **API key authentication** - none. The server does not read request headers at all, so an
+  `Authorization` header is neither validated nor shown to the model — which also means it is
+  never logged, never put in an event and never reaches the status stream. For a server whose
+  whole job is to look like an LLM backend, a client pointed at it presents a real key, so
+  *not* capturing it is the safer default; making it a model decision would mean deliberately
+  putting a credential into a prompt.
+
+### Bounds
+
+- **Request bodies are capped at 8 MiB** and refused with 413 in OpenAI's own error envelope.
+  `Incoming` has no default limit and this endpoint is unauthenticated, so `req.collect()`
+  used to buffer whatever the peer sent; the body is then handed to the model as prompt text,
+  where a megabyte is already useless. A distinct 413 rather than an empty body matters,
+  because a truncated body looks complete to the model.
+- **The response builder cannot panic.** `status` was read with `as u16`, and headers from
+  action data were applied with `.unwrap()` at the end — a header value containing CR/LF (a
+  response-splitting attempt) or a malformed name made the builder return `Err` and panicked
+  the connection task. Individual bad headers are dropped and a status outside 100-599 becomes
+  a 500 rather than wrapping toward 200.
+
+### Failure semantics
+
+A backend failure answers 503 when `WireFailure` classifies it as overloaded and 500
+otherwise, so a client backs off rather than recording a permanent fault. The peer gets a
+category; the log gets the error, tagged `decision=fail_closed_llm_error` or
+`decision=fail_closed_no_action`. The old no-action path answered "LLM did not return valid
+response", which is netget's own internals on a stranger's terminal.
 
 ### Response Format Compromises
 
@@ -188,8 +217,11 @@ let response = client.chat().create(request).await?;
 
 ## Key Design Principles
 
-1. **Zero Configuration** - Works immediately without LLM prompting
-2. **Real Responses** - Uses actual Ollama/LLM, not simulated
+1. **Every response is the model's** - there is no hardcoded answer path; a server that
+   cannot reach its backend refuses rather than inventing a completion
+2. **Real Responses** - composed by netget's own LLM backend, not canned. Note the confusion
+   this family invites: the backend netget *talks to* and the backend this server *pretends to
+   be* are different things, and the peer's prompt reaching netget's model is by design
 3. **Full Compatibility** - Works with standard OpenAI SDKs
 4. **Minimal Translation** - Thin layer between OpenAI API and Ollama
 5. **No State** - Stateless design matches OpenAI API philosophy
