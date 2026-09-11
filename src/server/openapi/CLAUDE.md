@@ -125,11 +125,36 @@ resource store behind the paths. `GET /todos` returns whatever the model says, a
 that "creates" something creates nothing. If a scenario needs the second request to see the
 first one's effect, the model must keep it in server memory.
 
+## Bounds
+
+**Request bodies are capped at 8 MiB** and refused with 413. `Incoming` has no default limit,
+and `security` schemes are parsed but never enforced (below), so every route is reachable
+pre-auth — a single POST with an endless chunked body was enough to walk the process out of
+memory. `http_body_util::Limited` errors as soon as the cap is passed, so an oversized upload
+costs at most the cap.
+
+The old error arm was worse than merely unbounded: it swallowed the read failure into
+`Bytes::new()` and carried on, so the model was shown a request with **no** body and answered
+it as though the peer had sent none. That is the truncated-body trap, and it is why the cap
+returns a distinct 413 rather than an empty body. The cap is small because the body goes into
+the `openapi_request` event and from there into an LLM prompt.
+
+One narrowing cast survived the pass that fixed `send_openapi_response` and
+`send_validation_error`: the legacy `ActionResult::Output` branch read `status` with `as u16`
+without going through either executor, so it was the one remaining route by which `65736`
+could reach `build_safe_response` as a perfectly valid 200. It is range-checked now, and an
+unusable value answers 500 rather than the 200 the old default supplied.
+
 ## Not implemented
 
-Request-body and parameter schema validation (route matching only), response validation,
-content negotiation, `multipart/form-data`, and any authentication — `security` schemes in the
-spec are parsed but never enforced.
+Request-body and parameter schema validation, response validation, content negotiation,
+`multipart/form-data`, and any authentication — `security` schemes in the spec are parsed but
+never enforced.
+
+Note that `validate_request()` exists, is called on every matched route when `llm_on_invalid`
+is false, and **returns `Ok(())` unconditionally** — its body is a TODO listing the four
+checks it would do. A reader of the call site would reasonably conclude requests are validated
+against the schema; nothing is. The `immediate_400` path it guards is therefore unreachable.
 
 ## Examples
 

@@ -194,6 +194,28 @@ fn validate_request(
     Ok(())
 }
 
+/// How much of a request body is read before the request is refused with 413.
+///
+/// The body is buffered whole and then embedded in an LLM prompt, so there is no legitimate
+/// use for a large one. Matches `http_common::handler::MAX_REQUEST_BODY_BYTES`.
+const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// Create immediate 413 response for a body past [`MAX_REQUEST_BODY_BYTES`].
+#[cfg(feature = "openapi")]
+fn payload_too_large() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(413)
+        .header("Content-Type", "application/json")
+        .body(Full::new(Bytes::from(
+            json!({
+                "error": "Payload Too Large",
+                "message": "The request body exceeds this server's limit"
+            })
+            .to_string(),
+        )))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+}
+
 /// Create immediate 404 Not Found response
 #[cfg(feature = "openapi")]
 fn immediate_404() -> Response<Full<Bytes>> {
@@ -398,8 +420,25 @@ async fn handle_llm_response(
                 if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&output_data) {
                     produced_response = true;
                     decision = "model_output_legacy";
-                    if let Some(status) = json_value.get("status").and_then(|v| v.as_u64()) {
-                        status_code = status as u16;
+                    // `as u16` wraps, and this path does not go through the executors that
+                    // bound `status_code` to 100-599 — so it was the one remaining route by
+                    // which `65736` could reach `build_safe_response` as a perfectly valid
+                    // 200. Anything unusable stays at the 500 set below rather than becoming
+                    // the success the old default supplied.
+                    status_code = 500;
+                    match json_value.get("status").and_then(|v| v.as_u64()) {
+                        Some(status) => match u16::try_from(status)
+                            .ok()
+                            .filter(|code| (100..=599).contains(code))
+                        {
+                            Some(code) => status_code = code,
+                            None => error!(
+                                "OpenAPI legacy output carried status {} which is not an HTTP \
+                                 status; answering 500",
+                                status
+                            ),
+                        },
+                        None => status_code = 200,
                     }
                     if let Some(headers_obj) = json_value.get("headers").and_then(|v| v.as_object())
                     {
@@ -731,12 +770,25 @@ async fn handle_openapi_request(
         }
     }
 
-    // Read body
-    let body_bytes = match req.into_body().collect().await {
+    // Read the body, bounded. `Incoming` has no default limit, so this buffered whatever the
+    // peer chose to send — and an OpenAPI server is unauthenticated by construction, so a
+    // single POST with an endless chunked body was enough to walk the process out of memory.
+    // `Limited` errors as soon as the cap is passed, so an oversized upload costs at most the
+    // cap rather than all of it.
+    //
+    // The old arm was worse than unbounded: it swallowed the read failure into an empty body
+    // and carried on, so the model was shown a request with no body and answered it as if
+    // the peer had sent none. That is the truncated-body trap — the model answers a request
+    // it never saw. 413 says what happened, in a form a client can act on.
+    let limited = http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY_BYTES);
+    let body_bytes = match limited.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            error!("Failed to read request body: {}", e);
-            Bytes::new()
+            Log::new(Some(&status_tx)).warn(format!(
+                "OpenAPI {} {} decision=fail_closed_body_too_large: {} (limit {} bytes)",
+                method, path, e, MAX_REQUEST_BODY_BYTES
+            ));
+            return Ok(payload_too_large());
         }
     };
 
