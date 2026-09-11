@@ -29,6 +29,33 @@ use crate::server::SamlIdpProtocol;
 use crate::state::app_state::AppState;
 use actions::SAML_IDP_REQUEST_EVENT;
 
+/// Largest request body this server will buffer.
+///
+/// `/acs`, `/sso` and every other route here is reachable with no credential at all, and the
+/// body is handed to the model verbatim as prompt text, so the previous unbounded
+/// `req.collect()` let one anonymous POST grow the process without limit and drive an LLM
+/// call with megabytes of attacker-chosen prompt. A base64 SAMLResponse form is a few tens of
+/// KiB; 256 KiB is generous for even a large assertion with attributes.
+const MAX_REQUEST_BYTES: usize = 256 * 1024;
+
+/// Narrow a model-supplied HTTP status to `u16` without wrapping.
+///
+/// `status as u16` on a `u64` truncates, and the truncation is the dangerous direction here:
+/// `65736` becomes `200`, and a 2xx is the only thing an SP treats as a completed sign-in. A
+/// status the model cannot have meant must not become the one that admits someone.
+fn status_or(value: Option<&serde_json::Value>, default: u16) -> u16 {
+    match value.and_then(|v| v.as_u64()) {
+        Some(raw) => u16::try_from(raw)
+            .ok()
+            .filter(|s| (100..=599).contains(s))
+            .unwrap_or_else(|| {
+                warn!("SAML IDP: ignoring out-of-range status {raw}, using {default}");
+                default
+            }),
+        None => default,
+    }
+}
+
 /// Build a response from parts that came from the model, without ever panicking.
 ///
 /// `status`, and every response header, arrive as model output (`send_error_response` even
@@ -255,14 +282,25 @@ async fn handle_saml_idp_request(
         .collect();
 
     // Read request body
-    let body_bytes = match req.collect().await {
+    // Bounded, and refused rather than truncated: a cut-off SAMLResponse would reach the
+    // model as a well-formed request whose assertion happened to end early.
+    let body_bytes = match http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BYTES)
+        .collect()
+        .await
+    {
         Ok(collected) => collected.to_bytes().to_vec(),
         Err(e) => {
-            error!("Failed to read SAML IDP request body: {}", e);
+            Log::new(Some(&status_tx)).warn(format!(
+                "SAML IDP {} {} decision=fail_closed_body_rejected (limit {} bytes): {}",
+                method, path, MAX_REQUEST_BYTES, e
+            ));
             return Ok(build_safe_response(
-                400,
-                [],
-                "Failed to read request body".to_string(),
+                413,
+                [(
+                    "content-type".to_string(),
+                    "text/plain; charset=utf-8".to_string(),
+                )],
+                "request body too large".to_string(),
             ));
         }
     };
@@ -300,8 +338,13 @@ async fn handle_saml_idp_request(
             } else if let Ok(body_str) = String::from_utf8(body_bytes.clone()) {
                 serde_json::Value::String(body_str)
             } else {
-                // For binary data, use base64
-                serde_json::Value::String(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &body_bytes))
+                // Never base64 in event data: a model cannot decode it, and this body is
+                // always text on a working SAML binding (the assertion's own base64 arrives
+                // inside a urlencoded form field). Say what happened instead.
+                serde_json::Value::String(format!(
+                    "<{} bytes of non-UTF-8 data; not a SAML binding this server understands>",
+                    body_bytes.len()
+                ))
             },
             "client_ip": remote_addr.ip().to_string(),
         }),
@@ -353,9 +396,8 @@ async fn handle_saml_idp_request(
                         if let Ok(json_value) =
                             serde_json::from_slice::<serde_json::Value>(&output_data)
                         {
-                            if let Some(status) = json_value.get("status").and_then(|v| v.as_u64())
-                            {
-                                status_code = status as u16;
+                            if json_value.get("status").is_some() {
+                                status_code = status_or(json_value.get("status"), 200);
                                 produced_response = true;
                             }
                             if let Some(headers_obj) =
@@ -364,7 +406,6 @@ async fn handle_saml_idp_request(
                                 for (k, v) in headers_obj {
                                     if let Some(v_str) = v.as_str() {
                                         response_headers.insert(k.clone(), v_str.to_string());
-                                        produced_response = true;
                                     }
                                 }
                             }
@@ -372,6 +413,10 @@ async fn handle_saml_idp_request(
                                 response_body = body.to_string();
                                 produced_response = true;
                             }
+                            // Headers alone deliberately do NOT count. Every action this
+                            // protocol defines sets a status and a body; JSON carrying only
+                            // headers left the default 200 with an empty body standing, which
+                            // is the fail-open the `produced_response` flag exists to prevent.
                         }
                     }
                 }

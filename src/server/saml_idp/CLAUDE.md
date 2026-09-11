@@ -117,6 +117,32 @@ to status 200 with an empty body, so a model whose output was not response-shape
 `200 OK` with nothing in it — read by an SP as a completed response with no assertion rather
 than as a server fault.
 
+## Hostile input
+
+Three bounds. For an IDP the "affirmative default" class is not cosmetic — a `2xx` is the only
+thing an SP treats as a completed sign-in, so a default that produces one *is* the
+vulnerability. `tests/server/saml_idp/hardening_test.rs` covers the first two.
+
+- **`MAX_REQUEST_BYTES` = 256 KiB.** `/sso` takes an anonymous POST and the body reaches the
+  model verbatim as prompt text, so the previous unbounded `req.collect()` let one request grow
+  the process without limit and drive an LLM call with megabytes of attacker-chosen prompt.
+  Over the limit is `413` and a refusal — never a truncated body, which would arrive at the
+  model as a well-formed request whose AuthnRequest happened to end early.
+- **`status_or` narrows a model-supplied status with `u16::try_from`.** `65736 as u16` is
+  `200`. `send_error_response` — the model's only way to refuse to authenticate — therefore
+  arrived with the status that says the opposite. Both `mod.rs` and the executor now refuse the
+  wrap; the executor additionally pins `send_error_response` to 400–599, since an error action
+  has no business producing a 2xx at all.
+- **Headers alone do not count as a response.** `produced_response` was set by a `headers`
+  object as well as by `status`/`body`, so JSON carrying only headers left the default `200`
+  with an empty body standing — the exact fail-open that flag exists to prevent. Every action
+  this protocol defines sets a status and a body, so only those two count now.
+
+**No XML is parsed here.** The `AuthnRequest` is passed to the model as text and NetGet never
+builds a tree, so the entity-expansion and unbounded-nesting classes do not arise on this path.
+(A non-UTF-8 body is reported to the model as `<N bytes of non-UTF-8 data…>`; it used to be
+base64-encoded into the event, which the project rule forbids and which no model can decode.)
+
 ## Storage
 
 None, per the project rule. No sessions, no user directory, no issued-assertion log. If a
