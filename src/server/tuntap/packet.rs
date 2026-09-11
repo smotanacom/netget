@@ -1328,7 +1328,7 @@ pub fn build_packet(action: &Value) -> Result<Vec<u8>, BuildError> {
     };
 
     let mut packet = if ipv6 {
-        build_ipv6_header(source, destination, protocol, ttl, transport.len())
+        build_ipv6_header(source, destination, protocol, ttl, transport.len())?
     } else {
         build_ipv4_header(action, source, destination, protocol, ttl, transport.len())?
     };
@@ -1403,18 +1403,28 @@ fn build_ipv6_header(
     protocol: u8,
     hop_limit: u8,
     payload_len: usize,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, BuildError> {
     let (IpAddr::V6(s), IpAddr::V6(d)) = (source, destination) else {
         unreachable!("caller checked the family");
     };
+    // `build_ipv4_header` refuses an oversized packet; this one narrowed with `as u16` and
+    // emitted a header declaring a wrapped payload length. Without a jumbogram hop-by-hop
+    // option, 65535 is the whole of what an IPv6 payload length can say (RFC 8200 §3), so
+    // there is no correct value to substitute — refuse.
+    let declared = u16::try_from(payload_len).map_err(|_| {
+        bad(format!(
+            "payload is {payload_len} bytes; IPv6's payload-length field is two bytes, and \
+             anything larger needs a jumbogram option this builder does not emit"
+        ))
+    })?;
     let mut h = Vec::with_capacity(40);
     h.extend_from_slice(&0x6000_0000u32.to_be_bytes()); // version 6, no traffic class or label
-    h.extend_from_slice(&(payload_len as u16).to_be_bytes());
+    h.extend_from_slice(&declared.to_be_bytes());
     h.push(protocol);
     h.push(hop_limit);
     h.extend_from_slice(&s.octets());
     h.extend_from_slice(&d.octets());
-    h
+    Ok(h)
 }
 
 fn icmp_type_of(action: &Value, ipv6: bool) -> Result<u8, BuildError> {
@@ -1490,10 +1500,20 @@ fn port(action: &Value, key: &str) -> Result<u16, BuildError> {
 }
 
 fn build_udp(action: &Value, payload: &[u8]) -> Result<Vec<u8>, BuildError> {
+    // UDP's length field is two bytes and covers the header. `as u16` on an oversized payload
+    // wrote a datagram *declaring* a wrapped length — well-formed to look at, and describing
+    // a different packet than the one it carried.
+    let length = u16::try_from(8 + payload.len()).map_err(|_| {
+        bad(format!(
+            "a UDP datagram is {} bytes including its header, and UDP's length field is two \
+             bytes (65535 maximum)",
+            8 + payload.len()
+        ))
+    })?;
     let mut msg = Vec::with_capacity(8 + payload.len());
     msg.extend_from_slice(&port(action, "source_port")?.to_be_bytes());
     msg.extend_from_slice(&port(action, "destination_port")?.to_be_bytes());
-    msg.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+    msg.extend_from_slice(&length.to_be_bytes());
     msg.extend_from_slice(&[0, 0]); // checksum placeholder — filled with the pseudo-header
     msg.extend_from_slice(payload);
     Ok(msg)
@@ -1519,8 +1539,18 @@ fn build_tcp(action: &Value, payload: &[u8]) -> Result<Vec<u8>, BuildError> {
             )))
         }
     };
-    let seq = get_u64(action, "seq").unwrap_or(0);
-    let ack = get_u64(action, "ack").unwrap_or(0);
+    // Refused, not narrowed. Every other numeric field here goes through `try_from`; these
+    // two did not, so `{"seq": 4294967296}` silently became 0 — and a TCP sequence number is
+    // exactly the kind of value where "a different number" and "the number asked for" are
+    // indistinguishable to everyone downstream.
+    let seq = get_u64(action, "seq")
+        .map(|v| u32::try_from(v).map_err(|_| bad("\"seq\" must be 0-4294967295")))
+        .transpose()?
+        .unwrap_or(0);
+    let ack = get_u64(action, "ack")
+        .map(|v| u32::try_from(v).map_err(|_| bad("\"ack\" must be 0-4294967295")))
+        .transpose()?
+        .unwrap_or(0);
     let window = get_u64(action, "window")
         .map(|v| u16::try_from(v).map_err(|_| bad("\"window\" must be 0-65535")))
         .transpose()?
@@ -1529,8 +1559,8 @@ fn build_tcp(action: &Value, payload: &[u8]) -> Result<Vec<u8>, BuildError> {
     let mut msg = Vec::with_capacity(20 + payload.len());
     msg.extend_from_slice(&port(action, "source_port")?.to_be_bytes());
     msg.extend_from_slice(&port(action, "destination_port")?.to_be_bytes());
-    msg.extend_from_slice(&(seq as u32).to_be_bytes());
-    msg.extend_from_slice(&(ack as u32).to_be_bytes());
+    msg.extend_from_slice(&seq.to_be_bytes());
+    msg.extend_from_slice(&ack.to_be_bytes());
     msg.push(5 << 4); // data offset 5 words, no options
     msg.push(flags);
     msg.extend_from_slice(&window.to_be_bytes());

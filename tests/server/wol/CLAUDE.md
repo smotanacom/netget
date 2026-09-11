@@ -5,7 +5,7 @@ Two files, and the split between them is the point.
 | File | What it covers | Cost |
 |---|---|---|
 | `decode_test.rs` | the magic-packet decoder, against literal bytes | pure function calls — no socket, no process, no LLM |
-| `e2e_test.rs` | what the *server* does with the decoded result | 3 NetGet processes, **11 LLM calls total** |
+| `e2e_test.rs` | what the *server* does with the decoded result | 3 NetGet processes, **12 LLM calls total** |
 
 Wake-on-LAN defines no response, so there is no reply to assert and the decode direction is
 essentially the whole of the protocol's correctness. That is cheap to test exhaustively, so it
@@ -42,7 +42,10 @@ specification for itself — an independent reading, not an independent implemen
 the `dhcp` situation, and it is why the protocol is `Experimental`. See
 `src/server/wol/CLAUDE.md` for what would make it `Beta`.
 
-## `e2e_test.rs` — 3 tests, 11 LLM calls
+## `e2e_test.rs` — 3 tests, 12 LLM calls
+
+The per-test headings below sum to 12, and this line said 11 until the arithmetic was checked
+against `grep -c expect_calls` rather than against itself.
 
 All three bind **127.0.0.1 on a high port**. Port 9 is the real Wake-on-LAN port and is
 privileged, so `PrivilegedPort(9)` genuinely fires there — that declaration is protection, not

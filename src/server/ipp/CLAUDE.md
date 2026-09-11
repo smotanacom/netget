@@ -85,6 +85,27 @@ Known gap: `operations-supported` is `1setOf type2 enum` in the spec and is enco
 `1setOf integer` because the values arrive as JSON numbers. `ipptool` accepts it; a strict
 client might not.
 
+### Numbers are range-checked before they are narrowed
+
+`validate_attributes` runs in the executor, **before** `build_ipp_response`, and refuses any
+integer outside i32 and any name or value past 65535 bytes. Both are cases where the encoder
+used to rewrite the model's answer in silence:
+
+- `n.as_i64().unwrap_or(0) as i32` made `job-id: 4294967296` into **0**, and a client reading
+  job 0 has no way to know it was ever anything else. Same for `1.5`, which `unwrap_or(0)` also
+  turned into 0 rather than reporting that IPP's `integer` syntax has no fractional form.
+- `push_len_prefixed` clamped to `u16::MAX` and then wrote a message *declaring* the truncated
+  length — self-consistent, parseable, and not what the model said.
+
+The check has to come first: `as i32` on an out-of-range value leaves nothing to check
+afterwards. That is the property `tests/narrowing_cast_drift_test.rs` encodes generally, and
+`tests/server/ipp/attribute_range_test.rs` encodes for this encoder, arrays included — a
+multi-valued attribute is the easy place for a bound to be forgotten, because the value the
+encoder narrows is one level below the one a naive check looks at.
+
+Refusing beats clamping: `i32::MAX` is not what the model asked for either, and the message is
+what the repair loop reads.
+
 ## Request-id and version are echoed by the server, not by the model
 
 RFC 8011 requires a response to carry the request's request-id and the request's version. Both
@@ -123,20 +144,75 @@ add them to the event.
 `parse_ipp_header` reads five fixed offsets after one `body.len() < 8` check; there is no
 attacker-controlled length arithmetic in it.
 
+## The body is bounded before it is buffered
+
+`Incoming` has no default limit, so `req.into_body().collect()` let an unauthenticated `POST`
+to port 631 decide how much memory this server allocated. It is read through
+`http_body_util::Limited` at `MAX_IPP_BODY_BYTES` (8 MiB, the same figure `http_common` uses;
+spelled out locally because that module is gated behind the `http`/`http2` features and `ipp`
+implies neither).
+
+A refusal is expressed twice: HTTP **413** for a generic client, and
+`client-error-request-entity-too-large` (0x0408) in the body for one that reads only the IPP
+layer. It costs **no LLM call**, and that is the assertion `tests/server/ipp/body_limit_test.rs`
+actually makes (`expect_calls(0)`), because the old code turned a read failure into
+`Bytes::new()` — which `parse_ipp_header` reports as the operation `Empty`, so the model would
+have been asked to answer a request nobody sent.
+
+Nothing recursive is decoded here, which is why there is no depth bound: only the 8-byte header
+is parsed. If request attribute groups are ever decoded, the walk must stay iterative — a Rust
+stack overflow is a `SIGSEGV`, not a panic, so `tokio::spawn` cannot contain it and the whole
+process dies.
+
 ## Failure behaviour
 
-Two paths used to give a client something it could not parse:
+Every outcome answers with a parseable IPP message, and the `decision=` tag is what tells them
+apart — on the wire three of them are byte-identical, and one of those is a status the model
+can also choose deliberately.
+
+| Outcome | Wire | `decision=` tag |
+|---|---|---|
+| The model answered | its `ipp_status`, its `http_status` | `model_answer` |
+| No `ipp_*` action came back | 200 + `server-error-internal-error` | `model_silent` |
+| An action came back and the executor refused it | 200 + `server-error-internal-error` | `fail_closed_action_error` |
+| The backend failed, saturated | 200 + `server-error-busy` | `fail_closed_llm_error` |
+| The backend failed otherwise | 200 + `server-error-internal-error` | `fail_closed_llm_error` |
+| Body over the cap | 413 + `client-error-request-entity-too-large` | `fail_closed_body_too_large` |
+| The encoder's own hex would not decode | 200 + `server-error-internal-error` | `fail_closed_encoding_bug` |
+
+`WireFailure::classify` picks between the saturated and the general case; the error **text**
+never reaches the wire, only the log. `server-error-busy` rather than
+`server-error-internal-error` for a saturated backend is the same distinction `http` draws with
+503 vs 500 — it is what a client retries on.
+
+Two paths used to give a client something it could not parse, and both are gone:
 
 - **LLM error** → HTTP 500 with the text body `Internal Server Error`. An IPP client reports
   that as a protocol error with no useful detail.
 - **LLM returned no `ipp_*` action** → HTTP 200 with an *empty* body, which is not a valid IPP
   message; clients report a truncated response.
 
-Both now return a well-formed `server-error-internal-error` message with the correct version
-and request-id, and the second logs a WARN.
+A third was still live until this pass: `hex::decode(body_hex).unwrap_or_default()` turned a
+decode failure into that same empty body. The hex is written and read entirely inside this
+protocol, so a failure means the two halves have drifted; it is now loud and answered with
+something parseable.
+
+## Connection tracking
+
+`update_connection_stats` is called for the request body and every response, so an IPP server's
+peers show live byte counters in the dashboard rail. Nothing did this before; the counters read
+zero for the life of the server however much it printed.
+
+`call_llm` is passed `Some(connection_id)`. It was `None` behind a `// TODO: Add connection_id
+when available` while the id had been in scope the whole time, which made connection-scoped
+event handlers and connection-scoped scheduled tasks silently inapplicable to every IPP request.
 
 ## Limitations
 
+- Every request is one LLM call and nothing bounds the rate, so an unauthenticated request loop
+  is an unauthenticated model-call loop. This is protocol-wide in netget rather than specific to
+  IPP; `src/server/tuntap/` is the one protocol here that solves it (a filter plus a rolling
+  per-minute window).
 - No IPPS (IPP over TLS), no authentication.
 - No CUPS extensions.
 - Request attribute groups not parsed (above).
@@ -174,9 +250,19 @@ with request-id `0x12345678` and version 1.1 came back with exactly that id and 
 
 ## Testing
 
-`tests/server/ipp/test.rs` — Get-Printer-Attributes, Print-Job, and a plain HTTP GET. The
-tests assert HTTP 200 and print the IPP status; they do not decode the attribute groups, which
-is why the value-tag and version bugs survived them. `ipptool` is the check that catches those.
+Four files, 12 tests, none `#[ignore]`d and none skip-when-missing:
+
+- `tests/server/ipp/test.rs` — Get-Printer-Attributes, Print-Job and a status-only reply, each
+  decoded with a hand-written strict decoder. An earlier version asserted only HTTP 200 and
+  printed the first bytes, which is why the value-tag and version bugs survived it.
+- `status_range_test.rs` — `http_status` refused rather than wrapped.
+- `attribute_range_test.rs` — attribute integers and lengths refused rather than narrowed or
+  truncated, arrays included.
+- `body_limit_test.rs` — an oversized body refused with 413 and **zero** LLM calls, and a 1 MiB
+  one still served.
+
+`ipptool` remains the check for spec compliance that no in-tree test covers; see Manual
+verification above.
 
 ## References
 

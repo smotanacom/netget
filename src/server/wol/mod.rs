@@ -280,13 +280,20 @@ impl WolServer {
                     }
                 };
 
-                console_trace!(
-                    status_tx,
-                    "Wake-on-LAN read {} bytes from {}: {}",
-                    n,
-                    peer_addr,
-                    hex_summary(&buffer[..n])
-                );
+                // Guarded, because `console_trace!` renders its arguments and pushes a line
+                // onto the *unbounded* status channel whatever the level is set to. Port 9 is
+                // the discard port: this runs once per stray datagram from every scanner on
+                // the segment, and per-datagram work on an unbounded channel is what the root
+                // CLAUDE.md warns against.
+                if tracing::enabled!(tracing::Level::TRACE) {
+                    console_trace!(
+                        status_tx,
+                        "Wake-on-LAN read {} bytes from {}: {}",
+                        n,
+                        peer_addr,
+                        hex_summary(&buffer[..n])
+                    );
+                }
 
                 // Port 9 is the discard port and attracts scanners and stray traffic. A
                 // datagram that is not a magic packet raises no event and costs no LLM call

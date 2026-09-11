@@ -861,8 +861,12 @@ impl VncClient {
         Ok(())
     }
 
-    /// Send a VNC protocol message with a writer
-    async fn send_vnc_message_with_writer<W>(
+    /// Send a VNC protocol message with a writer.
+    ///
+    /// `pub` so `tests/client/vnc/coordinate_range_test.rs` can drive it against a `Vec<u8>`
+    /// and assert the exact bytes: the guards on the model's coordinates live here, and a test
+    /// of the guard functions alone would not prove they are wired in.
+    pub async fn send_vnc_message_with_writer<W>(
         writer: &mut W,
         action_name: &str,
         data: &JsonValue,
@@ -875,10 +879,10 @@ impl VncClient {
         match action_name {
             "request_framebuffer_update" => {
                 let incremental = data["incremental"].as_bool().unwrap_or(true);
-                let x = data["x"].as_u64().unwrap_or(0) as u16;
-                let y = data["y"].as_u64().unwrap_or(0) as u16;
-                let width = data["width"].as_u64().unwrap_or(fb_width as u64) as u16;
-                let height = data["height"].as_u64().unwrap_or(fb_height as u64) as u16;
+                let x = rfb_u16(data, "x", 0)?;
+                let y = rfb_u16(data, "y", 0)?;
+                let width = rfb_u16(data, "width", fb_width)?;
+                let height = rfb_u16(data, "height", fb_height)?;
 
                 let msg = [
                     3u8, // FramebufferUpdateRequest
@@ -895,9 +899,9 @@ impl VncClient {
                 writer.write_all(&msg).await?;
             }
             "send_pointer_event" => {
-                let x = data["x"].as_u64().unwrap_or(0) as u16;
-                let y = data["y"].as_u64().unwrap_or(0) as u16;
-                let button_mask = data["button_mask"].as_u64().unwrap_or(0) as u8;
+                let x = rfb_u16(data, "x", 0)?;
+                let y = rfb_u16(data, "y", 0)?;
+                let button_mask = rfb_u8(data, "button_mask", 0)?;
 
                 let msg = [
                     5u8, // PointerEvent
@@ -955,5 +959,53 @@ impl VncClient {
         }
 
         Ok(())
+    }
+}
+
+/// Read a model-supplied RFB coordinate, refusing anything the field cannot hold.
+///
+/// Every one of these was `data["x"].as_u64().unwrap_or(0) as u16`. RFB's x, y, width and
+/// height are two bytes each, so `as u16` silently rewrites the number: **`65736` becomes
+/// `200`** and `70000` becomes `4464`. The client then asks the server for a rectangle nobody
+/// named, and nothing anywhere records that the request differs from the answer — the same
+/// arithmetic fail-open `tests/narrowing_cast_drift_test.rs` exists for.
+///
+/// Refusing beats clamping: 65535 is not what the model asked for either, and the message is
+/// what the repair loop reads.
+fn rfb_u16(data: &JsonValue, key: &str, default: u16) -> Result<u16> {
+    match data.get(key) {
+        None | Some(JsonValue::Null) => Ok(default),
+        Some(value) => {
+            let raw = value.as_u64().ok_or_else(|| {
+                anyhow::anyhow!("'{key}' must be a non-negative whole number, got {value}")
+            })?;
+            u16::try_from(raw).map_err(|_| {
+                anyhow::anyhow!(
+                    "'{key}' is {raw}; RFB carries coordinates and extents in two bytes, so \
+                     0-65535 is the whole of what this field can say"
+                )
+            })
+        }
+    }
+}
+
+/// The same for a one-byte RFB field (the pointer button mask).
+///
+/// RFB 3.8 defines bits 0-7, so `257` is not "button 1 again" — it is a number the field cannot
+/// hold, and `as u8` turned it into 1.
+fn rfb_u8(data: &JsonValue, key: &str, default: u8) -> Result<u8> {
+    match data.get(key) {
+        None | Some(JsonValue::Null) => Ok(default),
+        Some(value) => {
+            let raw = value.as_u64().ok_or_else(|| {
+                anyhow::anyhow!("'{key}' must be a non-negative whole number, got {value}")
+            })?;
+            u8::try_from(raw).map_err(|_| {
+                anyhow::anyhow!(
+                    "'{key}' is {raw}; the RFB button mask is one byte (0-255), one bit per \
+                     button"
+                )
+            })
+        }
     }
 }

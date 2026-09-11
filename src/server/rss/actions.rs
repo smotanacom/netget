@@ -229,15 +229,67 @@ impl Server for RssProtocol {
 impl RssProtocol {
     /// Execute generate_rss_feed sync action
     fn execute_generate_feed(&self, action: serde_json::Value) -> Result<ActionResult> {
-        // Extract feed data from action
-        let data = action.clone();
+        // Validate here rather than in the server: a failure at this point lands in
+        // `ExecutionResult::failures`, which is what the model is shown and what the repair
+        // loop reads. `build_rss_from_llm_data` calls the same function as a last gate.
+        validate_feed_data(&action)?;
 
         // Return custom result with feed data
         Ok(ActionResult::Custom {
             name: "generate_rss_feed".to_string(),
-            data,
+            data: action,
         })
     }
+}
+
+/// Check the fields `generate_rss_feed` declares `required: true`.
+///
+/// The server used to substitute `"Untitled Feed"`, `"http://localhost"` and
+/// `"No description"` for a missing title, link and description, so an answer naming none of
+/// the three produced a complete-looking feed and nothing recorded that the model had not
+/// actually supplied one. A required field whose default asserts a result is the shape
+/// CLAUDE.md calls the most dangerous pattern here; refuse and say which field, so the
+/// message the repair loop reads names the fix.
+///
+/// `items` is required but may be empty: a feed with no entries is a legitimate answer
+/// ("nothing new"), whereas a feed with no title is not a feed.
+pub fn validate_feed_data(action: &serde_json::Value) -> Result<()> {
+    for field in ["title", "link", "description"] {
+        match action.get(field) {
+            None | Some(serde_json::Value::Null) => {
+                anyhow::bail!(
+                    "generate_rss_feed requires '{field}'. RSS 2.0 makes title, link and \
+                     description mandatory on the channel, and netget will not invent them."
+                );
+            }
+            Some(serde_json::Value::String(s)) if s.trim().is_empty() => {
+                anyhow::bail!("generate_rss_feed '{field}' must not be empty");
+            }
+            Some(serde_json::Value::String(_)) => {}
+            Some(other) => {
+                anyhow::bail!(
+                    "generate_rss_feed '{field}' must be a string, got {}",
+                    match other {
+                        serde_json::Value::Bool(_) => "a boolean",
+                        serde_json::Value::Number(_) => "a number",
+                        serde_json::Value::Array(_) => "an array",
+                        serde_json::Value::Object(_) => "an object",
+                        _ => "something else",
+                    }
+                );
+            }
+        }
+    }
+
+    match action.get("items") {
+        None | Some(serde_json::Value::Null) => anyhow::bail!(
+            "generate_rss_feed requires 'items'. Use an empty array for a feed with no entries."
+        ),
+        Some(serde_json::Value::Array(_)) => {}
+        Some(_) => anyhow::bail!("generate_rss_feed 'items' must be an array"),
+    }
+
+    Ok(())
 }
 
 /// Action definition for generate_rss_feed (sync)

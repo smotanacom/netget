@@ -13,6 +13,16 @@
 //! operation was asked for but not, for instance, which `printer-uri` or `document-format` the
 //! client asked about, nor the document data of a Print-Job. Add attribute-group decoding here
 //! if the model needs to see it.
+//!
+//! That shallowness is also why there is no recursive walk to bound here — the class of defect
+//! that kills the whole process with a `SIGSEGV` no `tokio::spawn` can contain. If request
+//! attribute decoding is ever added, it must stay iterative and must bound each value against
+//! the bytes actually present rather than against the length the peer declared.
+//!
+//! **The body is bounded before it is buffered.** `Incoming` has no default limit, so an
+//! unauthenticated `POST` used to be able to ask this server to buffer whatever it chose to
+//! send. It is read through `http_body_util::Limited` and anything larger is refused with a
+//! well-formed `client-error-request-entity-too-large` and no LLM call.
 
 pub mod actions;
 
@@ -22,7 +32,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -37,7 +47,22 @@ use crate::logging::emit::Log;
 use crate::server::connection::ConnectionId;
 use crate::server::IppProtocol;
 use crate::state::app_state::AppState;
+use crate::utils::WireFailure;
 use crate::{console_error, console_info};
+
+use actions::{build_ipp_response, ipp_status_code};
+
+/// How much of a request body is read before the request is refused.
+///
+/// `Incoming` has no default limit, so without this an unauthenticated `POST` decides how much
+/// memory this server allocates. A `Print-Job`'s document data is the only IPP body that is
+/// legitimately large, and this server keeps no job store and never looks past the 8-byte
+/// header, so nothing here needs more than the bound `http_common` uses.
+///
+/// Spelled out rather than borrowed from `http_common::handler::MAX_REQUEST_BODY_BYTES`:
+/// that module is gated behind the `http`/`http2` features and `ipp` does not imply either,
+/// so referencing it would make `--features ipp` alone fail to build.
+const MAX_IPP_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// IPP server that delegates request handling to LLM
 pub struct IppServer;
@@ -161,7 +186,7 @@ impl IppServer {
 /// Handle a single IPP request with LLM
 async fn handle_ipp_request_with_llm(
     req: Request<Incoming>,
-    _connection_id: ConnectionId,
+    connection_id: ConnectionId,
     llm_client: OllamaClient,
     app_state: Arc<AppState>,
     status_tx: mpsc::UnboundedSender<String>,
@@ -180,14 +205,50 @@ async fn handle_ipp_request_with_llm(
         }
     }
 
-    // Read body (IPP operation data)
-    let body_bytes = match req.into_body().collect().await {
+    // Read body (IPP operation data), bounded. `Limited` errors as soon as the cap is passed
+    // rather than after buffering the whole thing, so an oversized request costs at most the
+    // cap. Refusing here also means an oversized request never reaches the model.
+    //
+    // A read failure is NOT treated as an empty body: `Bytes::new()` would be handed to the
+    // model as the operation `Empty`, so it would answer a request it never saw. IPP has a
+    // status for exactly this case and it is used.
+    let limited = Limited::new(req.into_body(), MAX_IPP_BODY_BYTES);
+    let body_bytes = match limited.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
-            console_error!(status_tx, "Failed to read IPP request body: {}", e);
-            Bytes::new()
+            console_error!(
+                status_tx,
+                "IPP {} refusing request body ({}); limit is {} bytes",
+                connection_id,
+                e,
+                MAX_IPP_BODY_BYTES
+            );
+            Log::new(Some(&status_tx)).warn(format!(
+                "IPP {} decision=fail_closed_body_too_large (limit {} bytes)",
+                connection_id, MAX_IPP_BODY_BYTES
+            ));
+            // 413 at the HTTP layer and the matching IPP status in the body: a client that
+            // reads either one learns the same thing. request-id is unknown - the header was
+            // never read - so it stays 0.
+            let body = build_ipp_response(
+                ipp_status_code("client-error-request-entity-too-large"),
+                Some("request body exceeds this server's limit"),
+                None,
+            );
+            return Ok(ipp_response_counted(&app_state, server_id, connection_id, 413, body).await);
         }
     };
+
+    app_state
+        .update_connection_stats(
+            server_id,
+            connection_id,
+            Some(body_bytes.len() as u64),
+            None,
+            Some(1),
+            None,
+        )
+        .await;
 
     Log::new(Some(&status_tx)).debug(format!(
         "IPP {} {} ({} bytes)",
@@ -239,7 +300,10 @@ async fn handle_ipp_request_with_llm(
         &llm_client,
         &app_state,
         server_id,
-        None, // TODO: Add connection_id when available
+        // Connection-scoped event handlers and connection-scoped scheduled tasks both key on
+        // this. Passing `None` here (it was a TODO, and the id was in scope the whole time)
+        // made both silently inapplicable to every IPP request.
+        Some(connection_id),
         &event,
         protocol.as_ref(),
     )
@@ -250,61 +314,147 @@ async fn handle_ipp_request_with_llm(
         Ok(execution_result) => {
             // Look for IPP-specific response actions
             for result in execution_result.protocol_results {
-                match result {
-                    ActionResult::Custom { name, data } => {
-                        if name == "ipp_response" {
-                            let status = data
-                                .get("http_status")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(200) as u16;
-                            let body_hex =
-                                data.get("body_hex").and_then(|v| v.as_str()).unwrap_or("");
-                            let mut body = hex::decode(body_hex).unwrap_or_default();
+                if let ActionResult::Custom { name, data } = result {
+                    if name == "ipp_response" {
+                        // `http_status` was range-checked in the executor before it was put
+                        // here, so this is `as u16` on a value already proven to be 100..=599.
+                        let status = data
+                            .get("http_status")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(200) as u16;
+                        let body_hex = data.get("body_hex").and_then(|v| v.as_str()).unwrap_or("");
 
-                            stamp_response_header(&mut body, header.as_ref(), request_id);
-
-                            debug!(
-                                "IPP response: http={} request-id={} ({} bytes)",
-                                status,
-                                request_id,
-                                body.len()
+                        // `unwrap_or_default()` here used to turn a decode failure into an
+                        // EMPTY body, which is not a valid IPP message: the client reports a
+                        // truncated response, exactly the failure the no-action branch below
+                        // exists to avoid. The hex is written by `ipp_wire_response` and read
+                        // here, so a failure means those two have drifted - loud, and answered
+                        // with something parseable.
+                        let Ok(mut body) = hex::decode(body_hex) else {
+                            error!(
+                                "IPP {} could not decode its own encoded response body \
+                                 ({} chars); answering server-error-internal-error",
+                                connection_id,
+                                body_hex.len()
                             );
-                            Log::new(Some(&status_tx)).debug(format!("IPP → {} response", status));
+                            Log::new(Some(&status_tx)).warn(format!(
+                                "IPP {} decision=fail_closed_encoding_bug",
+                                connection_id
+                            ));
+                            return Ok(ipp_response_counted(
+                                &app_state,
+                                server_id,
+                                connection_id,
+                                200,
+                                internal_error_body(header.as_ref(), request_id),
+                            )
+                            .await);
+                        };
 
-                            return Ok(ipp_http_response(status, body));
-                        }
-                    }
-                    _ => {
-                        // Other actions don't affect HTTP response
+                        stamp_response_header(&mut body, header.as_ref(), request_id);
+
+                        debug!(
+                            "IPP {} decision=model_answer http={} request-id={} ({} bytes)",
+                            connection_id,
+                            status,
+                            request_id,
+                            body.len()
+                        );
+                        Log::new(Some(&status_tx)).debug(format!("IPP → {} response", status));
+
+                        return Ok(ipp_response_counted(
+                            &app_state,
+                            server_id,
+                            connection_id,
+                            status,
+                            body,
+                        )
+                        .await);
                     }
                 }
+                // Other actions don't affect HTTP response
             }
 
             // The LLM produced no IPP response action. An empty 200 is not a valid IPP message
             // and clients report it as a truncated response, so send a well-formed
             // server-error-internal-error instead of a body the client cannot parse.
-            debug!("No IPP response action from LLM, returning server-error-internal-error");
-            Log::new(Some(&status_tx)).warn(
-                "IPP: LLM returned no ipp_* response action, sending \
-                 server-error-internal-error",
+            //
+            // The `decision=` tag is the only place the distinction survives: on the wire this
+            // is byte-identical to the backend-failure answer below, and to a model that chose
+            // `ipp_status: "server-error-internal-error"` on purpose.
+            let tag = if execution_result.failures.is_empty() {
+                "model_silent"
+            } else {
+                "fail_closed_action_error"
+            };
+            debug!(
+                "IPP {} decision={} - no ipp_* response action, \
+                 answering server-error-internal-error",
+                connection_id, tag
             );
-            Ok(ipp_http_response(
+            Log::new(Some(&status_tx)).warn(format!(
+                "IPP {} decision={}: no ipp_* response action, sending \
+                 server-error-internal-error",
+                connection_id, tag
+            ));
+            Ok(ipp_response_counted(
+                &app_state,
+                server_id,
+                connection_id,
                 200,
                 internal_error_body(header.as_ref(), request_id),
-            ))
+            )
+            .await)
         }
         Err(e) => {
-            console_error!(status_tx, "LLM error for IPP request: {}", e);
-
-            // Answer with a parseable IPP message rather than an HTTP 500 with a text body:
-            // an IPP client shown "Internal Server Error" reports a protocol error with no
-            // indication of what went wrong.
-            Ok(ipp_http_response(
-                200,
-                internal_error_body(header.as_ref(), request_id),
-            ))
+            // The peer gets a category, the log gets the error. IPP has no free-text field in
+            // which a category string would be honest, so the category picks the *status*: a
+            // saturated backend is transient and says so with `server-error-busy`, which is
+            // what a client retries on, while anything else is `server-error-internal-error`.
+            let failure = WireFailure::classify(&e);
+            console_error!(
+                status_tx,
+                "IPP {} decision=fail_closed_llm_error: {}",
+                connection_id,
+                e
+            );
+            let (status_name, message) = match failure {
+                WireFailure::Overloaded => (
+                    "server-error-busy",
+                    "netget: backend at capacity, retry later",
+                ),
+                WireFailure::Unavailable => (
+                    "server-error-internal-error",
+                    "netget: request could not be processed",
+                ),
+            };
+            let mut body = build_ipp_response(ipp_status_code(status_name), Some(message), None);
+            stamp_response_header(&mut body, header.as_ref(), request_id);
+            // 200 with an IPP-level error, not an HTTP 500 with a text body: an IPP client
+            // shown "Internal Server Error" reports a protocol error with no indication of
+            // what went wrong.
+            Ok(ipp_response_counted(&app_state, server_id, connection_id, 200, body).await)
         }
     }
+}
+
+/// Build the HTTP envelope and record the response's bytes against the connection.
+///
+/// Nothing recorded them, so an IPP server's `up` counter in the dashboard rail stayed at zero
+/// for its whole life however much it printed. Building and counting in one call is what keeps
+/// a future exit path from forgetting one of the two.
+async fn ipp_response_counted(
+    app_state: &Arc<AppState>,
+    server_id: crate::state::ServerId,
+    connection_id: ConnectionId,
+    status: u16,
+    body: Vec<u8>,
+) -> Response<Full<Bytes>> {
+    let sent = body.len() as u64;
+    app_state
+        .update_connection_stats(server_id, connection_id, None, Some(sent), None, Some(1))
+        .await;
+    ipp_http_response(status, body)
 }
 
 /// Build the HTTP envelope IPP requires.

@@ -264,6 +264,7 @@ impl IppProtocol {
             .get("attributes")
             .and_then(|v| v.as_object())
             .context("Missing 'attributes' object")?;
+        validate_attributes(attributes)?;
 
         debug!("IPP printer attributes: {} attrs", attributes.len());
 
@@ -283,6 +284,7 @@ impl IppProtocol {
             .get("attributes")
             .and_then(|v| v.as_object())
             .context("Missing 'attributes' object")?;
+        validate_attributes(attributes)?;
 
         debug!("IPP job attributes: {} attrs", attributes.len());
 
@@ -488,7 +490,7 @@ pub const REQUEST_ID_OFFSET: usize = 4;
 ///
 /// Unknown names become `server-error-internal-error` rather than `successful-ok`: telling a
 /// client everything is fine because the model invented a status name is the worse failure.
-fn ipp_status_code(name: &str) -> u16 {
+pub(crate) fn ipp_status_code(name: &str) -> u16 {
     match name {
         "successful-ok" => 0x0000,
         "successful-ok-ignored-or-substituted-attributes" => 0x0001,
@@ -553,10 +555,75 @@ fn job_state_enum(value: &str) -> Option<i32> {
     }
 }
 
+/// Longest attribute name or value this encoder will write, in bytes.
+///
+/// IPP's `value-length` is two bytes, so anything past 65535 cannot be expressed at all. The
+/// previous encoder silently truncated to `u16::MAX` and wrote a message claiming the
+/// truncated length - self-consistent, and not what the model said. RFC 8011 §4.1.2 caps
+/// `text` at 1023 octets and `name` at 255 anyway; this bound exists to refuse rather than
+/// lie, not to enforce the spec's per-syntax limits.
+const MAX_IPP_FIELD_BYTES: usize = u16::MAX as usize;
+
+/// Refuse model-supplied attribute values the encoder cannot represent.
+///
+/// Run **before** `build_ipp_response`, which is the only point at which the original value is
+/// still visible: `as i32` on `4294967296` is `0`, and after the cast there is nothing left to
+/// check. Refusing beats clamping - `i32::MAX` is not what the model asked for either, and the
+/// message is what the repair loop reads.
+fn validate_attributes(attributes: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
+    fn check(name: &str, value: &serde_json::Value) -> Result<()> {
+        match value {
+            serde_json::Value::Number(n) => {
+                let raw = n.as_i64().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "attribute '{name}' must be a whole number; IPP's integer syntax has \
+                         no fractional form"
+                    )
+                })?;
+                i32::try_from(raw).map_err(|_| {
+                    anyhow::anyhow!(
+                        "attribute '{name}' is {raw}, outside IPP's 32-bit signed integer \
+                         range (-2147483648 to 2147483647)"
+                    )
+                })?;
+            }
+            serde_json::Value::String(text) if text.len() > MAX_IPP_FIELD_BYTES => {
+                anyhow::bail!(
+                    "attribute '{name}' is {} bytes; IPP's value-length field is two bytes, so \
+                     {MAX_IPP_FIELD_BYTES} is the most that can be encoded",
+                    text.len()
+                );
+            }
+            serde_json::Value::Array(values) => {
+                for v in values {
+                    check(name, v)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    for (name, value) in attributes {
+        if name.len() > MAX_IPP_FIELD_BYTES {
+            anyhow::bail!(
+                "attribute name is {} bytes; IPP's name-length field is two bytes",
+                name.len()
+            );
+        }
+        check(name, value)?;
+    }
+    Ok(())
+}
+
 /// Append a length-prefixed byte string using IPP's two-byte big-endian length.
 ///
 /// The previous encoder wrote name lengths as `[0x00, len as u8]`, which silently truncated
 /// any name of 256 bytes or more and produced an unparseable message.
+///
+/// Model-supplied names and values are refused above [`MAX_IPP_FIELD_BYTES`] by
+/// [`validate_attributes`] before they ever reach here, so the clamp below is a backstop for
+/// server-authored literals, not a silent truncation of anything the model wrote.
 fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
     let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
     out.extend_from_slice(&len.to_be_bytes());
@@ -573,6 +640,11 @@ fn push_attribute_value(out: &mut Vec<u8>, name: &str, attr_name: &str, value: &
             push_len_prefixed(out, &[u8::from(*b)]);
         }
         serde_json::Value::Number(n) => {
+            // `validate_attributes` proved every number in this map fits an i32 *before* the
+            // encoder ran, which is the only place a range check works: once narrowed, a
+            // wrapped value is indistinguishable from one the model meant. `job-id: 4294967296`
+            // used to arrive here as `as i32` and go out as 0, and a client reading job 0 has
+            // no way to know it was ever anything else.
             let v = n.as_i64().unwrap_or(0) as i32;
             out.push(TAG_INTEGER);
             push_len_prefixed(out, name.as_bytes());
@@ -655,7 +727,7 @@ fn push_attributes(out: &mut Vec<u8>, attributes: &serde_json::Map<String, serde
 ///
 /// Layout: version(2) status(2) request-id(4) operation-group [extra-group] end-tag. The
 /// request-id is written as 0 and stamped with the request's real id by the HTTP handler.
-fn build_ipp_response(
+pub(crate) fn build_ipp_response(
     status_code: u16,
     status_message: Option<&str>,
     group: Option<(u8, &serde_json::Map<String, serde_json::Value>)>,

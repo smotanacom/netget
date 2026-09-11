@@ -220,10 +220,11 @@ IMPORTANT: Respond with the generate_rss_feed action containing all the feed dat
 
     let test_state = start_netget_server(config).await?;
 
-    // Wait for server to be ready
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
+    // `start_netget_server` returns when startup has been *parsed*, not when the socket is
+    // bound, so something has to wait. A fixed two-second sleep is enough when this test runs
+    // alone and is not when a hundred run together; wait for the listener instead.
     let base_url = format!("http://127.0.0.1:{}", test_state.port);
+    wait_until_listening(test_state.port).await?;
 
     println!("✓ RSS server started on port {}", test_state.port);
     println!("  Base URL: {}", base_url);
@@ -434,4 +435,21 @@ IMPORTANT: Respond with the generate_rss_feed action containing all the feed dat
     test_state.verify_mocks().await?;
 
     Ok(())
+}
+
+/// Poll until the RSS server's TCP port accepts a connection.
+///
+/// A condition, not a duration: the deadline is generous because it only ever expires when
+/// something is actually wrong, and the loop exits the moment the socket is up.
+async fn wait_until_listening(port: u16) -> E2EResult<()> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+            Ok(_) => return Ok(()),
+            Err(e) if std::time::Instant::now() >= deadline => {
+                return Err(format!("RSS server never bound port {port}: {e}").into())
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
+        }
+    }
 }
