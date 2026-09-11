@@ -70,7 +70,18 @@ The `print_job` action accepts document data as:
 - **Plain text**: UTF-8 string for text/plain documents
 - **Base64**: Encoded binary data for PDFs, PostScript, etc.
 
-The client auto-detects and decodes base64 when appropriate.
+**The encoding is declared, never sniffed.** `document_data` is plain text unless the action
+also sets `encoding: "base64"`.
+
+It used to guess — "all ASCII alphanumeric (plus `+`, `/`, `=`) and a length divisible by four"
+meant base64 — and those two sets overlap on completely ordinary documents. Printing the word
+`Test` produced three bytes of binary on the wire, and nothing said so. This is the
+`send_tcp_data` defect the root `CLAUDE.md` names as the reference case, in base64 rather than
+hex: a string is not evidence of its own encoding, and only the sender knows.
+
+A `base64` value that does not decode is now an error rather than being printed as its own
+base64 text with the job reported as successful. Pinned by
+`tests/client/ipp/document_encoding_test.rs`.
 
 ### Response Parsing
 
@@ -114,7 +125,7 @@ Client state stored in `protocol_data`:
     - Future: Add HTTP Basic Auth and mTLS
 4. **No Subscription Support**: No IPP-Subscribe or event notifications
     - Future: Implement job/printer event subscriptions
-5. **Document Format Detection**: Simple heuristic for base64 vs. plain text
+5. **Document format** is whatever `document_format` says; netget does not inspect the bytes.
     - May fail on edge cases
 
 ## Example Prompts

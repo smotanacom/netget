@@ -157,7 +157,28 @@ For CI/CD environments without CUPS, consider:
 ./cargo-isolated.sh test --no-default-features --features ipp --test client::ipp::e2e_test
 ```
 
-**Note**: Tests are marked `#[ignore]` because they require external services. Use `-- --ignored` to run them.
+**None of these tests is `#[ignore]`d and none needs CUPS.** This section described a state the
+suite left behind: `e2e_test.rs` runs against a mocked model and a NetGet IPP server of our own,
+`command_channel_test.rs` costs zero LLM calls, and `document_encoding_test.rs` drives the
+executor directly with no socket at all. The "Prerequisites" above are useful for *manual*
+verification against a real CUPS and nothing more — a `-- --ignored` run finds nothing here.
+
+The suite is also three files, not the one this page used to describe, and there is no
+`test_ipp_full_workflow`; the third e2e case is `test_ipp_get_job_attributes`. Derive the list
+rather than trusting it:
+
+```bash
+./cargo-isolated.sh test --no-default-features --features ipp --test client -- --test-threads=100 client::ipp
+```
+
+### `document_encoding_test.rs` — the encoding is declared, never sniffed
+
+Six tests, no LLM calls, no sockets. `print_job` used to guess whether `document_data` was
+base64 from its character set and length, and the two sets overlap: `Test`, `Note`, `Data` and
+every other four-character alphanumeric string decoded into three bytes of binary. The test
+that matters is `a_four_character_document_is_printed_as_itself`; the rest pin that declared
+base64 still decodes, that invalid base64 is refused rather than printed as its own text, that
+an unknown encoding is refused, and that a real PDF survives the round trip.
 
 ## Known Issues
 

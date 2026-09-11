@@ -110,8 +110,20 @@ impl Protocol for IppClientProtocol {
                     Parameter {
                         name: "document_data".to_string(),
                         type_hint: "string".to_string(),
-                        description: "Document content (text or base64 for binary)".to_string(),
+                        description: "Document content. Plain text unless you set \
+                                      encoding=\"base64\", which is how you send a PDF or any \
+                                      other binary document. It is never guessed."
+                            .to_string(),
                         required: true,
+                    },
+                    Parameter {
+                        name: "encoding".to_string(),
+                        type_hint: "string".to_string(),
+                        description: "How to read document_data: \"utf8\" (default, the text \
+                                      itself) or \"base64\". Say which; the two are not \
+                                      distinguishable from the content."
+                            .to_string(),
+                        required: false,
                     },
                 ],
                 example: json!({
@@ -350,21 +362,43 @@ impl Client for IppClientProtocol {
                     .and_then(|v| v.as_str())
                     .context("Missing 'document_data' field")?;
 
-                // Convert document data to bytes
-                // If it looks like base64, decode it; otherwise use as UTF-8
-                let data_bytes = if document_data
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
-                    && document_data.len() % 4 == 0
+                // The encoding is declared, never sniffed.
+                //
+                // This used to guess: "all ASCII alphanumeric (plus +/=) and a length divisible
+                // by four" meant base64, anything else meant text. A four-character document is
+                // both — printing the word `Test` produced three bytes of binary on the wire and
+                // nothing said so. `"48656c6c6f"` is simultaneously valid text and valid hex and
+                // only the sender knows which it means; this is the same defect `send_tcp_data`
+                // had, in base64 rather than hex, and the fix is the same explicit field.
+                //
+                // The old guess also swallowed a genuine base64 error into the raw bytes with
+                // `unwrap_or_else`, so a truncated document was printed as its own base64 text.
+                let data_bytes = match action
+                    .get("encoding")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .unwrap_or("utf8")
+                    .to_ascii_lowercase()
+                    .as_str()
                 {
-                    // Try base64 decode using the new engine API
-                    use base64::{engine::general_purpose, Engine as _};
-                    general_purpose::STANDARD
-                        .decode(document_data)
-                        .unwrap_or_else(|_| document_data.as_bytes().to_vec())
-                } else {
-                    // Use as UTF-8
-                    document_data.as_bytes().to_vec()
+                    "utf8" | "utf-8" | "text" | "plain" => document_data.as_bytes().to_vec(),
+                    "base64" | "b64" => {
+                        use base64::{engine::general_purpose, Engine as _};
+                        general_purpose::STANDARD
+                            .decode(document_data)
+                            .map_err(|e| {
+                                anyhow::anyhow!(
+                                "print_job 'document_data' is not valid base64: {e}. Either fix \
+                                 the encoding or omit the 'encoding' field to send the string \
+                                 as text."
+                            )
+                            })?
+                    }
+                    other => {
+                        return Err(anyhow::anyhow!(
+                            "print_job 'encoding' must be \"utf8\" or \"base64\", got {other:?}"
+                        ))
+                    }
                 };
 
                 Ok(ClientActionResult::Custom {
