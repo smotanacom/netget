@@ -257,20 +257,50 @@ impl MssqlProtocol {
     }
 
     fn execute_mssql_error_response(&self, action: serde_json::Value) -> Result<ActionResult> {
-        let error_number = action
-            .get("error_number")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(50000) as u32;
+        // Range-checked, not narrowed. Both fields were `as_u64()… as` a smaller type, which
+        // wraps in silence, and for `severity` the wrap lands on the one value that changes
+        // what the packet says: `256 as u8` is `0`, and MS-TDS reserves 10-and-below for
+        // *informational* messages — so a model refusing a statement at severity 20 delivered
+        // the mildest notice the token can carry. Refusing beats clamping: 25 is not what the
+        // model asked for either, and the message is what the repair loop reads.
+        let error_number = match action.get("error_number") {
+            None => 50000,
+            Some(v) if v.is_null() => 50000,
+            Some(v) => {
+                let raw = v
+                    .as_u64()
+                    .with_context(|| format!("'error_number' must be a number, got {v}"))?;
+                u32::try_from(raw).map_err(|_| {
+                    anyhow::anyhow!(
+                        "'error_number' {raw} does not fit the 32-bit message id TDS carries. \
+                         SQL Server uses 50000+ for user-defined errors."
+                    )
+                })?
+            }
+        };
 
         let message = action
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown error");
 
-        let severity = action
-            .get("severity")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(16) as u8;
+        let severity = match action.get("severity") {
+            None => 16,
+            Some(v) if v.is_null() => 16,
+            Some(v) => {
+                let raw = v
+                    .as_u64()
+                    .with_context(|| format!("'severity' must be a number, got {v}"))?;
+                if raw > 25 {
+                    return Err(anyhow::anyhow!(
+                        "'severity' {raw} is outside the TDS severity range 0-25. 11-16 are \
+                         errors the caller can correct, 17-19 resource errors, 20-25 fatal; \
+                         10 and below read as an informational message rather than a failure."
+                    ));
+                }
+                raw as u8
+            }
+        };
 
         debug!("MSSQL error response: {} - {}", error_number, message);
 
