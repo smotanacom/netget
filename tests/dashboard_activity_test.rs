@@ -291,6 +291,14 @@ fn status_lines_are_routed_by_prefix() {
         route_status_line("✓ Server started"),
         Routed::Chat(EntryKind::System, "✓ Server started".into())
     );
+    // Startup chatter tagged by the instance goes to the feed, not the chat.
+    assert_eq!(
+        route_status_line("[SERVER] Starting server #1 (TCP) on 127.0.0.1:0"),
+        Routed::Activity(
+            LogLevel::Info,
+            "[SERVER] Starting server #1 (TCP) on 127.0.0.1:0".into()
+        )
+    );
 }
 
 #[test]

@@ -259,10 +259,41 @@ impl DashboardApp {
         for event in events {
             self.activity.push(event);
         }
+        let newest = self.newest_arrival(&snapshot);
         self.snapshot = snapshot;
         self.prune();
+        // An instance that just appeared becomes the selection when nothing
+        // else is being looked at — including when the cursor sits on the
+        // `+ new …` row that created it. Otherwise Enter after "start a tcp
+        // server" reopened the picker, and the thing you just made sat one
+        // row above, unselected.
+        if let Some(key) = newest {
+            if self.instances.selected.is_none() || self.instances.on_new.is_some() {
+                self.select(key);
+            }
+        }
         self.clamp_selection();
         self.dirty = true;
+    }
+
+    /// The highest-id instance in `next` that the current snapshot lacks.
+    fn newest_arrival(&self, next: &RailSnapshot) -> Option<UiKey> {
+        let server = next
+            .servers
+            .iter()
+            .filter(|s| !self.snapshot.servers.iter().any(|old| old.id == s.id))
+            .map(|s| s.id)
+            .max_by_key(|id| id.as_u32())
+            .map(UiKey::Server);
+        let client = next
+            .clients
+            .iter()
+            .filter(|c| !self.snapshot.clients.iter().any(|old| old.id == c.id))
+            .map(|c| c.id)
+            .max_by_key(|id| id.as_u32())
+            .map(UiKey::Client);
+        // A client made from a server's `[ + client ]` is the newer of the two.
+        client.or(server)
     }
 
     /// Record one throughput sample per instance. Called on the 1s stats

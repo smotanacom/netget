@@ -100,15 +100,22 @@ originating modal on success and leaves it open showing the error on failure.
 
 ## Tests
 
+- `tests/dashboard_frame_test.rs` — whole frames rendered into ratatui's `TestBackend`:
+  the empty dashboard at 80×24, a populated one (peers, traffic, a parked request, an
+  errored server, a client with verbs), every tab for both kinds at the minimum size, and
+  what the selection does when its instance vanishes. **Start here for any layout change**;
+  `--nocapture` prints the frames.
 - `tests/dashboard_rail_test.rs` — list rows, instance lines, driver detection/rebuild,
   inspector items and bar buttons per state.
 - `tests/dashboard_activity_test.rs` — `Tracker::diff` emits each lifecycle/peer/request/
   waiting event exactly once; status-line routing.
 - `tests/dashboard_routing_test.rs`, `dashboard_create_flow_test.rs`,
   `dashboard_wireshark_test.rs` — the modals and the create path.
-- `tests/terminal_snapshot/` — the real binary in a pty, 80×24 snapshots of the frame.
-  `assert_snapshot` creates a missing snapshot and passes, so review a new one before
-  trusting it.
+- `tests/terminal_snapshot/` — the real binary in a pty: an 80×24 snapshot of the first
+  frame, and `test_dashboard_starts_and_stops_a_server_from_the_keyboard`, which drives
+  Tab → `a` → `tcp` → Enter → Enter → `x` with no model configured and waits on what each
+  key must paint. `assert_snapshot` creates a missing snapshot and passes, so review a new
+  one before trusting it.
 
 ## Progress log
 
@@ -125,9 +132,11 @@ originating modal on success and leaves it open showing the error on failure.
   text on the last row** (`typed_simple_input`, `cursor_navigation`, `ctrl_k_delete`,
   `input_line`, `usage_command_enabled`): `capture_screen` builds a fresh vt100 parser from
   only the bytes read in that call, so a second capture after the first drained the frame
-  sees only the diff. They were like that before the redesign and are byte-identical after
-  it; fixing the harness (one parser per pty for the test's lifetime) and re-recording them
-  is worth a pass of its own.
+  sees only the diff — and a cell that happened to hold the same character in the previous
+  frame is never re-emitted, so even the text that *is* captured can be garbled ("listein").
+  They were like that before the redesign and are byte-identical after it. The harness now
+  has `PtyScreen` (one parser fed for the whole test), which the keyboard-driven test uses;
+  moving those five tests onto it and re-recording them is worth a pass of its own.
 - Candidates not done: a `/` filter on the instance list once it grows past a screen; a
   keyboard toggle to maximise the chat pane; per-peer throughput; an `[ answer all ]`
   shortcut when several requests are parked.

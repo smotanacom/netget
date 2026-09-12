@@ -167,6 +167,11 @@ pub fn route_status_line(line: &str) -> Routed {
         Routed::Activity(LogLevel::Trace, rest.to_string())
     } else if let Some(rest) = line.strip_prefix("[REASONING] ") {
         Routed::Chat(EntryKind::Reasoning, rest.to_string())
+    } else if line.starts_with("[SERVER] ") || line.starts_with("[CLIENT] ") {
+        // Instance lifecycle chatter ("Starting server #1 (TCP) on …"): the
+        // machine talking, at INFO. The feed already derives the structured
+        // version from the snapshot; the line keeps the wording for the log.
+        Routed::Activity(LogLevel::Info, line.to_string())
     } else {
         Routed::Chat(EntryKind::System, line.to_string())
     }

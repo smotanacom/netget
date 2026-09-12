@@ -3,7 +3,7 @@
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::tui::app::{DashboardApp, Focus};
@@ -39,9 +39,39 @@ fn glyph_and_style(app: &DashboardApp, kind: EntryKind) -> (&'static str, Style)
     }
 }
 
-fn history_lines<'a>(app: &DashboardApp) -> Vec<Line<'a>> {
+/// Hard-wrap one entry into display rows: the glyph on the first row, a
+/// two-space hanging indent on the rest. Character wrapping, on purpose — the
+/// row count has to be exact for the scroll offset, and ratatui's word wrap
+/// takes more rows than any estimate whenever a break lands badly, which in
+/// a 40-column pane hid the newest line under the input box.
+fn wrap_entry<'a>(glyph: &'static str, style: Style, text: &str, width: usize) -> Vec<Line<'a>> {
+    let body_width = width.saturating_sub(2).max(1);
+    let mut rows = Vec::new();
+    for (i, text_line) in text.split('\n').enumerate() {
+        let chars: Vec<char> = text_line.chars().collect();
+        let mut chunks: Vec<String> = if chars.is_empty() {
+            vec![String::new()]
+        } else {
+            chars
+                .chunks(body_width)
+                .map(|c| c.iter().collect())
+                .collect()
+        };
+        for (j, chunk) in chunks.drain(..).enumerate() {
+            let prefix = if i == 0 && j == 0 { glyph } else { "  " };
+            rows.push(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(chunk, style),
+            ]));
+        }
+    }
+    rows
+}
+
+/// Every visible entry, already wrapped to `width` columns.
+fn history_rows<'a>(app: &DashboardApp, width: usize) -> Vec<Line<'a>> {
     let level = app.core.log_level;
-    let mut lines: Vec<Line> = Vec::new();
+    let mut rows: Vec<Line> = Vec::new();
     for entry in app
         .chat
         .entries
@@ -49,28 +79,16 @@ fn history_lines<'a>(app: &DashboardApp) -> Vec<Line<'a>> {
         .filter(|e| ChatState::passes_filter(e, level))
     {
         let (glyph, style) = glyph_and_style(app, entry.kind);
-        for (i, text_line) in entry.text.split('\n').enumerate() {
-            let prefix = if i == 0 { glyph } else { "  " };
-            lines.push(Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(text_line.to_string(), style),
-            ]));
-        }
+        rows.extend(wrap_entry(glyph, style, &entry.text, width));
     }
-    lines
+    rows
 }
 
 /// Rendered rows the history would take at `width`, so the layout can size
 /// the pane to its conversation. Zero when there is nothing to show.
 pub fn history_height_needed(app: &DashboardApp, width: u16) -> u16 {
-    let wrap_width = width.max(1) as usize;
-    history_lines(app)
-        .iter()
-        .map(|line| {
-            let w: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-            w.div_ceil(wrap_width).max(1)
-        })
-        .sum::<usize>()
+    history_rows(app, width.max(1) as usize)
+        .len()
         .min(u16::MAX as usize) as u16
 }
 
@@ -87,40 +105,22 @@ pub fn draw_history(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         return;
     }
 
-    let mut lines = history_lines(app);
+    let viewport = inner.height as usize;
+    let mut rows = history_rows(app, inner.width as usize);
 
     // Anchor to the bottom: a conversation grows upward from the input box.
-    let viewport = inner.height as usize;
-    let wrap_width = inner.width.max(1) as usize;
-    let rendered_height: usize = lines
-        .iter()
-        .map(|line| {
-            let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-            width.div_ceil(wrap_width).max(1)
-        })
-        .sum();
-    if rendered_height < viewport {
-        let padding = viewport - rendered_height;
-        let mut padded = vec![Line::from(""); padding];
-        padded.extend(lines);
-        lines = padded;
+    if rows.len() < viewport {
+        let mut padded = vec![Line::from(""); viewport - rows.len()];
+        padded.extend(rows);
+        rows = padded;
     }
-
-    // ratatui's Paragraph scroll counts *rendered* lines, and we wrap, so
-    // approximate by scrolling in unwrapped lines — accurate for typical
-    // one-line entries and monotonic for longer ones.
-    let total = lines.len() as u16;
-    let viewport = inner.height;
-    let max_offset = total.saturating_sub(viewport);
+    let max_offset = rows.len() - viewport;
     let offset = match app.chat.scroll {
         ScrollPos::Follow => max_offset,
-        ScrollPos::Up(up) => max_offset.saturating_sub(up as u16),
+        ScrollPos::Up(up) => max_offset.saturating_sub(up),
     };
-
-    let paragraph = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((offset, 0));
-    frame.render_widget(paragraph, inner);
+    let visible: Vec<Line> = rows.into_iter().skip(offset).take(viewport).collect();
+    frame.render_widget(Paragraph::new(visible), inner);
 
     if app.chat.unseen > 0 {
         let label = format!(" {} new ↓ ", app.chat.unseen);

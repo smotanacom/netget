@@ -564,6 +564,70 @@ fn status_line_count(screen: &str) -> usize {
 }
 
 /// Send input to the PTY
+/// A vt100 screen fed for the life of a test.
+///
+/// The dashboard repaints only the cells that changed, so a parser built
+/// fresh for each wait sees a half-drawn terminal: text painted before the
+/// wait started is missing, and a cell that happened to hold the same
+/// character in the previous frame is never re-emitted (a modal's "listening"
+/// leaves "listein" behind). Feeding one parser from the first frame on is
+/// the only way a later screen is what the terminal actually shows.
+struct PtyScreen {
+    parser: Parser,
+}
+
+impl PtyScreen {
+    fn new() -> Self {
+        Self {
+            parser: Parser::new(TERMINAL_HEIGHT, TERMINAL_WIDTH, 0),
+        }
+    }
+
+    /// Feed the parser until `ready` holds or the deadline passes; returns
+    /// the last screen either way.
+    fn wait_until(
+        &mut self,
+        pty: &mut pty_process::blocking::Pty,
+        timeout: Duration,
+        ready: impl Fn(&str) -> bool,
+    ) -> String {
+        use std::os::unix::io::AsRawFd;
+        let fd = pty.as_raw_fd();
+        unsafe {
+            let mut flags = libc::fcntl(fd, libc::F_GETFL);
+            flags |= libc::O_NONBLOCK;
+            libc::fcntl(fd, libc::F_SETFL, flags);
+        }
+        let mut buf = vec![0u8; 4096];
+        let deadline = std::time::Instant::now() + timeout;
+        let mut last = render(&self.parser, TERMINAL_HEIGHT);
+        while std::time::Instant::now() < deadline {
+            loop {
+                match pty.read(&mut buf) {
+                    Ok(n) if n > 0 => self.parser.process(&buf[..n]),
+                    Ok(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(_) => break,
+                }
+            }
+            last = render(&self.parser, TERMINAL_HEIGHT);
+            if ready(&last) {
+                // Let the frame finish before reporting it.
+                std::thread::sleep(Duration::from_millis(150));
+                loop {
+                    match pty.read(&mut buf) {
+                        Ok(n) if n > 0 => self.parser.process(&buf[..n]),
+                        _ => break,
+                    }
+                }
+                return render(&self.parser, TERMINAL_HEIGHT);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        last
+    }
+}
+
 fn send_input(pty: &mut pty_process::blocking::Pty, input: &str) {
     write_all_blocking(pty, input.as_bytes());
     std::thread::sleep(Duration::from_millis(150));
@@ -1396,6 +1460,84 @@ mod tests {
         );
 
         snapshot_util::assert_snapshot("usage_command_enabled", SNAPSHOT_DIR, &screen);
+
+        send_ctrl(&mut pty, 'c');
+    }
+
+    /// The management path with no model at all: Tab to the list, `a` for a
+    /// server, pick tcp, `2` opens its peers tab in the inspector, `x` stops
+    /// it. Every wait is on the text the previous key must produce, so
+    /// nothing here is a fixed sleep; one `PtyScreen` is fed throughout, so
+    /// each screen is the whole terminal rather than the cells that changed.
+    #[test]
+    fn test_dashboard_starts_and_stops_a_server_from_the_keyboard() {
+        let (mut pty, _child) = spawn_netget();
+        let mut screen = PtyScreen::new();
+
+        let first = screen.wait_until(&mut pty, Duration::from_secs(20), |s| {
+            s.contains("SERVERS 0") && s.contains("+ new server")
+        });
+        assert!(first.contains("SERVERS 0"), "no first frame:\n{first}");
+
+        // Tab: chat → instances. `a`: the protocol picker.
+        write_all_blocking(&mut pty, b"\t");
+        send_input(&mut pty, "a");
+        let picker = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("pick a protocol")
+        });
+        assert!(
+            picker.contains("pick a protocol"),
+            "picker did not open:\n{picker}"
+        );
+
+        // Filter to tcp and choose it: it starts on defaults (an OS port),
+        // and becomes the selection, so the inspector shows its action bar.
+        send_input(&mut pty, "tcp");
+        send_enter(&mut pty);
+        let running = screen.wait_until(&mut pty, Duration::from_secs(20), |s| {
+            s.contains("listening on 127.0") && s.contains("#1  tcp") && s.contains("[ stop ]")
+        });
+        assert!(
+            running.contains("listening on 127.0"),
+            "the feed did not report the server:\n{running}"
+        );
+        assert!(
+            running.contains("#1  tcp"),
+            "the list did not show it:\n{running}"
+        );
+        assert!(
+            running.contains("[ driver: MANUAL ]"),
+            "a server made here is driven by the human:\n{running}"
+        );
+        assert!(
+            !running.contains("pick a protocol"),
+            "the picker must have closed:\n{running}"
+        );
+
+        // `2` jumps to the peers tab and focuses the inspector.
+        send_input(&mut pty, "2");
+        let peers = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("no connections yet") && s.contains("[ message ]")
+        });
+        assert!(
+            peers.contains("[ message ]"),
+            "peers tab did not open:\n{peers}"
+        );
+
+        // `x` stops it, immediately: the list empties, the chat and the feed say so.
+        send_input(&mut pty, "x");
+        let stopped = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("SERVERS 0") && s.contains("Stopped server #1")
+        });
+        assert!(stopped.contains("SERVERS 0"), "not stopped:\n{stopped}");
+        assert!(
+            stopped.contains("Stopped server #1"),
+            "the chat must confirm it:\n{stopped}"
+        );
+        assert!(
+            stopped.contains("Nothing selected yet"),
+            "the inspector must let go of the stopped server:\n{stopped}"
+        );
 
         send_ctrl(&mut pty, 'c');
     }

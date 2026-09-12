@@ -337,3 +337,46 @@ fn a_vanished_selection_moves_to_its_neighbour_not_to_nothing() {
     let text = dump(&frame(&mut app, 80, 24));
     assert!(text.contains("Nothing selected yet"));
 }
+
+#[test]
+fn an_instance_that_just_appeared_becomes_the_selection() {
+    let mut app = app();
+    app.focus = Focus::Instances;
+    app.absorb_snapshot(RailSnapshot::default());
+    // The cursor sits on `+ new server`; the server it starts appears.
+    assert_eq!(app.selected(), None);
+    app.absorb_snapshot(populated());
+    assert_eq!(
+        app.selected(),
+        Some(UiKey::Client(ClientId::new(3))),
+        "the newest arrival"
+    );
+
+    // While something else is being inspected, an arrival does not steal it.
+    app.select(UiKey::Server(ServerId::new(1)));
+    let mut more = populated();
+    more.clients.push(ClientRow {
+        id: ClientId::new(9),
+        ..more.clients[0].clone()
+    });
+    app.absorb_snapshot(more);
+    assert_eq!(app.selected(), Some(UiKey::Server(ServerId::new(1))));
+}
+
+#[test]
+fn the_chat_keeps_its_newest_line_visible_when_older_ones_wrap() {
+    let mut app = app();
+    app.absorb_snapshot(RailSnapshot::default());
+    for i in 0..12 {
+        app.push_system(format!(
+            "line {i}: a sentence long enough to wrap twice inside a forty column chat pane, easily"
+        ));
+    }
+    app.push_system("THE NEWEST LINE");
+    let text = dump(&frame(&mut app, 80, 24));
+    println!("{text}");
+    assert!(
+        text.contains("THE NEWEST LINE"),
+        "the tail must be visible while following:\n{text}"
+    );
+}

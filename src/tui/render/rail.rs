@@ -108,14 +108,11 @@ fn header_line<'a>(app: &DashboardApp, section: Section, count: usize, width: us
         Section::Clients => "clients",
     };
     let label = format!(" {name} ");
-    let rule = "─".repeat(width.saturating_sub(label.chars().count() + 1));
+    let _ = count; // the pane title carries the counts; the rule is just a divider
+    let rule = "─".repeat(width.saturating_sub(label.chars().count()));
     Line::from(vec![
         Span::styled(label, app.styles.dimmed.add_modifier(Modifier::BOLD)),
         Span::styled(rule, app.styles.separator),
-        Span::styled(
-            if count == 0 { " " } else { "" }.to_string(),
-            app.styles.dimmed,
-        ),
     ])
 }
 
