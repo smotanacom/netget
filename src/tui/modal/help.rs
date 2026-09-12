@@ -6,36 +6,23 @@
 pub fn help_lines() -> Vec<(Option<&'static str>, &'static str)> {
     vec![
         (None, "Moving around"),
-        (
-            Some("↑ / ↓"),
-            "walk the left column: the list flows into the inspector's items",
-        ),
+        (Some("↑ / ↓"), "walk every row of every server and client"),
         (
             Some("← / →"),
-            "flip the inspector's tab, from the list or the inspector",
+            "along a row's buttons; on a section, fold / unfold it",
         ),
-        (
-            Some("Tab / Shift-Tab"),
-            "management column → activity → chat (or click)",
-        ),
-        (Some("Esc"), "step back: inspector → list → chat"),
-        (Some("F2"), "right column: balanced → chat only → feed only"),
+        (Some("Enter / Space"), "press the button, or act on the row"),
+        (Some("Tab"), "between the instances and the chat (or click)"),
+        (Some("Esc"), "back to the chat"),
         (Some("Ctrl-T"), "free the mouse for native text selection"),
         (Some("F1"), "this help"),
         (Some("Ctrl-C"), "quit"),
-        (None, "Instances"),
-        (
-            Some("Enter / Space"),
-            "the action menu for the selected instance (right-click too)",
-        ),
+        (None, "Instances — each card has buttons and sections"),
         (
             Some("a"),
             "start a server or a client — one picker lists both",
         ),
-        (
-            Some("+ new server or client"),
-            "the last row of the list does the same",
-        ),
+        (Some("+ new server or client"), "the last row does the same"),
         (Some("x"), "stop a server / remove a client — immediate"),
         (
             Some("e"),
@@ -52,18 +39,23 @@ pub fn help_lines() -> Vec<(Option<&'static str>, &'static str)> {
         ),
         (Some("n"), "on a client: compose and send one of its verbs"),
         (Some("w"), "Wireshark / tshark capture recipe"),
-        (Some("d"), "protocol description and maturity, into chat"),
-        (Some("1 … 6"), "jump to an inspector tab"),
-        (None, "Inspector items — Enter acts, Space lists more"),
+        (
+            Some("d"),
+            "protocol description and maturity, into the stream",
+        ),
+        (None, "Rows — Enter acts, buttons sit on the row"),
         (
             Some("  a peer"),
-            "narrow traffic to it; message / disconnect in the menu",
+            "unfold its requests; message / disconnect beside it",
         ),
         (Some("  a request"), "open its full request and response"),
-        (Some("  a rule"), "edit it; add / delete / move in the menu"),
+        (
+            Some("  a rule"),
+            "edit it; delete / ↑ / ↓ beside it, + add rule below",
+        ),
         (Some("  a config row"), "open the edit form"),
         (
-            Some("  a verb (send tab)"),
+            Some("  a verb (send)"),
             "compose it with its parameters as fields",
         ),
         (
@@ -92,7 +84,6 @@ pub fn help_lines() -> Vec<(Option<&'static str>, &'static str)> {
             Some("Alt-← / →  Alt-b / f"),
             "move by word · Alt-d deletes the next word",
         ),
-        (Some("PageUp"), "scroll the conversation"),
         (None, "Who answers an event — the driver, and rules"),
         (
             Some("MANUAL"),

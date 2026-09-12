@@ -1,137 +1,20 @@
-//! The instance list.
+//! The one-line instance summary a card's header row renders.
 
-use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
-use crate::tui::app::{DashboardApp, Focus, Section, UiKey};
-use crate::tui::hit::HitTarget;
-use crate::tui::rail::{fit, list_rows, InstanceLine, ListRow, Tone};
+use crate::tui::app::{DashboardApp, UiKey};
+use crate::tui::rail::{fit, InstanceLine, Tone};
 
-use super::{pane_block, tone_style};
+use super::tone_style;
 
 /// Sparkline width in the list row, when the pane is wide enough for one.
 const SPARK_WIDTH: usize = 8;
 /// Below this inner width the sparkline is dropped.
 const SPARK_MIN_WIDTH: usize = 52;
 
-pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
-    if area.height < 3 {
-        return;
-    }
-    let focused = app.focus == Focus::Instances;
-    let servers = app.snapshot.servers.len();
-    let clients = app.snapshot.clients.len();
-    let title = Line::from(vec![
-        Span::styled(" SERVERS ", app.styles.title),
-        Span::styled(format!("{servers} "), app.styles.dimmed),
-        Span::styled("· CLIENTS ", app.styles.title),
-        Span::styled(format!("{clients} "), app.styles.dimmed),
-    ]);
-    let block = pane_block(app, focused)
-        .title(title)
-        .title_bottom(Span::styled(
-            if focused {
-                " ↑↓ pick · ←→ tab · Enter actions "
-            } else {
-                " Tab here "
-            },
-            app.styles.dimmed,
-        ));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.height == 0 {
-        return;
-    }
-
-    let rows = list_rows(&app.snapshot);
-    let cursor = cursor_index(app, &rows);
-
-    // Scroll to keep the cursor visible.
-    let viewport = inner.height as usize;
-    let max_offset = rows.len().saturating_sub(viewport);
-    let mut offset = app.instances.scroll.min(max_offset);
-    if let Some(row) = cursor {
-        if row < offset {
-            offset = row;
-        } else if row >= offset + viewport {
-            offset = row + 1 - viewport;
-        }
-    }
-    app.instances.scroll = offset;
-
-    let width = inner.width as usize;
-    let mut lines: Vec<Line> = Vec::with_capacity(viewport);
-    for (screen_index, row) in rows.iter().skip(offset).take(viewport).enumerate() {
-        let absolute = offset + screen_index;
-        let is_cursor = cursor == Some(absolute);
-        lines.push(match row {
-            ListRow::Header(section, count) => header_line(app, *section, *count, width),
-            ListRow::New => new_line(app, is_cursor, focused),
-            ListRow::Instance(key) => match crate::tui::rail::line_for(&app.snapshot, *key) {
-                Some(line) => instance_line(app, &line, width, is_cursor, focused),
-                None => Line::from(""),
-            },
-        });
-        app.hits.push(
-            Rect {
-                x: inner.x,
-                y: inner.y + screen_index as u16,
-                width: inner.width,
-                height: 1,
-            },
-            HitTarget::ListRow(absolute),
-        );
-    }
-    frame.render_widget(Paragraph::new(lines), inner);
-
-    if rows.len() > viewport {
-        let hint = format!(" {}–{}/{} ", offset + 1, offset + viewport, rows.len());
-        let hint_width = (hint.chars().count() as u16).min(inner.width);
-        frame.render_widget(
-            Paragraph::new(Span::styled(hint, app.styles.dimmed)),
-            Rect {
-                x: inner.x + inner.width.saturating_sub(hint_width),
-                y: inner.y + inner.height - 1,
-                width: hint_width,
-                height: 1,
-            },
-        );
-    }
-}
-
-/// Which list row the cursor is on, if any.
-pub fn cursor_index(app: &DashboardApp, rows: &[ListRow]) -> Option<usize> {
-    if app.instances.on_new {
-        return rows.iter().position(|r| *r == ListRow::New);
-    }
-    let key = app.instances.selected?;
-    rows.iter().position(|r| *r == ListRow::Instance(key))
-}
-
-fn header_line<'a>(app: &DashboardApp, section: Section, count: usize, width: usize) -> Line<'a> {
-    let name = match section {
-        Section::Servers => "servers",
-        Section::Clients => "clients",
-    };
-    let label = format!(" {name} ");
-    let _ = count; // the pane title carries the counts; the rule is just a divider
-    let rule = "─".repeat(width.saturating_sub(label.chars().count()));
-    Line::from(vec![
-        Span::styled(label, app.styles.dimmed.add_modifier(Modifier::BOLD)),
-        Span::styled(rule, app.styles.separator),
-    ])
-}
-
-fn new_line<'a>(app: &DashboardApp, cursor: bool, focused: bool) -> Line<'a> {
-    let style = row_style(app, app.styles.button, cursor, focused);
-    Line::from(Span::styled("  + new server or client".to_string(), style))
-}
-
 /// Selection styling: inverted while the list has focus, accent-marked when
-/// the cursor is elsewhere so the inspector's subject stays visible.
+/// the column is not focused so the cursor's card stays visible.
 fn row_style(app: &DashboardApp, base: Style, cursor: bool, focused: bool) -> Style {
     if cursor && focused {
         app.styles.selected
@@ -188,7 +71,7 @@ pub fn instance_line<'a>(
     }
     if width >= SPARK_MIN_WIDTH {
         let spark = app
-            .instances
+            .cards
             .metrics
             .get(&line.key)
             .map(|m| m.sparkline(SPARK_WIDTH))

@@ -1,15 +1,14 @@
 //! Frame composition.
 //!
-//! Left column: the instance list above the inspector. Right column: the
-//! activity feed above the chat (history, then the input box). One status
-//! line along the bottom; modals on top of everything.
+//! Left column: the instance canvas. Right column: the stream, then the
+//! input box. One status line along the bottom; modals on top of everything.
 
-pub mod activity;
+pub mod cards;
 pub mod chat;
-pub mod inspector;
 pub mod overlay;
 pub mod rail;
 pub mod status_bar;
+pub mod stream;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -29,14 +28,6 @@ const LEFT_MIN: u16 = 38;
 const LEFT_MAX: u16 = 76;
 const LEFT_PERCENT: u16 = 48;
 const RIGHT_MIN: u16 = 36;
-
-/// The list takes what it needs up to this share of the column; the
-/// inspector gets the rest.
-const LIST_MAX_PERCENT: u16 = 45;
-const LIST_MIN_ROWS: u16 = 6;
-
-/// The chat grows with its conversation up to this share of the column.
-const CHAT_MAX_PERCENT: u16 = 50;
 
 pub fn draw(frame: &mut Frame, app: &mut DashboardApp) {
     app.hits.clear();
@@ -70,47 +61,15 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp) {
     let left = columns[0];
     let right = columns[1];
 
-    // ---- left: list over inspector ----
-    let list_needed = crate::tui::rail::list_rows(&app.snapshot).len() as u16 + 2;
-    let list_cap =
-        ((left.height as u32 * LIST_MAX_PERCENT as u32) / 100).max(LIST_MIN_ROWS as u32) as u16;
-    let list_height = list_needed.min(list_cap).min(left.height.saturating_sub(4));
-    let left_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(list_height), Constraint::Min(4)])
-        .split(left);
-    rail::draw(frame, app, left_rows[0]);
-    inspector::draw(frame, app, left_rows[1]);
+    cards::draw(frame, app, left);
 
-    // ---- right: feed over chat ----
     let input_height = chat::input_height(app);
-    let history_needed = chat::history_height_needed(app, right.width.saturating_sub(2));
-    let chat_cap = ((right.height as u32 * CHAT_MAX_PERCENT as u32) / 100) as u16;
-    let history_height = match app.right_layout {
-        crate::tui::app::RightLayout::Balanced => {
-            if history_needed == 0 {
-                0
-            } else {
-                (history_needed + 2)
-                    .clamp(3, chat_cap.saturating_sub(input_height).max(3))
-                    .min(right.height.saturating_sub(input_height + 4))
-            }
-        }
-        crate::tui::app::RightLayout::ChatMax => right.height.saturating_sub(input_height),
-        crate::tui::app::RightLayout::FeedMax => 0,
-    };
-    let feed_height = right.height.saturating_sub(history_height + input_height);
     let right_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(feed_height),
-            Constraint::Length(history_height),
-            Constraint::Length(input_height),
-        ])
+        .constraints([Constraint::Min(4), Constraint::Length(input_height)])
         .split(right);
-    activity::draw(frame, app, right_rows[0]);
-    chat::draw_history(frame, app, right_rows[1]);
-    chat::draw_input(frame, app, right_rows[2]);
+    stream::draw(frame, app, right_rows[0]);
+    chat::draw_input(frame, app, right_rows[1]);
 
     status_bar::draw(frame, app, status);
 

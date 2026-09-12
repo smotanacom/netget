@@ -1,8 +1,11 @@
-//! The dashboard's management surface, model-side: the instance list, the
-//! driver badge and its rebuild, the inspector's tabs, items and action bar,
-//! and the throughput arithmetic behind the sparklines.
+//! The management column, model-side: the one-line instance summary, the
+//! driver badge and its rebuild, the card rows (buttons, sections, peers with
+//! their requests, rules, config, send), and the throughput arithmetic behind
+//! the sparklines.
 
 #![cfg(feature = "tcp")]
+
+use std::collections::HashMap;
 
 use netget::scripting::event_handler::EventPattern;
 use netget::scripting::{EventHandler, EventHandlerConfig, EventHandlerType};
@@ -11,12 +14,12 @@ use netget::state::client::ClientStatus;
 use netget::state::intercepts::{InterceptOwner, InterceptView};
 use netget::state::server::ServerStatus;
 use netget::state::{ClientId, ServerId};
-use netget::tui::app::{InspectorUi, InstanceRef, Section, TrafficFilter, UiKey};
+use netget::tui::app::UiKey;
+use netget::tui::cards::{self, Activate, CardState, Group, InstanceAction, NodeId, Row};
 use netget::tui::driver::{driver_of, handlers_with_driver, specific_rule_count, Driver};
-use netget::tui::inspector::{self, InspectorTab, InstanceAction, Item};
 use netget::tui::metrics::{human_bytes, human_duration, Throughput};
 use netget::tui::projection::{ClientRow, ConnRow, RailSnapshot, SendState, SendVerb, ServerRow};
-use netget::tui::rail::{self, fit, is_selectable, list_rows, ListRow};
+use netget::tui::rail::{self, fit};
 
 fn entry(id: u64, conn: Option<u32>) -> AccessLogEntry {
     AccessLogEntry {
@@ -120,35 +123,34 @@ fn snapshot(servers: Vec<ServerRow>, clients: Vec<ClientRow>) -> RailSnapshot {
     }
 }
 
-// ---------------------------------------------------------------- the list
-
-#[test]
-fn the_list_is_sections_instances_and_one_new_row() {
-    let snap = snapshot(
-        vec![server(Vec::new(), Vec::new())],
-        vec![client(ClientStatus::Connected, SendState::Ready)],
-    );
-    let rows = list_rows(&snap);
-    assert_eq!(
-        rows,
-        vec![
-            ListRow::Header(Section::Servers, 1),
-            ListRow::Instance(UiKey::Server(ServerId::new(1))),
-            ListRow::Header(Section::Clients, 1),
-            ListRow::Instance(UiKey::Client(ClientId::new(4))),
-            ListRow::New,
-        ]
-    );
-    assert!(!is_selectable(&rows[0]));
-    assert!(is_selectable(&rows[1]));
-    assert!(is_selectable(&rows[4]), "the + new row is a cursor stop");
+fn rows_for(snap: &RailSnapshot, state: &CardState, width: usize) -> Vec<Row> {
+    cards::rows(snap, state, &HashMap::new(), width)
 }
 
-#[test]
-fn an_empty_list_still_has_the_new_row() {
-    let rows = list_rows(&RailSnapshot::default());
-    assert_eq!(rows.iter().filter(|r| is_selectable(r)).count(), 1);
+/// The rows of one card, from its header to the next header (or the end).
+fn card_rows<'a>(rows: &'a [Row], key: UiKey) -> &'a [Row] {
+    let start = cards::header_index(rows, key).expect("card header");
+    let end = rows[start + 1..]
+        .iter()
+        .position(|r| r.header.is_some() || r.key.is_none())
+        .map(|i| start + 1 + i)
+        .unwrap_or(rows.len());
+    &rows[start..end]
 }
+
+fn buttons_of(rows: &[Row]) -> Vec<InstanceAction> {
+    rows.iter()
+        .flat_map(|r| r.buttons.iter().map(|b| b.action))
+        .collect()
+}
+
+fn group_row<'a>(rows: &'a [Row], key: UiKey, group: Group) -> &'a Row {
+    rows.iter()
+        .find(|r| r.on_enter == Activate::Toggle(NodeId::Group(key, group)))
+        .expect("group row")
+}
+
+// ------------------------------------------------------------ the summary
 
 #[test]
 fn a_server_line_carries_status_port_peers_and_driver() {
@@ -216,7 +218,6 @@ fn the_driver_is_read_off_the_wildcard_rule() {
         }))),
         Driver::Llm
     );
-    // A specific rule alone is not a driver: the fallback is still the model.
     let only_specific = EventHandlerConfig {
         handlers: vec![specific("tcp_connection_opened")],
     };
@@ -229,63 +230,150 @@ fn cycling_the_driver_rewrites_only_the_wildcard_and_keeps_it_last() {
     let mut config = wildcard(EventHandlerType::Manual { timeout_secs: 300 });
     config.handlers.insert(0, specific("tcp_connection_opened"));
 
-    // MANUAL → LLM: the wildcard goes away, the specific rule stays.
     let llm = handlers_with_driver(Some(&config), Driver::Llm);
     assert_eq!(llm.len(), 1);
     assert_eq!(llm[0]["event_pattern"], "tcp_connection_opened");
 
-    // → SILENT: a static rule with no actions, after the specific one.
     let silent = handlers_with_driver(Some(&config), Driver::Silent);
     assert_eq!(silent.len(), 2);
     assert_eq!(silent[1]["event_pattern"], "*");
     assert_eq!(silent[1]["handler"]["type"], "static");
     assert_eq!(silent[1]["handler"]["actions"], serde_json::json!([]));
 
-    // → MANUAL again.
     let manual = handlers_with_driver(Some(&config), Driver::Manual);
     assert_eq!(manual[1]["handler"]["type"], "manual");
 
-    // Every rebuilt table parses back as handlers the dispatcher accepts.
     for table in [&llm, &silent, &manual] {
         for rule in table {
-            let parsed: EventHandler =
+            let _: EventHandler =
                 serde_json::from_value(rule.clone()).expect("rebuilt rule must be a valid handler");
-            let _ = parsed;
         }
     }
 
-    // The cycle order itself.
     assert_eq!(Driver::Manual.next(), Driver::Llm);
     assert_eq!(Driver::Llm.next(), Driver::Silent);
     assert_eq!(Driver::Silent.next(), Driver::Manual);
     assert_eq!(Driver::Rules.next(), Driver::Manual);
 }
 
-// ----------------------------------------------------------- the inspector
+// --------------------------------------------------------------- the cards
 
 #[test]
-fn a_server_offers_five_tabs_and_a_client_six() {
+fn every_card_is_always_there_and_the_new_row_comes_last() {
+    let snap = snapshot(
+        vec![server(Vec::new(), Vec::new())],
+        vec![client(ClientStatus::Connected, SendState::Ready)],
+    );
+    let rows = rows_for(&snap, &CardState::default(), 60);
+    let headers: Vec<UiKey> = rows
+        .iter()
+        .filter_map(|r| r.header.as_ref().map(|_| r.key.unwrap()))
+        .collect();
     assert_eq!(
-        InspectorTab::for_key(UiKey::Server(ServerId::new(1))),
+        headers,
         vec![
-            InspectorTab::Overview,
-            InspectorTab::Peers,
-            InspectorTab::Traffic,
-            InspectorTab::Rules,
-            InspectorTab::Config
-        ]
+            UiKey::Server(ServerId::new(1)),
+            UiKey::Client(ClientId::new(4))
+        ],
+        "one header per instance, servers first"
     );
-    assert!(InspectorTab::for_key(UiKey::Client(ClientId::new(1))).contains(&InspectorTab::Send));
-    // A tab the instance lacks resolves to the overview rather than an
-    // empty pane.
-    assert_eq!(
-        inspector::effective_tab(UiKey::Server(ServerId::new(1)), InspectorTab::Send),
-        InspectorTab::Overview
-    );
+    let last = rows.last().unwrap();
+    assert_eq!(last.on_enter, Activate::NewInstance);
+    assert!(last.text().contains("+ new server or client"));
+    // Nothing needs selecting: every card is unfolded with its buttons and
+    // sections, so the column has far more rows than instances.
+    assert!(rows.len() > 12, "{} rows", rows.len());
 }
 
 #[test]
-fn the_overview_leads_with_what_is_waiting_for_you() {
+fn a_card_shows_facts_then_an_aligned_button_grid_then_its_sections() {
+    let snap = snapshot(vec![server(Vec::new(), Vec::new())], Vec::new());
+    let rows = rows_for(&snap, &CardState::default(), 44);
+    let key = UiKey::Server(ServerId::new(1));
+    let card = card_rows(&rows, key);
+
+    // Header, facts (status + uptime + traffic), driver, then buttons.
+    assert!(card[0].header.is_some());
+    assert!(card[1].text().contains("Running"), "{}", card[1].text());
+    assert!(card[1].text().contains("up 2m13s"));
+    assert_eq!(card[1].positions(), 0, "facts are not cursor stops");
+    assert!(card[2].text().contains("MANUAL"), "{}", card[2].text());
+
+    let button_rows: Vec<&Row> = card
+        .iter()
+        .filter(|r| r.header.is_none() && !r.buttons.is_empty() && r.spans.is_empty())
+        .collect();
+    assert!(
+        button_rows.len() >= 2,
+        "at 44 columns the seven buttons need two rows"
+    );
+    let cell = button_rows[0].button_width;
+    assert!(cell > 0);
+    assert!(
+        button_rows.iter().all(|r| r.button_width == cell),
+        "every row of the grid shares one cell width, so the columns line up"
+    );
+    let actions = buttons_of(&card);
+    for wanted in [
+        InstanceAction::Stop,
+        InstanceAction::Edit,
+        InstanceAction::Rules,
+        InstanceAction::CycleDriver,
+        InstanceAction::ConnectClient,
+        InstanceAction::Wireshark,
+        InstanceAction::Docs,
+    ] {
+        assert!(
+            actions.contains(&wanted),
+            "{wanted:?} missing from {actions:?}"
+        );
+    }
+    let driver = card
+        .iter()
+        .flat_map(|r| r.buttons.iter())
+        .find(|b| b.action == InstanceAction::CycleDriver)
+        .unwrap();
+    assert_eq!(
+        driver.label, "driver → LLM",
+        "the button says where it goes"
+    );
+    assert_eq!(driver.key, Some('m'));
+
+    // Sections: peers open, rules and config folded.
+    assert_eq!(group_row(card, key, Group::Peers).expanded, Some(true));
+    assert_eq!(group_row(card, key, Group::Rules).expanded, Some(false));
+    assert_eq!(group_row(card, key, Group::Config).expanded, Some(false));
+    assert!(card.iter().any(|r| r.text().contains("no connections yet")));
+}
+
+#[test]
+fn a_wider_column_puts_the_buttons_on_one_row() {
+    let snap = snapshot(vec![server(Vec::new(), Vec::new())], Vec::new());
+    let rows = rows_for(&snap, &CardState::default(), 160);
+    let card = card_rows(&rows, UiKey::Server(ServerId::new(1)));
+    let button_rows = card
+        .iter()
+        .filter(|r| !r.buttons.is_empty() && r.spans.is_empty())
+        .count();
+    assert_eq!(button_rows, 1);
+}
+
+#[test]
+fn a_folded_card_is_one_row() {
+    let snap = snapshot(
+        vec![server(vec![conn(1, true, true)], Vec::new())],
+        Vec::new(),
+    );
+    let mut state = CardState::default();
+    let key = UiKey::Server(ServerId::new(1));
+    state.toggle(&NodeId::Card(key));
+    let rows = rows_for(&snap, &state, 60);
+    assert_eq!(card_rows(&rows, key).len(), 1);
+    assert_eq!(rows[0].expanded, Some(false));
+}
+
+#[test]
+fn the_waiting_request_comes_right_under_the_header() {
     let mut row = server(vec![conn(1, true, true)], Vec::new());
     row.intercepts.push(InterceptView {
         id: 9,
@@ -296,286 +384,241 @@ fn the_overview_leads_with_what_is_waiting_for_you() {
         event_data: None,
         created_unix_ms: 0,
     });
-    let ui = InspectorUi::default();
-    let view = inspector::build(InstanceRef::Server(&row), &ui, None, 60);
-    assert_eq!(view.item_at(0), Some(&Item::Intercept(9)));
-    assert_eq!(view.default_action(0), Some(InstanceAction::Answer(9)));
-    let text: Vec<String> = view.lines.iter().map(|l| l.text()).collect();
-    assert!(text[0].contains("YOUR answer needed"));
-    assert!(
-        text[0].contains("from :40001"),
-        "names the peer by port: {}",
-        text[0]
-    );
-    assert!(text
-        .iter()
-        .any(|t| t.starts_with("status") && t.contains("Running")));
-    assert!(text
-        .iter()
-        .any(|t| t.starts_with("driver") && t.contains("MANUAL")));
-    assert!(
-        text.iter().any(|t| t.contains("2m13s")),
-        "uptime is shown: {text:?}"
-    );
-
-    // The menu: lifecycle, edit, rules, the driver, the counterpart client.
-    let actions: Vec<InstanceAction> = view.actions.iter().map(|b| b.action).collect();
+    let snap = snapshot(vec![row], Vec::new());
+    let rows = rows_for(&snap, &CardState::default(), 60);
+    let card = card_rows(&rows, UiKey::Server(ServerId::new(1)));
     assert_eq!(
-        actions[0],
-        InstanceAction::Answer(9),
-        "what acts on the selected item comes first"
+        card[1].on_enter,
+        Activate::Action(InstanceAction::Answer(9))
     );
-    assert_eq!(actions[1], InstanceAction::Stop, "then the instance's own");
-    assert!(actions.contains(&InstanceAction::ConnectClient));
-    assert!(actions.contains(&InstanceAction::CycleDriver));
-    assert!(view
-        .actions
+    assert!(card[1].text().contains("YOUR answer needed"));
+    assert!(card[1].text().contains("from :40001"), "{}", card[1].text());
+    let peer = card
         .iter()
-        .any(|b| b.action == InstanceAction::CycleDriver && b.label == "driver: MANUAL → LLM"));
+        .find(|r| r.text().contains("127.0.0.1:40001"))
+        .unwrap();
+    assert!(peer.text().contains("⚠ waiting"), "{}", peer.text());
 }
 
 #[test]
-fn the_peers_tab_lists_live_then_closed_and_arms_the_bar_for_a_live_peer() {
-    let row = server(
-        vec![
-            conn(1, true, true),
-            conn(2, true, false),
-            conn(3, false, false),
-        ],
-        vec![entry(1, Some(1)), entry(2, Some(1)), entry(3, None)],
+fn peers_carry_their_buttons_and_unfold_into_their_requests() {
+    let snap = snapshot(
+        vec![server(
+            vec![
+                conn(1, true, true),
+                conn(2, true, false),
+                conn(3, false, false),
+            ],
+            vec![entry(1, Some(1)), entry(2, Some(1)), entry(3, None)],
+        )],
+        Vec::new(),
     );
-    let ui = InspectorUi {
-        tab: InspectorTab::Peers,
-        ..Default::default()
-    };
-    let view = inspector::build(InstanceRef::Server(&row), &ui, None, 60);
-    let items: Vec<&Item> = (0..view.item_count())
-        .filter_map(|n| view.item_at(n))
-        .collect();
-    assert_eq!(
-        items,
-        vec![
-            &Item::Peer(Some(1)),
-            &Item::Peer(Some(2)),
-            &Item::Peer(Some(3)),
-            &Item::Peer(None),
-        ],
-        "live peers, closed peers, then the connectionless bucket"
-    );
-    assert!(
-        view.lines[0].text().contains("2 req"),
-        "{}",
-        view.lines[0].text()
-    );
+    let key = UiKey::Server(ServerId::new(1));
+    let rows = rows_for(&snap, &CardState::default(), 80);
+    let card = card_rows(&rows, key);
 
-    // Selected: a live peer with a handle → message and disconnect enabled.
-    let message = view
-        .actions
+    let peer1 = card
         .iter()
-        .find(|b| b.action == InstanceAction::MessagePeer(1))
-        .expect("message button");
-    assert!(message.enabled);
+        .find(|r| r.on_enter == Activate::Toggle(NodeId::Peer(key, Some(1))))
+        .unwrap();
+    assert!(peer1.text().contains("2 req"), "{}", peer1.text());
     assert_eq!(
-        view.default_action(0),
-        Some(InstanceAction::FilterTraffic(Some(1)))
+        peer1.expanded,
+        Some(true),
+        "a peer's requests are open by default"
     );
+    let actions: Vec<InstanceAction> = peer1.buttons.iter().map(|b| b.action).collect();
+    assert_eq!(
+        actions,
+        vec![
+            InstanceAction::MessagePeer(1),
+            InstanceAction::DisconnectPeer(1)
+        ]
+    );
+    assert!(peer1.buttons.iter().all(|b| b.enabled));
+    assert_eq!(peer1.positions(), 3, "the label and two buttons");
+
+    // Its requests sit right beneath it, newest first, and open on Enter.
+    let at = card.iter().position(|r| std::ptr::eq(r, peer1)).unwrap();
+    assert_eq!(
+        card[at + 1].on_enter,
+        Activate::Action(InstanceAction::OpenRequest(2))
+    );
+    assert_eq!(
+        card[at + 2].on_enter,
+        Activate::Action(InstanceAction::OpenRequest(1))
+    );
+    assert_eq!(card[at + 1].depth, 3);
 
     // A live peer without a handle keeps the buttons, disabled, with the reason.
-    let ui = InspectorUi {
-        tab: InspectorTab::Peers,
-        item: 1,
-        ..Default::default()
-    };
-    let view = inspector::build(InstanceRef::Server(&row), &ui, None, 60);
-    let message = view
-        .actions
+    let peer2 = card
         .iter()
-        .find(|b| b.action == InstanceAction::MessagePeer(2))
-        .expect("message entry");
-    assert!(!message.enabled);
-    assert!(message
+        .find(|r| r.on_enter == Activate::Toggle(NodeId::Peer(key, Some(2))))
+        .unwrap();
+    assert!(peer2.buttons.iter().all(|b| !b.enabled));
+    assert!(peer2.buttons[0]
         .why_disabled
         .as_deref()
         .unwrap_or("")
         .contains("cannot message"));
+
+    // A closed peer has no buttons; the connectionless bucket collects the rest.
+    let peer3 = card
+        .iter()
+        .find(|r| r.on_enter == Activate::Toggle(NodeId::Peer(key, Some(3))))
+        .unwrap();
+    assert!(peer3.buttons.is_empty());
+    assert!(peer3.text().contains("(closed)"));
+    let loose = card
+        .iter()
+        .find(|r| r.on_enter == Activate::Toggle(NodeId::Peer(key, None)))
+        .unwrap();
+    assert!(loose.text().contains("1 req"));
 }
 
 #[test]
-fn the_traffic_tab_is_newest_first_and_narrows_to_a_peer() {
-    let row = server(
-        vec![conn(1, true, false), conn(2, true, false)],
-        vec![entry(1, Some(1)), entry(2, Some(2)), entry(3, Some(1))],
+fn a_busy_peer_is_capped_with_a_show_all_row() {
+    let requests: Vec<AccessLogEntry> = (1..=9).map(|i| entry(i, Some(1))).collect();
+    let snap = snapshot(
+        vec![server(vec![conn(1, true, false)], requests)],
+        Vec::new(),
     );
-    let ui = InspectorUi {
-        tab: InspectorTab::Traffic,
-        ..Default::default()
-    };
-    let view = inspector::build(InstanceRef::Server(&row), &ui, None, 80);
-    let items: Vec<&Item> = (0..view.item_count())
-        .filter_map(|n| view.item_at(n))
-        .collect();
-    assert_eq!(
-        items,
-        vec![&Item::Request(3), &Item::Request(2), &Item::Request(1)]
-    );
-    assert_eq!(view.default_action(0), Some(InstanceAction::OpenRequest(3)));
-    assert!(
-        view.lines[0].text().contains(":40001"),
-        "{}",
-        view.lines[0].text()
-    );
-    assert!(view.lines[0]
-        .text()
-        .contains("tcp_data_received → send_tcp_data"));
-    assert!(!view
-        .actions
+    let key = UiKey::Server(ServerId::new(1));
+    let rows = rows_for(&snap, &CardState::default(), 80);
+    let shown = rows
         .iter()
-        .any(|b| b.action == InstanceAction::ClearTrafficFilter));
+        .filter(|r| matches!(r.on_enter, Activate::Action(InstanceAction::OpenRequest(_))))
+        .count();
+    assert_eq!(shown, cards::CHILD_LIMIT);
+    let more = rows.iter().find(|r| r.text().contains("… 4 more")).unwrap();
+    assert_eq!(more.on_enter, Activate::ShowAll(NodeId::Peer(key, Some(1))));
 
-    let ui = InspectorUi {
-        tab: InspectorTab::Traffic,
-        filter: TrafficFilter::Peer(Some(2)),
-        ..Default::default()
-    };
-    let view = inspector::build(InstanceRef::Server(&row), &ui, None, 80);
-    assert_eq!(view.item_count(), 1);
-    assert_eq!(view.item_at(0), Some(&Item::Request(2)));
-    assert!(view.lines[0].text().contains("only peer 127.0.0.1:40002"));
-    assert!(view
-        .actions
+    let mut state = CardState::default();
+    state.show_all(&NodeId::Peer(key, Some(1)));
+    let rows = rows_for(&snap, &state, 80);
+    let shown = rows
         .iter()
-        .any(|b| b.action == InstanceAction::ClearTrafficFilter && b.enabled));
+        .filter(|r| matches!(r.on_enter, Activate::Action(InstanceAction::OpenRequest(_))))
+        .count();
+    assert_eq!(shown, 9);
 }
 
 #[test]
-fn the_rules_tab_lists_rules_in_match_order_with_their_kind() {
+fn rules_unfold_into_rows_with_their_own_buttons() {
     let mut row = server(Vec::new(), Vec::new());
     let mut config = wildcard(EventHandlerType::Manual { timeout_secs: 300 });
     config.handlers.insert(0, specific("tcp_connection_opened"));
     row.routing = Some(config);
-    let ui = InspectorUi {
-        tab: InspectorTab::Rules,
-        item: 1,
-        ..Default::default()
-    };
-    let view = inspector::build(InstanceRef::Server(&row), &ui, None, 80);
-    assert_eq!(view.item_count(), 2);
-    assert_eq!(view.item_at(0), Some(&Item::Rule(0)));
-    let texts: Vec<String> = view
-        .lines
-        .iter()
-        .filter(|l| l.item.is_some())
-        .map(|l| l.text())
-        .collect();
-    assert!(
-        texts[0].contains("tcp_connection_opened → STATIC"),
-        "{}",
-        texts[0]
-    );
-    assert!(texts[1].contains("* → MANUAL"), "{}", texts[1]);
-    assert_eq!(view.default_action(1), Some(InstanceAction::EditRule(1)));
-    let actions: Vec<InstanceAction> = view
-        .actions
-        .iter()
-        .filter(|b| b.enabled)
-        .map(|b| b.action)
-        .collect();
-    assert!(actions.contains(&InstanceAction::AddRule));
-    assert!(actions.contains(&InstanceAction::DeleteRule(1)));
-    assert!(actions.contains(&InstanceAction::MoveRule(1, -1)));
-    // With a wildcard there is no "otherwise → LLM" note.
-    assert!(!view.lines.iter().any(|l| l.text().contains("otherwise")));
+    let key = UiKey::Server(ServerId::new(1));
+    let snap = snapshot(vec![row], Vec::new());
+    let mut state = CardState::default();
+    state.toggle(&NodeId::Group(key, Group::Rules));
+    let rows = rows_for(&snap, &state, 80);
+    let card = card_rows(&rows, key);
 
-    row.routing = None;
-    let view = inspector::build(InstanceRef::Server(&row), &ui, None, 80);
-    assert_eq!(view.item_count(), 0);
-    assert!(view
-        .lines
+    let rule_rows: Vec<&Row> = card
         .iter()
-        .any(|l| l.text().contains("otherwise → LLM")));
+        .filter(|r| matches!(r.on_enter, Activate::Action(InstanceAction::EditRule(_))))
+        .collect();
+    assert_eq!(rule_rows.len(), 2);
+    assert!(
+        rule_rows[0]
+            .text()
+            .contains("tcp_connection_opened → STATIC"),
+        "{}",
+        rule_rows[0].text()
+    );
+    assert!(
+        rule_rows[1].text().contains("* → MANUAL"),
+        "{}",
+        rule_rows[1].text()
+    );
+    let actions: Vec<InstanceAction> = rule_rows[1].buttons.iter().map(|b| b.action).collect();
+    assert_eq!(
+        actions,
+        vec![
+            InstanceAction::DeleteRule(1),
+            InstanceAction::MoveRule(1, -1),
+            InstanceAction::MoveRule(1, 1)
+        ]
+    );
+    assert!(buttons_of(card).contains(&InstanceAction::AddRule));
+    assert!(
+        !card.iter().any(|r| r.text().contains("otherwise")),
+        "a wildcard leaves nothing to fall through"
+    );
 }
 
 #[test]
-fn the_config_tab_shows_every_setting_and_enter_opens_the_form() {
-    let row = server(Vec::new(), Vec::new());
-    let ui = InspectorUi {
-        tab: InspectorTab::Config,
-        ..Default::default()
-    };
-    let view = inspector::build(InstanceRef::Server(&row), &ui, None, 80);
-    let names: Vec<String> = (0..view.item_count())
-        .filter_map(|n| match view.item_at(n) {
-            Some(Item::Config(name)) => Some(name.clone()),
-            _ => None,
+fn config_unfolds_into_settings_that_open_the_form() {
+    let key = UiKey::Server(ServerId::new(1));
+    let snap = snapshot(vec![server(Vec::new(), Vec::new())], Vec::new());
+    let mut state = CardState::default();
+    state.toggle(&NodeId::Group(key, Group::Config));
+    let rows = rows_for(&snap, &state, 80);
+    let names: Vec<String> = card_rows(&rows, key)
+        .iter()
+        .filter(|r| r.on_enter == Activate::Action(InstanceAction::Edit))
+        .map(|r| {
+            r.spans
+                .first()
+                .map(|s| s.0.trim().to_string())
+                .unwrap_or_default()
         })
         .collect();
     assert_eq!(
         names,
-        vec![
-            "protocol",
-            "port",
-            "host",
-            "send_first",
-            "instruction",
-            "memory"
-        ]
+        vec!["port", "host", "send_first", "instruction", "memory"]
     );
-    assert_eq!(view.default_action(1), Some(InstanceAction::Edit));
-    let port_line = view
-        .lines
+    let port = card_rows(&rows, key)
         .iter()
-        .find(|l| l.item == Some(Item::Config("port".into())))
+        .find(|r| r.spans.first().is_some_and(|s| s.0.trim() == "port"))
         .unwrap();
-    assert!(port_line.text().contains("8080"));
+    assert!(port.text().contains("8080"));
 }
 
 #[test]
-fn a_client_offers_its_verbs_on_the_send_tab_and_connect_when_down() {
-    let ready = client(ClientStatus::Connected, SendState::Ready);
-    let ui = InspectorUi {
-        tab: InspectorTab::Send,
-        item: 1,
-        ..Default::default()
-    };
-    let view = inspector::build(InstanceRef::Client(&ready), &ui, None, 80);
-    assert_eq!(view.item_count(), 2);
-    assert_eq!(view.item_at(1), Some(&Item::SendAction(1)));
-    assert_eq!(view.default_action(1), Some(InstanceAction::SendAction(1)));
-    assert!(view.lines[1].text().contains("send_text"));
-    assert!(view.lines[1].text().contains("Send raw text"));
-    assert!(view
-        .actions
+fn a_client_lists_its_verbs_and_offers_connect_when_down() {
+    let key = UiKey::Client(ClientId::new(4));
+    let snap = snapshot(
+        Vec::new(),
+        vec![client(ClientStatus::Connected, SendState::Ready)],
+    );
+    let rows = rows_for(&snap, &CardState::default(), 80);
+    let card = card_rows(&rows, key);
+    let verbs: Vec<&Row> = card
         .iter()
-        .any(|b| b.action == InstanceAction::SendAction(1) && b.enabled));
+        .filter(|r| matches!(r.on_enter, Activate::Action(InstanceAction::SendAction(_))))
+        .collect();
+    assert_eq!(verbs.len(), 2);
+    assert!(verbs[1].text().contains("send_text"));
+    assert!(verbs[1].text().contains("Send raw text"));
+    assert_eq!(group_row(card, key, Group::Send).expanded, Some(true));
+    let actions = buttons_of(card);
+    assert_eq!(actions[0], InstanceAction::Disconnect);
+    assert!(actions.contains(&InstanceAction::Send));
 
-    // Disconnected: the overview leads with connect, and send is disabled
-    // with a reason rather than missing.
-    let down = client(ClientStatus::Disconnected, SendState::NotConnected);
-    let ui = InspectorUi::default();
-    let view = inspector::build(InstanceRef::Client(&down), &ui, None, 80);
-    assert_eq!(view.actions[0].action, InstanceAction::Connect);
-    let send = view
-        .actions
+    let snap = snapshot(
+        Vec::new(),
+        vec![client(ClientStatus::Disconnected, SendState::NotConnected)],
+    );
+    let rows = rows_for(&snap, &CardState::default(), 80);
+    let card = card_rows(&rows, key);
+    let actions = buttons_of(card);
+    assert_eq!(actions[0], InstanceAction::Connect);
+    let send = card
         .iter()
+        .flat_map(|r| r.buttons.iter())
         .find(|b| b.action == InstanceAction::Send)
         .unwrap();
     assert!(!send.enabled);
     assert_eq!(send.why_disabled.as_deref(), Some("not connected"));
-
-    // A protocol whose loop has no command channel says so.
-    let stuck = client(ClientStatus::Connected, SendState::ProtocolUnsupported);
-    let view = inspector::build(InstanceRef::Client(&stuck), &ui, None, 80);
-    assert_eq!(view.actions[0].action, InstanceAction::Disconnect);
-    let send = view
-        .actions
+    assert_eq!(send.key, Some('n'));
+    // The verbs stay listed but cannot be composed until connected.
+    assert!(card.iter().any(|r| r.text().contains("send_command")));
+    assert!(!card
         .iter()
-        .find(|b| b.action == InstanceAction::Send)
-        .unwrap();
-    assert!(send
-        .why_disabled
-        .as_deref()
-        .unwrap_or("")
-        .contains("command channel"));
+        .any(|r| matches!(r.on_enter, Activate::Action(InstanceAction::SendAction(_)))));
 }
 
 // -------------------------------------------------------------- the metrics
@@ -585,9 +628,9 @@ fn throughput_samples_are_deltas_and_the_sparkline_scales_to_the_peak() {
     let mut t = Throughput::default();
     assert!(t.is_idle());
     t.sample(0, 0);
-    t.sample(100, 50); // +100 / +50
-    t.sample(100, 50); // idle second
-    t.sample(400, 50); // +300
+    t.sample(100, 50);
+    t.sample(100, 50);
+    t.sample(400, 50);
     assert_eq!(t.rate(), (300, 0));
     assert!(!t.is_idle());
     let spark = t.sparkline(4);
@@ -600,8 +643,6 @@ fn throughput_samples_are_deltas_and_the_sparkline_scales_to_the_peak() {
         glyphs[1] > '▁' && glyphs[1] < '█',
         "a smaller sample sits between"
     );
-
-    // Totals that go backwards (a connection reaped) never underflow.
     t.sample(10, 10);
     assert_eq!(t.rate(), (0, 0));
 }

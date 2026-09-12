@@ -21,7 +21,7 @@ use netget::state::intercepts::{InterceptOwner, InterceptView};
 use netget::state::server::ServerStatus;
 use netget::state::{ClientId, ServerId};
 use netget::tui::app::{DashboardApp, Focus, UiKey};
-use netget::tui::inspector::InspectorTab;
+use netget::tui::cards::{Activate, InstanceAction};
 use netget::tui::projection::{ClientRow, ConnRow, RailSnapshot, SendState, SendVerb, ServerRow};
 use netget::tui::render;
 use netget::tui::theme::Styles;
@@ -171,44 +171,39 @@ fn dump(lines: &[String]) -> String {
 #[test]
 fn an_empty_dashboard_says_what_to_do_at_the_minimum_size() {
     let mut app = app();
-    app.push_system("NetGet — a starts a server");
+    app.push_system("NetGet — a starts a server or client");
     app.absorb_snapshot(RailSnapshot::default());
     let lines = frame(&mut app, 80, 24);
     let text = dump(&lines);
     println!("{text}");
     assert!(text.contains("SERVERS 0 · CLIENTS 0"));
     assert!(text.contains("+ new server or client"));
-    assert!(text.contains("Nothing selected yet"));
-    assert!(text.contains("start a server"));
-    assert!(text.contains("ACTIVITY"));
-    assert!(text.contains("Nothing has happened yet"));
-    assert!(text.contains("CHAT"));
+    assert!(text.contains("ACTIVITY & CHAT"));
+    assert!(text.contains("a starts a server or client"));
     assert!(
         text.contains("F1 keys"),
         "the status bar keeps its help hint at 80 columns"
     );
-    // Every pane box closes at the right edge: no row wider than the terminal.
+    assert!(!text.contains("╭ CHAT"), "one stream, not two panes");
     assert!(lines.iter().all(|l| l.chars().count() <= 80));
 }
 
 #[test]
-fn a_populated_dashboard_shows_every_instance_and_the_selected_one_in_depth() {
+fn a_populated_dashboard_shows_every_instance_with_its_buttons_and_sections() {
     let mut app = app();
-    // The first snapshot only seeds the feed; the second is the change.
+    // The first snapshot only seeds the stream; the second is the change.
     app.absorb_snapshot(RailSnapshot::default());
     app.absorb_snapshot(populated());
-    // Sample twice so a sparkline exists.
     app.sample_metrics();
     app.snapshot.servers[0].conns[0].bytes_sent += 5_000;
     app.sample_metrics();
-    app.focus = Focus::Instances;
-    app.select(UiKey::Server(ServerId::new(1)));
+    app.focus = Focus::Cards;
 
-    let lines = frame(&mut app, 120, 36);
+    let lines = frame(&mut app, 120, 40);
     let text = dump(&lines);
     println!("{text}");
 
-    // The list: status glyph, id, protocol, port, live peers, driver.
+    // Every instance is there, with its summary line.
     let http = lines
         .iter()
         .find(|l| l.contains("#1") && l.contains("http"))
@@ -226,33 +221,30 @@ fn a_populated_dashboard_shows_every_instance_and_the_selected_one_in_depth() {
         .find(|l| l.contains("#2") && l.contains("dns"))
         .expect("dns row");
     assert!(dns.contains("✗"), "{dns}");
-    assert!(
-        dns.contains("permission denied"),
-        "an error row spends its width on the reason: {dns}"
-    );
+    assert!(dns.contains("permission denied"), "{dns}");
     let telnet = lines
         .iter()
         .find(|l| l.contains("#3") && l.contains("telnet"))
         .expect("telnet row");
     assert!(telnet.contains("→127.0.0.1:2323"), "{telnet}");
-    assert!(telnet.contains("LLM"), "{telnet}");
 
-    // The inspector: title, tabs, bar, and the waiting line first.
-    assert!(text.contains("#1 http 127.0.0.1:8080"));
-    assert!(text.contains("overview"));
-    assert!(
-        text.contains("Space actions"),
-        "the inspector says how to act:\n{text}"
-    );
+    // Without selecting anything: the question, the buttons, the peer, its
+    // request, and the client's verbs are all on screen.
     assert!(text.contains("YOUR answer needed · http_request from :53121"));
+    assert!(text.contains("[ stop"), "{text}");
+    assert!(text.contains("[ driver → LLM"), "{text}");
+    assert!(text.contains("127.0.0.1:53121"), "the peer");
+    assert!(
+        text.contains("http_request → send_http_response"),
+        "its request"
+    );
+    assert!(text.contains("send_command"), "the client's verbs");
     assert!(text.contains("up 2m13s"));
     assert!(text.contains("↓1.2K ↑50.7K"), "{text}");
 
-    // The feed got the diff: the instances, the peer, the requests, the question.
+    // The stream got the diff: the instances, the peer, the question.
     assert!(text.contains("listening on 127.0.0.1:8080"));
-    assert!(text.contains("permission denied"));
     assert!(text.contains("⇐ 127.0.0.1:53121 connected"));
-    assert!(text.contains(":53121 http_request → send_http"));
     assert!(text.contains("http_request from :53121 needs YOUR"));
     assert!(
         text.contains("1 waiting for you"),
@@ -267,108 +259,75 @@ fn a_populated_dashboard_shows_every_instance_and_the_selected_one_in_depth() {
 }
 
 #[test]
-fn every_tab_renders_for_both_kinds_at_the_minimum_size() {
+fn every_section_renders_unfolded_at_the_minimum_size() {
+    use netget::tui::cards::{Group, NodeId};
     let mut app = app();
     app.absorb_snapshot(populated());
     for key in [
         UiKey::Server(ServerId::new(1)),
         UiKey::Client(ClientId::new(3)),
     ] {
-        app.select(key);
-        app.focus = Focus::Inspector;
-        for tab in InspectorTab::for_key(key) {
-            app.inspector.tab = tab;
-            app.inspector.item = 0;
-            let lines = frame(&mut app, 80, 24);
-            let text = dump(&lines);
-            assert!(
-                text.contains(tab.label(key)),
-                "tab {:?} for {:?} not rendered:\n{text}",
-                tab,
-                key
-            );
-            // The strip scrolls to keep the selected tab visible; the
-            // status bar always ends with the help hint.
-            assert!(lines.last().unwrap().ends_with("F1 keys"));
-            assert!(lines.iter().all(|l| l.chars().count() <= 80));
+        for group in [
+            Group::Peers,
+            Group::Connections,
+            Group::Send,
+            Group::Rules,
+            Group::Config,
+        ] {
+            app.cards.state.open(&NodeId::Group(key, group));
         }
     }
-    // The send tab lists the client's verbs.
-    app.select(UiKey::Client(ClientId::new(3)));
-    app.inspector.tab = InspectorTab::Send;
-    let text = dump(&frame(&mut app, 100, 30));
+    app.focus = Focus::Cards;
+    let rows = app.rows();
+    // Walk the whole column: every stop renders within the width.
+    for (index, row) in rows.iter().enumerate() {
+        if row.positions() == 0 {
+            continue;
+        }
+        app.cards.row = index;
+        app.cards.col = row.positions() - 1;
+        let lines = frame(&mut app, 80, 24);
+        assert!(lines.iter().all(|l| l.chars().count() <= 80), "row {index}");
+    }
+    let text = dump(&frame(&mut app, 100, 60));
     println!("{text}");
-    assert!(text.contains("send_command"));
-    // The traffic tab lists requests newest first with the peer's port.
-    app.select(UiKey::Server(ServerId::new(1)));
-    app.inspector.tab = InspectorTab::Traffic;
-    let lines = frame(&mut app, 100, 30);
-    let text = dump(&lines);
-    println!("{text}");
-    let first = lines
-        .iter()
-        .position(|l| l.contains(":53121 http_request → send_http"))
-        .expect("a traffic row");
-    assert!(
-        lines[first].contains("17:13:23"),
-        "newest first: {}",
-        lines[first]
-    );
+    assert!(text.contains("[ delete"), "rule rows carry their buttons");
+    assert!(text.contains("[ + add rule"), "{text}");
+    assert!(text.contains("instruction"), "config rows");
+    assert!(text.contains("Send a command line"), "verbs");
 }
 
 #[test]
-fn a_vanished_selection_moves_to_its_neighbour_not_to_nothing() {
+fn the_cursor_survives_its_card_vanishing() {
     let mut app = app();
     app.absorb_snapshot(populated());
-    app.focus = Focus::Instances;
-    app.select(UiKey::Server(ServerId::new(1)));
+    app.focus = Focus::Cards;
+    app.focus_card(UiKey::Server(ServerId::new(1)));
+    assert_eq!(app.cursor_key(), Some(UiKey::Server(ServerId::new(1))));
     let mut without_first = populated();
     without_first.servers.remove(0);
     app.absorb_snapshot(without_first);
-    assert_eq!(app.selected(), Some(UiKey::Server(ServerId::new(2))));
-
-    // Everything gone: the cursor lands on + new server, and the inspector
-    // cannot keep focus on nothing.
-    app.focus = Focus::Inspector;
-    app.absorb_snapshot(RailSnapshot::default());
-    assert_eq!(app.selected(), None);
-    assert_eq!(app.focus, Focus::Instances);
-    let text = dump(&frame(&mut app, 80, 24));
-    assert!(text.contains("Nothing selected yet"));
-}
-
-#[test]
-fn an_instance_that_just_appeared_becomes_the_selection() {
-    let mut app = app();
-    app.focus = Focus::Instances;
-    app.absorb_snapshot(RailSnapshot::default());
-    // The cursor sits on `+ new server`; the server it starts appears.
-    assert_eq!(app.selected(), None);
-    app.absorb_snapshot(populated());
-    assert_eq!(
-        app.selected(),
-        Some(UiKey::Client(ClientId::new(3))),
-        "the newest arrival"
+    assert!(
+        app.cursor_key().is_some(),
+        "the cursor lands on whatever now sits there"
     );
+    let _ = frame(&mut app, 80, 24);
 
-    // While something else is being inspected, an arrival does not steal it.
-    app.select(UiKey::Server(ServerId::new(1)));
-    let mut more = populated();
-    more.clients.push(ClientRow {
-        id: ClientId::new(9),
-        ..more.clients[0].clone()
-    });
-    app.absorb_snapshot(more);
-    assert_eq!(app.selected(), Some(UiKey::Server(ServerId::new(1))));
+    // Everything gone: the cursor sits on + new server or client.
+    app.absorb_snapshot(RailSnapshot::default());
+    let rows = app.rows();
+    assert_eq!(rows[app.cards.row].on_enter, Activate::NewInstance);
+    let text = dump(&frame(&mut app, 80, 24));
+    assert!(text.contains("+ new server or client"));
 }
 
 #[test]
-fn the_chat_keeps_its_newest_line_visible_when_older_ones_wrap() {
+fn the_stream_keeps_its_newest_line_visible_when_older_ones_wrap() {
     let mut app = app();
     app.absorb_snapshot(RailSnapshot::default());
     for i in 0..12 {
         app.push_system(format!(
-            "line {i}: a sentence long enough to wrap twice inside a forty column chat pane, easily"
+            "line {i}: a sentence long enough to wrap twice inside a forty column pane, easily"
         ));
     }
     app.push_system("THE NEWEST LINE");
@@ -381,75 +340,73 @@ fn the_chat_keeps_its_newest_line_visible_when_older_ones_wrap() {
 }
 
 #[test]
-fn f2_gives_one_right_pane_the_whole_column() {
-    use netget::tui::app::RightLayout;
+fn an_instance_that_just_appeared_gets_the_cursor() {
     let mut app = app();
+    app.focus = Focus::Cards;
     app.absorb_snapshot(RailSnapshot::default());
-    app.push_system("hello");
-
-    app.right_layout = RightLayout::ChatMax;
-    let text = dump(&frame(&mut app, 80, 24));
-    assert!(text.contains("CHAT"));
-    assert!(
-        !text.contains("ACTIVITY"),
-        "the feed yields the column:\n{text}"
-    );
-
-    app.right_layout = RightLayout::FeedMax;
-    let text = dump(&frame(&mut app, 80, 24));
-    assert!(text.contains("ACTIVITY"));
-    assert!(
-        !text.contains("CHAT"),
-        "the chat history yields the column:\n{text}"
-    );
-    assert!(text.contains("> "), "the input box always stays:\n{text}");
-
+    app.absorb_snapshot(populated());
     assert_eq!(
-        RightLayout::Balanced.next().next().next(),
-        RightLayout::Balanced
+        app.cursor_key(),
+        Some(UiKey::Client(ClientId::new(3))),
+        "the newest arrival"
+    );
+    let rows = app.rows();
+    assert!(
+        rows[app.cards.row].header.is_some(),
+        "on its header, buttons one ↓ away"
     );
 }
 
 #[test]
-fn the_action_menu_lists_verbs_vertically_with_their_letters() {
-    use netget::tui::modal::Modal;
+fn the_stream_holds_the_conversation_and_the_activity_together() {
     let mut app = app();
+    app.absorb_snapshot(RailSnapshot::default());
+    app.push_chat(netget::tui::chat::EntryKind::User, "start an http server");
     app.absorb_snapshot(populated());
-    app.focus = Focus::Instances;
-    app.select(UiKey::Server(ServerId::new(1)));
-    netget::tui::actions::open_action_menu(&mut app);
-    assert!(matches!(app.modals.last(), Some(Modal::ActionMenu(_))));
-    let lines = frame(&mut app, 80, 24);
+    app.push_system("Started server #1 (http)");
+    let lines = frame(&mut app, 100, 30);
     let text = dump(&lines);
     println!("{text}");
+    assert!(text.contains("ACTIVITY & CHAT"));
+    let asked = lines
+        .iter()
+        .position(|l| l.contains("▶ start an http server"))
+        .expect("what was typed");
+    let listening = lines
+        .iter()
+        .position(|l| l.contains("listening on 127.0.0.1:8080"))
+        .expect("what happened");
+    let answered = lines
+        .iter()
+        .position(|l| l.contains("Started server #1 (http)"))
+        .expect("what came back");
     assert!(
-        text.contains("#1 http 127.0.0.1:8080"),
-        "titled by the instance"
+        asked < listening && listening < answered,
+        "one timeline, in order"
     );
-    let stop = lines
-        .iter()
-        .find(|l| l.contains("stop server"))
-        .expect("stop entry");
-    assert!(
-        stop.contains(" x "),
-        "the letter sits beside the entry: {stop}"
-    );
-    let edit = lines
-        .iter()
-        .position(|l| l.contains("edit config"))
-        .unwrap();
-    let stop_at = lines
-        .iter()
-        .position(|l| l.contains("stop server"))
-        .unwrap();
-    assert_eq!(edit, stop_at + 1, "one entry per line, nothing wraps");
-    assert!(text.contains("driver: MANUAL → LLM"));
+}
 
-    // A disabled entry is listed with its reason rather than hidden.
-    app.modals.clear();
-    app.select(UiKey::Client(ClientId::new(3)));
-    app.snapshot.clients[0].send_state = netget::tui::projection::SendState::NotConnected;
-    netget::tui::actions::open_action_menu(&mut app);
-    let text = dump(&frame(&mut app, 100, 30));
-    assert!(text.contains("send…  — not connected"), "{text}");
+#[test]
+fn the_button_grid_walks_with_the_arrows() {
+    let mut app = app();
+    app.absorb_snapshot(populated());
+    app.focus = Focus::Cards;
+    app.focus_card(UiKey::Server(ServerId::new(1)));
+    let rows = app.rows();
+    let header = app.cards.row;
+    let first_buttons = (header..rows.len())
+        .find(|i| !rows[*i].buttons.is_empty())
+        .expect("a button row");
+    let row = &rows[first_buttons];
+    assert!(row.spans.is_empty(), "a grid row is buttons only");
+    assert_eq!(
+        row.button_at(0).map(|b| b.action),
+        Some(InstanceAction::Stop)
+    );
+    assert_eq!(row.positions(), row.buttons.len());
+    app.cards.row = first_buttons;
+    app.cards.col = 1;
+    let lines = frame(&mut app, 80, 24);
+    assert!(lines.iter().all(|l| l.chars().count() <= 80));
+    assert!(dump(&lines).contains("[ edit"));
 }

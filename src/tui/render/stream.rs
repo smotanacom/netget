@@ -1,4 +1,10 @@
-//! The activity feed pane.
+//! The stream: activity and conversation in one pane, newest at the bottom.
+//!
+//! Machine events (instances, peers, requests, questions parked for you, log
+//! lines) and the conversation (what you typed, what the model reasoned and
+//! answered, command output) are one timeline. Conversation entries wrap;
+//! event lines are one row each and truncate, since Enter opens what they
+//! point at.
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -8,7 +14,7 @@ use ratatui::Frame;
 
 use crate::tui::activity::{ActivityEntry, ActivityFeed, ActivityKind};
 use crate::tui::app::{DashboardApp, Focus, UiKey};
-use crate::tui::chat::ScrollPos;
+use crate::tui::chat::{EntryKind, ScrollPos};
 use crate::tui::hit::HitTarget;
 use crate::tui::rail::fit;
 
@@ -18,7 +24,7 @@ use super::pane_block;
 pub fn visible_entries(app: &DashboardApp) -> Vec<&ActivityEntry> {
     let level = app.core.log_level;
     let only = if app.activity.only_selected {
-        app.selected()
+        app.cursor_key()
     } else {
         None
     };
@@ -33,24 +39,33 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     if area.height < 3 {
         return;
     }
-    let focused = app.focus == Focus::Activity;
-    let mut title = vec![Span::styled(" ACTIVITY ", app.styles.title)];
+    let focused = app.focus == Focus::Stream;
+    let mut title = vec![Span::styled(" ACTIVITY & CHAT ", app.styles.title)];
     if app.activity.only_selected {
-        if let Some(instance) = app.selected_instance() {
-            title.push(Span::styled(
-                format!("· only {} ", instance.tag()),
-                app.styles.warning,
-            ));
+        if let Some(key) = app.cursor_key() {
+            if let Some(instance) = app.instance(key) {
+                title.push(Span::styled(
+                    format!("· only {} ", instance.tag()),
+                    app.styles.warning,
+                ));
+            }
         }
     }
     title.push(Span::styled(
         format!("· log:{} ", app.core.log_level.as_str().to_lowercase()),
         app.styles.dimmed,
     ));
-    let block = pane_block(app, focused).title(Line::from(title));
+    let hint = if focused {
+        " ↑↓ lines · Enter open · f filter · Esc "
+    } else {
+        " PageUp scrolls "
+    };
+    let block = pane_block(app, focused)
+        .title(Line::from(title))
+        .title_bottom(Span::styled(hint, app.styles.dimmed));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    app.hits.push(inner, HitTarget::Activity);
+    app.hits.push(inner, HitTarget::Stream);
     if inner.height == 0 {
         return;
     }
@@ -58,8 +73,8 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     let entries = visible_entries(app);
     if entries.is_empty() {
         let hint = if app.activity.entries.is_empty() {
-            "Nothing has happened yet. Instances starting, peers connecting, every \
-             request and its answer, and anything waiting on you all land here."
+            "Nothing yet. Instances starting, peers connecting, every request and its \
+             answer, anything waiting on you, and the conversation all land here."
         } else {
             "(nothing matches the current filter)"
         };
@@ -76,36 +91,48 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         );
         return;
     }
-    let total = entries.len();
+
+    // Every entry becomes one or more rows; the scroll is in rows.
+    let width = inner.width as usize;
+    let cursor = if focused { app.activity.cursor } else { None };
+    let mut rows: Vec<(usize, Line)> = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let is_cursor = cursor == Some(index);
+        for line in entry_lines(app, entry, width, is_cursor) {
+            rows.push((index, line));
+        }
+    }
+    let total = rows.len();
     let viewport = inner.height as usize;
     let max_offset = total.saturating_sub(viewport);
     let mut offset = match app.activity.scroll {
         ScrollPos::Follow => max_offset,
         ScrollPos::Up(up) => max_offset.saturating_sub(up),
     };
-    // A cursor (while focused) pins the window around itself.
-    let cursor = if focused { app.activity.cursor } else { None };
     if let Some(cursor) = cursor {
-        if cursor < offset {
-            offset = cursor;
-        } else if cursor >= offset + viewport {
-            offset = cursor + 1 - viewport;
+        let first = rows.iter().position(|(i, _)| *i == cursor).unwrap_or(0);
+        let last = rows
+            .iter()
+            .rposition(|(i, _)| *i == cursor)
+            .unwrap_or(first);
+        if first < offset {
+            offset = first;
+        } else if last >= offset + viewport {
+            offset = last + 1 - viewport;
         }
     }
 
-    let width = inner.width as usize;
+    let shown = total.saturating_sub(offset).min(viewport);
+    let pad = viewport - shown;
     let mut lines: Vec<Line> = Vec::with_capacity(viewport);
-    // Anchor to the bottom while the feed is short.
-    let shown = entries.len().saturating_sub(offset).min(viewport);
-    for _ in shown..viewport {
+    for _ in 0..pad {
         lines.push(Line::from(""));
     }
-    let pad = viewport - shown;
-    let mut hits: Vec<(Rect, HitTarget)> = Vec::with_capacity(shown);
-    for (screen_index, entry) in entries.iter().skip(offset).take(viewport).enumerate() {
-        let absolute = offset + screen_index;
-        let is_cursor = cursor == Some(absolute);
-        lines.push(entry_line(app, entry, width, is_cursor));
+    let mut hits: Vec<(Rect, HitTarget)> = Vec::new();
+    for (screen_index, (entry_index, line)) in
+        rows.into_iter().skip(offset).take(viewport).enumerate()
+    {
+        lines.push(line);
         hits.push((
             Rect {
                 x: inner.x,
@@ -113,7 +140,7 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
                 width: inner.width,
                 height: 1,
             },
-            HitTarget::ActivityRow(absolute),
+            HitTarget::StreamRow(entry_index),
         ));
     }
     drop(entries);
@@ -150,16 +177,55 @@ fn kind_glyph_and_style(app: &DashboardApp, kind: ActivityKind) -> (&'static str
         ActivityKind::Request => ("→ ", app.styles.normal),
         ActivityKind::Waiting => ("⚠ ", app.styles.error),
         ActivityKind::Failure => ("✗ ", app.styles.error),
+        ActivityKind::Chat(EntryKind::User) => ("▶ ", app.styles.user),
+        ActivityKind::Chat(EntryKind::Reasoning) => ("∴ ", app.styles.reasoning),
+        ActivityKind::Chat(_) => ("  ", app.styles.normal),
     }
 }
 
-fn entry_line<'a>(
+/// One entry's rows: an event is one truncated row; a conversation entry
+/// is hard-wrapped with a hanging indent, so nothing it says is lost.
+fn entry_lines<'a>(
     app: &DashboardApp,
     entry: &ActivityEntry,
     width: usize,
     cursor: bool,
-) -> Line<'a> {
+) -> Vec<Line<'a>> {
     let (glyph, style) = kind_glyph_and_style(app, entry.event.kind);
+    let sel = |s: Style| if cursor { app.styles.selected } else { s };
+
+    if let ActivityKind::Chat(_) = entry.event.kind {
+        let body_width = width.saturating_sub(2).max(1);
+        let mut rows = Vec::new();
+        for (i, text_line) in entry.event.text.split('\n').enumerate() {
+            let chars: Vec<char> = text_line.chars().collect();
+            let chunks: Vec<String> = if chars.is_empty() {
+                vec![String::new()]
+            } else {
+                chars
+                    .chunks(body_width)
+                    .map(|c| c.iter().collect())
+                    .collect()
+            };
+            for (j, chunk) in chunks.into_iter().enumerate() {
+                let prefix = if i == 0 && j == 0 { glyph } else { "  " };
+                let mut spans = vec![
+                    Span::styled(prefix, sel(style)),
+                    Span::styled(chunk.clone(), sel(style)),
+                ];
+                let filled = 2 + chunk.chars().count();
+                if cursor && filled < width {
+                    spans.push(Span::styled(
+                        " ".repeat(width - filled),
+                        app.styles.selected,
+                    ));
+                }
+                rows.push(Line::from(spans));
+            }
+        }
+        return rows;
+    }
+
     let tag_style = match entry.event.owner {
         Some(UiKey::Server(_)) => app.styles.server,
         Some(UiKey::Client(_)) => app.styles.client,
@@ -173,7 +239,6 @@ fn entry_line<'a>(
     };
     let used = time.chars().count() + tag.chars().count() + glyph.chars().count();
     let text = fit(&entry.event.text, width.saturating_sub(used));
-    let sel = |s: Style| if cursor { app.styles.selected } else { s };
     let mut spans = vec![
         Span::styled(time, sel(app.styles.dimmed)),
         Span::styled(tag, sel(tag_style)),
@@ -187,5 +252,5 @@ fn entry_line<'a>(
             app.styles.selected,
         ));
     }
-    Line::from(spans)
+    vec![Line::from(spans)]
 }

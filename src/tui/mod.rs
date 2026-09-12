@@ -1,9 +1,9 @@
 //! Full-screen ratatui dashboard — the default interactive UI.
 //!
-//! Management on the left: an instance list over a tabbed inspector for the
-//! selected server or client. What is happening on the right: an activity
-//! feed over the chat (the conversation with the model, and command output),
-//! with the input box at the bottom. See `src/tui/CLAUDE.md` for the design.
+//! Management on the left: every server and client as a card with its
+//! buttons and sections, always visible. On the right, one stream of what is
+//! happening and of the conversation, with the input box at the bottom. See
+//! `src/tui/CLAUDE.md` for the design.
 //!
 //! The legacy rolling TUI remains available behind `--legacy-tui`; both share
 //! the same startup construction, status channel, tick cadences and command
@@ -12,13 +12,13 @@
 pub mod actions;
 pub mod activity;
 pub mod app;
+pub mod cards;
 pub mod chat;
 pub mod command_exec;
 pub mod commands;
 pub mod driver;
 pub mod event_loop;
 pub mod hit;
-pub mod inspector;
 pub mod keymap;
 pub mod metrics;
 pub mod modal;
@@ -89,7 +89,7 @@ pub async fn run_dashboard(
     let mut app = DashboardApp::new(core, styles, status_tx.clone(), ui_tx, llm_client.clone());
 
     app.push_system(format!(
-        "NetGet — a starts a server, A a client, Tab moves between panes, F1 lists every key{}",
+        "NetGet — a starts a server or client, Tab reaches them, F1 lists every key{}",
         if args.legacy_tui {
             ""
         } else {

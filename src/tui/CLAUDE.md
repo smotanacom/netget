@@ -8,44 +8,47 @@ the model-selection code.
 ## The shape of the screen
 
 ```
-┌ SERVERS 2 · CLIENTS 1 ──────────────┐┌ ACTIVITY ───────────────────────────────┐
-│ ● #1 http    :8080   2⇄ ▁▂▅█▅▂ MANUAL│ 02:13:01 http#1  ⇐ 127.0.0.1:5321       │
-│ ● #2 tcp     :9000   0⇄        SILENT│ 02:13:01 http#1  http_request → send_…  │
-│   + new server                       │ 02:13:05 dns#3   ✗ bind failed (EADDRIN)│
-│ ● #4 telnet  →127.0.0.1:2323     LLM │                                          │
-│   + new client                       │                                          │
-├ #1 http :8080 ───────────────────────┤├ CHAT ────────────────────────────────────┤
-│ overview│peers│traffic│rules│config  │ ▶ start an http server on 8080           │
-│ [ stop ] [ edit ] [ rules ] [ + client│   Started server #1 (http)               │
-│ status   Running · up 2m 13s         │├──────────────────────────────────────────┤
-│ …                                    ││ > _                                      │
-└──────────────────────────────────────┘└──────────────────────────────────────────┘
- 2 servers · 1 client │ ⚠ 1 waiting │ llm: qwen3 │ log:INFO │ F1 keys
+┌ SERVERS 2 · CLIENTS 1 ───────────────────────┐┌ ACTIVITY & CHAT ─────────────────────────┐
+│ ● #1  http     :8080      1⇄ ▁▂▅█▅▂ ⚠1 MANUAL││ 02:13:01 http#1  ◆ listening on 127.0.0…  │
+│   ⚠ YOUR answer needed · http_request from …  ││ 02:13:04 http#1  ⇄ ⇐ 127.0.0.1:53121 conn…│
+│   Running · up 2m13s · ↓1.2K ↑45K · 3 req     ││ 02:13:04 http#1  → :53121 http_request → …│
+│   driver MANUAL — you answer each event here  ││ 02:13:09 http#1  ⚠ http_request from :531…│
+│   [ stop     ] [ edit     ] [ rules    ]      ││ ▶ start an http server on 8080            │
+│   [ driver → LLM ] [ + http client ] [ wire… ]││   Started server #1 (http)                │
+│ ▾ peers  1 live · 0 recent                    ││                                           │
+│   ● 127.0.0.1:53121 ↓1.2K ↑45K · 3 req ⚠      ││                                           │
+│     17:13:23 http_request → send_http_response││                                           │
+│ ▸ rules  1 rule · driver MANUAL               ││                                           │
+│ ▸ config  2 settings                          ││                                           │
+│ ✗ #2  dns      :53 bind 0.0.0.0:53: permissi… ││                                           │
+│ ● #3  telnet   →127.0.0.1:2323           LLM  ││                                           │
+│   …                                           │├───────────────────────────────────────────┤
+│   + new server or client                      ││ > _                                       │
+└───────────────────────────────────────────────┘└───────────────────────────────────────────┘
+ 2 servers · 1 client │ ⚠ 1 waiting for you │ llm: qwen3 │ log:INFO │ F1 keys
 ```
 
-**Left column = management, one continuous space.** The **instance list** on top is one
-line per server and client: status glyph, id, protocol, address, live peer count, a
-30-second throughput sparkline, and a **driver badge** saying who answers this instance's
-events. One `+ new server or client` row at the foot opens a picker that lists both kinds
-together. Below the list, the **inspector** shows the selected instance in tabs —
-`overview`, `peers` (for a client: `connections`), `traffic`, `rules`, `config`, and for
-clients `send`. ↑/↓ walk the list *into* the inspector's items and back; ←/→ flip the tab
-from anywhere in the column; Enter or Space (or a right click) opens the **action menu** — a
-vertical list of everything that can be done to the selected item and then to the instance,
-each with the letter that runs it without the menu. Nothing wraps, nothing needs Tab. The
-inspector never grows the list: a busy instance scrolls inside its own pane.
+**Left column = every instance, always visible.** One scrollable canvas of **cards**. A
+card is its summary line (status glyph, id, protocol, address, live peers, a 30-second
+sparkline, a **driver badge**), the requests parked for you, a facts line (status, uptime,
+traffic, rate), the driver, then its **buttons as an aligned grid** — every cell as wide
+as the widest label, as many per row as fit — and its **sections**: `peers` (each peer
+with its buttons and its requests beneath it), `rules` (each rule with delete / ↑ / ↓
+beside it and `+ add rule` below), `config` (each setting opens the form); a client has
+`send` (its verbs) and `connections` instead of `peers`. Nothing is selected and nothing
+is drilled into: ↑/↓ walk every row, ←/→ walk a row's buttons (and fold / unfold a
+section), Enter presses the button or acts on the row, and the letters (`x e r m c n w d`)
+act on the card under the cursor. `+ new server or client` at the foot opens one picker
+listing both kinds. Rules and config start folded; everything else is open.
 
-**Right column = what is happening.** The **activity feed** is the machine's view: instances
-starting/stopping, peers connecting/closing, every request with the action that answered it
-(Enter opens the full request/response), questions parked for you (Enter answers), and the
-`[LEVEL]` log lines the status channel carries, filtered by log level. The **chat** below is
-the conversation: what you typed, the model's reasoning and replies, command output, and
-errors. The chat pane sizes itself to its content (up to half the column), so a session that
-never talks to a model gives the feed the whole column.
+**Right column = one stream.** Machine events (instances starting, peers connecting and
+closing, every request with the action that answered it, questions parked for you, the
+`[LEVEL]` log lines filtered by level) and the conversation (what you typed, the model's
+reasoning and replies, command output) are one timeline, newest at the bottom, with the
+input box under it. Event lines are one row each; conversation entries wrap. PageUp or
+the wheel scrolls back, ↑/↓ then walk lines and Enter opens what one points at.
 
-Why two panes rather than one stream: before this split, `[INFO]` lines from every server
-interleaved with the conversation, and a question you asked the model scrolled off under
-its own tool-call logging within seconds.
+Tab hops between the two columns. That is the only thing Tab does.
 
 ## Manual first, model optional
 
@@ -54,16 +57,17 @@ The dashboard is built around driving instances yourself. Three mechanisms carry
 - **Driver** (`driver.rs`): a one-word summary of an instance's `*` handler rule —
   `MANUAL` (every unmatched event parks for you), `LLM` (no wildcard rule; the instance
   instruction answers), `SILENT` (`*` → static with no actions: acknowledge, never reply),
-  or `RULES` (a wildcard script/static/LLM rule — something custom). `[ driver: … ]` in the
-  action bar, and `m` on an instance, cycle MANUAL → LLM → SILENT; the non-wildcard rules are
-  kept untouched. It applies through `management::update_*` with only `event_handlers` set,
+  or `RULES` (a wildcard script/static/LLM rule — something custom). The `[ driver → … ]`
+  button, and `m` on a card, cycle MANUAL → LLM → SILENT; the non-wildcard rules are kept
+  untouched. It applies through `management::update_*` with only `event_handlers` set,
   which is a hot swap — no restart, no dropped connections.
-- **Rules tab**: the handler table inline, with add / edit / delete / move up / move down in
-  the bar. Add and edit open the routing modal (`modal/routing.rs`); delete and move rebuild
-  the table headlessly through `RoutingModel` and apply the same way.
-- **Send tab / message a peer**: a client's own verbs as rows (Enter opens the composer on
-  that verb's parameters); a server's live peer gets *message* and *disconnect* entries in
-  the action menu where the protocol registered a peer handle (`server/peer_support.rs`).
+- **Rules section**: the handler table inline. Enter on a rule edits it in the routing
+  modal (`modal/routing.rs`); its delete / ↑ / ↓ buttons rebuild the table headlessly
+  through `RoutingModel` and apply the same way; `+ add rule` opens the modal on a fresh one.
+- **Send section / message a peer**: a client's own verbs as rows (Enter opens the composer
+  on that verb's parameters); a server's live peer carries `[ message ]` and
+  `[ disconnect ]` on its own row where the protocol registered a peer handle
+  (`server/peer_support.rs`). Without a handle the buttons stay, disabled, and say why.
 
 Instances created here default to `*` → manual (see `modal/form.rs`), so the first thing you
 see after starting a server and poking it with `curl` is `⚠ … waiting for YOUR answer`, in
@@ -74,21 +78,21 @@ the list badge, the inspector overview, the feed, and the status bar.
 | file | what |
 |---|---|
 | `mod.rs` | `run_dashboard` entry, model resolution, channel wiring |
-| `app.rs` | `DashboardApp`: focus, selection, per-pane UI state, snapshot, modal stack |
+| `app.rs` | `DashboardApp`: focus, the canvas cursor, fold state, snapshot, modal stack |
 | `event_loop.rs` | terminal lifecycle; the select loop; status-line routing; snapshot absorption |
 | `projection.rs` | `AppState` → owned `RailSnapshot` (`ServerRow` / `ClientRow`) under short locks |
-| `rail.rs` | the instance list model: rows, per-instance line, status glyphs |
-| `inspector.rs` | tabs, per-tab lines and selectable items, the action menu's entries |
+| `rail.rs` | the one-line instance summary a card's header renders |
+| `cards.rs` | the canvas model: every card's rows, buttons, sections, fold state |
 | `driver.rs` | `Driver` detection from a handler table and rebuilding the table for a new driver |
-| `activity.rs` | the feed ring, and `Tracker::diff`, which turns two snapshots into events |
+| `activity.rs` | the stream ring (events and conversation), and `Tracker::diff`, which turns two snapshots into events |
 | `metrics.rs` | per-instance throughput samples, rates, sparklines, byte formatting |
-| `chat.rs` | the conversation ring; `route_status_line` decides feed vs chat |
+| `chat.rs` | `route_status_line`: a status line becomes a log entry or a conversation entry |
 | `actions.rs` | every instance action (`InstanceAction`) executed in one place |
 | `keymap.rs` | global keys, focus cycling, per-pane keys, mouse |
 | `modal_keys.rs` | input handling for every modal |
 | `hit.rs` | per-frame hit-test registry for the mouse |
 | `render/` | one file per pane plus `overlay.rs` for modals |
-| `modal/` | forms, composer, routing editor, intercept answer, picker, action menu, help, wireshark |
+| `modal/` | forms, composer, routing editor, intercept answer, picker, help, wireshark |
 | `wireshark.rs` | protocol → dissector/capture-filter table |
 
 The rule that keeps keyboard and mouse from drifting: an action is an `InstanceAction`, run
@@ -108,8 +112,8 @@ originating modal on success and leaves it open showing the error on failure.
   errored server, a client with verbs), every tab for both kinds at the minimum size, and
   what the selection does when its instance vanishes. **Start here for any layout change**;
   `--nocapture` prints the frames.
-- `tests/dashboard_rail_test.rs` — list rows, instance lines, driver detection/rebuild,
-  inspector items and bar buttons per state.
+- `tests/dashboard_rail_test.rs` — the summary line, driver detection/rebuild, and the
+  card rows: the button grid, sections, peers with their requests, rules, config, verbs.
 - `tests/dashboard_activity_test.rs` — `Tracker::diff` emits each lifecycle/peer/request/
   waiting event exactly once; status-line routing.
 - `tests/dashboard_routing_test.rs`, `dashboard_create_flow_test.rs`,
@@ -132,11 +136,10 @@ originating modal on success and leaves it open showing the error on failure.
   line is being typed; the pty harness gained `PtyScreen` and renders unpainted cells as
   spaces, and all six snapshots were re-recorded as real screens.
 
-- 2026-09-12 (third pass, from operator feedback): one picker for both kinds (`+ new server
-  or client`, `a`); the wrapping action bar is gone — the action menu (Enter/Space/right
-  click) lists item-specific entries then the instance's, with letters; the left column is
-  walked with ↑/↓ (list flows into inspector items) and ←/→ flips tabs anywhere in it, so
-  Tab is only for changing column; ↓ past the feed's newest line lands in the chat.
+- 2026-09-12 (third pass, from operator feedback): the list + inspector split and the
+  popup menu are gone. Every instance is a card that is always open with its buttons (an
+  aligned grid) and sections; ↑/↓ walk every row, ←/→ the buttons; Tab only changes column.
+  One picker for both kinds. Activity and chat are one stream with the input beneath it.
 
 ## Next steps
 
@@ -145,6 +148,5 @@ originating modal on success and leaves it open showing the error on failure.
   re-recording after any layout change (delete the `.snap.md`, run, review the new file —
   `assert_snapshot` creates a missing one and passes). Every dashboard pty test waits on
   the text its last key must paint through one `PtyScreen`; never add a fixed sleep.
-- Candidates not done: a `/` filter on the instance list once it grows past a screen;
-  per-peer throughput; an `[ answer all ]` shortcut when several requests are parked; a
-  Wireshark button in the peers tab bar.
+- Candidates not done: fold-all / unfold-all keys once many cards are open; per-peer
+  throughput; an `[ answer all ]` shortcut when several requests are parked.

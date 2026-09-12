@@ -33,6 +33,10 @@ pub enum ActivityKind {
     Waiting,
     /// A lifecycle event that went wrong (bind failed, connect refused).
     Failure,
+    /// The conversation: what you typed, the model's reasoning and replies,
+    /// command output. Never filtered by log level; wraps rather than
+    /// truncates.
+    Chat(crate::tui::chat::EntryKind),
 }
 
 /// What an entry points at, for Enter.

@@ -1,14 +1,14 @@
 //! Every instance action, executed in one place.
 //!
 //! A letter on the list, Enter on an action-bar button, a click on that
-//! button and Enter on an inspector item all produce an [`InstanceAction`]
+//! button, a click and Enter on a row all produce an [`InstanceAction`]
 //! and land here, so what they do cannot drift apart. Anything that touches
 //! the network is spawned and reports back through `uimsg` — see that
 //! module for why nothing here may await a connect.
 
 use crate::state::app_state::AppState;
-use crate::tui::app::{DashboardApp, Section, TrafficFilter, UiKey};
-use crate::tui::inspector::{InspectorTab, InstanceAction};
+use crate::tui::app::{DashboardApp, Section, UiKey};
+use crate::tui::cards::InstanceAction;
 use crate::tui::modal::{confirm, Modal, PendingAction};
 use crate::tui::uimsg::{ActionOrigin, UiMsg};
 
@@ -75,16 +75,6 @@ pub async fn run(app: &mut DashboardApp, key: UiKey, action: InstanceAction, sta
             if let UiKey::Server(id) = key {
                 disconnect_peer(app, id, conn, state);
             }
-        }
-        InstanceAction::FilterTraffic(conn) => {
-            app.inspector.filter = TrafficFilter::Peer(conn);
-            app.inspector.tab = InspectorTab::Traffic;
-            app.inspector.item = 0;
-            app.inspector.scroll = 0;
-        }
-        InstanceAction::ClearTrafficFilter => {
-            app.inspector.filter = TrafficFilter::All;
-            app.inspector.item = 0;
         }
         InstanceAction::Disconnect => {
             if let UiKey::Client(id) = key {
@@ -552,7 +542,7 @@ async fn open_composer(
     }
     let mut model = ComposerModel::new(client_id, &protocol, actions);
     if let Some(name) = wanted {
-        // Look the verb up by name: the inspector's rows are the vocabulary
+        // Look the verb up by name: the send section's rows are the vocabulary
         // minus response-only verbs, so their indices are not the composer's.
         if let Some(index) = model.actions.iter().position(|a| a.name == name) {
             model.selected = index;
@@ -623,37 +613,6 @@ pub async fn open_protocol_picker(
     });
 }
 
-/// Open the action menu for the selected instance, built for the cursor's
-/// position: the open tab, and the selected item when the inspector has the
-/// cursor.
-pub fn open_action_menu(app: &mut DashboardApp) {
-    use crate::tui::modal::action_menu::ActionMenuModel;
-    let Some(instance) = app.selected_instance() else {
-        return;
-    };
-    let key = instance.key();
-    let view = crate::tui::inspector::build(
-        instance,
-        &app.inspector,
-        app.instances.metrics.get(&key),
-        60,
-    );
-    // From the list, the menu is about the instance, not whatever item the
-    // inspector's cursor last rested on.
-    let items = if app.focus == crate::tui::app::Focus::Inspector {
-        view.actions
-    } else {
-        crate::tui::inspector::menu_items(instance, view.tab, None, app.inspector.filter)
-    };
-    if items.is_empty() {
-        return;
-    }
-    app.modals
-        .push(Modal::ActionMenu(Box::new(ActionMenuModel::new(
-            key, view.title, items,
-        ))));
-}
-
 /// Jump to the oldest parked request anywhere and open its answer modal.
 pub fn answer_next_waiting(app: &mut DashboardApp, state: &AppState) {
     let mut oldest: Option<(u64, UiKey, u64)> = None;
@@ -679,7 +638,7 @@ pub fn answer_next_waiting(app: &mut DashboardApp, state: &AppState) {
     }
     match oldest {
         Some((_, key, id)) => {
-            app.select(key);
+            app.focus_card(key);
             open_intercept(app, key, id, state);
         }
         None => app.push_system("nothing is waiting for you"),

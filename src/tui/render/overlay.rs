@@ -74,9 +74,7 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
             Vec::new()
         }
         // Rendered separately below (their own panes and button rows).
-        Modal::Composer(_) | Modal::Routing(_) | Modal::Intercept(_) | Modal::ActionMenu(_) => {
-            Vec::new()
-        }
+        Modal::Composer(_) | Modal::Routing(_) | Modal::Intercept(_) => Vec::new(),
     };
 
     let scroll = match modal {
@@ -96,35 +94,6 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     app.hits.push(rect, HitTarget::ModalBody);
-
-    // The action menu: one entry per line, the letter beside it.
-    if let Some(Modal::ActionMenu(menu)) = app.modals.last() {
-        let mut lines: Vec<Line> = Vec::with_capacity(menu.items.len());
-        let mut offsets: Vec<u16> = Vec::with_capacity(menu.items.len());
-        for (index, item) in menu.items.iter().enumerate() {
-            offsets.push(lines.len() as u16);
-            let selected = index == menu.selected;
-            let key = item.key.map(|k| k.to_string()).unwrap_or_default();
-            let (label_style, key_style) = if selected {
-                (app.styles.selected, app.styles.selected)
-            } else if !item.enabled {
-                (app.styles.dimmed, app.styles.dimmed)
-            } else {
-                (app.styles.normal, app.styles.accent)
-            };
-            let mut spans = vec![
-                Span::styled(format!(" {key:>1} "), key_style),
-                Span::styled(format!(" {}", item.label), label_style),
-            ];
-            if let Some(why) = &item.why_disabled {
-                spans.push(Span::styled(format!("  — {why}"), app.styles.dimmed));
-            }
-            lines.push(Line::from(spans));
-        }
-        frame.render_widget(Paragraph::new(lines), inner);
-        push_row_hits(app, inner, &offsets);
-        return;
-    }
 
     // The instance form: fields, then Apply / Cancel.
     if let Some(Modal::Form(form)) = app.modals.last() {

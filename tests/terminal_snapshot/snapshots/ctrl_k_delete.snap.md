@@ -1,24 +1,24 @@
-╭ SERVERS 0 · CLIENTS 0 ─────────────╮╭ ACTIVITY · log:info ───────────────────╮
-│ servers ───────────────────────────││                                        │
-│ clients ───────────────────────────││ Nothing has happened yet. Instances    │
-│  + new server or client            ││ starting, peers connecting, every      │
-╰ Tab here ──────────────────────────╯│ request and its answer, and anything   │
-╭ nothing selected ──────────────────╮│ waiting on you all land here.          │
+╭ SERVERS 0 · CLIENTS 0 ─────────────╮╭ ACTIVITY & CHAT · log:info ────────────╮
+│  + new server or client            ││                                        │
 │                                    ││                                        │
-│  Nothing selected yet.             ││                                        │
+│    Nothing is running yet.         ││                                        │
 │                                    ││                                        │
-│  a     start a server or a client  ││                                        │
-│  ↑ ↓   pick one; ↓ walks into it   ││                                        │
-│  Enter everything you can do to it │╰────────────────────────────────────────╯
-│  Tab   to the feed and the chat    │╭ CHAT ──────────────────────────────────╮
-│  F1    every key                   ││  ✗  Ollama is not available or no model│
+│    That row, or a, picks a protocol││                                        │
+│    and starts it. The instance sho…││                                        │
+│    up here with its buttons, peers,││                                        │
+│    rules and config, and stays.    ││                                        │
+│    ↑↓ walk the rows, ←→ the button…││                                        │
+│                                    ││  NetGet — a starts a server or client, │
+│    Or ask the model in the chat:   ││  Tab reaches them, F1 lists every key (│
+│    “start an http server on 8080”. ││  --legacy-tui for the old UI)          │
+│                                    ││  ✗  Ollama is not available or no model│
 │                                    ││  s found.                              │
-│  Or ask the model in chat — “start ││     Please ensure Ollama is running: ht│
-│an http server on 8080”.            ││  tps://ollama.ai                       │
+│                                    ││     Please ensure Ollama is running: ht│
+│                                    ││  tps://ollama.ai                       │
 │                                    ││     Use `/model` to list and select a m│
 │                                    ││  odel once Ollama is running.          │
-│                                    │╰────────────────────────────────────────╯
-│                                    │╭ no model · /commands only · F2 layout ─╮
+│                                    │╰ PageUp scrolls ────────────────────────╯
+│                                    │╭ no model · /commands only · Tab → cards╮
 │                                    ││>                                       │
-╰────────────────────────────────────╯╰────────────────────────────────────────╯
+╰ Tab here ──────────────────────────╯╰────────────────────────────────────────╯
 <MODEL> │ log:INFO │ web:ON │ handler:ANY  │ F1 keys

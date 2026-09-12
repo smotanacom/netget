@@ -1437,9 +1437,9 @@ mod tests {
         send_ctrl(&mut pty, 'c');
     }
 
-    /// The management path with no model at all: Tab to the list, `a` for the
-    /// picker, `tcp server`, `→` flips to its peers tab, Space opens the
-    /// action menu, `x` stops it. Every wait is on the text the previous key
+    /// The management path with no model at all: Tab to the instances, `a`
+    /// for the picker, `tcp server`, and the card is there with its buttons;
+    /// `x` stops it. Every wait is on the text the previous key
     /// must produce, so nothing here is a fixed sleep; one `PtyScreen` is fed
     /// throughout, so each screen is the whole terminal rather than the cells
     /// that changed.
@@ -1465,8 +1465,8 @@ mod tests {
         );
 
         // One list holds both kinds: "tcp server" narrows to the server. It
-        // starts on defaults (an OS port) and becomes the selection, so the
-        // inspector shows it.
+        // starts on defaults (an OS port) and the cursor lands on its card,
+        // whose buttons and sections are already on screen.
         send_input(&mut pty, "tcp server");
         let narrowed = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
             s.contains("filter: tcp server")
@@ -1474,17 +1474,16 @@ mod tests {
         assert!(narrowed.contains("filter: tcp server"), "{narrowed}");
         send_enter(&mut pty);
         let running = screen.wait_until(&mut pty, Duration::from_secs(20), |s| {
-            s.contains("listening on 127.0")
-                && s.contains("#1  tcp")
-                && s.contains("#1 tcp 127.0.0.1")
+            s.contains("listening on 127.0") && s.contains("#1  tcp") && s.contains("[ stop")
         });
         assert!(
             running.contains("listening on 127.0"),
-            "the feed did not report the server:\n{running}"
+            "the stream did not report the server:\n{running}"
         );
+        assert!(running.contains("[ stop"), "the card's buttons:\n{running}");
         assert!(
-            running.contains("#1 tcp 127.0.0.1"),
-            "the new server is selected and inspected:\n{running}"
+            running.contains("no connections yet"),
+            "the peers section is open:\n{running}"
         );
         assert!(
             running.contains("MANUAL"),
@@ -1495,24 +1494,8 @@ mod tests {
             "the picker must have closed:\n{running}"
         );
 
-        // → flips the inspector to the peers tab without leaving the list.
-        write_all_blocking(&mut pty, b"\x1b[C");
-        let peers = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
-            s.contains("no connections yet")
-        });
-        assert!(
-            peers.contains("no connections yet"),
-            "peers tab did not open:\n{peers}"
-        );
-
-        // Space opens the action menu: one entry per line, letters beside.
-        send_input(&mut pty, " ");
-        let menu = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
-            s.contains("stop server") && s.contains("wireshark")
-        });
-        assert!(menu.contains("stop server"), "menu did not open:\n{menu}");
-
-        // `x` in the menu stops it: the list empties, the chat and the feed say so.
+        // `x` stops it from anywhere on the card: the list empties, the
+        // stream says so.
         send_input(&mut pty, "x");
         let stopped = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
             s.contains("SERVERS 0") && s.contains("Stopped server #1")
@@ -1520,11 +1503,7 @@ mod tests {
         assert!(stopped.contains("SERVERS 0"), "not stopped:\n{stopped}");
         assert!(
             stopped.contains("Stopped server #1"),
-            "the chat must confirm it:\n{stopped}"
-        );
-        assert!(
-            stopped.contains("Nothing selected yet"),
-            "the inspector must let go of the stopped server:\n{stopped}"
+            "the stream must confirm it:\n{stopped}"
         );
 
         send_ctrl(&mut pty, 'c');

@@ -70,7 +70,7 @@ pub struct ClientRow {
     pub send_state: SendState,
     /// The client protocol's own verbs, in vocabulary order — the telnet
     /// client's `send_command` / `send_text`, TCP's `send_tcp_data`. The
-    /// inspector renders one row per entry, and a row's index selects the
+    /// send section renders one row per entry, and a row's index selects the
     /// action in the composer, so the order must match
     /// `ComposerModel::vocabulary` exactly (both come from it).
     pub send_actions: Vec<SendVerb>,
@@ -78,7 +78,7 @@ pub struct ClientRow {
     pub intercepts: Vec<crate::state::intercepts::InterceptView>,
 }
 
-/// One verb a client can send, as the inspector lists it.
+/// One verb a client can send, as the send section lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendVerb {
     pub name: String,
@@ -110,7 +110,7 @@ pub struct RailSnapshot {
 /// Requests kept per band (the full scoped log stays reachable via drill-in).
 const REQUESTS_PER_BAND: usize = 100;
 
-/// Whether an action is worth its own row in the inspector's send tab.
+/// Whether an action is worth its own row in a client's send section.
 ///
 /// The vocabulary is async ∪ sync, so it also contains verbs that only make
 /// sense as *answers* to a received event, or that the action bar already

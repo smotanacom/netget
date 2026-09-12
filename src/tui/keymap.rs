@@ -1,9 +1,10 @@
 //! Keyboard and mouse handling for the panes.
 //!
 //! Precedence: an open modal owns everything (`modal_keys`); then the global
-//! toggles; then the focused pane. Every pane action funnels into
-//! `actions::run` with an `InstanceAction`, so a letter, Enter on a button and
-//! a click do the same thing.
+//! toggles; then the focused column. In the management column the arrows do
+//! all the moving — ↑/↓ over rows, ←/→ along a row's buttons — and Enter acts
+//! on whatever the cursor is on. Everything funnels into `actions::run` with
+//! an `InstanceAction`, so a letter, a button and a click do the same thing.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use tokio::sync::mpsc;
@@ -12,10 +13,9 @@ use crate::events::EventHandler;
 use crate::state::app_state::AppState;
 use crate::tui::actions;
 use crate::tui::app::{DashboardApp, Focus, UiKey};
+use crate::tui::cards::{Activate, InstanceAction, Row};
 use crate::tui::hit::{HitTarget, SegmentId};
-use crate::tui::inspector::{self, InspectorTab, InstanceAction};
 use crate::tui::modal::Modal;
-use crate::tui::rail::{is_selectable, list_rows, ListRow};
 use crate::tui::uimsg::{ActionOrigin, UiMsg};
 
 /// What the event loop should do after handling an event.
@@ -43,13 +43,11 @@ pub async fn handle_key(
     // Readline chords on text being typed come before the global toggles:
     // Ctrl-E and Ctrl-W mean "end of line" and "delete word" to anyone with
     // a line in the box, and only cycle scripting / web search once it is
-    // empty. The legacy TUI never resolved this and lost the editing keys.
-    if app.focus == Focus::ChatInput && !app.input.text().is_empty() {
-        if readline_key(app, key) {
-            let text = app.input.text();
-            app.core.update_slash_suggestions(&text);
-            return Outcome::Continue;
-        }
+    // empty.
+    if app.focus == Focus::ChatInput && !app.input.text().is_empty() && readline_key(app, key) {
+        let text = app.input.text();
+        app.core.update_slash_suggestions(&text);
+        return Outcome::Continue;
     }
 
     match key.code {
@@ -93,17 +91,12 @@ pub async fn handle_key(
             app.modals.push(Modal::Help { scroll: 0 });
             return Outcome::Continue;
         }
-        KeyCode::F(2) => {
-            app.right_layout = app.right_layout.next();
-            app.push_system(format!("Layout: {}", app.right_layout.describe()));
-            return Outcome::Continue;
-        }
         KeyCode::Tab if !alt => {
-            cycle_focus(app, false);
+            cycle_focus(app);
             return Outcome::Continue;
         }
         KeyCode::BackTab => {
-            cycle_focus(app, true);
+            cycle_focus(app);
             return Outcome::Continue;
         }
         _ => {}
@@ -111,51 +104,20 @@ pub async fn handle_key(
 
     match app.focus {
         Focus::ChatInput => handle_chat_key(app, key, state, event_handler, status_tx).await,
-        Focus::ChatHistory => {
-            match key.code {
-                KeyCode::Up => app.chat.scroll_up(1),
-                KeyCode::Down => app.chat.scroll_down(1),
-                KeyCode::PageUp => app.chat.scroll_up(10),
-                KeyCode::PageDown => app.chat.scroll_down(10),
-                KeyCode::End | KeyCode::Esc => {
-                    app.chat.scroll_to_follow();
-                    app.focus = Focus::ChatInput;
-                }
-                _ => {}
-            }
-            Outcome::Continue
-        }
-        Focus::Instances => handle_instances_key(app, key, state).await,
-        Focus::Inspector => handle_inspector_key(app, key, state).await,
-        Focus::Activity => handle_activity_key(app, key, state).await,
+        Focus::Cards => handle_cards_key(app, key, state).await,
+        Focus::Stream => handle_stream_key(app, key, state).await,
     }
 }
 
-/// Instances → Inspector → Activity → Chat → Instances. The inspector is
-/// skipped when nothing is selected (there is nothing in it to focus).
-/// Three stops: the management column (list and inspector together), the
-/// feed, the chat. Inside the management column the arrows do the moving.
-fn cycle_focus(app: &mut DashboardApp, backward: bool) {
-    let column = |f: Focus| match f {
-        Focus::Instances | Focus::Inspector => 0,
-        Focus::Activity => 1,
-        Focus::ChatInput | Focus::ChatHistory => 2,
+/// Two stops: the management column and the chat box.
+fn cycle_focus(app: &mut DashboardApp) {
+    app.focus = match app.focus {
+        Focus::Cards => Focus::ChatInput,
+        Focus::Stream | Focus::ChatInput => Focus::Cards,
     };
-    let current = column(app.focus);
-    let next = if backward {
-        (current + 2) % 3
-    } else {
-        (current + 1) % 3
-    };
-    app.focus = match next {
-        0 => Focus::Instances,
-        1 => Focus::Activity,
-        _ => Focus::ChatInput,
-    };
-    if app.focus == Focus::Activity {
-        app.activity.cursor = None;
-    }
-    app.clamp_selection();
+    app.activity.cursor = None;
+    let rows = app.rows();
+    app.clamp_cursor_to(&rows);
 }
 
 async fn handle_chat_key(
@@ -182,8 +144,8 @@ async fn handle_chat_key(
             crate::tui::commands::submit(app, text, state, event_handler, status_tx).await;
         }
         KeyCode::PageUp => {
-            app.focus = Focus::ChatHistory;
-            app.chat.scroll_up(10);
+            app.focus = Focus::Stream;
+            app.activity.scroll_up(10);
         }
         KeyCode::Up if app.input.is_on_first_line() => history_previous(app),
         KeyCode::Down if app.input.is_on_last_line() => history_next(app),
@@ -291,58 +253,41 @@ fn history_next(app: &mut DashboardApp) {
     }
 }
 
-/// Move the list cursor by `delta` selectable rows.
-fn move_list_cursor(app: &mut DashboardApp, delta: isize) {
-    let rows = list_rows(&app.snapshot);
-    let selectable: Vec<usize> = rows
+/// Move the cursor by `delta` stop rows (rows with something to land on).
+fn move_cursor(app: &mut DashboardApp, rows: &[Row], delta: isize) {
+    let stops: Vec<usize> = rows
         .iter()
         .enumerate()
-        .filter(|(_, r)| is_selectable(r))
+        .filter(|(_, r)| r.positions() > 0)
         .map(|(i, _)| i)
         .collect();
-    if selectable.is_empty() {
+    if stops.is_empty() {
         return;
     }
-    let current = crate::tui::render::rail::cursor_index(app, &rows)
-        .and_then(|i| selectable.iter().position(|s| *s == i));
-    let next = match current {
-        None => {
-            if delta < 0 {
-                selectable.len() - 1
-            } else {
-                0
-            }
-        }
-        Some(pos) => (pos as isize + delta).clamp(0, selectable.len() as isize - 1) as usize,
-    };
-    set_list_cursor(app, rows[selectable[next]]);
-}
-
-fn set_list_cursor(app: &mut DashboardApp, row: ListRow) {
-    match row {
-        ListRow::Instance(key) => app.select(key),
-        ListRow::New => {
-            app.instances.selected = None;
-            app.instances.on_new = true;
-            app.inspector.item = 0;
-        }
-        ListRow::Header(..) => {}
+    let current = stops
+        .iter()
+        .position(|s| *s == app.cards.row)
+        .unwrap_or_else(|| {
+            stops
+                .partition_point(|s| *s < app.cards.row)
+                .min(stops.len() - 1)
+        });
+    let next = (current as isize + delta).clamp(0, stops.len() as isize - 1) as usize;
+    app.cards.row = stops[next];
+    // Keep the column where it can: a button grid walks vertically.
+    let positions = rows[app.cards.row].positions();
+    if app.cards.col >= positions {
+        app.cards.col = positions.saturating_sub(1);
     }
 }
 
-fn list_cursor_row(app: &DashboardApp) -> Option<ListRow> {
-    let rows = list_rows(&app.snapshot);
-    crate::tui::render::rail::cursor_index(app, &rows).map(|i| rows[i])
-}
-
-/// Letters that act on the selected instance from either left pane.
-/// Letters that act on the selected instance from either left pane.
+/// Letters that act on the card under the cursor.
 async fn instance_letter(app: &mut DashboardApp, code: KeyCode, state: &AppState) -> bool {
     if matches!(code, KeyCode::Char('a') | KeyCode::Char('A')) {
         actions::open_protocol_picker(app, None, state).await;
         return true;
     }
-    let Some(key) = app.selected() else {
+    let Some(key) = app.cursor_key() else {
         return false;
     };
     let action = match (code, key) {
@@ -360,177 +305,99 @@ async fn instance_letter(app: &mut DashboardApp, code: KeyCode, state: &AppState
     true
 }
 
-/// Digits jump straight to a tab and focus the inspector.
-fn tab_digit(code: KeyCode) -> Option<usize> {
-    match code {
-        KeyCode::Char(c @ '1'..='6') => Some(c as usize - '1' as usize),
-        _ => None,
-    }
-}
-
-fn jump_to_tab(app: &mut DashboardApp, index: usize) {
-    let Some(key) = app.selected() else {
+/// Enter on the cursor: press the button, or act on the label.
+async fn activate(app: &mut DashboardApp, rows: &[Row], state: &AppState) {
+    let Some(row) = rows.get(app.cards.row) else {
         return;
     };
-    let tabs = InspectorTab::for_key(key);
-    if let Some(tab) = tabs.get(index) {
-        set_tab(app, *tab);
-    }
-}
-
-/// ←/→ anywhere in the management column flips the inspector's tab, so
-/// instances can be browsed with ↑/↓ and compared on one tab without
-/// leaving the list.
-fn step_tab(app: &mut DashboardApp, backward: bool) {
-    let Some(key) = app.selected() else {
+    if let Some(button) = row.button_at(app.cards.col) {
+        let button = button.clone();
+        let Some(key) = row.key else {
+            return;
+        };
+        if button.enabled {
+            actions::run(app, key, button.action, state).await;
+        } else {
+            app.push_system(format!(
+                "[ {} ]: {}",
+                button.label,
+                button.why_disabled.unwrap_or_default()
+            ));
+        }
         return;
-    };
-    let tabs = InspectorTab::for_key(key);
-    let current = inspector::effective_tab(key, app.inspector.tab);
-    let pos = tabs.iter().position(|t| *t == current).unwrap_or(0);
-    let next = if backward {
-        (pos + tabs.len() - 1) % tabs.len()
-    } else {
-        (pos + 1) % tabs.len()
-    };
-    set_tab(app, tabs[next]);
-}
-
-fn set_tab(app: &mut DashboardApp, tab: InspectorTab) {
-    if app.inspector.tab != tab {
-        app.inspector.tab = tab;
-        app.inspector.item = 0;
-        app.inspector.scroll = 0;
     }
-}
-
-/// How many items the inspector has for the selected instance right now.
-fn inspector_item_count(app: &DashboardApp) -> usize {
-    app.selected_instance()
-        .map(|instance| {
-            let key = instance.key();
-            inspector::build(
-                instance,
-                &app.inspector,
-                app.instances.metrics.get(&key),
-                60,
-            )
-            .item_count()
-        })
-        .unwrap_or(0)
-}
-
-/// Whether the cursor sits on the last selectable list row.
-fn at_list_end(app: &DashboardApp) -> bool {
-    let rows = list_rows(&app.snapshot);
-    let last = rows.iter().rposition(is_selectable);
-    crate::tui::render::rail::cursor_index(app, &rows) == last
-}
-
-async fn handle_instances_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
-    match key.code {
-        // ↓ past the last row walks into the inspector's items.
-        KeyCode::Down => {
-            if at_list_end(app) {
-                if app.selected().is_some() && inspector_item_count(app) > 0 {
-                    app.focus = Focus::Inspector;
-                    app.inspector.item = 0;
-                }
-            } else {
-                move_list_cursor(app, 1);
+    match row.on_enter.clone() {
+        Activate::None => {}
+        Activate::Toggle(node) => app.cards.state.toggle(&node),
+        Activate::ShowAll(node) => app.cards.state.show_all(&node),
+        Activate::Action(action) => {
+            if let Some(key) = row.key {
+                actions::run(app, key, action, state).await;
             }
         }
-        KeyCode::Up => move_list_cursor(app, -1),
-        KeyCode::PageDown => move_list_cursor(app, 10),
-        KeyCode::PageUp => move_list_cursor(app, -10),
-        KeyCode::Home => move_list_cursor(app, isize::MIN / 2),
-        KeyCode::End => move_list_cursor(app, isize::MAX / 2),
-        KeyCode::Left => step_tab(app, true),
-        KeyCode::Right => step_tab(app, false),
-        KeyCode::Enter | KeyCode::Char(' ') => match list_cursor_row(app) {
-            Some(ListRow::New) => {
-                actions::open_protocol_picker(app, None, state).await;
+        Activate::NewInstance => actions::open_protocol_picker(app, None, state).await,
+    }
+}
+
+async fn handle_cards_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
+    let rows = app.rows();
+    app.clamp_cursor_to(&rows);
+    match key.code {
+        KeyCode::Down => move_cursor(app, &rows, 1),
+        KeyCode::Up => move_cursor(app, &rows, -1),
+        KeyCode::PageDown => move_cursor(app, &rows, 10),
+        KeyCode::PageUp => move_cursor(app, &rows, -10),
+        KeyCode::Home => move_cursor(app, &rows, isize::MIN / 2),
+        KeyCode::End => move_cursor(app, &rows, isize::MAX / 2),
+        KeyCode::Right => {
+            let positions = rows.get(app.cards.row).map(|r| r.positions()).unwrap_or(0);
+            if app.cards.col + 1 < positions {
+                app.cards.col += 1;
+            } else if let Some(row) = rows.get(app.cards.row) {
+                // → on a folded row unfolds it, like a tree.
+                if row.expanded == Some(false) {
+                    if let Activate::Toggle(node) = &row.on_enter {
+                        app.cards.state.open(node);
+                    }
+                }
             }
-            Some(ListRow::Instance(_)) => actions::open_action_menu(app),
-            _ => {}
-        },
+        }
+        KeyCode::Left => {
+            if app.cards.col > 0 {
+                app.cards.col -= 1;
+            } else if let Some(row) = rows.get(app.cards.row) {
+                // ← on an open row folds it; on a leaf, steps out to the
+                // row above it that is shallower.
+                if row.expanded == Some(true) {
+                    if let Activate::Toggle(node) = &row.on_enter {
+                        app.cards.state.close(node);
+                    }
+                } else if row.depth > 0 {
+                    if let Some(parent) = rows[..app.cards.row]
+                        .iter()
+                        .rposition(|r| r.depth < row.depth && r.positions() > 0)
+                    {
+                        app.cards.row = parent;
+                        app.cards.col = 0;
+                    }
+                }
+            }
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => activate(app, &rows, state).await,
         KeyCode::Esc => {
             app.focus = Focus::ChatInput;
         }
         code => {
-            if let Some(index) = tab_digit(code) {
-                jump_to_tab(app, index);
-            } else {
-                instance_letter(app, code, state).await;
-            }
+            instance_letter(app, code, state).await;
         }
     }
-    app.clamp_selection();
+    let rows = app.rows();
+    app.clamp_cursor_to(&rows);
     Outcome::Continue
 }
 
-async fn handle_inspector_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
-    let Some(instance) = app.selected_instance() else {
-        app.focus = Focus::Instances;
-        return Outcome::Continue;
-    };
-    let key_id = instance.key();
-    let view = inspector::build(
-        instance,
-        &app.inspector,
-        app.instances.metrics.get(&key_id),
-        60,
-    );
-    let items = view.item_count();
-
-    match key.code {
-        KeyCode::Esc => {
-            app.focus = Focus::Instances;
-        }
-        KeyCode::Left => step_tab(app, true),
-        KeyCode::Right => step_tab(app, false),
-        // ↑ past the first item walks back up into the list.
-        KeyCode::Up => {
-            if app.inspector.item == 0 || items == 0 {
-                app.focus = Focus::Instances;
-                app.instances.on_new = false;
-            } else {
-                app.inspector.item -= 1;
-            }
-        }
-        KeyCode::Down => {
-            if app.inspector.item + 1 < items {
-                app.inspector.item += 1;
-            }
-        }
-        KeyCode::PageDown => {
-            app.inspector.item = (app.inspector.item + 10).min(items.saturating_sub(1));
-        }
-        KeyCode::PageUp => app.inspector.item = app.inspector.item.saturating_sub(10),
-        KeyCode::Home => app.inspector.item = 0,
-        KeyCode::End => app.inspector.item = items.saturating_sub(1),
-        KeyCode::Enter => {
-            if let Some(action) = view.default_action(app.inspector.item) {
-                actions::run(app, key_id, action, state).await;
-            } else {
-                actions::open_action_menu(app);
-            }
-        }
-        KeyCode::Char(' ') => actions::open_action_menu(app),
-        code => {
-            if let Some(index) = tab_digit(code) {
-                jump_to_tab(app, index);
-            } else {
-                instance_letter(app, code, state).await;
-            }
-        }
-    }
-    app.clamp_selection();
-    Outcome::Continue
-}
-
-async fn handle_activity_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
-    let visible = crate::tui::render::activity::visible_entries(app).len();
+async fn handle_stream_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
+    let visible = crate::tui::render::stream::visible_entries(app).len();
     match key.code {
         KeyCode::Esc | KeyCode::End => {
             app.activity.scroll_to_follow();
@@ -546,7 +413,7 @@ async fn handle_activity_key(app: &mut DashboardApp, key: KeyEvent, state: &AppS
                 app.activity.scroll_up(0);
             }
         }
-        // ↓ past the newest line walks on into the chat.
+        // ↓ past the newest line walks on into the chat box.
         KeyCode::Down => match app.activity.cursor {
             Some(c) if c + 1 < visible => app.activity.cursor = Some(c + 1),
             _ => {
@@ -567,6 +434,7 @@ async fn handle_activity_key(app: &mut DashboardApp, key: KeyEvent, state: &AppS
                     app.activity.cursor = Some(c + 10);
                 } else {
                     app.activity.scroll_to_follow();
+                    app.focus = Focus::ChatInput;
                 }
             }
         }
@@ -582,15 +450,13 @@ async fn handle_activity_key(app: &mut DashboardApp, key: KeyEvent, state: &AppS
         }
         KeyCode::Enter => {
             if let Some(cursor) = app.activity.cursor {
-                let link = crate::tui::render::activity::visible_entries(app)
+                let link = crate::tui::render::stream::visible_entries(app)
                     .get(cursor)
                     .and_then(|e| e.event.link);
                 follow_link(app, link, state).await;
             }
         }
-        code => {
-            instance_letter(app, code, state).await;
-        }
+        _ => {}
     }
     Outcome::Continue
 }
@@ -603,17 +469,15 @@ async fn follow_link(
     use crate::tui::activity::Link;
     match link {
         Some(Link::Request(key, id)) => {
-            app.select(key);
             actions::run(app, key, InstanceAction::OpenRequest(id), state).await;
         }
         Some(Link::Intercept(key, id)) => {
-            app.select(key);
             actions::run(app, key, InstanceAction::Answer(id), state).await;
         }
         Some(Link::Instance(key)) => {
             if app.instance(key).is_some() {
-                app.select(key);
-                app.focus = Focus::Inspector;
+                app.focus = Focus::Cards;
+                app.focus_card(key);
                 app.activity.scroll_to_follow();
             } else {
                 app.push_system(format!("{} is gone", key.describe()));
@@ -626,42 +490,23 @@ async fn follow_link(
 pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &AppState) -> Outcome {
     let target = app.hits.hit(event.column, event.row).cloned();
 
-    // A right click opens the action menu for whatever it lands on.
-    if event.kind == MouseEventKind::Down(MouseButton::Right) && app.modal().is_none() {
-        match target {
-            Some(HitTarget::ListRow(index)) => {
-                let rows = list_rows(&app.snapshot);
-                if let Some(ListRow::Instance(key)) = rows.get(index).copied() {
-                    app.focus = Focus::Instances;
-                    app.select(key);
-                    actions::open_action_menu(app);
-                }
-            }
-            Some(HitTarget::InspectorItem(index)) => {
-                app.focus = Focus::Inspector;
-                app.inspector.item = index;
-                actions::open_action_menu(app);
-            }
-            Some(HitTarget::InspectorBody) | Some(HitTarget::InspectorTab(_)) => {
-                app.focus = Focus::Inspector;
-                actions::open_action_menu(app);
-            }
-            _ => {}
-        }
-        app.dirty = true;
-        return Outcome::Continue;
-    }
-
     match event.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let up = event.kind == MouseEventKind::ScrollUp;
             match target {
-                Some(HitTarget::ChatHistory) | Some(HitTarget::ChatInput) => {
+                Some(HitTarget::ChatInput)
+                | Some(HitTarget::Stream)
+                | Some(HitTarget::StreamRow(_)) => {
                     if up {
-                        app.focus = Focus::ChatHistory;
-                        app.chat.scroll_up(3);
+                        app.focus = Focus::Stream;
+                        app.activity.scroll_up(3);
                     } else {
-                        app.chat.scroll_down(3);
+                        app.activity.scroll_down(3);
+                        if app.activity.scroll == crate::tui::chat::ScrollPos::Follow
+                            && app.focus == Focus::Stream
+                        {
+                            app.focus = Focus::ChatInput;
+                        }
                     }
                 }
                 Some(HitTarget::ModalBody) | Some(HitTarget::ModalRow(_)) => {
@@ -669,27 +514,13 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
                         modal.scroll_by(if up { -3 } else { 3 });
                     }
                 }
-                Some(HitTarget::ListRow(_)) => {
-                    let rows = list_rows(&app.snapshot).len();
-                    app.instances.scroll = if up {
-                        app.instances.scroll.saturating_sub(3)
+                Some(HitTarget::CardRow { .. }) | Some(HitTarget::Cards) => {
+                    let rows = app.rows().len();
+                    app.cards.scroll = if up {
+                        app.cards.scroll.saturating_sub(3)
                     } else {
-                        (app.instances.scroll + 3).min(rows.saturating_sub(1))
+                        (app.cards.scroll + 3).min(rows.saturating_sub(1))
                     };
-                }
-                Some(HitTarget::InspectorBody) | Some(HitTarget::InspectorItem(_)) => {
-                    app.inspector.scroll = if up {
-                        app.inspector.scroll.saturating_sub(3)
-                    } else {
-                        app.inspector.scroll + 3
-                    };
-                }
-                Some(HitTarget::Activity) | Some(HitTarget::ActivityRow(_)) => {
-                    if up {
-                        app.activity.scroll_up(3);
-                    } else {
-                        app.activity.scroll_down(3);
-                    }
                 }
                 _ => {}
             }
@@ -712,74 +543,18 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
             return crate::tui::modal_keys::run_modal_action(app, action, state).await;
         }
         if let HitTarget::ModalRow(index) = target {
-            // A menu entry is a verb: clicking it runs it. Every other
-            // modal's rows only select on click.
-            if matches!(app.modal(), Some(Modal::ActionMenu(_))) {
-                crate::tui::modal_keys::run_action_menu_item(app, index, state).await;
-            } else {
-                crate::tui::modal_keys::select_modal_row(app, index);
-            }
+            crate::tui::modal_keys::select_modal_row(app, index);
         }
         return Outcome::Continue;
     }
 
     match target {
-        HitTarget::ChatHistory => app.focus = Focus::ChatHistory,
         HitTarget::ChatInput => app.focus = Focus::ChatInput,
-        HitTarget::ListRow(index) => {
-            let rows = list_rows(&app.snapshot);
-            let Some(row) = rows.get(index).copied() else {
-                return Outcome::Continue;
-            };
-            match row {
-                ListRow::Header(..) => {}
-                ListRow::New => {
-                    app.focus = Focus::Instances;
-                    set_list_cursor(app, row);
-                    actions::open_protocol_picker(app, None, state).await;
-                }
-                ListRow::Instance(key) => {
-                    // First click selects; a click on the selection opens
-                    // its actions.
-                    if app.selected() == Some(key) && app.focus == Focus::Instances {
-                        actions::open_action_menu(app);
-                    } else {
-                        app.focus = Focus::Instances;
-                        app.select(key);
-                    }
-                }
-            }
-        }
-        HitTarget::InspectorTab(tab) => {
-            app.focus = Focus::Inspector;
-            set_tab(app, tab);
-        }
-        HitTarget::InspectorItem(index) => {
-            app.focus = Focus::Inspector;
-            // First click selects; a click on the selection activates it.
-            if app.inspector.item == index {
-                if let Some(instance) = app.selected_instance() {
-                    let key = instance.key();
-                    let view = inspector::build(
-                        instance,
-                        &app.inspector,
-                        app.instances.metrics.get(&key),
-                        60,
-                    );
-                    if let Some(action) = view.default_action(index) {
-                        actions::run(app, key, action, state).await;
-                    }
-                }
-            } else {
-                app.inspector.item = index;
-            }
-        }
-        HitTarget::InspectorBody => app.focus = Focus::Inspector,
-        HitTarget::Activity => app.focus = Focus::Activity,
-        HitTarget::ActivityRow(index) => {
-            app.focus = Focus::Activity;
+        HitTarget::Stream => app.focus = Focus::Stream,
+        HitTarget::StreamRow(index) => {
+            app.focus = Focus::Stream;
             if app.activity.cursor == Some(index) {
-                let link = crate::tui::render::activity::visible_entries(app)
+                let link = crate::tui::render::stream::visible_entries(app)
                     .get(index)
                     .and_then(|e| e.event.link);
                 follow_link(app, link, state).await;
@@ -788,6 +563,22 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
                 if app.activity.scroll == crate::tui::chat::ScrollPos::Follow {
                     app.activity.scroll_up(0);
                 }
+            }
+        }
+        HitTarget::Cards => app.focus = Focus::Cards,
+        HitTarget::CardRow { row, col } => {
+            let rows = app.rows();
+            let Some(target_row) = rows.get(row) else {
+                return Outcome::Continue;
+            };
+            app.focus = Focus::Cards;
+            let was_here = app.cards.row == row && app.cards.col == col;
+            app.cards.row = row;
+            app.cards.col = col;
+            // A button runs on the click. A label needs a second click, so
+            // a mis-click on a peer cannot fold it or open its request.
+            if target_row.button_at(col).is_some() || was_here {
+                activate(app, &rows, state).await;
             }
         }
         HitTarget::StatusSegment(segment) => match segment {
@@ -813,8 +604,7 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
             SegmentId::Help => app.modals.push(Modal::Help { scroll: 0 }),
             SegmentId::Waiting => actions::answer_next_waiting(app, state),
             SegmentId::Instances => {
-                app.focus = Focus::Instances;
-                app.clamp_selection();
+                app.focus = Focus::Cards;
             }
             SegmentId::Model => {
                 let lines = crate::tui::command_exec::execute(
@@ -851,13 +641,14 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
         | HitTarget::ModalButton(_)
         | HitTarget::ModalActionButton(_) => {}
     }
-    app.clamp_selection();
+    let rows = app.rows();
+    app.clamp_cursor_to(&rows);
     Outcome::Continue
 }
 
 /// Fold the result of a spawned action back into the UI: on success the
-/// originating modal closes and the summary goes to chat; on failure the modal
-/// stays open showing the error, so the user can fix and retry.
+/// originating modal closes and the summary goes to the stream; on failure
+/// the modal stays open showing the error, so the user can fix and retry.
 pub fn handle_ui_msg(app: &mut DashboardApp, msg: UiMsg) {
     app.dirty = true;
     let (origin, result) = match msg {

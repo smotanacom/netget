@@ -1,47 +1,9 @@
-//! The instance list: one line per server and client.
-//!
-//! The list is the overview and stays one line per instance whatever is
-//! happening inside it; depth lives in the inspector. One row at the foot
-//! starts a new instance of either kind — the picker lists servers and
-//! clients together, so there is nothing to choose before choosing.
+//! The one-line instance summary: status glyph, id, protocol, address, live
+//! peers, sparkline, driver badge. A card's header row is one of these.
 
-use crate::tui::app::{Section, UiKey};
+use crate::tui::app::UiKey;
 use crate::tui::driver::{driver_of, Driver};
-use crate::tui::projection::{ClientRow, RailSnapshot, ServerRow};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ListRow {
-    Header(Section, usize),
-    Instance(UiKey),
-    /// `+ new server or client`, at the foot.
-    New,
-}
-
-/// Servers, then clients, each under its header; the `+ new` row last.
-pub fn list_rows(snapshot: &RailSnapshot) -> Vec<ListRow> {
-    let mut rows = Vec::with_capacity(snapshot.servers.len() + snapshot.clients.len() + 3);
-    rows.push(ListRow::Header(Section::Servers, snapshot.servers.len()));
-    rows.extend(
-        snapshot
-            .servers
-            .iter()
-            .map(|s| ListRow::Instance(UiKey::Server(s.id))),
-    );
-    rows.push(ListRow::Header(Section::Clients, snapshot.clients.len()));
-    rows.extend(
-        snapshot
-            .clients
-            .iter()
-            .map(|c| ListRow::Instance(UiKey::Client(c.id))),
-    );
-    rows.push(ListRow::New);
-    rows
-}
-
-/// Rows the cursor can land on: instances and the `+ new` row.
-pub fn is_selectable(row: &ListRow) -> bool {
-    !matches!(row, ListRow::Header(..))
-}
+use crate::tui::projection::{ClientRow, ServerRow};
 
 /// How a piece of text should be coloured, resolved by the renderer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,22 +96,6 @@ pub fn client_line(row: &ClientRow) -> InstanceLine {
         driver: driver_of(row.routing.as_ref()),
         waiting: row.intercepts.len(),
         error,
-    }
-}
-
-/// The line for whichever instance `key` names.
-pub fn line_for(snapshot: &RailSnapshot, key: UiKey) -> Option<InstanceLine> {
-    match key {
-        UiKey::Server(id) => snapshot
-            .servers
-            .iter()
-            .find(|s| s.id == id)
-            .map(server_line),
-        UiKey::Client(id) => snapshot
-            .clients
-            .iter()
-            .find(|c| c.id == id)
-            .map(client_line),
     }
 }
 

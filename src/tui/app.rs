@@ -1,14 +1,14 @@
-//! Dashboard application state: what is focused, what is selected, what the
-//! last poll saw, and which modals are open.
+//! Dashboard application state: where the cursor is, what the last poll saw,
+//! and which modals are open.
 
 use std::collections::HashMap;
 
 use crate::cli::input_state::InputState;
 use crate::state::{ClientId, ServerId};
-use crate::tui::activity::{ActivityFeed, Tracker};
-use crate::tui::chat::ChatState;
+use crate::tui::activity::{Activity, ActivityFeed, ActivityKind, Tracker};
+use crate::tui::cards::{CardState, Row};
+use crate::tui::chat::EntryKind;
 use crate::tui::hit::HitRegistry;
-use crate::tui::inspector::InspectorTab;
 use crate::tui::metrics::Throughput;
 use crate::tui::modal::Modal;
 use crate::tui::projection::{ClientRow, RailSnapshot, ServerRow};
@@ -30,7 +30,7 @@ impl UiKey {
         }
     }
 
-    /// `server #1` / `client #4`, for chat lines and titles.
+    /// `server #1` / `client #4`, for stream lines and titles.
     pub fn describe(&self) -> String {
         match self {
             UiKey::Server(id) => format!("server #{}", id.as_u32()),
@@ -54,99 +54,34 @@ pub enum Section {
 
 /// Where keyboard input goes when no modal is open.
 ///
-/// Tab walks Instances → Inspector → Activity → ChatInput; Esc steps back
-/// towards typing. `ChatHistory` is the chat pane scrolled away from its
-/// tail — the same pane, in a mode where the arrows move the view.
+/// Two columns. `Cards` is the whole management column — every server and
+/// client, their buttons and sections — walked with the arrows. `ChatInput`
+/// is the box at the bottom of the stream; `Stream` is that column scrolled
+/// away from its tail (PageUp, the wheel), where the arrows move through
+/// the lines. Tab hops between the columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    Instances,
-    Inspector,
-    Activity,
+    Cards,
+    Stream,
     ChatInput,
-    ChatHistory,
 }
 
-/// The instance list's own state.
+/// The management column's cursor and fold state.
 #[derive(Debug, Default)]
-pub struct InstancesUi {
-    /// The selected row, by identity rather than index, so a re-poll that
-    /// reorders or removes instances cannot silently move the cursor onto a
-    /// different one.
-    pub selected: Option<UiKey>,
-    /// Cursor on the `+ new server or client` row, which belongs to no
-    /// instance.
-    pub on_new: bool,
-    /// Where the cursor last was, so a vanished instance hands the cursor to
-    /// its neighbour rather than to nothing.
-    pub last_index: usize,
+pub struct CardsUi {
+    /// The row the cursor is on (index into `cards::rows`).
+    pub row: usize,
+    /// The position on that row: the label (0, where the label acts) then
+    /// each button.
+    pub col: usize,
     /// First visible row.
     pub scroll: usize,
+    /// Inner width at the last paint, so the keymap builds the same rows
+    /// the renderer did (button grids depend on it).
+    pub width: usize,
+    pub state: CardState,
     /// Throughput history per instance, sampled once a second.
     pub metrics: HashMap<UiKey, Throughput>,
-}
-
-/// Which peer the traffic tab is narrowed to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TrafficFilter {
-    #[default]
-    All,
-    /// One connection; `None` is the connectionless bucket.
-    Peer(Option<u32>),
-}
-
-/// The inspector's own state. Tab and item survive moving between instances
-/// on purpose: comparing two servers' traffic means pressing ↓, not ↓ then
-/// re-finding the tab.
-#[derive(Debug)]
-pub struct InspectorUi {
-    pub tab: InspectorTab,
-    /// Selected item (index into the tab's selectable items).
-    pub item: usize,
-    /// First visible body line.
-    pub scroll: usize,
-    pub filter: TrafficFilter,
-}
-
-impl Default for InspectorUi {
-    fn default() -> Self {
-        Self {
-            tab: InspectorTab::Overview,
-            item: 0,
-            scroll: 0,
-            filter: TrafficFilter::All,
-        }
-    }
-}
-
-/// How the right column is split between the feed and the chat.
-///
-/// Balanced sizes the chat to its conversation. The two maximised modes give
-/// one pane the whole column — reading a long model answer, or watching a
-/// busy server — and F2 cycles through them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RightLayout {
-    #[default]
-    Balanced,
-    ChatMax,
-    FeedMax,
-}
-
-impl RightLayout {
-    pub fn next(&self) -> Self {
-        match self {
-            RightLayout::Balanced => RightLayout::ChatMax,
-            RightLayout::ChatMax => RightLayout::FeedMax,
-            RightLayout::FeedMax => RightLayout::Balanced,
-        }
-    }
-
-    pub fn describe(&self) -> &'static str {
-        match self {
-            RightLayout::Balanced => "feed and chat share the column",
-            RightLayout::ChatMax => "chat takes the column (F2 again for the feed)",
-            RightLayout::FeedMax => "feed takes the column (F2 again to balance)",
-        }
-    }
 }
 
 /// Status-bar model.
@@ -207,7 +142,7 @@ impl<'a> InstanceRef<'a> {
         }
     }
 
-    /// `http#1`-style tag used by the feed and the inspector title.
+    /// `http#1`-style tag used by the stream.
     pub fn tag(&self) -> String {
         format!("{}#{}", self.protocol().to_lowercase(), self.key().raw_id())
     }
@@ -216,24 +151,22 @@ impl<'a> InstanceRef<'a> {
 pub struct DashboardApp {
     /// Legacy display state reused for command history, log level and caps.
     pub core: App,
-    pub chat: ChatState,
+    /// The one timeline: machine events and the conversation.
     pub activity: ActivityFeed,
     pub tracker: Tracker,
     pub input: InputState,
     pub focus: Focus,
-    pub instances: InstancesUi,
-    pub inspector: InspectorUi,
+    pub cards: CardsUi,
     pub snapshot: RailSnapshot,
     pub modals: Vec<Modal>,
     pub hits: HitRegistry,
     pub status: StatusModel,
     pub styles: Styles,
-    pub right_layout: RightLayout,
     pub dirty: bool,
     pub mouse_capture: bool,
     pub should_quit: bool,
     /// Clone of the status channel, so modal actions (create/update/send) can
-    /// stream their progress into the same panes.
+    /// stream their progress into the same pane.
     pub status_tx: tokio::sync::mpsc::UnboundedSender<String>,
     /// Results of spawned actions (see `crate::tui::uimsg`). Network work must
     /// never be awaited on the event loop.
@@ -255,19 +188,19 @@ impl DashboardApp {
             ui_tx,
             llm_client,
             core,
-            chat: ChatState::new(),
             activity: ActivityFeed::new(),
             tracker: Tracker::default(),
             input: InputState::new(),
             focus: Focus::ChatInput,
-            instances: InstancesUi::default(),
-            inspector: InspectorUi::default(),
+            cards: CardsUi {
+                width: 60,
+                ..Default::default()
+            },
             snapshot: RailSnapshot::default(),
             modals: Vec::new(),
             hits: HitRegistry::default(),
             status: StatusModel::default(),
             styles,
-            right_layout: RightLayout::default(),
             dirty: true,
             mouse_capture: true,
             should_quit: false,
@@ -282,9 +215,19 @@ impl DashboardApp {
         self.modals.last_mut()
     }
 
+    /// The management column's rows as the renderer last laid them out.
+    pub fn rows(&self) -> Vec<Row> {
+        crate::tui::cards::rows(
+            &self.snapshot,
+            &self.cards.state,
+            &self.cards.metrics,
+            self.cards.width,
+        )
+    }
+
     /// Take a freshly built snapshot: derive activity from the change, keep
-    /// the selection meaningful, drop per-instance state for instances that
-    /// are gone.
+    /// the cursor on a row that exists, drop per-instance state for
+    /// instances that are gone.
     pub fn absorb_snapshot(&mut self, snapshot: RailSnapshot) {
         let events = self.tracker.diff(&snapshot);
         for event in events {
@@ -293,17 +236,13 @@ impl DashboardApp {
         let newest = self.newest_arrival(&snapshot);
         self.snapshot = snapshot;
         self.prune();
-        // An instance that just appeared becomes the selection when nothing
-        // else is being looked at — including when the cursor sits on the
-        // `+ new …` row that created it. Otherwise Enter after "start a tcp
-        // server" reopened the picker, and the thing you just made sat one
-        // row above, unselected.
+        // An instance that just appeared gets the cursor: the thing you just
+        // made is what you want to look at, and its buttons are one ↓ away.
         if let Some(key) = newest {
-            if self.instances.selected.is_none() || self.instances.on_new {
-                self.select(key);
-            }
+            self.focus_card(key);
         }
-        self.clamp_selection();
+        let rows = self.rows();
+        self.clamp_cursor_to(&rows);
         self.dirty = true;
     }
 
@@ -323,8 +262,16 @@ impl DashboardApp {
             .map(|c| c.id)
             .max_by_key(|id| id.as_u32())
             .map(UiKey::Client);
-        // A client made from a server's `[ + client ]` is the newer of the two.
         client.or(server)
+    }
+
+    /// Put the cursor on `key`'s header row.
+    pub fn focus_card(&mut self, key: UiKey) {
+        let rows = self.rows();
+        if let Some(index) = crate::tui::cards::header_index(&rows, key) {
+            self.cards.row = index;
+            self.cards.col = 0;
+        }
     }
 
     /// Record one throughput sample per instance. Called on the 1s stats
@@ -340,7 +287,7 @@ impl DashboardApp {
                 rx += c.bytes_received;
                 tx += c.bytes_sent;
             }
-            self.instances
+            self.cards
                 .metrics
                 .entry(UiKey::Server(server.id))
                 .or_default()
@@ -352,7 +299,7 @@ impl DashboardApp {
                 .as_ref()
                 .map(|c| (c.bytes_received, c.bytes_sent))
                 .unwrap_or((0, 0));
-            self.instances
+            self.cards
                 .metrics
                 .entry(UiKey::Client(client.id))
                 .or_default()
@@ -368,91 +315,37 @@ impl DashboardApp {
             .map(|s| UiKey::Server(s.id))
             .chain(self.snapshot.clients.iter().map(|c| UiKey::Client(c.id)))
             .collect();
-        self.instances.metrics.retain(|key, _| live.contains(key));
+        self.cards.metrics.retain(|key, _| live.contains(key));
     }
 
-    /// Keep the selection pointing at something that exists.
+    /// Keep the cursor on a row that can take it.
     ///
-    /// A stopped server or a removed client takes its row with it; the cursor
-    /// moves to the row that now occupies its place (or the last one), not to
-    /// nothing. With no instances at all, the cursor sits on `+ new server`
-    /// when the list is focused, so Enter always does something.
-    pub fn clamp_selection(&mut self) {
-        use crate::tui::rail::{list_rows, ListRow};
-        let rows = list_rows(&self.snapshot);
-        let instance_rows: Vec<(usize, UiKey)> = rows
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| match r {
-                ListRow::Instance(key) => Some((i, *key)),
-                _ => None,
-            })
-            .collect();
-
-        if let Some(key) = self.instances.selected {
-            if let Some((index, _)) = instance_rows.iter().find(|(_, k)| *k == key) {
-                self.instances.last_index = *index;
-                self.instances.on_new = false;
-                return;
-            }
-            // Gone: hand the cursor to the neighbour that now sits where it was.
-            let replacement = instance_rows
-                .iter()
-                .filter(|(i, _)| *i >= self.instances.last_index)
-                .min_by_key(|(i, _)| *i)
-                .or_else(|| instance_rows.last())
-                .map(|(i, k)| (*i, *k));
-            match replacement {
-                Some((index, key)) => {
-                    self.instances.selected = Some(key);
-                    self.instances.last_index = index;
-                    self.instances.on_new = false;
-                    self.inspector.item = 0;
-                    self.inspector.scroll = 0;
-                    self.inspector.filter = TrafficFilter::All;
-                }
-                None => {
-                    self.instances.selected = None;
-                    if self.focus == Focus::Inspector {
-                        self.focus = Focus::Instances;
-                    }
-                    self.instances.on_new = true;
-                }
-            }
+    /// Rows come and go under the cursor — a peer closes, a card folds, a
+    /// server stops — so the index is re-checked against the rows as they
+    /// are now: forward to the next stop, else back to the previous one.
+    pub fn clamp_cursor_to(&mut self, rows: &[Row]) {
+        if rows.is_empty() {
+            self.cards.row = 0;
+            self.cards.col = 0;
             return;
         }
-
-        // Nothing selected. When the list (or inspector) is focused, a cursor
-        // must exist: the first instance, else `+ new server`.
-        if !self.instances.on_new {
-            if let Some((index, key)) = instance_rows.first() {
-                if matches!(self.focus, Focus::Instances | Focus::Inspector) {
-                    self.instances.selected = Some(*key);
-                    self.instances.last_index = *index;
-                }
-            } else if self.focus == Focus::Instances {
-                self.instances.on_new = true;
-            }
-        }
-        if self.instances.selected.is_none() && self.focus == Focus::Inspector {
-            self.focus = Focus::Instances;
+        let row = self.cards.row.min(rows.len() - 1);
+        let stop = (row..rows.len())
+            .find(|i| rows[*i].positions() > 0)
+            .or_else(|| (0..row).rev().find(|i| rows[*i].positions() > 0))
+            .unwrap_or(0);
+        self.cards.row = stop;
+        let positions = rows[stop].positions();
+        if positions == 0 {
+            self.cards.col = 0;
+        } else if self.cards.col >= positions {
+            self.cards.col = positions - 1;
         }
     }
 
-    /// Select an instance and reset the inspector's cursor for it.
-    pub fn select(&mut self, key: UiKey) {
-        if self.instances.selected != Some(key) {
-            self.inspector.item = 0;
-            self.inspector.scroll = 0;
-            self.inspector.filter = TrafficFilter::All;
-        }
-        self.instances.selected = Some(key);
-        self.instances.on_new = false;
-        self.clamp_selection();
-    }
-
-    pub fn selected(&self) -> Option<UiKey> {
-        self.instances.selected
+    /// The instance whose row the cursor is on, if any.
+    pub fn cursor_key(&self) -> Option<UiKey> {
+        self.rows().get(self.cards.row).and_then(|r| r.key)
     }
 
     pub fn server_row(&self, id: ServerId) -> Option<&ServerRow> {
@@ -470,11 +363,7 @@ impl DashboardApp {
         }
     }
 
-    pub fn selected_instance(&self) -> Option<InstanceRef<'_>> {
-        self.selected().and_then(|key| self.instance(key))
-    }
-
-    /// Pending intercepts across every instance, oldest first.
+    /// Pending intercepts across every instance.
     pub fn waiting_count(&self) -> usize {
         self.snapshot
             .servers
@@ -489,16 +378,28 @@ impl DashboardApp {
                 .sum::<usize>()
     }
 
-    pub fn push_system(&mut self, text: impl Into<String>) {
-        self.chat.push(crate::tui::chat::EntryKind::System, text);
+    /// A conversation entry into the stream.
+    pub fn push_chat(&mut self, kind: EntryKind, text: impl Into<String>) {
+        let kind = match kind {
+            EntryKind::Log(level) => ActivityKind::Log(level),
+            other => ActivityKind::Chat(other),
+        };
+        self.activity.push(Activity {
+            kind,
+            owner: None,
+            tag: String::new(),
+            text: text.into(),
+            link: None,
+            at_unix_ms: None,
+        });
         self.dirty = true;
     }
 
+    pub fn push_system(&mut self, text: impl Into<String>) {
+        self.push_chat(EntryKind::System, text);
+    }
+
     pub fn push_error(&mut self, text: impl Into<String>) {
-        self.chat.push(
-            crate::tui::chat::EntryKind::Log(crate::ui::app::LogLevel::Error),
-            text,
-        );
-        self.dirty = true;
+        self.push_chat(EntryKind::Log(crate::ui::app::LogLevel::Error), text);
     }
 }

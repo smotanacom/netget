@@ -10,19 +10,18 @@ use ratatui::layout::Rect;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitTarget {
-    /// A row of the instance list, by index into `rail::list_rows`.
-    ListRow(usize),
-    /// The inspector's body (scroll wheel target).
-    InspectorBody,
-    /// A tab in the inspector's strip.
-    InspectorTab(crate::tui::inspector::InspectorTab),
-    /// A selectable line in the inspector's body, by item ordinal.
-    InspectorItem(usize),
-    /// The activity feed (scroll wheel target).
-    Activity,
-    /// One visible feed entry, by index into the visible list.
-    ActivityRow(usize),
-    ChatHistory,
+    /// The management column's empty space (scroll wheel target).
+    Cards,
+    /// One position on one row of the management column: `col` 0 is the
+    /// label, then each button — the same positions the arrows walk.
+    CardRow {
+        row: usize,
+        col: usize,
+    },
+    /// The stream (scroll wheel target).
+    Stream,
+    /// One visible stream entry, by index into the visible list.
+    StreamRow(usize),
     ChatInput,
     /// A clickable segment of the bottom status bar.
     StatusSegment(SegmentId),

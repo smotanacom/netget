@@ -25,8 +25,8 @@ pub async fn submit(
         return;
     }
     app.core.add_to_history(trimmed.clone());
-    app.chat.push(EntryKind::User, trimmed.clone());
-    app.chat.scroll_to_follow();
+    app.push_chat(EntryKind::User, trimmed.clone());
+    app.activity.scroll_to_follow();
     app.dirty = true;
 
     match UserCommand::parse(&trimmed) {
@@ -134,10 +134,9 @@ pub async fn submit(
             });
         }
         UserCommand::UnknownSlashCommand { command } => {
-            app.chat.push(
-                EntryKind::Log(crate::ui::app::LogLevel::Error),
-                format!("Unknown command: /{command} — press F1 for what the dashboard offers"),
-            );
+            app.push_error(format!(
+                "Unknown command: /{command} — press F1 for what the dashboard offers"
+            ));
         }
         other => {
             // Everything else is handled by the shared command executor, whose

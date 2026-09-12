@@ -5,8 +5,8 @@
 #![cfg(feature = "tcp")]
 
 use netget::tui::app::Section;
+use netget::tui::cards::{self, InstanceAction};
 use netget::tui::hit::ModalAction;
-use netget::tui::inspector::{self, InspectorTab, InstanceAction};
 use netget::tui::modal::form::{FieldTarget, FormModel};
 use netget::tui::wireshark::{
     wire_for, CapturePlan, CaptureTarget, PlanLine, Platform, Role, Transport,
@@ -238,16 +238,14 @@ fn the_button_is_a_wireshark_action_on_servers_and_clients() {
     use netget::state::client::ClientStatus;
     use netget::state::server::ServerStatus;
     use netget::state::{ClientId, ServerId};
-    use netget::tui::app::{InspectorUi, InstanceRef};
+    use netget::tui::app::InstanceRef;
     use netget::tui::projection::{ClientRow, SendState, ServerRow};
 
-    let ui = InspectorUi::default();
-    let has_wireshark = |view: &inspector::InspectorView| {
-        view.actions
+    let has_wireshark = |buttons: &[cards::Button]| {
+        buttons
             .iter()
             .any(|b| b.action == InstanceAction::Wireshark && b.label.contains("wireshark"))
     };
-
     let server = ServerRow {
         id: ServerId::new(1),
         protocol: "HTTP".into(),
@@ -266,10 +264,10 @@ fn the_button_is_a_wireshark_action_on_servers_and_clients() {
         client_counterpart: None,
         intercepts: Vec::new(),
     };
-    // The action menu carries it whichever tab is open.
-    let view = inspector::build(InstanceRef::Server(&server), &ui, None, 60);
-    assert_eq!(view.tab, InspectorTab::Overview);
-    assert!(has_wireshark(&view));
+    // Every card's button grid carries it.
+    assert!(has_wireshark(&cards::instance_buttons(
+        InstanceRef::Server(&server)
+    )));
 
     let client = ClientRow {
         id: ClientId::new(1),
@@ -289,8 +287,9 @@ fn the_button_is_a_wireshark_action_on_servers_and_clients() {
         send_actions: Vec::new(),
         intercepts: Vec::new(),
     };
-    let view = inspector::build(InstanceRef::Client(&client), &ui, None, 60);
-    assert!(has_wireshark(&view));
+    assert!(has_wireshark(&cards::instance_buttons(
+        InstanceRef::Client(&client)
+    )));
 }
 
 /// The six USB servers are plain TCP listeners speaking USB/IP, and Wireshark has dissected it

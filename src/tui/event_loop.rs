@@ -198,27 +198,19 @@ pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
     Ok(())
 }
 
-/// Send one status-channel line to the pane it belongs in.
-///
-/// `[LEVEL]` lines are the machine talking and go to the feed; the model's
-/// reasoning and replies, and command output, go to the chat. An error is
-/// shown in both — whoever caused it is looking at the chat.
+/// Put one status-channel line into the stream: `[LEVEL]` lines as log
+/// entries (filtered by level), the model's reasoning and replies and
+/// command output as conversation (never filtered).
 fn route_line(app: &mut DashboardApp, line: &str) {
     use crate::tui::chat::{route_status_line, Routed};
-    use crate::ui::app::LogLevel;
     match route_status_line(line) {
         Routed::Control => {}
         Routed::Activity(level, text) => {
-            if level == LogLevel::Error {
-                app.chat
-                    .push(crate::tui::chat::EntryKind::Log(level), text.clone());
-            }
             app.activity.push_log(level, text);
             app.dirty = true;
         }
         Routed::Chat(kind, text) => {
-            app.chat.push(kind, text);
-            app.dirty = true;
+            app.push_chat(kind, text);
         }
     }
 }
