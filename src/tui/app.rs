@@ -120,6 +120,37 @@ impl Default for InspectorUi {
     }
 }
 
+/// How the right column is split between the feed and the chat.
+///
+/// Balanced sizes the chat to its conversation. The two maximised modes give
+/// one pane the whole column — reading a long model answer, or watching a
+/// busy server — and F2 cycles through them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RightLayout {
+    #[default]
+    Balanced,
+    ChatMax,
+    FeedMax,
+}
+
+impl RightLayout {
+    pub fn next(&self) -> Self {
+        match self {
+            RightLayout::Balanced => RightLayout::ChatMax,
+            RightLayout::ChatMax => RightLayout::FeedMax,
+            RightLayout::FeedMax => RightLayout::Balanced,
+        }
+    }
+
+    pub fn describe(&self) -> &'static str {
+        match self {
+            RightLayout::Balanced => "feed and chat share the column",
+            RightLayout::ChatMax => "chat takes the column (F2 again for the feed)",
+            RightLayout::FeedMax => "feed takes the column (F2 again to balance)",
+        }
+    }
+}
+
 /// Status-bar model.
 #[derive(Debug, Clone, Default)]
 pub struct StatusModel {
@@ -199,6 +230,7 @@ pub struct DashboardApp {
     pub hits: HitRegistry,
     pub status: StatusModel,
     pub styles: Styles,
+    pub right_layout: RightLayout,
     pub dirty: bool,
     pub mouse_capture: bool,
     pub should_quit: bool,
@@ -237,6 +269,7 @@ impl DashboardApp {
             hits: HitRegistry::default(),
             status: StatusModel::default(),
             styles,
+            right_layout: RightLayout::default(),
             dirty: true,
             mouse_capture: true,
             should_quit: false,

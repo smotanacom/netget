@@ -144,12 +144,12 @@ pub fn draw_input(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     };
     let hint = if focused {
         if app.status.model.is_empty() {
-            " no model · /commands only · Tab → panes "
+            " no model · /commands only · F2 layout "
         } else {
-            " Enter send · Alt-Enter newline · Tab → panes "
+            " Enter send · Alt-Enter newline · F2 layout "
         }
     } else {
-        " Tab → chat "
+        " Tab → chat · F2 layout "
     };
     let block = Block::default()
         .borders(Borders::ALL)

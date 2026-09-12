@@ -37,6 +37,12 @@
 //! footer. `test_dynamic_footer_shrinking` carries the measurement and the reason a first
 //! attempt at fixing it made things worse.
 //!
+//! The six dashboard snapshots are captured through `PtyScreen` — one vt100 parser fed for
+//! the life of the test — and each waits on the text its last key must produce. Before that
+//! they were recorded through `capture_screen`, which builds a fresh parser per call and so
+//! saw only the cells repainted since the previous call: five of the six were a blank screen
+//! with the typed text on the last row, and passed for a whole UI generation.
+//!
 //! # Why only the six dashboard tests carry a snapshot
 //!
 //! The ten rolling-TUI tests assert behaviour and take no snapshot, and that is deliberate.
@@ -345,7 +351,17 @@ fn capture_screen(pty: &mut pty_process::blocking::Pty) -> String {
         let mut line = String::new();
         for col in 0..TERMINAL_WIDTH {
             if let Some(cell) = screen.cell(row, col) {
-                line.push_str(&cell.contents());
+                // A cell nothing ever painted reports "" rather than " ".
+                // The dashboard repaints only changed cells, and a space
+                // typed over a blank cell is not a change, so without this
+                // every such space vanished ("deletethistext") and the
+                // snapshots read as if the UI dropped them.
+                let contents = cell.contents();
+                if contents.is_empty() {
+                    line.push(' ');
+                } else {
+                    line.push_str(&contents);
+                }
             }
         }
         lines.push(line.trim_end().to_string());
@@ -362,7 +378,17 @@ fn render(parser: &Parser, height: u16) -> String {
         let mut line = String::new();
         for col in 0..TERMINAL_WIDTH {
             if let Some(cell) = screen.cell(row, col) {
-                line.push_str(&cell.contents());
+                // A cell nothing ever painted reports "" rather than " ".
+                // The dashboard repaints only changed cells, and a space
+                // typed over a blank cell is not a change, so without this
+                // every such space vanished ("deletethistext") and the
+                // snapshots read as if the UI dropped them.
+                let contents = cell.contents();
+                if contents.is_empty() {
+                    line.push(' ');
+                } else {
+                    line.push_str(&contents);
+                }
             }
         }
         lines.push(line.trim_end().to_string());
@@ -502,7 +528,17 @@ fn capture_screen_with_height(pty: &mut pty_process::blocking::Pty, height: u16)
         let mut line = String::new();
         for col in 0..TERMINAL_WIDTH {
             if let Some(cell) = screen.cell(row, col) {
-                line.push_str(&cell.contents());
+                // A cell nothing ever painted reports "" rather than " ".
+                // The dashboard repaints only changed cells, and a space
+                // typed over a blank cell is not a change, so without this
+                // every such space vanished ("deletethistext") and the
+                // snapshots read as if the UI dropped them.
+                let contents = cell.contents();
+                if contents.is_empty() {
+                    line.push(' ');
+                } else {
+                    line.push_str(&contents);
+                }
             }
         }
         lines.push(line.trim_end().to_string());
@@ -679,25 +715,16 @@ mod tests {
     #[test]
     fn test_typing_simple_input() {
         let (mut pty, _child) = spawn_netget();
+        let mut screen = PtyScreen::new();
+        screen.wait_until(&mut pty, Duration::from_secs(20), |s| {
+            s.contains("SERVERS 0")
+        });
 
-        // Wait for initial render
-        std::thread::sleep(Duration::from_millis(1000));
-
-        // Clear initial output
-        let _ = capture_screen(&mut pty);
-
-        // Type some text
         send_input(&mut pty, "listen on port 8080");
-
-        // Capture screen after typing
-        let screen = capture_screen(&mut pty);
-
-        println!("=== After Typing ===");
-        println!("{}", screen);
-        println!("====================");
-
-        // Note: Input may not immediately appear due to TUI rendering
-        // Just capture the snapshot to see what we got
+        let screen = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("> listen on port 8080")
+        });
+        assert!(screen.contains("> listen on port 8080"), "{screen}");
         snapshot_util::assert_snapshot("typed_simple_input", SNAPSHOT_DIR, &screen);
 
         send_ctrl(&mut pty, 'c');
@@ -706,29 +733,22 @@ mod tests {
     #[test]
     fn test_cursor_navigation_ctrl_a_ctrl_e() {
         let (mut pty, _child) = spawn_netget();
+        let mut screen = PtyScreen::new();
+        screen.wait_until(&mut pty, Duration::from_secs(20), |s| {
+            s.contains("SERVERS 0")
+        });
 
-        // Wait for initial render
-        std::thread::sleep(Duration::from_millis(1000));
-        let _ = capture_screen(&mut pty);
-
-        // Type text
         send_input(&mut pty, "hello world");
-        std::thread::sleep(Duration::from_millis(200));
-
-        // Move cursor to beginning (Ctrl+A)
+        screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("> hello world")
+        });
+        // Ctrl-A to the start, then type there.
         send_ctrl(&mut pty, 'a');
-        std::thread::sleep(Duration::from_millis(100));
-
-        // Type at beginning
         send_input(&mut pty, "start ");
-
-        // Capture screen
-        let screen = capture_screen(&mut pty);
-
-        println!("=== After Cursor Navigation ===");
-        println!("{}", screen);
-        println!("================================");
-
+        let screen = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("> start hello world")
+        });
+        assert!(screen.contains("> start hello world"), "{screen}");
         snapshot_util::assert_snapshot("cursor_navigation", SNAPSHOT_DIR, &screen);
 
         send_ctrl(&mut pty, 'c');
@@ -737,30 +757,23 @@ mod tests {
     #[test]
     fn test_ctrl_k_delete_to_end() {
         let (mut pty, _child) = spawn_netget();
+        let mut screen = PtyScreen::new();
+        screen.wait_until(&mut pty, Duration::from_secs(20), |s| {
+            s.contains("SERVERS 0")
+        });
 
-        // Wait for initial render
-        std::thread::sleep(Duration::from_millis(1000));
-        let _ = capture_screen(&mut pty);
-
-        // Type text
         send_input(&mut pty, "delete this text");
-        std::thread::sleep(Duration::from_millis(200));
-
-        // Move to beginning
+        screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("> delete this text")
+        });
+        // Ctrl-A to the start, Ctrl-K kills to the end: the line is empty again.
         send_ctrl(&mut pty, 'a');
-        std::thread::sleep(Duration::from_millis(100));
-
-        // Delete to end (Ctrl+K)
         send_ctrl(&mut pty, 'k');
-        std::thread::sleep(Duration::from_millis(200));
-
-        // Capture screen - should show empty or cleared input
-        let screen = capture_screen(&mut pty);
-
-        println!("=== After Ctrl+K ===");
-        println!("{}", screen);
-        println!("====================");
-
+        let screen = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.lines()
+                .any(|l| l.starts_with("│> ") && l.trim_end() == "│>")
+        });
+        assert!(!screen.contains("delete this text"), "{screen}");
         snapshot_util::assert_snapshot("ctrl_k_delete", SNAPSHOT_DIR, &screen);
 
         send_ctrl(&mut pty, 'c');
@@ -769,24 +782,23 @@ mod tests {
     #[test]
     fn test_multiline_input_with_shift_enter() {
         let (mut pty, _child) = spawn_netget();
+        let mut screen = PtyScreen::new();
+        screen.wait_until(&mut pty, Duration::from_secs(20), |s| {
+            s.contains("SERVERS 0")
+        });
 
-        // Wait for initial render
-        std::thread::sleep(Duration::from_millis(1000));
-        let _ = capture_screen(&mut pty);
-
-        // Type first line
+        // Ctrl-N is the newline the dashboard documents (Alt-Enter is the
+        // other; a pty cannot carry Shift-Enter). The box grows a row.
         send_input(&mut pty, "listen on port 21");
-
-        // TODO: Shift+Enter is difficult to simulate in PTY
-        // For now, just verify single line works
-        std::thread::sleep(Duration::from_millis(200));
-
-        let screen = capture_screen(&mut pty);
-
-        println!("=== Input Line ===");
-        println!("{}", screen);
-        println!("==================");
-
+        screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("> listen on port 21")
+        });
+        send_ctrl(&mut pty, 'n');
+        send_input(&mut pty, "and answer hello");
+        let screen = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("> listen on port 21") && s.contains("  and answer hello")
+        });
+        assert!(screen.contains("  and answer hello"), "{screen}");
         snapshot_util::assert_snapshot("input_line", SNAPSHOT_DIR, &screen);
 
         send_ctrl(&mut pty, 'c');
@@ -1404,61 +1416,22 @@ mod tests {
     #[test]
     fn test_usage_command_display() {
         let (mut pty, _child) = spawn_netget();
-
-        // Wait longer for initial render and welcome messages
-        std::thread::sleep(Duration::from_millis(2500));
-        let initial_screen = capture_screen(&mut pty);
-
-        println!("=== Initial Screen (before /usage) ===");
-        println!("{}", initial_screen);
-        println!("=======================================");
-
-        // First test if ANY command output works
-        send_input(&mut pty, "/test 2");
-        send_enter(&mut pty);
-        let _ = capture_screen_until(&mut pty, Duration::from_secs(15), |s| {
-            s.contains("Test line 2 of 2")
+        let mut screen = PtyScreen::new();
+        screen.wait_until(&mut pty, Duration::from_secs(20), |s| {
+            s.contains("SERVERS 0")
         });
-        let test_screen = capture_screen(&mut pty);
-        println!("=== After /test 2 command ===");
-        println!("{}", test_screen);
-        println!("==============================");
 
-        // Now send /usage command to toggle usage stats
+        // A slash command's output lands in the chat, above the input box.
         send_input(&mut pty, "/usage");
-        // Press Enter to submit (PTY uses \r for Enter)
         send_enter(&mut pty);
-
-        // Capture immediately after sending command
-        std::thread::sleep(Duration::from_millis(500));
-        let screen_immediate = capture_screen(&mut pty);
-        println!("=== Immediately After Sending /usage ===");
-        println!("{}", screen_immediate);
-        println!("=========================================");
-
-        // Wait longer for stats to update and render
-        std::thread::sleep(Duration::from_millis(2000));
-
-        // Capture screen after /usage command
-        let screen = capture_screen(&mut pty);
-
-        println!("=== After /usage Command (2.5s later) ===");
-        println!("{}", screen);
-        println!("==========================================");
-
-        // The /usage command should toggle usage stats in the footer
-        // However, in the PTY test environment, command output may not appear
-        // in the scrollback (similar to /test command behavior).
-        // Instead, we'll just verify the snapshot is created and the footer is valid.
-
-        // Verify no double status lines (similar to other footer tests)
+        let screen = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("Output tokens: 0")
+        });
+        assert!(screen.contains("LLM calls:     0"), "{screen}");
         assert!(
-            !screen.contains(
-                " Model:None | Log:INFO <^l> | WebSearch:ON <^w> | Handler:ANY <^h>\n Model:None"
-            ),
-            "Found double status line"
+            screen.contains("▶ /usage"),
+            "what was typed stays in the conversation:\n{screen}"
         );
-
         snapshot_util::assert_snapshot("usage_command_enabled", SNAPSHOT_DIR, &screen);
 
         send_ctrl(&mut pty, 'c');

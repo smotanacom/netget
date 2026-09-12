@@ -380,3 +380,33 @@ fn the_chat_keeps_its_newest_line_visible_when_older_ones_wrap() {
         "the tail must be visible while following:\n{text}"
     );
 }
+
+#[test]
+fn f2_gives_one_right_pane_the_whole_column() {
+    use netget::tui::app::RightLayout;
+    let mut app = app();
+    app.absorb_snapshot(RailSnapshot::default());
+    app.push_system("hello");
+
+    app.right_layout = RightLayout::ChatMax;
+    let text = dump(&frame(&mut app, 80, 24));
+    assert!(text.contains("CHAT"));
+    assert!(
+        !text.contains("ACTIVITY"),
+        "the feed yields the column:\n{text}"
+    );
+
+    app.right_layout = RightLayout::FeedMax;
+    let text = dump(&frame(&mut app, 80, 24));
+    assert!(text.contains("ACTIVITY"));
+    assert!(
+        !text.contains("CHAT"),
+        "the chat history yields the column:\n{text}"
+    );
+    assert!(text.contains("> "), "the input box always stays:\n{text}");
+
+    assert_eq!(
+        RightLayout::Balanced.next().next().next(),
+        RightLayout::Balanced
+    );
+}

@@ -122,21 +122,20 @@ originating modal on success and leaves it open showing the error on failure.
 - 2026-09-12: layout swapped (management left, activity + chat right); instance list +
   tabbed inspector replace the single tree; activity feed derived from snapshot diffs;
   driver badge/cycle; throughput sparklines; status bar reworked.
+- 2026-09-12 (second pass): a new instance becomes the selection; the chat hard-wraps its
+  rows so the newest line is always visible; `F2` cycles the right column (balanced → chat
+  only → feed only); the readline chords (Ctrl-A/E/K/U/W, Alt-word keys) the legacy footer
+  had are back in the chat input, taking precedence over the Ctrl-E/Ctrl-W toggles while a
+  line is being typed; the pty harness gained `PtyScreen` and renders unpainted cells as
+  spaces, and all six snapshots were re-recorded as real screens.
 
 ## Next steps
 
 - Prefer `tests/dashboard_frame_test.rs` (ratatui `TestBackend`, deterministic, populated
   states) for layout assertions. The pty snapshots in `tests/terminal_snapshot/` need
-  regenerating after any layout change (see that file's header); review the `.actual.snap.md`
-  before promoting. **Five of the six pty snapshots are blank captures with only the typed
-  text on the last row** (`typed_simple_input`, `cursor_navigation`, `ctrl_k_delete`,
-  `input_line`, `usage_command_enabled`): `capture_screen` builds a fresh vt100 parser from
-  only the bytes read in that call, so a second capture after the first drained the frame
-  sees only the diff — and a cell that happened to hold the same character in the previous
-  frame is never re-emitted, so even the text that *is* captured can be garbled ("listein").
-  They were like that before the redesign and are byte-identical after it. The harness now
-  has `PtyScreen` (one parser fed for the whole test), which the keyboard-driven test uses;
-  moving those five tests onto it and re-recording them is worth a pass of its own.
-- Candidates not done: a `/` filter on the instance list once it grows past a screen; a
-  keyboard toggle to maximise the chat pane; per-peer throughput; an `[ answer all ]`
-  shortcut when several requests are parked.
+  re-recording after any layout change (delete the `.snap.md`, run, review the new file —
+  `assert_snapshot` creates a missing one and passes). Every dashboard pty test waits on
+  the text its last key must paint through one `PtyScreen`; never add a fixed sleep.
+- Candidates not done: a `/` filter on the instance list once it grows past a screen;
+  per-peer throughput; an `[ answer all ]` shortcut when several requests are parked; a
+  Wireshark button in the peers tab bar.

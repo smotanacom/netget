@@ -11,6 +11,7 @@ pub fn help_lines() -> Vec<(Option<&'static str>, &'static str)> {
             "instances → inspector → activity → chat",
         ),
         (Some("Esc"), "step back: inspector → list → chat"),
+        (Some("F2"), "right column: balanced → chat only → feed only"),
         (Some("Ctrl-T"), "free the mouse for native text selection"),
         (Some("F1"), "this help"),
         (Some("Ctrl-C"), "quit"),
@@ -84,6 +85,14 @@ pub fn help_lines() -> Vec<(Option<&'static str>, &'static str)> {
         (Some("Enter"), "send to the model, or run a slash command"),
         (Some("Alt-Enter / Ctrl-N"), "newline"),
         (Some("↑ / ↓"), "command history (at the first / last line)"),
+        (
+            Some("Ctrl-A / E / K / U / W"),
+            "start / end of line · kill to end · kill line · delete word (while typing)",
+        ),
+        (
+            Some("Alt-← / →  Alt-b / f"),
+            "move by word · Alt-d deletes the next word",
+        ),
         (Some("PageUp"), "scroll the conversation"),
         (None, "Who answers an event — the driver, and rules"),
         (

@@ -86,17 +86,24 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp) {
     let input_height = chat::input_height(app);
     let history_needed = chat::history_height_needed(app, right.width.saturating_sub(2));
     let chat_cap = ((right.height as u32 * CHAT_MAX_PERCENT as u32) / 100) as u16;
-    let history_height = if history_needed == 0 {
-        0
-    } else {
-        (history_needed + 2)
-            .clamp(3, chat_cap.saturating_sub(input_height).max(3))
-            .min(right.height.saturating_sub(input_height + 4))
+    let history_height = match app.right_layout {
+        crate::tui::app::RightLayout::Balanced => {
+            if history_needed == 0 {
+                0
+            } else {
+                (history_needed + 2)
+                    .clamp(3, chat_cap.saturating_sub(input_height).max(3))
+                    .min(right.height.saturating_sub(input_height + 4))
+            }
+        }
+        crate::tui::app::RightLayout::ChatMax => right.height.saturating_sub(input_height),
+        crate::tui::app::RightLayout::FeedMax => 0,
     };
+    let feed_height = right.height.saturating_sub(history_height + input_height);
     let right_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(4),
+            Constraint::Length(feed_height),
             Constraint::Length(history_height),
             Constraint::Length(input_height),
         ])

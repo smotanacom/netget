@@ -40,6 +40,18 @@ pub async fn handle_key(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
 
+    // Readline chords on text being typed come before the global toggles:
+    // Ctrl-E and Ctrl-W mean "end of line" and "delete word" to anyone with
+    // a line in the box, and only cycle scripting / web search once it is
+    // empty. The legacy TUI never resolved this and lost the editing keys.
+    if app.focus == Focus::ChatInput && !app.input.text().is_empty() {
+        if readline_key(app, key) {
+            let text = app.input.text();
+            app.core.update_slash_suggestions(&text);
+            return Outcome::Continue;
+        }
+    }
+
     match key.code {
         KeyCode::Char('c') | KeyCode::Char('C') if ctrl => return Outcome::Quit,
         KeyCode::Char('l') | KeyCode::Char('L') if ctrl => {
@@ -79,6 +91,11 @@ pub async fn handle_key(
         }
         KeyCode::F(1) => {
             app.modals.push(Modal::Help { scroll: 0 });
+            return Outcome::Continue;
+        }
+        KeyCode::F(2) => {
+            app.right_layout = app.right_layout.next();
+            app.push_system(format!("Layout: {}", app.right_layout.describe()));
             return Outcome::Continue;
         }
         KeyCode::Tab if !alt => {
@@ -180,12 +197,37 @@ async fn handle_chat_key(
             app.core.slash_suggestions.clear();
         }
         _ => {
-            app.input.handle_key(key.code, key.modifiers);
+            if !readline_key(app, key) {
+                app.input.handle_key(key.code, key.modifiers);
+            }
         }
     }
     let text = app.input.text();
     app.core.update_slash_suggestions(&text);
     Outcome::Continue
+}
+
+/// The readline chords the legacy TUI's footer had. Returns whether `key`
+/// was one.
+fn readline_key(app: &mut DashboardApp, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Char('a') | KeyCode::Char('A') if ctrl => app.input.move_to_start_of_line(),
+        KeyCode::Char('e') | KeyCode::Char('E') if ctrl => app.input.move_to_end_of_line(),
+        KeyCode::Char('k') | KeyCode::Char('K') if ctrl => app.input.delete_to_end_of_line(),
+        KeyCode::Char('u') | KeyCode::Char('U') if ctrl => app.input.delete_line(),
+        KeyCode::Char('w') | KeyCode::Char('W') if ctrl => app.input.delete_word(),
+        KeyCode::Backspace if alt => app.input.delete_word(),
+        KeyCode::Delete if alt => app.input.delete_word_forward(),
+        KeyCode::Left if alt => app.input.move_cursor_word_left(),
+        KeyCode::Right if alt => app.input.move_cursor_word_right(),
+        KeyCode::Char('b') if alt => app.input.move_cursor_word_left(),
+        KeyCode::Char('f') if alt => app.input.move_cursor_word_right(),
+        KeyCode::Char('d') if alt => app.input.delete_word_forward(),
+        _ => return false,
+    }
+    true
 }
 
 /// Command-history navigation, mirroring the legacy TUI: entering history
