@@ -1,132 +1,245 @@
-//! The instance rail: one borderless, scrollable tree holding every server and
-//! client.
-//!
-//! There is deliberately no per-instance frame and no servers/clients split.
-//! Both cost rows and neither carries information the root row does not — an
-//! instance already says what it is. Collapsing what you are not looking at is
-//! what makes room, so the height algorithm that used to divide the rail into
-//! bands is gone.
+//! The instance list.
 
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::tui::app::{DashboardApp, Focus};
+use crate::tui::app::{DashboardApp, Focus, Section, UiKey};
 use crate::tui::hit::HitTarget;
+use crate::tui::rail::{fit, list_rows, InstanceLine, ListRow, Tone};
 
-use super::band;
+use super::{pane_block, tone_style};
 
-/// Rows taken by the header line.
-const HEADER_HEIGHT: u16 = 1;
+/// Sparkline width in the list row, when the pane is wide enough for one.
+const SPARK_WIDTH: usize = 8;
+/// Below this inner width the sparkline is dropped.
+const SPARK_MIN_WIDTH: usize = 52;
 
 pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
-    if area.height == 0 {
+    if area.height < 3 {
         return;
     }
-
+    let focused = app.focus == Focus::Instances;
     let servers = app.snapshot.servers.len();
     let clients = app.snapshot.clients.len();
-    let focused = matches!(app.focus, Focus::Rail(_));
-
-    // Header: counts on the left, the two add affordances on the right.
-    let header_area = Rect {
-        height: HEADER_HEIGHT,
-        ..area
-    };
-    let header = Line::from(vec![
-        Span::styled(
-            " INSTANCES ",
-            if focused {
-                app.styles.accent
-            } else {
-                app.styles.title
-            },
-        ),
-        Span::styled(
-            format!(
-                "({servers} server{}, {clients} client{})",
-                if servers == 1 { "" } else { "s" },
-                if clients == 1 { "" } else { "s" }
-            ),
-            app.styles.dimmed,
-        ),
+    let title = Line::from(vec![
+        Span::styled(" SERVERS ", app.styles.title),
+        Span::styled(format!("{servers} "), app.styles.dimmed),
+        Span::styled("· CLIENTS ", app.styles.title),
+        Span::styled(format!("{clients} "), app.styles.dimmed),
     ]);
-    frame.render_widget(Paragraph::new(header), header_area);
-
-    // `[ + server ]` and `[ + client ]` used to sit here, right-aligned in the
-    // header. They are rows at the foot of the tree now, like every other
-    // action — reachable by walking the list rather than only by clicking a
-    // corner or knowing that `a` exists.
-
-    let body = Rect {
-        x: area.x,
-        y: area.y + HEADER_HEIGHT,
-        width: area.width,
-        height: area.height.saturating_sub(HEADER_HEIGHT),
-    };
-    if body.height == 0 {
+    let block = pane_block(app, focused).title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
         return;
     }
 
-    // Never empty: the two "new instance" rows are always there, so an idle
-    // rail shows what to do rather than a sentence explaining it.
-    let rows = band::rail_rows(app);
+    let rows = list_rows(&app.snapshot);
+    let cursor = cursor_index(app, &rows);
 
-    // Scroll so the selection stays visible.
-    let viewport = body.height as usize;
+    // Scroll to keep the cursor visible.
+    let viewport = inner.height as usize;
     let max_offset = rows.len().saturating_sub(viewport);
-    let mut offset = app.rail.scroll.min(max_offset);
-    if let Focus::Rail(sel) = &app.focus {
-        if let Some(row) = sel.row {
-            if row < offset {
-                offset = row;
-            } else if row >= offset + viewport {
-                offset = row + 1 - viewport;
-            }
+    let mut offset = app.instances.scroll.min(max_offset);
+    if let Some(row) = cursor {
+        if row < offset {
+            offset = row;
+        } else if row >= offset + viewport {
+            offset = row + 1 - viewport;
         }
     }
-    app.rail.scroll = offset;
+    app.instances.scroll = offset;
 
-    let selected_row = match &app.focus {
-        Focus::Rail(sel) => sel.row,
-        _ => None,
-    };
-
-    let mut lines: Vec<Line> = Vec::new();
+    let width = inner.width as usize;
+    let mut lines: Vec<Line> = Vec::with_capacity(viewport);
     for (screen_index, row) in rows.iter().skip(offset).take(viewport).enumerate() {
         let absolute = offset + screen_index;
-        let is_selected = focused && selected_row == Some(absolute);
-        lines.push(band::row_line(app, &row.row, is_selected));
-
-        let row_area = Rect {
-            x: body.x,
-            y: body.y + screen_index as u16,
-            width: body.width,
-            height: 1,
-        };
-        app.hits.push(
-            row_area,
-            HitTarget::TreeRow {
-                key: row.key,
-                index: absolute,
+        let is_cursor = cursor == Some(absolute);
+        lines.push(match row {
+            ListRow::Header(section, count) => header_line(app, *section, *count, width),
+            ListRow::New(section) => new_line(app, *section, is_cursor, focused),
+            ListRow::Instance(key) => match crate::tui::rail::line_for(&app.snapshot, *key) {
+                Some(line) => instance_line(app, &line, width, is_cursor, focused),
+                None => Line::from(""),
             },
+        });
+        app.hits.push(
+            Rect {
+                x: inner.x,
+                y: inner.y + screen_index as u16,
+                width: inner.width,
+                height: 1,
+            },
+            HitTarget::ListRow(absolute),
         );
     }
-    frame.render_widget(Paragraph::new(lines), body);
+    frame.render_widget(Paragraph::new(lines), inner);
 
     if rows.len() > viewport {
         let hint = format!(" {}–{}/{} ", offset + 1, offset + viewport, rows.len());
-        let width = (hint.chars().count() as u16).min(body.width);
-        let hint_area = Rect {
-            x: body.x + body.width.saturating_sub(width),
-            y: body.y + body.height - 1,
-            width,
-            height: 1,
-        };
+        let hint_width = (hint.chars().count() as u16).min(inner.width);
         frame.render_widget(
             Paragraph::new(Span::styled(hint, app.styles.dimmed)),
-            hint_area,
+            Rect {
+                x: inner.x + inner.width.saturating_sub(hint_width),
+                y: inner.y + inner.height - 1,
+                width: hint_width,
+                height: 1,
+            },
         );
+    }
+}
+
+/// Which list row the cursor is on, if any.
+pub fn cursor_index(app: &DashboardApp, rows: &[ListRow]) -> Option<usize> {
+    if let Some(section) = app.instances.on_new {
+        return rows.iter().position(|r| *r == ListRow::New(section));
+    }
+    let key = app.instances.selected?;
+    rows.iter().position(|r| *r == ListRow::Instance(key))
+}
+
+fn header_line<'a>(app: &DashboardApp, section: Section, count: usize, width: usize) -> Line<'a> {
+    let name = match section {
+        Section::Servers => "servers",
+        Section::Clients => "clients",
+    };
+    let label = format!(" {name} ");
+    let rule = "─".repeat(width.saturating_sub(label.chars().count() + 1));
+    Line::from(vec![
+        Span::styled(label, app.styles.dimmed.add_modifier(Modifier::BOLD)),
+        Span::styled(rule, app.styles.separator),
+        Span::styled(
+            if count == 0 { " " } else { "" }.to_string(),
+            app.styles.dimmed,
+        ),
+    ])
+}
+
+fn new_line<'a>(app: &DashboardApp, section: Section, cursor: bool, focused: bool) -> Line<'a> {
+    let label = match section {
+        Section::Servers => "  + new server",
+        Section::Clients => "  + new client",
+    };
+    let style = row_style(app, app.styles.button, cursor, focused);
+    Line::from(Span::styled(label.to_string(), style))
+}
+
+/// Selection styling: inverted while the list has focus, accent-marked when
+/// the cursor is elsewhere so the inspector's subject stays visible.
+fn row_style(app: &DashboardApp, base: Style, cursor: bool, focused: bool) -> Style {
+    if cursor && focused {
+        app.styles.selected
+    } else if cursor {
+        base.add_modifier(Modifier::BOLD)
+    } else {
+        base
+    }
+}
+
+/// `● #1 http     :8080        2⇄ ▁▂▅█▅▂▁▁ MANUAL`, fitted to `width`.
+pub fn instance_line<'a>(
+    app: &DashboardApp,
+    line: &InstanceLine,
+    width: usize,
+    cursor: bool,
+    focused: bool,
+) -> Line<'a> {
+    let marker = if cursor && !focused { "▸" } else { " " };
+    let head = format!(
+        "{marker}{} #{:<3}{:<8} ",
+        line.glyph,
+        line.id,
+        fit(&line.protocol, 8)
+    );
+    let head_width = head.chars().count();
+
+    // Right-hand side: peers, sparkline, waiting chip, driver badge.
+    let mut right: Vec<(String, Tone)> = Vec::new();
+    if let Some(error) = &line.error {
+        // An error row spends its width on the reason.
+        let target = format!("{} ", line.target);
+        let room = width.saturating_sub(head_width + target.chars().count());
+        let mut spans = vec![
+            Span::styled(
+                head,
+                row_style(app, tone_style(app, line.glyph_tone), cursor, focused),
+            ),
+            Span::styled(target, row_style(app, app.styles.normal, cursor, focused)),
+            Span::styled(
+                fit(error, room),
+                row_style(app, app.styles.error, cursor, focused),
+            ),
+        ];
+        pad_line(
+            &mut spans,
+            width,
+            row_style(app, app.styles.normal, cursor, focused),
+        );
+        return Line::from(spans);
+    }
+    if !line.peers.is_empty() {
+        right.push((format!("{:>3}", line.peers), Tone::Dim));
+    }
+    if width >= SPARK_MIN_WIDTH {
+        let spark = app
+            .instances
+            .metrics
+            .get(&line.key)
+            .map(|m| m.sparkline(SPARK_WIDTH))
+            .unwrap_or_else(|| " ".repeat(SPARK_WIDTH));
+        right.push((format!(" {spark}"), Tone::Accent));
+    }
+    if line.waiting > 0 {
+        right.push((format!(" ⚠{}", line.waiting), Tone::Bad));
+    }
+    right.push((format!(" {:>6}", line.driver.label()), line.driver.tone()));
+    let right_width: usize = right.iter().map(|(s, _)| s.chars().count()).sum();
+
+    let room = width.saturating_sub(head_width + right_width + 1);
+    let target = fit(&line.target, room);
+    let target_padded = format!("{target:<room$} ");
+
+    let mut spans = vec![
+        Span::styled(
+            head,
+            row_style(app, tone_style(app, line.glyph_tone), cursor, focused),
+        ),
+        Span::styled(
+            target_padded,
+            row_style(app, app.styles.normal, cursor, focused),
+        ),
+    ];
+    for (text, tone) in right {
+        spans.push(Span::styled(
+            text,
+            row_style(app, tone_style(app, tone), cursor, focused),
+        ));
+    }
+    pad_line(
+        &mut spans,
+        width,
+        row_style(app, app.styles.normal, cursor, focused),
+    );
+    Line::from(spans)
+}
+
+/// Pad a line to the full width so a reversed selection spans the pane.
+fn pad_line(spans: &mut Vec<Span<'_>>, width: usize, style: Style) {
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if used < width {
+        spans.push(Span::styled(" ".repeat(width - used), style));
+    }
+}
+
+/// Whether `key` is drawn as a server or a client, for callers that colour
+/// by kind.
+pub fn kind_tone(key: UiKey) -> Tone {
+    match key {
+        UiKey::Server(_) => Tone::Server,
+        UiKey::Client(_) => Tone::Client,
     }
 }

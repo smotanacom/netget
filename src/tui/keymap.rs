@@ -1,16 +1,21 @@
-//! Keyboard and mouse handling.
+//! Keyboard and mouse handling for the panes.
 //!
-//! Precedence: an open modal owns everything; then the global toggles (which
-//! keep their legacy bindings for parity); then focus-specific handling.
+//! Precedence: an open modal owns everything (`modal_keys`); then the global
+//! toggles; then the focused pane. Every pane action funnels into
+//! `actions::run` with an `InstanceAction`, so a letter, Enter on a button and
+//! a click do the same thing.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use tokio::sync::mpsc;
 
 use crate::events::EventHandler;
 use crate::state::app_state::AppState;
-use crate::tui::app::{DashboardApp, Focus, RailSel, Section, UiKey};
+use crate::tui::actions;
+use crate::tui::app::{DashboardApp, Focus, Section, UiKey};
 use crate::tui::hit::{HitTarget, SegmentId};
-use crate::tui::modal::{confirm, Modal, PendingAction};
+use crate::tui::inspector::{self, InspectorTab, InstanceAction};
+use crate::tui::modal::Modal;
+use crate::tui::rail::{is_selectable, list_rows, ListRow};
 use crate::tui::uimsg::{ActionOrigin, UiMsg};
 
 /// What the event loop should do after handling an event.
@@ -28,15 +33,13 @@ pub async fn handle_key(
 ) -> Outcome {
     app.dirty = true;
 
-    // Modal first: it owns all input while open.
     if app.modal().is_some() {
-        return handle_modal_key(app, key, state).await;
+        return crate::tui::modal_keys::handle_modal_key(app, key, state).await;
     }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
 
-    // Global bindings (parity with the legacy TUI).
     match key.code {
         KeyCode::Char('c') | KeyCode::Char('C') if ctrl => return Outcome::Quit,
         KeyCode::Char('l') | KeyCode::Char('L') if ctrl => {
@@ -89,7 +92,7 @@ pub async fn handle_key(
         _ => {}
     }
 
-    match app.focus.clone() {
+    match app.focus {
         Focus::ChatInput => handle_chat_key(app, key, state, event_handler, status_tx).await,
         Focus::ChatHistory => {
             match key.code {
@@ -105,16 +108,41 @@ pub async fn handle_key(
             }
             Outcome::Continue
         }
-        Focus::Rail(sel) => handle_rail_key(app, key, sel, state).await,
+        Focus::Instances => handle_instances_key(app, key, state).await,
+        Focus::Inspector => handle_inspector_key(app, key, state).await,
+        Focus::Activity => handle_activity_key(app, key, state).await,
     }
 }
 
-fn cycle_focus(app: &mut DashboardApp, _backward: bool) {
-    // Two stops now that the rail is a single pane.
-    app.focus = match app.focus {
-        Focus::Rail(_) => Focus::ChatInput,
-        _ => Focus::Rail(RailSel::new()),
+/// Instances → Inspector → Activity → Chat → Instances. The inspector is
+/// skipped when nothing is selected (there is nothing in it to focus).
+fn cycle_focus(app: &mut DashboardApp, backward: bool) {
+    let order = [
+        Focus::Instances,
+        Focus::Inspector,
+        Focus::Activity,
+        Focus::ChatInput,
+    ];
+    let current = match app.focus {
+        Focus::ChatHistory => 3,
+        other => order.iter().position(|f| *f == other).unwrap_or(3),
     };
+    let mut next = current;
+    for _ in 0..order.len() {
+        next = if backward {
+            (next + order.len() - 1) % order.len()
+        } else {
+            (next + 1) % order.len()
+        };
+        if order[next] == Focus::Inspector && app.selected().is_none() {
+            continue;
+        }
+        break;
+    }
+    app.focus = order[next];
+    if app.focus == Focus::Activity {
+        app.activity.cursor = None;
+    }
     app.clamp_selection();
 }
 
@@ -226,1419 +254,382 @@ fn history_next(app: &mut DashboardApp) {
     }
 }
 
-async fn handle_rail_key(
-    app: &mut DashboardApp,
-    key: KeyEvent,
-    mut sel: RailSel,
-    state: &AppState,
-) -> Outcome {
-    let rows = crate::tui::render::band::rail_rows(app);
-    let owner = sel.row.and_then(|row| rows.get(row)).and_then(|r| r.key);
+/// Move the list cursor by `delta` selectable rows.
+fn move_list_cursor(app: &mut DashboardApp, delta: isize) {
+    let rows = list_rows(&app.snapshot);
+    let selectable: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| is_selectable(r))
+        .map(|(i, _)| i)
+        .collect();
+    if selectable.is_empty() {
+        return;
+    }
+    let current = crate::tui::render::rail::cursor_index(app, &rows)
+        .and_then(|i| selectable.iter().position(|s| *s == i));
+    let next = match current {
+        None => {
+            if delta < 0 {
+                selectable.len() - 1
+            } else {
+                0
+            }
+        }
+        Some(pos) => (pos as isize + delta).clamp(0, selectable.len() as isize - 1) as usize,
+    };
+    set_list_cursor(app, rows[selectable[next]]);
+}
 
-    match key.code {
-        KeyCode::Down => {
-            sel.row = Some(match sel.row {
-                None => 0,
-                Some(row) if row + 1 < rows.len() => row + 1,
-                Some(row) => row,
-            });
+fn set_list_cursor(app: &mut DashboardApp, row: ListRow) {
+    match row {
+        ListRow::Instance(key) => app.select(key),
+        ListRow::New(section) => {
+            app.instances.selected = None;
+            app.instances.on_new = Some(section);
+            app.inspector.item = 0;
+            app.inspector.bar = None;
         }
-        KeyCode::Up => {
-            sel.row = Some(match sel.row {
-                None => 0,
-                Some(row) => row.saturating_sub(1),
-            });
+        ListRow::Header(..) => {}
+    }
+}
+
+fn list_cursor_row(app: &DashboardApp) -> Option<ListRow> {
+    let rows = list_rows(&app.snapshot);
+    crate::tui::render::rail::cursor_index(app, &rows).map(|i| rows[i])
+}
+
+/// Letters that act on the selected instance from either left pane.
+async fn instance_letter(app: &mut DashboardApp, code: KeyCode, state: &AppState) -> bool {
+    match code {
+        KeyCode::Char('a') => {
+            actions::open_protocol_picker(app, Section::Servers, None, state).await;
+            return true;
         }
-        KeyCode::PageDown => {
-            let step = 10;
-            sel.row = Some(match sel.row {
-                None => step.min(rows.len().saturating_sub(1)),
-                Some(row) => (row + step).min(rows.len().saturating_sub(1)),
-            });
-        }
-        KeyCode::PageUp => {
-            sel.row = Some(sel.row.unwrap_or(0).saturating_sub(10));
-        }
-        KeyCode::Home => sel.row = Some(0),
-        KeyCode::End => sel.row = Some(rows.len().saturating_sub(1)),
-        // Right expands a group or steps into it; Left collapses, or steps out
-        // to the parent when there is nothing to collapse.
-        KeyCode::Right => {
-            if let (Some(key_owner), Some(row)) = (owner, sel.row) {
-                if let Some(rail_row) = rows.get(row) {
-                    let node = rail_row.row.node.clone();
-                    if rail_row.row.expanded == Some(false) {
-                        app.rail.band_mut(key_owner).tree.expand(&node);
-                    } else if rail_row.row.expanded == Some(true) && row + 1 < rows.len() {
-                        sel.row = Some(row + 1);
-                    }
-                }
-            }
-        }
-        KeyCode::Left => {
-            if let (Some(key_owner), Some(row)) = (owner, sel.row) {
-                if let Some(rail_row) = rows.get(row) {
-                    let node = rail_row.row.node.clone();
-                    let depth = rail_row.row.depth;
-                    if rail_row.row.expanded == Some(true) {
-                        app.rail.band_mut(key_owner).tree.collapse(&node);
-                    } else if depth > 0 {
-                        if let Some(parent) = rows[..row]
-                            .iter()
-                            .rposition(|candidate| candidate.row.depth < depth)
-                        {
-                            sel.row = Some(parent);
-                        }
-                    }
-                }
-            }
-        }
-        KeyCode::Enter | KeyCode::Char(' ') => {
-            if let Some(row) = sel.row {
-                activate_row(app, owner, &rows, row, state).await;
-            } else if !rows.is_empty() {
-                sel.row = Some(0);
-            }
-        }
-        KeyCode::Esc => {
-            app.focus = Focus::ChatInput;
-            return Outcome::Continue;
-        }
-        KeyCode::Char('x') => {
-            if let Some(key_owner) = owner {
-                stop_instance(app, key_owner, state).await;
-            }
-        }
-        KeyCode::Char('e')
-        | KeyCode::Char('r')
-        | KeyCode::Char('d')
-        | KeyCode::Char('n')
-        | KeyCode::Char('c')
-        | KeyCode::Char('w')
-        | KeyCode::Char('a') => {
-            handle_band_shortcut(app, key.code, owner, state).await;
+        KeyCode::Char('A') => {
+            actions::open_protocol_picker(app, Section::Clients, None, state).await;
+            return true;
         }
         _ => {}
     }
+    let Some(key) = app.selected() else {
+        return false;
+    };
+    let action = match (code, key) {
+        (KeyCode::Char('x'), _) => InstanceAction::Stop,
+        (KeyCode::Char('e'), _) => InstanceAction::Edit,
+        (KeyCode::Char('r'), _) => InstanceAction::Rules,
+        (KeyCode::Char('m'), _) => InstanceAction::CycleDriver,
+        (KeyCode::Char('w'), _) => InstanceAction::Wireshark,
+        (KeyCode::Char('d'), _) => InstanceAction::Docs,
+        (KeyCode::Char('c'), UiKey::Server(_)) => InstanceAction::ConnectClient,
+        (KeyCode::Char('n'), UiKey::Client(_)) => InstanceAction::Send,
+        _ => return false,
+    };
+    actions::run(app, key, action, state).await;
+    true
+}
 
-    if let Focus::Rail(current) = &mut app.focus {
-        *current = sel;
+/// Digits jump straight to a tab and focus the inspector.
+fn tab_digit(code: KeyCode) -> Option<usize> {
+    match code {
+        KeyCode::Char(c @ '1'..='6') => Some(c as usize - '1' as usize),
+        _ => None,
+    }
+}
+
+fn jump_to_tab(app: &mut DashboardApp, index: usize) {
+    let Some(key) = app.selected() else {
+        return;
+    };
+    let tabs = InspectorTab::for_key(key);
+    if let Some(tab) = tabs.get(index) {
+        set_tab(app, *tab);
+        app.focus = Focus::Inspector;
+    }
+}
+
+fn set_tab(app: &mut DashboardApp, tab: InspectorTab) {
+    if app.inspector.tab != tab {
+        app.inspector.tab = tab;
+        app.inspector.item = 0;
+        app.inspector.scroll = 0;
+        app.inspector.bar = None;
+    }
+}
+
+async fn handle_instances_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
+    match key.code {
+        KeyCode::Down => move_list_cursor(app, 1),
+        KeyCode::Up => move_list_cursor(app, -1),
+        KeyCode::PageDown => move_list_cursor(app, 10),
+        KeyCode::PageUp => move_list_cursor(app, -10),
+        KeyCode::Home => move_list_cursor(app, isize::MIN / 2),
+        KeyCode::End => move_list_cursor(app, isize::MAX / 2),
+        KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ') => match list_cursor_row(app) {
+            Some(ListRow::New(section)) => {
+                actions::open_protocol_picker(app, section, None, state).await;
+            }
+            Some(ListRow::Instance(_)) => {
+                app.focus = Focus::Inspector;
+                app.inspector.bar = None;
+            }
+            _ => {}
+        },
+        KeyCode::Esc => {
+            app.focus = Focus::ChatInput;
+        }
+        code => {
+            if let Some(index) = tab_digit(code) {
+                jump_to_tab(app, index);
+            } else {
+                instance_letter(app, code, state).await;
+            }
+        }
     }
     app.clamp_selection();
     Outcome::Continue
 }
 
-/// Enter on a tree row: toggle a group, lift a "… N more" cap, or open the
-/// editor that owns the row.
-async fn activate_row(
-    app: &mut DashboardApp,
-    key: Option<UiKey>,
-    rows: &[crate::tui::render::band::RailRow],
-    row: usize,
-    state: &AppState,
-) {
-    use crate::tui::tree::{NodeId, RowAction};
-
-    let Some(rail_row) = rows.get(row) else {
-        return;
+async fn handle_inspector_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
+    let Some(instance) = app.selected_instance() else {
+        app.focus = Focus::Instances;
+        return Outcome::Continue;
     };
-    let tree_row = &rail_row.row;
-    let node = tree_row.node.clone();
-
-    // The rail's own rows own no instance, so they are handled before anything
-    // that needs one.
-    if let NodeId::NewInstance(section) = node {
-        open_protocol_picker(app, section, None, state).await;
-        return;
-    }
-    let Some(key) = key else {
-        return;
-    };
-
-    // A group toggles; that includes a request, whose detail is its children.
-    if tree_row.expanded.is_some() {
-        app.rail.band_mut(key).tree.toggle(&node);
-        return;
-    }
-
-    match node {
-        NodeId::More(group) => {
-            app.rail.band_mut(key).tree.show_all(&group);
-        }
-        NodeId::ConfigItem(k, _) => open_editor(app, k),
-        // Entering a route edits that route, not the table it sits in — the
-        // row you pressed is the one you meant.
-        NodeId::Route(k, index) => open_routing_at(app, k, state, RouteTarget::Edit(index)),
-        NodeId::Action(k, action) => match action {
-            RowAction::EditConfig => open_editor(app, k),
-            RowAction::EditRoute(index) => open_routing_at(app, k, state, RouteTarget::Edit(index)),
-            RowAction::AddRoute => open_routing_at(app, k, state, RouteTarget::New),
-            RowAction::AddClient => {
-                if let UiKey::Server(id) = k {
-                    open_client_for_server(app, id, state).await;
-                }
-            }
-            RowAction::Send => {
-                if let UiKey::Client(id) = k {
-                    open_composer(app, id, None, state).await;
-                }
-            }
-            RowAction::SendAction(index) => {
-                if let UiKey::Client(id) = k {
-                    open_composer(app, id, Some(index), state).await;
-                }
-            }
-            RowAction::MessagePeer(conn_id) => {
-                if let UiKey::Server(id) = k {
-                    open_peer_composer(app, id, conn_id, state);
-                }
-            }
-            RowAction::DisconnectPeer(conn_id) => {
-                if let UiKey::Server(id) = k {
-                    disconnect_peer(app, id, conn_id, state);
-                }
-            }
-            RowAction::Disconnect => {
-                if let UiKey::Client(id) = k {
-                    disconnect_client(app, id, state).await;
-                }
-            }
-            RowAction::Connect => {
-                if let UiKey::Client(id) = k {
-                    connect_client(app, id, state);
-                }
-            }
-            RowAction::Stop => stop_instance(app, k, state).await,
-            RowAction::Wireshark => open_wireshark(app, k),
-        },
-        NodeId::Intercept(k, intercept_id) => open_intercept(app, k, intercept_id, state),
-        NodeId::RoutingFallback(_) | NodeId::RequestDetail(..) => {}
-        _ => {}
-    }
-}
-
-/// Open the answer modal for a pending intercept.
-fn open_intercept(app: &mut DashboardApp, key: UiKey, intercept_id: u64, state: &AppState) {
-    use crate::tui::modal::intercept::InterceptModel;
-
-    let (protocol, view) = match key {
-        UiKey::Server(id) => {
-            let Some(row) = app.snapshot.servers.iter().find(|s| s.id == id) else {
-                return;
-            };
-            (
-                row.protocol.clone(),
-                row.intercepts
-                    .iter()
-                    .find(|v| v.id == intercept_id)
-                    .cloned(),
-            )
-        }
-        UiKey::Client(id) => {
-            let Some(row) = app.snapshot.clients.iter().find(|c| c.id == id) else {
-                return;
-            };
-            (
-                row.protocol.clone(),
-                row.intercepts
-                    .iter()
-                    .find(|v| v.id == intercept_id)
-                    .cloned(),
-            )
-        }
-    };
-    let Some(view) = view else {
-        app.push_system(format!(
-            "request #{intercept_id} is no longer waiting (answered or timed out)"
-        ));
-        return;
-    };
-    let (_events, vocabulary) = crate::tui::modal::routing::vocabulary(key, &protocol, state);
-    app.modals.push(Modal::Intercept(Box::new(InterceptModel {
-        id: view.id,
-        owner: key,
-        protocol,
-        event_type: view.event_type,
-        description: view.description,
-        event_data: view.event_data,
-        vocabulary,
-        error: None,
-        focused: 0,
-    })));
-}
-
-/// Which handler the routing editor should open on.
-enum RouteTarget {
-    /// The table itself, nothing opened.
-    List,
-    /// Edit an existing handler by index.
-    Edit(usize),
-    /// Start a new handler.
-    New,
-}
-
-/// Stop an instance immediately — no confirmation. Stopping is cheap to redo
-/// (recreate from the picker) and the dialog was pure friction; only the bulk
-/// actions (stop all, quit) keep a confirm.
-async fn stop_instance(app: &mut DashboardApp, key: UiKey, state: &AppState) {
-    let action = match key {
-        UiKey::Server(id) => PendingAction::StopServer(id),
-        UiKey::Client(id) => PendingAction::StopClient(id),
-    };
-    let line = confirm::execute(&action, state).await;
-    app.push_system(line);
-}
-
-/// Hang up a client's connection, keeping the row for `[ connect ]` later.
-async fn disconnect_client(app: &mut DashboardApp, id: crate::state::ClientId, state: &AppState) {
-    if state.disconnect_client(id).await {
-        app.push_system(format!(
-            "client #{} disconnected — [ connect ] re-establishes it",
-            id.as_u32()
-        ));
-    } else {
-        app.push_system(format!("client #{} is already gone", id.as_u32()));
-    }
-}
-
-/// (Re)connect a disconnected client. Spawned: connecting is network I/O and
-/// must not block the event loop (see `crate::tui::uimsg`).
-fn connect_client(app: &mut DashboardApp, id: crate::state::ClientId, state: &AppState) {
-    app.push_system(format!("connecting client #{}…", id.as_u32()));
-    let llm = app.llm_client.clone();
-    let status_tx = app.status_tx.clone();
-    let ui_tx = app.ui_tx.clone();
-    let state = state.clone();
-    tokio::spawn(async move {
-        let message = match crate::cli::client_startup::start_client_by_id(
-            &state, id, &llm, &status_tx,
-        )
-        .await
-        {
-            Ok(_) => format!("client #{} connected", id.as_u32()),
-            Err(e) => format!("client #{} failed to connect: {e}", id.as_u32()),
-        };
-        let _ = ui_tx.send(UiMsg::Chat(message));
-    });
-}
-
-async fn handle_band_shortcut(
-    app: &mut DashboardApp,
-    code: KeyCode,
-    key: Option<UiKey>,
-    state: &AppState,
-) {
-    match code {
-        // `a` adds a server; a client normally comes from `c` on a server, and
-        // the header's [ + client ] covers the standalone case.
-        KeyCode::Char('a') => open_protocol_picker(app, Section::Servers, None, state).await,
-        KeyCode::Char('e') => {
-            if let Some(band_key) = key {
-                open_editor(app, band_key);
-            }
-        }
-        KeyCode::Char('r') => {
-            if let Some(band_key) = key {
-                open_routing(app, band_key, state);
-            }
-        }
-        KeyCode::Char('d') => {
-            if let Some(UiKey::Server(id)) = key {
-                if let Some(row) = app.snapshot.servers.iter().find(|s| s.id == id) {
-                    let protocol = row.protocol.clone();
-                    match crate::protocol::server_registry::registry().resolve(&protocol) {
-                        Ok(p) => {
-                            let text = format!(
-                                "{} — {}\n{}",
-                                p.protocol_name(),
-                                p.description(),
-                                p.metadata().summary()
-                            );
-                            app.push_system(text);
-                        }
-                        Err(e) => app.push_system(format!("{e}")),
-                    }
-                }
-            }
-        }
-        KeyCode::Char('c') => {
-            if let Some(UiKey::Server(id)) = key {
-                open_client_for_server(app, id, state).await;
-            }
-        }
-        KeyCode::Char('n') => {
-            if let Some(UiKey::Client(id)) = key {
-                open_composer(app, id, None, state).await;
-            }
-        }
-        KeyCode::Char('w') => {
-            if let Some(band_key) = key {
-                open_wireshark(app, band_key);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Open the Wireshark recipe for a running instance, from the snapshot.
-///
-/// A server's bind host comes from its bound address (the real one, port 0
-/// resolved) and the interface from its startup params, where the raw-socket
-/// protocols keep it; a client contributes the address it dials.
-fn open_wireshark(app: &mut DashboardApp, key: UiKey) {
-    use crate::tui::wireshark::{CapturePlan, CaptureTarget, Platform, Role};
-
-    let target = match key {
-        UiKey::Server(id) => {
-            let Some(row) = app.snapshot.servers.iter().find(|s| s.id == id) else {
-                return;
-            };
-            let bound: Option<std::net::SocketAddr> =
-                row.local_addr.as_deref().and_then(|a| a.parse().ok());
-            let param = |name: &str| -> Option<String> {
-                row.startup_params
-                    .as_ref()
-                    .and_then(|p| p.get(name))
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-            };
-            CaptureTarget {
-                protocol: row.protocol.clone(),
-                role: Role::Server,
-                host: bound.map(|a| a.ip().to_string()).or_else(|| param("host")),
-                port: bound.map(|a| a.port()).or(Some(row.port)),
-                interface: param("interface"),
-            }
-        }
-        UiKey::Client(id) => {
-            let Some(row) = app.snapshot.clients.iter().find(|c| c.id == id) else {
-                return;
-            };
-            CaptureTarget::client(&row.protocol, Some(&row.remote_addr))
-        }
-    };
-    let plan = CapturePlan::build(target, Platform::current());
-    app.modals.push(Modal::Wireshark {
-        plan: Box::new(plan),
-        scroll: 0,
-    });
-}
-
-/// Open the protocol picker for a section. `prefill_remote` aims a new client
-/// at a specific address (the `[+ client]` affordance on a server band).
-async fn open_protocol_picker(
-    app: &mut DashboardApp,
-    section: Section,
-    prefill_remote: Option<String>,
-    state: &AppState,
-) {
-    let caps = state.get_system_capabilities().await;
-    let entries = crate::tui::modal::protocol_picker::entries(section, &caps);
-    if entries.is_empty() {
-        app.push_system("No protocols compiled into this build for that side.");
-        return;
-    }
-    app.modals.push(Modal::ProtocolPicker {
-        section,
-        entries,
-        filter: String::new(),
-        selected: 0,
-        prefill_remote,
-    });
-}
-
-fn open_editor(app: &mut DashboardApp, key: UiKey) {
-    use crate::tui::modal::form::FormModel;
-    let model = match key {
-        UiKey::Server(id) => app
-            .snapshot
-            .servers
-            .iter()
-            .find(|s| s.id == id)
-            .map(FormModel::for_edit_server),
-        UiKey::Client(id) => app
-            .snapshot
-            .clients
-            .iter()
-            .find(|c| c.id == id)
-            .map(FormModel::for_edit_client),
-    };
-    if let Some(model) = model {
-        app.modals.push(Modal::Form(Box::new(model)));
-    }
-}
-
-fn open_routing(app: &mut DashboardApp, key: UiKey, state: &AppState) {
-    open_routing_at(app, key, state, RouteTarget::List);
-}
-
-/// Open the routing editor, optionally landing straight on one handler.
-///
-/// Going through the table first was a step with nothing in it: you had already
-/// pointed at the handler you wanted by pressing Enter on its row.
-fn open_routing_at(app: &mut DashboardApp, key: UiKey, state: &AppState, target: RouteTarget) {
-    use crate::tui::modal::routing::RoutingModel;
-    let model = match key {
-        UiKey::Server(id) => app
-            .snapshot
-            .servers
-            .iter()
-            .find(|s| s.id == id)
-            .map(|row| RoutingModel::new(key, &row.protocol, row.routing.as_ref(), state)),
-        UiKey::Client(id) => app
-            .snapshot
-            .clients
-            .iter()
-            .find(|c| c.id == id)
-            .map(|row| RoutingModel::new(key, &row.protocol, row.routing.as_ref(), state)),
-    };
-    if let Some(mut model) = model {
-        match target {
-            RouteTarget::List => {}
-            RouteTarget::New => model.add(),
-            RouteTarget::Edit(index) => {
-                if index < model.handlers.len() {
-                    model.selected = index;
-                    model.edit_selected();
-                }
-            }
-        }
-        app.modals.push(Modal::Routing(Box::new(model)));
-    }
-}
-
-/// `[ + connect a client ]` on a server: create a client of the counterpart protocol
-/// pointed at that very server, so the pair can talk to each other.
-async fn open_client_for_server(
-    app: &mut DashboardApp,
-    server_id: crate::state::ServerId,
-    state: &AppState,
-) {
-    let Some(row) = app.snapshot.servers.iter().find(|s| s.id == server_id) else {
-        return;
-    };
-    let Some(client_protocol) = row.client_counterpart.clone() else {
-        app.push_system(format!(
-            "{} has no client implementation compiled into this build",
-            row.protocol
-        ));
-        return;
-    };
-    let port = row
-        .local_addr
-        .as_ref()
-        .and_then(|a| a.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()))
-        .unwrap_or(row.port);
-    let remote = format!("127.0.0.1:{port}");
-
-    use crate::tui::modal::form::{FieldTarget, FormModel};
-    let mut model = FormModel::for_create(Section::Clients, &client_protocol, None);
-    model.set_field_value(&FieldTarget::RemoteAddr, remote.clone());
-    model.set_field_value(
-        &FieldTarget::Instruction,
-        format!(
-            "You are a {client_protocol} client connected to our own server #{} at {remote}.",
-            server_id.as_u32()
-        ),
+    let key_id = instance.key();
+    let view = inspector::build(
+        instance,
+        &app.inspector,
+        app.instances.metrics.get(&key_id),
+        60,
     );
-
-    // When everything this client needs is known, connect it rather than
-    // showing a form with nothing left to fill in. A client whose protocol
-    // declares a required startup parameter (openai's api_key, say) cannot be
-    // defaulted: show the form pre-filled with the remote and instruction, the
-    // cursor already on the missing field, instead of failing in the chat.
-    if let Some(missing) = model.missing_required() {
-        model.focus_first_missing_required();
-        model.error = Some(format!(
-            "{client_protocol} needs {missing} before it can connect — fill it in and press [ Apply ]"
-        ));
-        app.modals.push(Modal::Form(Box::new(model)));
-        return;
-    }
-    app.push_system(format!(
-        "Connecting a {client_protocol} client to {remote}…"
-    ));
-    let llm = app.llm_client.clone();
-    let status_tx = app.status_tx.clone();
-    let ui_tx = app.ui_tx.clone();
-    let state = state.clone();
-    tokio::spawn(async move {
-        let result = model
-            .apply(&state, llm, &status_tx)
-            .await
-            .map_err(|e| e.to_string());
-        let _ = ui_tx.send(UiMsg::ActionDone {
-            origin: ActionOrigin::Form,
-            result,
-        });
-    });
-}
-
-/// Compose an action for one live server connection. The vocabulary is the
-/// server protocol's sync actions — its wire verbs (send_tcp_data and
-/// friends), not its management ones.
-fn open_peer_composer(
-    app: &mut DashboardApp,
-    server_id: crate::state::ServerId,
-    connection_id: u32,
-    _state: &AppState,
-) {
-    use crate::tui::modal::composer::ComposerModel;
-    let Some(row) = app.snapshot.servers.iter().find(|s| s.id == server_id) else {
-        return;
-    };
-    let Ok(protocol) = crate::protocol::server_registry::registry().resolve(&row.protocol) else {
-        app.push_system(format!("{} is not a registered protocol", row.protocol));
-        return;
-    };
-    let actions = protocol.get_sync_actions();
-    if actions.is_empty() {
-        app.push_system(format!("{} declares no wire actions to send", row.protocol));
-        return;
-    }
-    app.modals
-        .push(Modal::Composer(Box::new(ComposerModel::for_peer(
-            server_id,
-            connection_id,
-            &row.protocol,
-            actions,
-        ))));
-}
-
-/// Close one live server connection from the server's side.
-///
-/// Goes through the peer handle with the protocol's own `close_connection`
-/// action, so it is available exactly where `[ message this peer ]` is and
-/// runs the same teardown the model's close would. Immediate, like the
-/// client's `[ disconnect ]`: only the bulk actions confirm.
-fn disconnect_peer(
-    app: &mut DashboardApp,
-    server_id: crate::state::ServerId,
-    connection_id: u32,
-    state: &AppState,
-) {
-    use crate::tui::modal::composer::{ComposerModel, ComposerTarget};
-    let target = ComposerTarget::Peer {
-        server: server_id,
-        connection: connection_id,
-    };
-    app.push_system(format!("{}: disconnecting…", target.describe()));
-    let ui_tx = app.ui_tx.clone();
-    let state = state.clone();
-    tokio::spawn(async move {
-        let message = match ComposerModel::deliver(
-            target,
-            &state,
-            serde_json::json!({"type": "close_connection"}),
-        )
-        .await
-        {
-            Ok(outcome) => format!(
-                "{}: {}",
-                target.describe(),
-                crate::tui::modal::composer::describe(&outcome)
-            ),
-            Err(e) => e.to_string(),
-        };
-        let _ = ui_tx.send(UiMsg::Chat(message));
-    });
-}
-
-/// Open the send composer for a client.
-///
-/// `action_index` selects one of the protocol's actions up front — that is
-/// what the inlined `[ send_command ]`-style rows pass, so pressing one lands
-/// straight on that action's parameters instead of on a menu. `None` (the `n`
-/// shortcut) opens on the action list.
-async fn open_composer(
-    app: &mut DashboardApp,
-    client_id: crate::state::ClientId,
-    action_index: Option<usize>,
-    state: &AppState,
-) {
-    let Some(row) = app.snapshot.clients.iter().find(|c| c.id == client_id) else {
-        return;
-    };
-    match row.send_state {
-        crate::tui::projection::SendState::Ready => {}
-        crate::tui::projection::SendState::NotConnected => {
-            app.push_system(format!(
-                "client #{} is not connected — nothing to send through",
-                client_id.as_u32()
-            ));
-            return;
-        }
-        crate::tui::projection::SendState::ProtocolUnsupported => {
-            app.push_system(format!(
-                "the {} client cannot take injected actions yet: its connection loop has not \
-                 adopted the command channel (see src/client/command_support.rs)",
-                row.protocol
-            ));
-            return;
-        }
-    }
-    use crate::tui::modal::composer::ComposerModel;
-    let actions = ComposerModel::vocabulary(&row.protocol, state);
-    if actions.is_empty() {
-        app.push_system(format!("{} declares no client actions", row.protocol));
-        return;
-    }
-    let mut model = ComposerModel::new(client_id, &row.protocol, actions);
-    if let Some(index) = action_index {
-        // The row's index comes from the same vocabulary call, so it is in
-        // range; guard anyway rather than silently opening the wrong action.
-        if index < model.actions.len() {
-            model.selected = index;
-            model.choose();
-        }
-    }
-    app.modals.push(Modal::Composer(Box::new(model)));
-}
-
-async fn handle_modal_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
-    let is_confirm = matches!(app.modal(), Some(Modal::Confirm { .. }));
-    let is_approval = matches!(app.modal(), Some(Modal::WebApproval { .. }));
-
-    if is_approval {
-        use crate::state::app_state::WebApprovalResponse;
-        let response = match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                Some(WebApprovalResponse::Allow)
-            }
-            KeyCode::Char('a') | KeyCode::Char('A') => Some(WebApprovalResponse::AlwaysAllow),
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                Some(WebApprovalResponse::Deny)
-            }
-            KeyCode::Char('c') | KeyCode::Char('C')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                Some(WebApprovalResponse::Deny)
-            }
-            _ => None,
-        };
-        if let Some(response) = response {
-            if let Some(Modal::WebApproval { response_tx, .. }) = app.modals.pop() {
-                let _ = response_tx.send(response);
-            }
-        }
-        return Outcome::Continue;
-    }
-
-    if is_confirm {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                if let Some(Modal::Confirm { action, .. }) = app.modals.pop() {
-                    if action == PendingAction::Quit {
-                        return Outcome::Quit;
-                    }
-                    let line = confirm::execute(&action, state).await;
-                    app.push_system(line);
-                }
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                app.modals.pop();
-            }
-            _ => {}
-        }
-        return Outcome::Continue;
-    }
-
-    match app.modal() {
-        Some(Modal::ProtocolPicker { .. }) => return handle_picker_key(app, key, state).await,
-        Some(Modal::Form(_)) => return handle_form_key(app, key, state).await,
-        Some(Modal::TextEditor { .. }) => return handle_text_editor_key(app, key),
-        Some(Modal::Composer(_)) => return handle_composer_key(app, key, state).await,
-        Some(Modal::Routing(_)) => return handle_routing_key(app, key, state).await,
-        Some(Modal::Intercept(_)) => return handle_intercept_key(app, key, state).await,
-        _ => {}
-    }
-
-    match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => {
-            app.modals.pop();
-        }
-        KeyCode::Up => app.modal_mut().map(|m| m.scroll_by(-1)).unwrap_or(()),
-        KeyCode::Down => app.modal_mut().map(|m| m.scroll_by(1)).unwrap_or(()),
-        KeyCode::PageUp => app.modal_mut().map(|m| m.scroll_by(-10)).unwrap_or(()),
-        KeyCode::PageDown => app.modal_mut().map(|m| m.scroll_by(10)).unwrap_or(()),
-        _ => {}
-    }
-    Outcome::Continue
-}
-
-async fn handle_picker_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
-    use crate::tui::modal::form::{FieldTarget, FormModel};
-    use crate::tui::modal::protocol_picker;
-
-    let Some(Modal::ProtocolPicker {
-        section,
-        entries,
-        filter,
-        selected,
-        prefill_remote,
-    }) = app.modals.last_mut()
-    else {
-        return Outcome::Continue;
-    };
+    let items = view.item_count();
+    let tabs = view.tabs.clone();
+    let tab_pos = tabs.iter().position(|t| *t == view.tab).unwrap_or(0);
 
     match key.code {
         KeyCode::Esc => {
-            app.modals.pop();
+            app.focus = Focus::Instances;
+            app.inspector.bar = None;
         }
-        KeyCode::Up => *selected = selected.saturating_sub(1),
-        KeyCode::Down => {
-            let count = protocol_picker::filter(entries, filter).len();
-            if *selected + 1 < count {
-                *selected += 1;
-            }
-        }
-        KeyCode::Backspace => {
-            filter.pop();
-            *selected = 0;
-        }
-        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            filter.push(c);
-            *selected = 0;
-        }
-        KeyCode::Enter => {
-            // Take everything needed out of the picker first, so the borrow on
-            // `app.modals` is released before the instance is started.
-            let matches = protocol_picker::filter(entries, filter);
-            let Some(entry) = matches.get(*selected) else {
-                return Outcome::Continue;
-            };
-            let section = *section;
-            let protocol = entry.name.clone();
-            let remote = prefill_remote.clone();
-            let default_port = if entry.has_binding_defaults {
-                entry.default_port
-            } else {
-                None
-            };
-
-            let mut model = FormModel::for_create(section, &protocol, default_port);
-            if let Some(remote) = remote {
-                model.set_field_value(&FieldTarget::RemoteAddr, remote);
-            }
-            let missing = model.missing_required();
-            app.modals.pop();
-
-            // Picking a protocol starts it immediately on defaults — the point
-            // of the picker is "give me one of these", not "fill in a form".
-            // Everything stays editable afterwards (`e` config, `r` routing).
-            // The form only appears when something genuinely cannot be
-            // defaulted, such as a client's remote address.
-            if let Some(missing) = missing {
-                model.focus_first_missing_required();
-                model.error = Some(format!(
-                    "{protocol} needs {missing} before it can start — fill it in and press [ Apply ]"
-                ));
-                app.modals.push(Modal::Form(Box::new(model)));
-                return Outcome::Continue;
-            }
-
-            app.push_system(format!("Starting {protocol} on defaults…"));
-            let llm = app.llm_client.clone();
-            let status_tx = app.status_tx.clone();
-            let ui_tx = app.ui_tx.clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                let result = model
-                    .apply(&state, llm, &status_tx)
-                    .await
-                    .map_err(|e| e.to_string());
-                let _ = ui_tx.send(UiMsg::ActionDone {
-                    origin: ActionOrigin::Form,
-                    result,
-                });
-            });
-        }
-        _ => {}
-    }
-    Outcome::Continue
-}
-
-async fn handle_form_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
-    use crate::tui::modal::form::FieldTarget;
-    use crate::tui::modal::text_editor::TextEditorModel;
-
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let Some(Modal::Form(form)) = app.modals.last_mut() else {
-        return Outcome::Continue;
-    };
-
-    // Inline editing of a single-line field.
-    if let Some(buffer) = form.editing.as_mut() {
-        match key.code {
-            KeyCode::Enter => form.commit_edit(),
-            KeyCode::Esc => form.cancel_edit(),
-            KeyCode::Backspace => {
-                buffer.pop();
-            }
-            KeyCode::Char(c) if !ctrl => buffer.push(c),
-            _ => {}
-        }
-        return Outcome::Continue;
-    }
-
-    match key.code {
-        KeyCode::Esc => {
-            app.modals.pop();
-        }
-        KeyCode::Tab => form.cycle_focus(false),
-        KeyCode::BackTab => form.cycle_focus(true),
-        KeyCode::Up => {
-            form.focused_button = None;
-            form.move_selection(-1);
-        }
-        KeyCode::Down => {
-            form.focused_button = None;
-            form.move_selection(1);
-        }
-        KeyCode::Enter if form.focused_action().is_some() => {
-            let action = form.focused_action().unwrap();
-            return run_form_action(app, action, state).await;
-        }
-        KeyCode::Enter => {
-            let Some(field) = form.selected_field().cloned() else {
-                return Outcome::Continue;
-            };
-            if field.multiline {
-                let json = matches!(field.target, FieldTarget::EventHandlersJson);
-                let editor = TextEditorModel::new(&field.label, &field.help, &field.value, json);
-                app.modals.push(Modal::TextEditor {
-                    editor: Box::new(editor),
-                    target: field.target,
-                });
-            } else if field.target == FieldTarget::SendFirst {
-                let toggled = if field.value == "true" {
-                    "false"
-                } else {
-                    "true"
-                };
-                form.set_field_value(&FieldTarget::SendFirst, toggled.to_string());
-            } else {
-                form.begin_edit();
-            }
-        }
-        // Typing on a selected field edits it, starting with the character
-        // just typed. Requiring Enter first made every field a two-step, and
-        // nothing else here wants bare letters.
-        KeyCode::Char(c) if !ctrl && form.focused_button.is_none() => {
-            if form
-                .selected_field()
-                .is_some_and(|field| !field.multiline && field.target != FieldTarget::SendFirst)
-            {
-                form.begin_edit();
-                if let Some(buffer) = form.editing.as_mut() {
-                    buffer.push(c);
-                }
-            }
-        }
-        KeyCode::Backspace if form.focused_button.is_none() => {
-            // Same for backspace: start editing and delete, rather than
-            // silently doing nothing until Enter is pressed.
-            if form
-                .selected_field()
-                .is_some_and(|field| !field.multiline && field.target != FieldTarget::SendFirst)
-            {
-                form.begin_edit();
-                if let Some(buffer) = form.editing.as_mut() {
-                    buffer.pop();
-                }
-            }
-        }
-        _ => {}
-    }
-    Outcome::Continue
-}
-
-/// Run one instance-form button. Applying is spawned, never awaited on the
-/// event loop: creating a server or connecting a client does network I/O, and
-/// awaiting it here froze the whole dashboard until the kernel gave up.
-async fn run_form_action(
-    app: &mut DashboardApp,
-    action: crate::tui::hit::ModalAction,
-    state: &AppState,
-) -> Outcome {
-    use crate::tui::hit::ModalAction;
-
-    let Some(Modal::Form(form)) = app.modals.last_mut() else {
-        return Outcome::Continue;
-    };
-    match action {
-        ModalAction::FormCancel => {
-            app.modals.pop();
-        }
-        ModalAction::FormWireshark => {
-            // Stacked over the form, so Esc returns to it with nothing lost —
-            // the point is to start the capture, then come back and Apply.
-            let plan = crate::tui::wireshark::CapturePlan::build(
-                form.capture_target(),
-                crate::tui::wireshark::Platform::current(),
-            );
-            app.modals.push(Modal::Wireshark {
-                plan: Box::new(plan),
-                scroll: 0,
-            });
-        }
-        ModalAction::FormApply => {
-            if form.busy {
-                return Outcome::Continue;
-            }
-            form.busy = true;
-            form.error = None;
-            let model = form.clone();
-            let llm = app.llm_client.clone();
-            let status_tx = app.status_tx.clone();
-            let ui_tx = app.ui_tx.clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                let result = model
-                    .apply(&state, llm, &status_tx)
-                    .await
-                    .map_err(|e| e.to_string());
-                let _ = ui_tx.send(UiMsg::ActionDone {
-                    origin: ActionOrigin::Form,
-                    result,
-                });
-            });
-        }
-        _ => {}
-    }
-    Outcome::Continue
-}
-
-/// The text editor: Tab leaves the text for the `[ Accept ]` / `[ Cancel ]`
-/// buttons (and cycles back), Enter presses the focused one, and typing
-/// returns to the text. Tab used to insert a tab character here, which left
-/// a chord as the only way to accept — the one thing the buttons exist to
-/// avoid. Indentation inside the editor is the spacebar's job.
-fn handle_text_editor_key(app: &mut DashboardApp, key: KeyEvent) -> Outcome {
-    use crate::tui::hit::ModalAction;
-
-    let Some(Modal::TextEditor { editor, .. }) = app.modals.last_mut() else {
-        return Outcome::Continue;
-    };
-
-    match key.code {
-        KeyCode::Esc => {
-            app.modals.pop();
-        }
-        KeyCode::Tab => editor.cycle_focus(false),
-        KeyCode::BackTab => editor.cycle_focus(true),
-        KeyCode::Enter | KeyCode::Char(' ') if editor.focused_action().is_some() => {
-            match editor.focused_action() {
-                Some(ModalAction::EditorAccept) => text_editor_accept(app),
-                Some(ModalAction::EditorCancel) => {
-                    app.modals.pop();
-                }
-                _ => {}
-            }
-        }
-        _ => {
-            editor.focused_button = None;
-            editor.textarea.input(tui_textarea::Input::from(key));
-        }
-    }
-    Outcome::Continue
-}
-
-/// Accept the text editor's content into whatever opened it. Shared by the
-/// focused and the clicked `[ Accept ]` button so the two cannot diverge.
-fn text_editor_accept(app: &mut DashboardApp) {
-    use crate::tui::modal::form::FieldTarget;
-
-    let Some(Modal::TextEditor { editor, target }) = app.modals.last_mut() else {
-        return;
-    };
-    let Some(text) = editor.accept() else {
-        return; // Validation failed; the editor shows why.
-    };
-    let target = target.clone();
-    app.modals.pop();
-    match app.modals.last_mut() {
-        Some(Modal::Form(form)) => form.set_field_value(&target, text),
-        // Opened from a routing draft: the target says which half of the
-        // handler body was being edited.
-        Some(Modal::Routing(model)) => {
-            if let Some(draft) = model.draft.as_mut() {
-                match target {
-                    FieldTarget::DraftActions | FieldTarget::EventHandlersJson => {
-                        match serde_json::from_str::<serde_json::Value>(&text) {
-                            Ok(serde_json::Value::Array(actions)) => {
-                                draft.actions = actions;
-                                draft.error = None;
-                            }
-                            Ok(_) => {
-                                draft.error = Some("response actions must be a JSON array".into())
-                            }
-                            Err(e) => draft.error = Some(format!("invalid JSON: {e}")),
-                        }
-                    }
-                    FieldTarget::DraftInstruction => draft.instruction = text,
-                    _ => draft.code = text,
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-async fn handle_composer_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let Some(Modal::Composer(composer)) = app.modals.last_mut() else {
-        return Outcome::Continue;
-    };
-
-    if let Some(buffer) = composer.editing.as_mut() {
-        match key.code {
-            KeyCode::Enter => composer.commit_edit(),
-            KeyCode::Esc => composer.cancel_edit(),
-            KeyCode::Backspace => {
-                buffer.pop();
-            }
-            KeyCode::Char(c) if !ctrl => buffer.push(c),
-            _ => {}
-        }
-        return Outcome::Continue;
-    }
-
-    match key.code {
-        KeyCode::Esc => {
-            if composer.chosen.is_some() {
-                composer.back_to_actions();
-            } else {
-                app.modals.pop();
-            }
-        }
-        KeyCode::Tab => composer.cycle_focus(false),
-        KeyCode::BackTab => composer.cycle_focus(true),
-        KeyCode::Up => {
-            composer.focused_button = None;
-            composer.move_selection(-1);
-        }
-        KeyCode::Down => {
-            composer.focused_button = None;
-            composer.move_selection(1);
-        }
-        KeyCode::Enter if composer.focused_action().is_some() => {
-            let action = composer.focused_action().unwrap();
-            return run_composer_action(app, action, state).await;
-        }
-        KeyCode::Enter => {
-            if composer.chosen.is_some() {
-                composer.begin_edit();
-            } else {
-                composer.choose();
-            }
-        }
-        // Space flips a boolean field like a checkbox, and steps a choice
-        // field to its next value — the same gesture Enter performs.
-        KeyCode::Char(' ')
-            if composer.chosen.is_some()
-                && composer.raw_json.is_none()
-                && composer.focused_button.is_none()
-                && composer.selected_field().is_some_and(|f| {
-                    matches!(
-                        f.kind,
-                        crate::tui::modal::composer::FieldKind::Bool
-                            | crate::tui::modal::composer::FieldKind::Choice
-                    )
-                }) =>
-        {
-            composer.begin_edit();
-        }
-        // ←/→ cycle a choice field without leaving the row.
-        KeyCode::Left | KeyCode::Right
-            if composer.chosen.is_some()
-                && composer.raw_json.is_none()
-                && composer.focused_button.is_none()
-                && composer
-                    .selected_field()
-                    .is_some_and(|f| f.kind == crate::tui::modal::composer::FieldKind::Choice) =>
-        {
+        KeyCode::Left | KeyCode::Right => {
             let backward = key.code == KeyCode::Left;
-            let selected = composer.selected;
-            if let Some(field) = composer.fields.get_mut(selected) {
-                field.cycle_choice(backward);
+            match app.inspector.bar {
+                Some(index) if !view.bar.is_empty() => {
+                    let len = view.bar.len();
+                    app.inspector.bar = Some(if backward {
+                        (index + len - 1) % len
+                    } else {
+                        (index + 1) % len
+                    });
+                }
+                _ => {
+                    let next = if backward {
+                        (tab_pos + tabs.len() - 1) % tabs.len()
+                    } else {
+                        (tab_pos + 1) % tabs.len()
+                    };
+                    set_tab(app, tabs[next]);
+                }
             }
         }
-        // Typing on a parameter field edits it (see the form's note).
-        KeyCode::Char(c)
-            if !ctrl
-                && composer.chosen.is_some()
-                && composer.raw_json.is_none()
-                && composer.focused_button.is_none()
-                && composer
-                    .selected_field()
-                    .is_some_and(|f| f.kind == crate::tui::modal::composer::FieldKind::Text) =>
-        {
-            composer.begin_edit();
-            if let Some(buffer) = composer.editing.as_mut() {
-                buffer.push(c);
+        KeyCode::Up => match app.inspector.bar {
+            Some(_) => {}
+            None if app.inspector.item == 0 || items == 0 => {
+                if !view.bar.is_empty() {
+                    app.inspector.bar = Some(0);
+                }
             }
-        }
-        KeyCode::Backspace
-            if composer.chosen.is_some()
-                && composer.raw_json.is_none()
-                && composer.focused_button.is_none()
-                && composer
-                    .selected_field()
-                    .is_some_and(|f| f.kind == crate::tui::modal::composer::FieldKind::Text) =>
-        {
-            composer.begin_edit();
-            if let Some(buffer) = composer.editing.as_mut() {
-                buffer.pop();
+            None => app.inspector.item -= 1,
+        },
+        KeyCode::Down => match app.inspector.bar {
+            Some(_) => {
+                app.inspector.bar = None;
+                app.inspector.item = 0;
             }
+            None if app.inspector.item + 1 < items => app.inspector.item += 1,
+            None => {}
+        },
+        KeyCode::PageDown => {
+            app.inspector.bar = None;
+            app.inspector.item = (app.inspector.item + 10).min(items.saturating_sub(1));
         }
-        // Backspace unsets an optional choice field (a required one has no
-        // meaningful empty state to go back to).
-        KeyCode::Backspace
-            if composer.chosen.is_some()
-                && composer.raw_json.is_none()
-                && composer.focused_button.is_none()
-                && composer.selected_field().is_some_and(|f| {
-                    f.kind == crate::tui::modal::composer::FieldKind::Choice && !f.required
-                }) =>
-        {
-            let selected = composer.selected;
-            if let Some(field) = composer.fields.get_mut(selected) {
-                field.value.clear();
-            }
+        KeyCode::PageUp => {
+            app.inspector.bar = None;
+            app.inspector.item = app.inspector.item.saturating_sub(10);
         }
-        _ => {}
-    }
-    Outcome::Continue
-}
-
-/// Run one composer button. Sending is spawned (network I/O must not block
-/// the event loop); the toggles act in place.
-async fn run_composer_action(
-    app: &mut DashboardApp,
-    action: crate::tui::hit::ModalAction,
-    state: &AppState,
-) -> Outcome {
-    use crate::tui::hit::ModalAction;
-
-    let Some(Modal::Composer(composer)) = app.modals.last_mut() else {
-        return Outcome::Continue;
-    };
-    match action {
-        ModalAction::ComposerBack => composer.back_to_actions(),
-        ModalAction::ComposerRaw => composer.toggle_raw_json(),
-        ModalAction::ComposerSend => {
-            use crate::tui::modal::composer::{ComposerModel, ComposerTarget};
-
-            // Answering a parked request: resolving is a channel send under a
-            // short lock, so it happens inline, and both the composer and the
-            // question it answered close together.
-            if let ComposerTarget::Intercept { id, .. } = composer.target {
-                let actions = match composer.build_answer() {
-                    Ok(actions) => actions,
-                    Err(e) => {
-                        composer.error = Some(e.to_string());
-                        return Outcome::Continue;
+        KeyCode::Home => {
+            app.inspector.bar = None;
+            app.inspector.item = 0;
+        }
+        KeyCode::End => {
+            app.inspector.bar = None;
+            app.inspector.item = items.saturating_sub(1);
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => match app.inspector.bar {
+            Some(index) => {
+                if let Some(button) = view.bar.get(index) {
+                    if button.enabled {
+                        actions::run(app, key_id, button.action, state).await;
+                    } else if let Some(why) = &button.why_disabled {
+                        app.push_system(format!("[ {} ]: {why}", button.label));
                     }
-                };
-                let names: Vec<String> = actions
-                    .iter()
-                    .map(|a| {
-                        a.get("type")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("(no type)")
-                            .to_string()
-                    })
-                    .collect();
-                match state.resolve_intercept(id, actions).await {
-                    Ok(()) => {
-                        app.modals.pop();
-                        if matches!(app.modals.last(), Some(Modal::Intercept(m)) if m.id == id) {
-                            app.modals.pop();
-                        }
-                        app.push_system(format!(
-                            "answered request #{id} with {}",
-                            names.join(", ")
-                        ));
-                    }
-                    Err(e) => composer.error = Some(e),
                 }
-                return Outcome::Continue;
             }
-
-            // Validate synchronously: a missing required field is the user's
-            // to fix right here, so the composer stays open showing it.
-            let action = match composer.build_action() {
-                Ok(action) => action,
-                Err(e) => {
-                    composer.error = Some(e.to_string());
-                    return Outcome::Continue;
+            None => {
+                if let Some(action) = view.default_action(app.inspector.item) {
+                    actions::run(app, key_id, action, state).await;
                 }
-            };
-
-            // Everything past this point is network work. Close the composer
-            // and report asynchronously — it used to sit on "sending…" until
-            // the outcome arrived, which for a client whose loop is parked on
-            // a MANUAL question meant a frozen-looking modal and then a bare
-            // timeout error.
-            let target = composer.target;
-            let name = action
-                .get("type")
-                .and_then(|t| t.as_str())
-                .unwrap_or("action")
-                .to_string();
-            app.modals.pop();
-            app.push_system(format!("{}: sending {name}…", target.describe()));
-
-            let ui_tx = app.ui_tx.clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                let message = match ComposerModel::deliver(target, &state, action).await {
-                    Ok(outcome) => format!(
-                        "{}: {}",
-                        target.describe(),
-                        crate::tui::modal::composer::describe(&outcome)
-                    ),
-                    // No target prefix here: send_to_client / send_to_peer
-                    // already name what failed, and prefixing produced
-                    // "client #2: client #2 did not report…".
-                    Err(e) => match ComposerModel::queue_hint(target, &state).await {
-                        Some(hint) => format!("{e} — {hint}"),
-                        None => e.to_string(),
-                    },
-                };
-                let _ = ui_tx.send(UiMsg::Chat(message));
-            });
-        }
-        _ => {}
-    }
-    Outcome::Continue
-}
-
-/// The intercept modal: three buttons, Tab between them, Enter acts.
-async fn handle_intercept_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
-    let Some(Modal::Intercept(model)) = app.modals.last_mut() else {
-        return Outcome::Continue;
-    };
-    match key.code {
-        // Esc keeps the request waiting — closing the window must not be the
-        // thing that silently refuses a peer.
-        KeyCode::Esc => {
-            app.modals.pop();
-        }
-        KeyCode::Tab | KeyCode::Right | KeyCode::Down => model.cycle_focus(false),
-        KeyCode::BackTab | KeyCode::Left | KeyCode::Up => model.cycle_focus(true),
-        KeyCode::Enter | KeyCode::Char(' ') => {
-            if let Some(action) = model.focused_action() {
-                return run_intercept_action(app, action, state).await;
             }
-        }
-        _ => {}
-    }
-    Outcome::Continue
-}
-
-/// Run one intercept button: compose, send, or fail closed.
-async fn run_intercept_action(
-    app: &mut DashboardApp,
-    action: crate::tui::hit::ModalAction,
-    state: &AppState,
-) -> Outcome {
-    use crate::tui::hit::ModalAction;
-    use crate::tui::modal::composer::ComposerModel;
-
-    let Some(Modal::Intercept(model)) = app.modals.last_mut() else {
-        return Outcome::Continue;
-    };
-    match action {
-        // The same composer as the `[ send ]` rows: an action list, then
-        // fields. Its Send resolves the intercept (see `run_composer_action`).
-        ModalAction::InterceptCompose => {
-            if model.vocabulary.is_empty() {
-                model.error = Some(format!(
-                    "{} declares no actions to answer with — Answer with nothing or Fail closed",
-                    model.protocol
-                ));
-                return Outcome::Continue;
-            }
-            let composer = ComposerModel::for_intercept(
-                model.id,
-                model.owner,
-                &model.protocol,
-                model.vocabulary.clone(),
-            );
-            app.modals.push(Modal::Composer(Box::new(composer)));
-        }
-        ModalAction::InterceptSend => {
-            // Zero actions is a real answer — "acknowledge, say nothing" — the
-            // same semantics as an empty static handler, and exactly what a
-            // lifecycle event like connection-opened usually deserves. It is
-            // delivered (Ok) and therefore distinct from a timeout (Err).
-            let id = model.id;
-            // Resolving is a channel send under a short lock — no network I/O,
-            // safe to do inline (the waiting dispatcher does the wire work).
-            match state.resolve_intercept(id, Vec::new()).await {
-                Ok(()) => {
-                    app.modals.pop();
-                    app.push_system(format!(
-                        "answered request #{id} with nothing (acknowledged, no reply sent)"
-                    ));
-                }
-                Err(e) => model.error = Some(e),
-            }
-        }
-        ModalAction::InterceptDismiss => {
-            let id = model.id;
-            if state.dismiss_intercept(id).await {
-                app.modals.pop();
-                app.push_system(format!(
-                    "refused request #{id} — the peer got the fail-closed reply"
-                ));
+        },
+        code => {
+            if let Some(index) = tab_digit(code) {
+                jump_to_tab(app, index);
             } else {
-                model.error = Some(format!("request #{id} is no longer waiting"));
+                instance_letter(app, code, state).await;
             }
         }
-        _ => {}
+    }
+    app.clamp_selection();
+    Outcome::Continue
+}
+
+async fn handle_activity_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
+    let visible = crate::tui::render::activity::visible_entries(app).len();
+    match key.code {
+        KeyCode::Esc | KeyCode::End => {
+            app.activity.scroll_to_follow();
+            app.focus = Focus::ChatInput;
+        }
+        KeyCode::Up => {
+            let cursor = match app.activity.cursor {
+                None => visible.checked_sub(1),
+                Some(c) => Some(c.saturating_sub(1)),
+            };
+            app.activity.cursor = cursor;
+            if cursor.is_some() && app.activity.scroll == crate::tui::chat::ScrollPos::Follow {
+                app.activity.scroll_up(0);
+            }
+        }
+        KeyCode::Down => {
+            if let Some(c) = app.activity.cursor {
+                if c + 1 < visible {
+                    app.activity.cursor = Some(c + 1);
+                } else {
+                    app.activity.scroll_to_follow();
+                }
+            }
+        }
+        KeyCode::PageUp => {
+            let cursor = app.activity.cursor.unwrap_or(visible).saturating_sub(10);
+            app.activity.cursor = Some(cursor);
+            if app.activity.scroll == crate::tui::chat::ScrollPos::Follow {
+                app.activity.scroll_up(0);
+            }
+        }
+        KeyCode::PageDown => {
+            if let Some(c) = app.activity.cursor {
+                if c + 10 < visible {
+                    app.activity.cursor = Some(c + 10);
+                } else {
+                    app.activity.scroll_to_follow();
+                }
+            }
+        }
+        KeyCode::Home => {
+            if visible > 0 {
+                app.activity.cursor = Some(0);
+                app.activity.scroll_up(0);
+            }
+        }
+        KeyCode::Char('f') => {
+            app.activity.only_selected = !app.activity.only_selected;
+            app.activity.cursor = None;
+        }
+        KeyCode::Enter => {
+            if let Some(cursor) = app.activity.cursor {
+                let link = crate::tui::render::activity::visible_entries(app)
+                    .get(cursor)
+                    .and_then(|e| e.event.link);
+                follow_link(app, link, state).await;
+            }
+        }
+        code => {
+            instance_letter(app, code, state).await;
+        }
     }
     Outcome::Continue
+}
+
+async fn follow_link(
+    app: &mut DashboardApp,
+    link: Option<crate::tui::activity::Link>,
+    state: &AppState,
+) {
+    use crate::tui::activity::Link;
+    match link {
+        Some(Link::Request(key, id)) => {
+            app.select(key);
+            actions::run(app, key, InstanceAction::OpenRequest(id), state).await;
+        }
+        Some(Link::Intercept(key, id)) => {
+            app.select(key);
+            actions::run(app, key, InstanceAction::Answer(id), state).await;
+        }
+        Some(Link::Instance(key)) => {
+            if app.instance(key).is_some() {
+                app.select(key);
+                app.focus = Focus::Inspector;
+                app.activity.scroll_to_follow();
+            } else {
+                app.push_system(format!("{} is gone", key.describe()));
+            }
+        }
+        None => {}
+    }
 }
 
 pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &AppState) -> Outcome {
     let target = app.hits.hit(event.column, event.row).cloned();
 
     match event.kind {
-        MouseEventKind::ScrollUp => {
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let up = event.kind == MouseEventKind::ScrollUp;
             match target {
                 Some(HitTarget::ChatHistory) | Some(HitTarget::ChatInput) => {
-                    app.focus = Focus::ChatHistory;
-                    app.chat.scroll_up(3);
+                    if up {
+                        app.focus = Focus::ChatHistory;
+                        app.chat.scroll_up(3);
+                    } else {
+                        app.chat.scroll_down(3);
+                    }
                 }
                 Some(HitTarget::ModalBody) | Some(HitTarget::ModalRow(_)) => {
                     if let Some(modal) = app.modal_mut() {
-                        modal.scroll_by(-3);
+                        modal.scroll_by(if up { -3 } else { 3 });
                     }
                 }
-                Some(HitTarget::TreeRow { .. }) | Some(HitTarget::Band { .. }) => {
-                    app.rail.scroll = app.rail.scroll.saturating_sub(3);
+                Some(HitTarget::ListRow(_)) => {
+                    let rows = list_rows(&app.snapshot).len();
+                    app.instances.scroll = if up {
+                        app.instances.scroll.saturating_sub(3)
+                    } else {
+                        (app.instances.scroll + 3).min(rows.saturating_sub(1))
+                    };
                 }
-                _ => {}
-            }
-            app.dirty = true;
-            return Outcome::Continue;
-        }
-        MouseEventKind::ScrollDown => {
-            match target {
-                Some(HitTarget::ChatHistory) | Some(HitTarget::ChatInput) => {
-                    app.chat.scroll_down(3);
+                Some(HitTarget::InspectorBody) | Some(HitTarget::InspectorItem(_)) => {
+                    app.inspector.scroll = if up {
+                        app.inspector.scroll.saturating_sub(3)
+                    } else {
+                        app.inspector.scroll + 3
+                    };
                 }
-                Some(HitTarget::ModalBody) | Some(HitTarget::ModalRow(_)) => {
-                    if let Some(modal) = app.modal_mut() {
-                        modal.scroll_by(3);
+                Some(HitTarget::Activity) | Some(HitTarget::ActivityRow(_)) => {
+                    if up {
+                        app.activity.scroll_up(3);
+                    } else {
+                        app.activity.scroll_down(3);
                     }
-                }
-                Some(HitTarget::TreeRow { .. }) | Some(HitTarget::Band { .. }) => {
-                    let rows = crate::tui::render::band::rail_row_count(app);
-                    app.rail.scroll = (app.rail.scroll + 3).min(rows.saturating_sub(1));
                 }
                 _ => {}
             }
@@ -1655,17 +646,13 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
     };
 
     // Buttons inside a modal are clickable; every other click in a modal is
-    // swallowed so it cannot reach the rail beneath.
+    // swallowed so it cannot reach the panes beneath.
     if app.modal().is_some() {
         if let HitTarget::ModalActionButton(action) = target {
-            return run_modal_action(app, action, state).await;
+            return crate::tui::modal_keys::run_modal_action(app, action, state).await;
         }
-        // Clicking a row selects it. The lists inside modals looked
-        // interactive and were not: only buttons and the outer body were
-        // registered, so a click on a field or a protocol did nothing.
         if let HitTarget::ModalRow(index) = target {
-            select_modal_row(app, index);
-            return Outcome::Continue;
+            crate::tui::modal_keys::select_modal_row(app, index);
         }
         return Outcome::Continue;
     }
@@ -1673,12 +660,89 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
     match target {
         HitTarget::ChatHistory => app.focus = Focus::ChatHistory,
         HitTarget::ChatInput => app.focus = Focus::ChatInput,
-        HitTarget::SectionHeader(_) => app.focus = Focus::Rail(RailSel::new()),
-        HitTarget::Band { .. } => app.focus = Focus::Rail(RailSel::new()),
-        HitTarget::TreeRow { key, index } => {
-            app.focus = Focus::Rail(RailSel { row: Some(index) });
-            let rows = crate::tui::render::band::rail_rows(app);
-            activate_row(app, key, &rows, index, state).await;
+        HitTarget::ListRow(index) => {
+            let rows = list_rows(&app.snapshot);
+            let Some(row) = rows.get(index).copied() else {
+                return Outcome::Continue;
+            };
+            match row {
+                ListRow::Header(..) => {}
+                ListRow::New(section) => {
+                    app.focus = Focus::Instances;
+                    set_list_cursor(app, row);
+                    actions::open_protocol_picker(app, section, None, state).await;
+                }
+                ListRow::Instance(key) => {
+                    // First click selects; a click on the selection opens it.
+                    if app.selected() == Some(key) && app.focus == Focus::Instances {
+                        app.focus = Focus::Inspector;
+                    } else {
+                        app.focus = Focus::Instances;
+                        app.select(key);
+                    }
+                }
+            }
+        }
+        HitTarget::InspectorTab(tab) => {
+            app.focus = Focus::Inspector;
+            set_tab(app, tab);
+        }
+        HitTarget::InspectorBar(index) => {
+            app.focus = Focus::Inspector;
+            app.inspector.bar = Some(index);
+            if let Some(instance) = app.selected_instance() {
+                let key = instance.key();
+                let view = inspector::build(
+                    instance,
+                    &app.inspector,
+                    app.instances.metrics.get(&key),
+                    60,
+                );
+                if let Some(button) = view.bar.get(index).cloned() {
+                    if button.enabled {
+                        actions::run(app, key, button.action, state).await;
+                    } else if let Some(why) = button.why_disabled {
+                        app.push_system(format!("[ {} ]: {why}", button.label));
+                    }
+                }
+            }
+        }
+        HitTarget::InspectorItem(index) => {
+            app.focus = Focus::Inspector;
+            // First click selects; a click on the selection activates it.
+            if app.inspector.bar.is_none() && app.inspector.item == index {
+                if let Some(instance) = app.selected_instance() {
+                    let key = instance.key();
+                    let view = inspector::build(
+                        instance,
+                        &app.inspector,
+                        app.instances.metrics.get(&key),
+                        60,
+                    );
+                    if let Some(action) = view.default_action(index) {
+                        actions::run(app, key, action, state).await;
+                    }
+                }
+            } else {
+                app.inspector.bar = None;
+                app.inspector.item = index;
+            }
+        }
+        HitTarget::InspectorBody => app.focus = Focus::Inspector,
+        HitTarget::Activity => app.focus = Focus::Activity,
+        HitTarget::ActivityRow(index) => {
+            app.focus = Focus::Activity;
+            if app.activity.cursor == Some(index) {
+                let link = crate::tui::render::activity::visible_entries(app)
+                    .get(index)
+                    .and_then(|e| e.event.link);
+                follow_link(app, link, state).await;
+            } else {
+                app.activity.cursor = Some(index);
+                if app.activity.scroll == crate::tui::chat::ScrollPos::Follow {
+                    app.activity.scroll_up(0);
+                }
+            }
         }
         HitTarget::StatusSegment(segment) => match segment {
             SegmentId::LogLevel => {
@@ -1701,7 +765,30 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
                 }
             }
             SegmentId::Help => app.modals.push(Modal::Help { scroll: 0 }),
-            SegmentId::Model | SegmentId::Backend | SegmentId::Usage => {
+            SegmentId::Waiting => actions::answer_next_waiting(app, state),
+            SegmentId::Instances => {
+                app.focus = Focus::Instances;
+                app.clamp_selection();
+            }
+            SegmentId::Model => {
+                let lines = crate::tui::command_exec::execute(
+                    crate::events::UserCommand::ShowUsage,
+                    state,
+                    &dummy_channel(),
+                )
+                .await;
+                let model = if app.status.model.is_empty() {
+                    "No model — /model <name> picks one; manual, static and script rules need none."
+                        .to_string()
+                } else {
+                    format!("Model: {} — /model lists alternatives.", app.status.model)
+                };
+                app.push_system(model);
+                for line in lines {
+                    app.push_system(line);
+                }
+            }
+            SegmentId::Backend | SegmentId::Usage => {
                 let lines = crate::tui::command_exec::execute(
                     crate::events::UserCommand::ShowUsage,
                     state,
@@ -1713,387 +800,13 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
                 }
             }
         },
-        HitTarget::ModalBody | HitTarget::ModalRow(_) | HitTarget::ModalButton(_) => {}
-        HitTarget::ModalActionButton(_) => {}
+        HitTarget::ModalBody
+        | HitTarget::ModalRow(_)
+        | HitTarget::ModalButton(_)
+        | HitTarget::ModalActionButton(_) => {}
     }
+    app.clamp_selection();
     Outcome::Continue
-}
-
-async fn handle_routing_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
-    use crate::tui::modal::routing::DraftFocus;
-    use crate::tui::modal::text_editor::TextEditorModel;
-
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let Some(Modal::Routing(model)) = app.modals.last_mut() else {
-        return Outcome::Continue;
-    };
-
-    // Handler draft open. Tab walks kind → pattern → the kind's fields →
-    // buttons; ←/→ changes whatever choice has focus; Enter acts on it.
-    if let Some(draft) = model.draft.as_mut() {
-        if let Some(buffer) = draft.editing.as_mut() {
-            match key.code {
-                KeyCode::Enter => {
-                    let text = buffer.clone();
-                    draft.editing = None;
-                    match draft.focus {
-                        DraftFocus::Pattern => draft.pattern = text,
-                        DraftFocus::Timeout => draft.timeout_secs = text,
-                        _ => {}
-                    }
-                }
-                KeyCode::Esc => draft.editing = None,
-                KeyCode::Backspace => {
-                    buffer.pop();
-                }
-                KeyCode::Char(c) if !ctrl => buffer.push(c),
-                _ => {}
-            }
-            return Outcome::Continue;
-        }
-
-        let backward_left = key.code == KeyCode::Left;
-        match key.code {
-            KeyCode::Esc => model.draft = None,
-            KeyCode::Tab => draft.cycle_focus(false),
-            KeyCode::BackTab => draft.cycle_focus(true),
-            KeyCode::Left | KeyCode::Right => match draft.focus {
-                DraftFocus::Kind => {
-                    let kind = if backward_left {
-                        draft.kind.previous()
-                    } else {
-                        draft.kind.next()
-                    };
-                    draft.set_kind(kind);
-                }
-                DraftFocus::Pattern => {
-                    let event_ids = model.event_ids.clone();
-                    if let Some(draft) = model.draft.as_mut() {
-                        draft.cycle_pattern(&event_ids, backward_left);
-                    }
-                }
-                DraftFocus::Language => draft.cycle_language(backward_left),
-                DraftFocus::Resident => draft.resident = !draft.resident,
-                DraftFocus::Button(_) => draft.cycle_focus(backward_left),
-                _ => {}
-            },
-            KeyCode::Up if draft.focus == DraftFocus::Actions => {
-                draft.selected_action = draft.selected_action.saturating_sub(1);
-            }
-            KeyCode::Down if draft.focus == DraftFocus::Actions => {
-                if draft.selected_action + 1 < draft.actions.len() {
-                    draft.selected_action += 1;
-                }
-            }
-            KeyCode::Char('d') if draft.focus == DraftFocus::Actions => {
-                if draft.selected_action < draft.actions.len() {
-                    draft.actions.remove(draft.selected_action);
-                    draft.selected_action = draft.selected_action.saturating_sub(1);
-                }
-            }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                use crate::tui::modal::form::FieldTarget;
-                match draft.focus {
-                    DraftFocus::Button(_) => match draft.focused_action() {
-                        Some(crate::tui::hit::ModalAction::DraftSave) => {
-                            match model.commit_draft() {
-                                Ok(()) => model.error = None,
-                                Err(e) => {
-                                    if let Some(draft) = model.draft.as_mut() {
-                                        draft.error = Some(e.to_string());
-                                    }
-                                }
-                            }
-                        }
-                        Some(crate::tui::hit::ModalAction::DraftCancel) => model.draft = None,
-                        _ => {}
-                    },
-                    DraftFocus::Kind => draft.set_kind(draft.kind.next()),
-                    DraftFocus::Pattern => draft.editing = Some(draft.pattern.clone()),
-                    DraftFocus::Language => draft.cycle_language(false),
-                    DraftFocus::Resident => draft.resident = !draft.resident,
-                    DraftFocus::Timeout => draft.editing = Some(draft.timeout_secs.clone()),
-                    DraftFocus::Instruction => {
-                        let editor = TextEditorModel::new(
-                            "per-event instruction",
-                            "What the model should do when this event arrives.",
-                            &draft.instruction,
-                            false,
-                        );
-                        app.modals.push(Modal::TextEditor {
-                            editor: Box::new(editor),
-                            target: FieldTarget::DraftInstruction,
-                        });
-                    }
-                    DraftFocus::Code => {
-                        let editor = TextEditorModel::new(
-                            "script code",
-                            "The script receives the event on stdin and writes {\"actions\": [...]}.",
-                            &draft.code,
-                            false,
-                        );
-                        app.modals.push(Modal::TextEditor {
-                            editor: Box::new(editor),
-                            target: FieldTarget::DraftCode,
-                        });
-                    }
-                    DraftFocus::Actions => {
-                        let initial = if draft.actions.is_empty() {
-                            example_actions(model_actions(model))
-                        } else {
-                            serde_json::to_string_pretty(&draft.actions).unwrap_or_default()
-                        };
-                        let editor = TextEditorModel::new(
-                            "response actions",
-                            "A JSON array of actions. {{event.field}} interpolates from the event.",
-                            &initial,
-                            true,
-                        );
-                        app.modals.push(Modal::TextEditor {
-                            editor: Box::new(editor),
-                            target: FieldTarget::DraftActions,
-                        });
-                    }
-                }
-            }
-            // Typing on the two free-text fields edits them in place.
-            KeyCode::Char(c) if !ctrl => match draft.focus {
-                DraftFocus::Pattern => {
-                    draft.editing = Some(format!("{}{c}", draft.pattern));
-                }
-                DraftFocus::Timeout => {
-                    draft.editing = Some(format!("{}{c}", draft.timeout_secs));
-                }
-                _ => {}
-            },
-            KeyCode::Backspace => match draft.focus {
-                DraftFocus::Pattern => {
-                    let mut text = draft.pattern.clone();
-                    text.pop();
-                    draft.editing = Some(text);
-                }
-                DraftFocus::Timeout => {
-                    let mut text = draft.timeout_secs.clone();
-                    text.pop();
-                    draft.editing = Some(text);
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-        return Outcome::Continue;
-    }
-
-    // Handler list and buttons. Tab moves between them; Enter activates what
-    // has focus. The letter shortcuts still work, but nothing depends on them.
-    use crate::tui::modal::routing::RoutingFocus;
-
-    match key.code {
-        KeyCode::Tab => model.cycle_focus(false),
-        KeyCode::BackTab => model.cycle_focus(true),
-        KeyCode::Esc => {
-            app.modals.pop();
-        }
-        KeyCode::Up if model.focus == RoutingFocus::List => model.move_selection(-1),
-        KeyCode::Down if model.focus == RoutingFocus::List => model.move_selection(1),
-        KeyCode::Left | KeyCode::Right => model.cycle_focus(key.code == KeyCode::Left),
-        KeyCode::Enter => match model.focused_button() {
-            Some(action) => return run_routing_action(app, action, state).await,
-            None => model.edit_selected(),
-        },
-        // Kept as accelerators for anyone who wants them.
-        KeyCode::Char('a') => model.add(),
-        KeyCode::Char('e') => model.edit_selected(),
-        KeyCode::Char('d') => model.delete_selected(),
-        KeyCode::Char('K') => model.reorder(-1),
-        KeyCode::Char('J') => model.reorder(1),
-        _ => {}
-    }
-    Outcome::Continue
-}
-
-/// Run one routing-editor button.
-async fn run_routing_action(
-    app: &mut DashboardApp,
-    action: crate::tui::hit::ModalAction,
-    state: &AppState,
-) -> Outcome {
-    use crate::tui::hit::ModalAction;
-
-    let Some(Modal::Routing(model)) = app.modals.last_mut() else {
-        return Outcome::Continue;
-    };
-    match action {
-        ModalAction::RoutingAdd => model.add(),
-        ModalAction::RoutingEdit => model.edit_selected(),
-        ModalAction::RoutingDelete => model.delete_selected(),
-        ModalAction::RoutingMoveUp => model.reorder(-1),
-        ModalAction::RoutingMoveDown => model.reorder(1),
-        ModalAction::RoutingCancel => {
-            app.modals.pop();
-        }
-        ModalAction::RoutingSave => {
-            if model.busy {
-                return Outcome::Continue;
-            }
-            model.busy = true;
-            model.error = None;
-            let snapshot = model.clone();
-            let llm = app.llm_client.clone();
-            let status_tx = app.status_tx.clone();
-            let ui_tx = app.ui_tx.clone();
-            let state = state.clone();
-            tokio::spawn(async move {
-                let result = snapshot
-                    .apply(&state, llm, &status_tx)
-                    .await
-                    .map_err(|e| e.to_string());
-                let _ = ui_tx.send(UiMsg::ActionDone {
-                    origin: ActionOrigin::Routing,
-                    result,
-                });
-            });
-        }
-        // Draft/form actions are handled by their own modals.
-        _ => {}
-    }
-    Outcome::Continue
-}
-
-fn model_actions(
-    model: &crate::tui::modal::routing::RoutingModel,
-) -> &[crate::llm::actions::ActionDefinition] {
-    &model.actions
-}
-
-/// A starter JSON array using the protocol's first action as a template, so
-/// the editor opens with something valid rather than a blank page.
-fn example_actions(actions: &[crate::llm::actions::ActionDefinition]) -> String {
-    match actions.first() {
-        Some(action) => {
-            let mut example = action.example.clone();
-            if example.get("type").is_none() {
-                if let Some(obj) = example.as_object_mut() {
-                    obj.insert(
-                        "type".to_string(),
-                        serde_json::Value::String(action.name.clone()),
-                    );
-                }
-            }
-            serde_json::to_string_pretty(&serde_json::Value::Array(vec![example]))
-                .unwrap_or_else(|_| "[]".to_string())
-        }
-        None => "[]".to_string(),
-    }
-}
-
-/// Point the open modal's selection at the row that was clicked.
-///
-/// Selection only — a click never *acts*, so a mis-click cannot send a
-/// request or delete a handler. Enter (or the buttons) still does that.
-fn select_modal_row(app: &mut DashboardApp, index: usize) {
-    match app.modals.last_mut() {
-        Some(Modal::Form(form)) => {
-            if index < form.fields.len() {
-                form.focused_button = None;
-                form.selected = index;
-            }
-        }
-        Some(Modal::Composer(composer)) => {
-            let len = if composer.chosen.is_some() {
-                composer.fields.len()
-            } else {
-                composer.actions.len()
-            };
-            if index < len {
-                composer.focused_button = None;
-                composer.selected = index;
-            }
-        }
-        Some(Modal::Routing(model)) => {
-            if model.draft.is_none() && index < model.handlers.len() {
-                model.focus = crate::tui::modal::routing::RoutingFocus::List;
-                model.selected = index;
-            }
-        }
-        Some(Modal::ProtocolPicker { selected, .. }) => *selected = index,
-        _ => {}
-    }
-}
-
-/// Dispatch a modal button to the editor that owns it.
-pub async fn run_modal_action(
-    app: &mut DashboardApp,
-    action: crate::tui::hit::ModalAction,
-    state: &AppState,
-) -> Outcome {
-    use crate::tui::hit::ModalAction;
-    match action {
-        ModalAction::FormApply | ModalAction::FormCancel | ModalAction::FormWireshark => {
-            run_form_action(app, action, state).await
-        }
-        ModalAction::DraftSave => {
-            if let Some(Modal::Routing(model)) = app.modals.last_mut() {
-                match model.commit_draft() {
-                    Ok(()) => model.error = None,
-                    Err(e) => {
-                        if let Some(draft) = model.draft.as_mut() {
-                            draft.error = Some(e.to_string());
-                        }
-                    }
-                }
-            }
-            Outcome::Continue
-        }
-        ModalAction::DraftCancel => {
-            if let Some(Modal::Routing(model)) = app.modals.last_mut() {
-                model.draft = None;
-            }
-            Outcome::Continue
-        }
-        ModalAction::DraftKind(kind) => {
-            if let Some(Modal::Routing(model)) = app.modals.last_mut() {
-                if let Some(draft) = model.draft.as_mut() {
-                    draft.set_kind(kind);
-                    draft.focus = crate::tui::modal::routing::DraftFocus::Kind;
-                }
-            }
-            Outcome::Continue
-        }
-        ModalAction::InterceptCompose
-        | ModalAction::InterceptSend
-        | ModalAction::InterceptDismiss => run_intercept_action(app, action, state).await,
-        ModalAction::ComposerSend | ModalAction::ComposerRaw | ModalAction::ComposerBack => {
-            run_composer_action(app, action, state).await
-        }
-        ModalAction::EditorAccept => {
-            text_editor_accept(app);
-            Outcome::Continue
-        }
-        ModalAction::EditorCancel => {
-            if matches!(app.modals.last(), Some(Modal::TextEditor { .. })) {
-                app.modals.pop();
-            }
-            Outcome::Continue
-        }
-        ModalAction::ConfirmYes => {
-            if let Some(Modal::Confirm { action, .. }) = app.modals.pop() {
-                if action == PendingAction::Quit {
-                    return Outcome::Quit;
-                }
-                let line = confirm::execute(&action, state).await;
-                app.push_system(line);
-            }
-            Outcome::Continue
-        }
-        ModalAction::ConfirmNo => {
-            if matches!(app.modals.last(), Some(Modal::Confirm { .. })) {
-                app.modals.pop();
-            }
-            Outcome::Continue
-        }
-        _ => run_routing_action(app, action, state).await,
-    }
 }
 
 /// Fold the result of a spawned action back into the UI: on success the
@@ -2109,11 +822,11 @@ pub fn handle_ui_msg(app: &mut DashboardApp, msg: UiMsg) {
         UiMsg::ActionDone { origin, result } => (origin, result),
     };
 
-    let matches_origin = match (origin, app.modal()) {
-        (ActionOrigin::Form, Some(Modal::Form(_))) => true,
-        (ActionOrigin::Routing, Some(Modal::Routing(_))) => true,
-        _ => false,
-    };
+    let matches_origin = matches!(
+        (origin, app.modal()),
+        (ActionOrigin::Form, Some(Modal::Form(_)))
+            | (ActionOrigin::Routing, Some(Modal::Routing(_)))
+    );
 
     match result {
         Ok(summary) => {
@@ -2140,8 +853,7 @@ pub fn handle_ui_msg(app: &mut DashboardApp, msg: UiMsg) {
                     _ => {}
                 }
             } else {
-                // The user moved on; the failure still has to be visible.
-                app.push_system(format!("✗ {error}"));
+                app.push_error(format!("✗ {error}"));
             }
         }
     }

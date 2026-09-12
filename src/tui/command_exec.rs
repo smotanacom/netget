@@ -20,10 +20,11 @@ pub async fn execute(
         UserCommand::Status => status_report(state).await,
         UserCommand::Manage => {
             let mut lines = vec![
-                "The rail on the right IS the management surface:".to_string(),
-                "  a  add a server (or client)      e  edit config".to_string(),
-                "  r  routing handlers              x  stop".to_string(),
-                "  c  connect a client to a server  n  send through a client".to_string(),
+                "The list on the left is the management surface (Tab reaches it):".to_string(),
+                "  a  start a server      A  start a client     e  edit config".to_string(),
+                "  r  rules               m  cycle the driver   x  stop / remove".to_string(),
+                "  c  connect a client to a server              n  send through a client"
+                    .to_string(),
             ];
             lines.extend(status_report(state).await);
             lines
@@ -66,7 +67,7 @@ pub async fn execute(
                 ],
                 Err(e) => vec![format!("{e}")],
             },
-            None => vec!["Usage: /docs <protocol> — or press d on a band in the rail".to_string()],
+            None => vec!["Usage: /docs <protocol> — or press d on an instance".to_string()],
         },
         UserCommand::ShowBackend => {
             vec![format!("Backend URL: {}", state.get_ollama_url().await)]

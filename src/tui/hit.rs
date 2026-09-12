@@ -8,32 +8,28 @@
 
 use ratatui::layout::Rect;
 
-use crate::tui::app::{Section, UiKey};
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HitTarget {
+    /// A row of the instance list, by index into `rail::list_rows`.
+    ListRow(usize),
+    /// The inspector's body (scroll wheel target).
+    InspectorBody,
+    /// A tab in the inspector's strip.
+    InspectorTab(crate::tui::inspector::InspectorTab),
+    /// A button in the inspector's action bar, by index.
+    InspectorBar(usize),
+    /// A selectable line in the inspector's body, by item ordinal.
+    InspectorItem(usize),
+    /// The activity feed (scroll wheel target).
+    Activity,
+    /// One visible feed entry, by index into the visible list.
+    ActivityRow(usize),
     ChatHistory,
     ChatInput,
-    SectionHeader(Section),
-    Band {
-        key: UiKey,
-    },
-    /// A row of a band's flattened tree, by index.
-    ///
-    /// Actions are rows too (`tree::RowAction`), so there is no separate
-    /// button target inside the rail: clicking a row and pressing Enter on it
-    /// go through exactly the same path, which is what stopped the two from
-    /// drifting apart.
-    TreeRow {
-        /// `None` for the rail's own rows (`[ + new server ]` / `[ + new
-        /// client ]`), which belong to no instance.
-        key: Option<UiKey>,
-        index: usize,
-    },
     /// A clickable segment of the bottom status bar.
     StatusSegment(SegmentId),
     /// Anywhere inside the active modal (swallows clicks so they do not reach
-    /// the rail beneath).
+    /// the panes beneath).
     ModalBody,
     ModalRow(usize),
     ModalButton(ModalButtonId),
@@ -43,6 +39,8 @@ pub enum HitTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentId {
+    Instances,
+    Waiting,
     Model,
     Backend,
     LogLevel,

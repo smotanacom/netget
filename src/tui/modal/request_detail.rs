@@ -45,8 +45,19 @@ pub fn detail_lines(entry: &AccessLogEntry) -> Vec<String> {
     lines
 }
 
-/// One-line summary for a request row in a band's requests pane.
+/// One-line summary for a request row: `#id event → answer`.
 pub fn summary_line(entry: &AccessLogEntry) -> String {
+    format!(
+        "#{} {} → {}",
+        entry.id,
+        entry.event_type,
+        answer_summary(entry)
+    )
+}
+
+/// What answered the request, in a word: the first action's type (plus
+/// `+N` for the rest), `—` when nothing did.
+pub fn answer_summary(entry: &AccessLogEntry) -> String {
     let action = match entry.response.first() {
         None => "—".to_string(),
         Some(first) => first
@@ -69,5 +80,5 @@ pub fn summary_line(entry: &AccessLogEntry) -> String {
     } else {
         String::new()
     };
-    format!("#{} {} → {}{}", entry.id, entry.event_type, action, extra)
+    format!("{action}{extra}")
 }

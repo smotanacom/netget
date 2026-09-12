@@ -1,29 +1,23 @@
-//! Chat pane: scrollable history above, multi-line input below.
+//! Chat pane: the conversation above, the input box below.
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::tui::app::{DashboardApp, Focus};
 use crate::tui::chat::{ChatState, EntryKind, ScrollPos};
 use crate::tui::hit::HitTarget;
 
+use super::pane_block;
+
 /// Input box grows with content, up to this many text rows.
 const INPUT_MAX_ROWS: u16 = 5;
 
-pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
-    let input_rows = (app.input.lines().len() as u16).clamp(1, INPUT_MAX_ROWS);
-    let input_height = input_rows + 2; // borders
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(input_height)])
-        .split(area);
-
-    draw_history(frame, app, chunks[0]);
-    draw_input(frame, app, chunks[1]);
+/// Rows the input box needs, borders included.
+pub fn input_height(app: &DashboardApp) -> u16 {
+    (app.input.lines().len() as u16).clamp(1, INPUT_MAX_ROWS) + 2
 }
 
 fn glyph_and_style(app: &DashboardApp, kind: EntryKind) -> (&'static str, Style) {
@@ -45,21 +39,7 @@ fn glyph_and_style(app: &DashboardApp, kind: EntryKind) -> (&'static str, Style)
     }
 }
 
-fn draw_history(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
-    let focused = app.focus == Focus::ChatHistory;
-    let border_style = if focused {
-        app.styles.accent
-    } else {
-        app.styles.separator
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(Span::styled(" chat ", app.styles.title));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    app.hits.push(inner, HitTarget::ChatHistory);
-
+fn history_lines<'a>(app: &DashboardApp) -> Vec<Line<'a>> {
     let level = app.core.log_level;
     let mut lines: Vec<Line> = Vec::new();
     for entry in app
@@ -77,11 +57,39 @@ fn draw_history(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
             ]));
         }
     }
+    lines
+}
 
-    // Anchor to the bottom: a conversation grows upward from the input box, so
-    // a handful of messages should sit just above it rather than floating at
-    // the top of an empty pane. Padding leading blank lines is what makes the
-    // sparse case look right; once the history overflows, scrolling takes over.
+/// Rendered rows the history would take at `width`, so the layout can size
+/// the pane to its conversation. Zero when there is nothing to show.
+pub fn history_height_needed(app: &DashboardApp, width: u16) -> u16 {
+    let wrap_width = width.max(1) as usize;
+    history_lines(app)
+        .iter()
+        .map(|line| {
+            let w: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            w.div_ceil(wrap_width).max(1)
+        })
+        .sum::<usize>()
+        .min(u16::MAX as usize) as u16
+}
+
+pub fn draw_history(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let focused = app.focus == Focus::ChatHistory;
+    let block = pane_block(app, focused).title(Span::styled(" CHAT ", app.styles.title));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    app.hits.push(inner, HitTarget::ChatHistory);
+    if inner.height == 0 {
+        return;
+    }
+
+    let mut lines = history_lines(app);
+
+    // Anchor to the bottom: a conversation grows upward from the input box.
     let viewport = inner.height as usize;
     let wrap_width = inner.width.max(1) as usize;
     let rendered_height: usize = lines
@@ -98,8 +106,8 @@ fn draw_history(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         lines = padded;
     }
 
-    // Scroll: ratatui's Paragraph scroll counts *rendered* lines, and we wrap,
-    // so approximate by scrolling in unwrapped lines — accurate for typical
+    // ratatui's Paragraph scroll counts *rendered* lines, and we wrap, so
+    // approximate by scrolling in unwrapped lines — accurate for typical
     // one-line entries and monotonic for longer ones.
     let total = lines.len() as u16;
     let viewport = inner.height;
@@ -114,8 +122,7 @@ fn draw_history(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         .scroll((offset, 0));
     frame.render_widget(paragraph, inner);
 
-    // "N new" pill when scrolled up with unseen entries below.
-    if app.chat.unseen > 0 && inner.height > 0 {
+    if app.chat.unseen > 0 {
         let label = format!(" {} new ↓ ", app.chat.unseen);
         let width = (label.chars().count() as u16).min(inner.width);
         let pill = Rect {
@@ -128,7 +135,7 @@ fn draw_history(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     }
 }
 
-fn draw_input(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
+pub fn draw_input(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     let focused = app.focus == Focus::ChatInput;
     let border_style = if focused {
         app.styles.accent
@@ -136,12 +143,17 @@ fn draw_input(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         app.styles.separator
     };
     let hint = if focused {
-        " Enter send · Alt-Enter newline · Tab → rail "
+        if app.status.model.is_empty() {
+            " no model · /commands only · Tab → panes "
+        } else {
+            " Enter send · Alt-Enter newline · Tab → panes "
+        }
     } else {
         " Tab → chat "
     };
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(border_style)
         .title(Span::styled(hint, app.styles.dimmed));
     let inner = block.inner(area);
@@ -163,7 +175,6 @@ fn draw_input(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
 
-    // Slash-command suggestions float just above the input box.
     if focused && !app.core.slash_suggestions.is_empty() {
         draw_suggestions(frame, app, area);
     }
@@ -193,6 +204,7 @@ fn draw_suggestions(frame: &mut Frame, app: &DashboardApp, input_area: Rect) {
     };
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(app.styles.separator)
         .title(Span::styled(" commands ", app.styles.dimmed));
     let inner = block.inner(area);

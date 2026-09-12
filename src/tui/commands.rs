@@ -33,6 +33,15 @@ pub async fn submit(
         UserCommand::Interpret { input } => {
             // Fire-and-forget, exactly as the rolling TUI does: output streams
             // back through the status channel.
+            if state.get_ollama_model().await.is_none() {
+                app.push_error(
+                    "No model is configured, so there is nothing to interpret that. \
+                     /model <name> picks one — or drive instances directly: a starts a \
+                     server, and every event can be answered by a rule or by you.",
+                );
+                app.dirty = true;
+                return;
+            }
             let mut handler = event_handler.clone();
             let tx = status_tx.clone();
             tokio::spawn(async move {

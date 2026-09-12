@@ -39,6 +39,8 @@ pub struct ServerRow {
     pub recent: Vec<ClosedConnectionSummary>,
     pub requests: Vec<AccessLogEntry>,
     pub task_count: usize,
+    /// Seconds since the instance was created.
+    pub uptime_secs: u64,
     /// Canonical client protocol name when this server's protocol has a
     /// compiled client counterpart (drives the [+client] button).
     pub client_counterpart: Option<String>,
@@ -60,18 +62,27 @@ pub struct ClientRow {
     pub history: Vec<ClientConnectionAttempt>,
     pub requests: Vec<AccessLogEntry>,
     pub task_count: usize,
+    /// Seconds since the instance was created.
+    pub uptime_secs: u64,
     /// Whether [send] can be used, and if not, why — "not connected" and "this
     /// protocol has no command channel yet" are different problems and must
     /// not be shown as the same one.
     pub send_state: SendState,
-    /// The client protocol's own action names, in vocabulary order — the
-    /// telnet client's `send_command` / `send_text`, TCP's `send_tcp_data`.
-    /// The rail renders one row per entry, and a row's index selects the
+    /// The client protocol's own verbs, in vocabulary order — the telnet
+    /// client's `send_command` / `send_text`, TCP's `send_tcp_data`. The
+    /// inspector renders one row per entry, and a row's index selects the
     /// action in the composer, so the order must match
     /// `ComposerModel::vocabulary` exactly (both come from it).
-    pub send_actions: Vec<String>,
+    pub send_actions: Vec<SendVerb>,
     /// Replies a `manual` rule parked, waiting for the operator's answer.
     pub intercepts: Vec<crate::state::intercepts::InterceptView>,
+}
+
+/// One verb a client can send, as the inspector lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendVerb {
+    pub name: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,13 +110,13 @@ pub struct RailSnapshot {
 /// Requests kept per band (the full scoped log stays reachable via drill-in).
 const REQUESTS_PER_BAND: usize = 100;
 
-/// Whether an action is worth its own row under a client.
+/// Whether an action is worth its own row in the inspector's send tab.
 ///
 /// The vocabulary is async ∪ sync, so it also contains verbs that only make
-/// sense as *answers* to a received event, or that the tree already offers
-/// better. Those are filtered from the inline rows only — `n` still opens the
-/// composer on the complete list, so nothing is unreachable.
-fn is_initiable_action(name: &str) -> bool {
+/// sense as *answers* to a received event, or that the action bar already
+/// offers better. Those are filtered from the rows only — `[ pick a verb… ]`
+/// still opens the composer on the complete list, so nothing is unreachable.
+pub fn is_initiable_action(name: &str) -> bool {
     match name {
         // A response-only verb: "I am not answering yet, send me more". Sent
         // on demand it writes nothing and reports "executed".
@@ -203,6 +214,7 @@ pub async fn build_snapshot(state: &AppState) -> RailSnapshot {
                 .unwrap_or_default(),
             conns,
             task_count,
+            uptime_secs: server.created_at.elapsed().as_secs(),
             client_counterpart: crate::protocol::compiled_client_protocol_for_server(
                 &server.protocol_name,
             ),
@@ -247,14 +259,18 @@ pub async fn build_snapshot(state: &AppState) -> RailSnapshot {
                 .remove(&client.id.as_u32())
                 .unwrap_or_default(),
             task_count,
+            uptime_secs: client.created_at.elapsed().as_secs(),
             send_state,
             send_actions: crate::tui::modal::composer::ComposerModel::vocabulary(
                 &client.protocol_name,
                 state,
             )
             .into_iter()
-            .map(|action| action.name)
-            .filter(|name| is_initiable_action(name))
+            .filter(|action| is_initiable_action(&action.name))
+            .map(|action| SendVerb {
+                name: action.name,
+                description: action.description,
+            })
             .collect(),
             intercepts: client_intercepts
                 .remove(&client.id.as_u32())

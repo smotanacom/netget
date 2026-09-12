@@ -83,27 +83,22 @@ impl ChatState {
     /// Parse one status-channel line into an entry, mirroring the rolling
     /// TUI's prefix protocol. Returns false for the `__UPDATE_UI__` sentinel
     /// (and other `__` control messages), which are not chat content.
+    ///
+    /// The dashboard routes lines between the feed and the chat with
+    /// [`route_status_line`]; this pushes everything into the chat, for
+    /// callers that have only one pane.
     pub fn push_status_line(&mut self, line: &str) -> bool {
-        if line.starts_with("__") {
-            return false;
+        match route_status_line(line) {
+            Routed::Control => false,
+            Routed::Activity(level, text) => {
+                self.push(EntryKind::Log(level), text);
+                true
+            }
+            Routed::Chat(kind, text) => {
+                self.push(kind, text);
+                true
+            }
         }
-        let (kind, text) = if let Some(rest) = line.strip_prefix("[ERROR] ") {
-            (EntryKind::Log(LogLevel::Error), rest.to_string())
-        } else if let Some(rest) = line.strip_prefix("[WARN] ") {
-            (EntryKind::Log(LogLevel::Warn), rest.to_string())
-        } else if let Some(rest) = line.strip_prefix("[INFO] ") {
-            (EntryKind::Log(LogLevel::Info), rest.to_string())
-        } else if let Some(rest) = line.strip_prefix("[DEBUG] ") {
-            (EntryKind::Log(LogLevel::Debug), rest.to_string())
-        } else if let Some(rest) = line.strip_prefix("[TRACE] ") {
-            (EntryKind::Log(LogLevel::Trace), rest.to_string())
-        } else if let Some(rest) = line.strip_prefix("[REASONING] ") {
-            (EntryKind::Reasoning, rest.to_string())
-        } else {
-            (EntryKind::System, line.to_string())
-        };
-        self.push(kind, text);
-        true
     }
 
     /// Whether an entry passes the current log-level filter.
@@ -139,5 +134,40 @@ impl ChatState {
                 }
             }
         };
+    }
+}
+
+/// Where a status-channel line belongs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Routed {
+    /// `__UPDATE_UI__` and other `__` control messages: not content.
+    Control,
+    /// A `[LEVEL]` log line: the machine talking. Goes to the activity feed
+    /// (an `[ERROR]` is mirrored into the chat too, since the person who
+    /// caused it is looking there).
+    Activity(LogLevel, String),
+    /// The conversation: what the model reasons and says, and command output.
+    Chat(EntryKind, String),
+}
+
+/// Decide which pane a status line belongs to.
+pub fn route_status_line(line: &str) -> Routed {
+    if line.starts_with("__") {
+        return Routed::Control;
+    }
+    if let Some(rest) = line.strip_prefix("[ERROR] ") {
+        Routed::Activity(LogLevel::Error, rest.to_string())
+    } else if let Some(rest) = line.strip_prefix("[WARN] ") {
+        Routed::Activity(LogLevel::Warn, rest.to_string())
+    } else if let Some(rest) = line.strip_prefix("[INFO] ") {
+        Routed::Activity(LogLevel::Info, rest.to_string())
+    } else if let Some(rest) = line.strip_prefix("[DEBUG] ") {
+        Routed::Activity(LogLevel::Debug, rest.to_string())
+    } else if let Some(rest) = line.strip_prefix("[TRACE] ") {
+        Routed::Activity(LogLevel::Trace, rest.to_string())
+    } else if let Some(rest) = line.strip_prefix("[REASONING] ") {
+        Routed::Chat(EntryKind::Reasoning, rest.to_string())
+    } else {
+        Routed::Chat(EntryKind::System, line.to_string())
     }
 }

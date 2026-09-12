@@ -6,8 +6,8 @@
 
 use netget::tui::app::Section;
 use netget::tui::hit::ModalAction;
+use netget::tui::inspector::{self, InspectorTab, InstanceAction};
 use netget::tui::modal::form::{FieldTarget, FormModel};
-use netget::tui::tree::{self, NodeId, RowAction, TreeState};
 use netget::tui::wireshark::{
     wire_for, CapturePlan, CaptureTarget, PlanLine, Platform, Role, Transport,
 };
@@ -215,11 +215,6 @@ fn unknown_protocol_names_fall_back_to_plain_tcp() {
 
 #[test]
 fn every_instance_offers_the_row_and_the_form_offers_the_button() {
-    // The row sits with the lifecycle verbs on both kinds of instance.
-    let state = TreeState::default();
-    let rows = tree::new_instance_rows();
-    assert!(!rows.is_empty());
-
     let mut form = FormModel::for_create(Section::Servers, "http", Some(8080));
     assert!(form.buttons().contains(&ModalAction::FormWireshark));
 
@@ -236,15 +231,22 @@ fn every_instance_offers_the_row_and_the_form_offers_the_button() {
     let target = client.capture_target();
     assert_eq!(target.role, Role::Client);
     assert_eq!(target.port, Some(2323));
-    let _ = state;
 }
 
 #[test]
-fn the_row_is_a_wireshark_action_on_servers_and_clients() {
+fn the_button_is_a_wireshark_action_on_servers_and_clients() {
     use netget::state::client::ClientStatus;
     use netget::state::server::ServerStatus;
     use netget::state::{ClientId, ServerId};
+    use netget::tui::app::{InspectorUi, InstanceRef};
     use netget::tui::projection::{ClientRow, SendState, ServerRow};
+
+    let ui = InspectorUi::default();
+    let has_wireshark = |view: &inspector::InspectorView| {
+        view.bar
+            .iter()
+            .any(|b| b.action == InstanceAction::Wireshark && b.label.contains("wireshark"))
+    };
 
     let server = ServerRow {
         id: ServerId::new(1),
@@ -260,14 +262,14 @@ fn the_row_is_a_wireshark_action_on_servers_and_clients() {
         recent: Vec::new(),
         requests: Vec::new(),
         task_count: 0,
+        uptime_secs: 0,
         client_counterpart: None,
         intercepts: Vec::new(),
     };
-    let rows = tree::server_rows(&server, &TreeState::default());
-    assert!(rows.iter().any(
-        |r| matches!(r.node, NodeId::Action(_, RowAction::Wireshark))
-            && r.label.contains("wireshark")
-    ));
+    // The overview bar carries it, and so does the config tab's.
+    let view = inspector::build(InstanceRef::Server(&server), &ui, None, 60);
+    assert_eq!(view.tab, InspectorTab::Overview);
+    assert!(has_wireshark(&view));
 
     let client = ClientRow {
         id: ClientId::new(1),
@@ -282,14 +284,13 @@ fn the_row_is_a_wireshark_action_on_servers_and_clients() {
         history: Vec::new(),
         requests: Vec::new(),
         task_count: 0,
+        uptime_secs: 0,
         send_state: SendState::Ready,
         send_actions: Vec::new(),
         intercepts: Vec::new(),
     };
-    let rows = tree::client_rows(&client, &TreeState::default());
-    assert!(rows
-        .iter()
-        .any(|r| matches!(r.node, NodeId::Action(_, RowAction::Wireshark))));
+    let view = inspector::build(InstanceRef::Client(&client), &ui, None, 60);
+    assert!(has_wireshark(&view));
 }
 
 /// The six USB servers are plain TCP listeners speaking USB/IP, and Wireshark has dissected it

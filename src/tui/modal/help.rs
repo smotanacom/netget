@@ -1,138 +1,118 @@
 //! Keybinding reference. Doubles as the discovery surface for everything the
 //! dashboard can do, which is why it enumerates the old slash commands too.
 
-/// Lines of the help modal: `(heading, key, description)`; a `None` key marks
-/// a section heading.
+/// Lines of the help modal: `(key, description)`; a `None` key marks a
+/// section heading.
 pub fn help_lines() -> Vec<(Option<&'static str>, &'static str)> {
     vec![
-        (None, "Navigation — the rail is a tree"),
+        (None, "Panes"),
         (
             Some("Tab / Shift-Tab"),
-            "move between chat, servers, clients",
+            "instances → inspector → activity → chat",
         ),
+        (Some("Esc"), "step back: inspector → list → chat"),
+        (Some("Ctrl-T"), "free the mouse for native text selection"),
+        (Some("F1"), "this help"),
+        (Some("Ctrl-C"), "quit"),
+        (None, "Instances (the list, top left)"),
         (
             Some("↑ / ↓"),
-            "walk the tree (crosses into the next instance)",
-        ),
-        (Some("→"), "expand a group, or step into it"),
-        (Some("←"), "collapse a group, or step out to its parent"),
-        (
-            Some("Enter / Space"),
-            "toggle the row; on '… N more' show them all",
+            "pick an instance; Enter or → opens it in the inspector",
         ),
         (
-            Some("Enter on a request"),
-            "expand its full request/response inline",
-        ),
-        (Some("Esc"), "leave the tree, back to chat"),
-        (Some("Space on an instance"), "maximize / restore that band"),
-        (Some("PageUp / PageDown"), "scroll chat history"),
-        (
-            None,
-            "Instances — every action is also a row you can Enter or click",
+            Some("a  /  A"),
+            "start a server / start a client (protocol picker)",
         ),
         (
-            Some("[ + new server ]"),
-            "last rows of the rail — the protocol picker",
+            Some("+ new server"),
+            "the last row of each section does the same",
         ),
-        (Some("[ edit config ]"), "under config — same as e"),
-        (Some("[ + add handler ]"), "under handlers — same as r"),
-        (Some("a handler row"), "Enter edits that handler directly"),
+        (Some("x"), "stop a server / remove a client — immediate"),
         (
-            Some("[ + connect a … ]"),
-            "under a server's peers — same as c",
+            Some("e"),
+            "edit config (port, host, instruction, parameters)",
         ),
+        (Some("r"), "rules: who answers each event"),
         (
-            Some("[ message this peer ]"),
-            "under a live connection, where the protocol permits",
-        ),
-        (
-            Some("[ send_command ] …"),
-            "a client's own actions, inlined — Enter fills its parameters",
-        ),
-        (
-            Some("n"),
-            "on a client: the same composer, choose the action there",
-        ),
-        (
-            Some("[ disconnect ]"),
-            "hang up a client but keep it; [ connect ] redials",
-        ),
-        (
-            Some("[ view in wireshark ]"),
-            "capture command + filters for this instance — same as w",
-        ),
-        (
-            Some("[ stop / remove ]"),
-            "last row of an instance — immediate, same as x",
-        ),
-        (
-            Some("⚠ waiting for YOU"),
-            "a MANUAL rule parked a request — Enter answers it",
-        ),
-        (None, "Ways a handler can answer"),
-        (Some("STATIC"), "fixed actions, no model call — cheapest"),
-        (
-            Some("SCRIPT"),
-            "your code runs per event (python/js/perl/go)",
-        ),
-        (
-            Some("LLM"),
-            "the model decides, with a per-event instruction",
-        ),
-        (
-            Some("MANUAL"),
-            "you answer each request yourself at the dashboard",
-        ),
-        (None, "Instance shortcuts"),
-        (Some("a"), "add: new server / client (protocol picker)"),
-        (Some("e"), "edit the selected instance's config"),
-        (Some("r"), "edit handlers (static / script / LLM / manual)"),
-        (
-            Some("x"),
-            "stop or remove the selected instance (immediate)",
+            Some("m"),
+            "cycle the driver: MANUAL → LLM → SILENT (keeps specific rules)",
         ),
         (
             Some("c"),
-            "on a server: connect a client of the same protocol",
+            "on a server: connect a client of its protocol to it",
         ),
-        (Some("n"), "on a client: compose and send a request"),
+        (Some("n"), "on a client: compose and send one of its verbs"),
+        (Some("w"), "Wireshark / tshark capture recipe"),
+        (Some("d"), "protocol description and maturity, into chat"),
+        (Some("1 … 6"), "jump to an inspector tab"),
+        (None, "Inspector (bottom left)"),
+        (Some("← / →"), "switch tab — or move along the action bar"),
         (
-            Some("w"),
-            "Wireshark/tshark command for the selected instance (also a button on the create form)",
+            Some("↑ / ↓"),
+            "move through the tab's items; ↑ past the top reaches the buttons",
         ),
-        (Some("d"), "protocol docs for the selected instance"),
-        (None, "Global toggles"),
+        (Some("Enter"), "press the button, or act on the item:"),
+        (
+            Some("  a peer"),
+            "narrow traffic to it ([ message ] / [ disconnect ] in the bar)",
+        ),
+        (Some("  a request"), "open its full request and response"),
+        (
+            Some("  a rule"),
+            "edit it ([ + add ] [ delete ] [ up ] [ down ] in the bar)",
+        ),
+        (Some("  a config row"), "open the edit form"),
+        (
+            Some("  a verb (send tab)"),
+            "compose it with its parameters as fields",
+        ),
+        (
+            Some("  ⚠ waiting"),
+            "answer a request a MANUAL rule parked for you",
+        ),
+        (None, "Activity (top right)"),
+        (
+            Some("↑ / ↓"),
+            "walk the feed; Enter opens what a line points at",
+        ),
+        (Some("f"), "only the selected instance's lines"),
         (
             Some("Ctrl-L"),
-            "cycle log level (filters chat, retroactively)",
+            "cycle the log level the feed shows (retroactive)",
         ),
-        (Some("Ctrl-W"), "cycle web search: on / ask / off"),
-        (
-            Some("Ctrl-H"),
-            "cycle handler mode: any / script / static / llm",
-        ),
-        (Some("Ctrl-E"), "cycle scripting mode"),
-        (
-            Some("Ctrl-T"),
-            "toggle mouse capture (for native text selection)",
-        ),
-        (Some("F1"), "this help"),
-        (Some("Ctrl-C"), "quit"),
-        (None, "Chat"),
-        (Some("Enter"), "send to the LLM (or run a slash command)"),
+        (None, "Chat (bottom right)"),
+        (Some("Enter"), "send to the model, or run a slash command"),
         (Some("Alt-Enter / Ctrl-N"), "newline"),
-        (Some("↑ / ↓"), "command history (at first/last line)"),
+        (Some("↑ / ↓"), "command history (at the first / last line)"),
+        (Some("PageUp"), "scroll the conversation"),
+        (None, "Who answers an event — the driver, and rules"),
+        (
+            Some("MANUAL"),
+            "you: each event parks until you compose the answer",
+        ),
+        (
+            Some("LLM"),
+            "the model, from the instance instruction (needs a model)",
+        ),
+        (Some("SILENT"), "nobody: acknowledged, never answered"),
+        (Some("STATIC"), "a rule with fixed actions, no model call"),
+        (
+            Some("SCRIPT"),
+            "a rule running your python / js / perl / go per event",
+        ),
+        (None, "Global toggles"),
+        (Some("Ctrl-W"), "web search: on / ask / off"),
+        (Some("Ctrl-H"), "handler mode: any / script / static / llm"),
+        (Some("Ctrl-E"), "scripting mode"),
         (None, "Slash commands still work in chat"),
         (
-            Some("/status /manage"),
-            "superseded by the rail on the right",
+            Some("/model /backend"),
+            "pick the model (click llm: on the status bar)",
         ),
-        (Some("/model /backend"), "also on the status bar (click it)"),
         (Some("/log /web /handler"), "also Ctrl-L / Ctrl-W / Ctrl-H"),
-        (Some("/docs /env /usage"), "also d on a band, and F2"),
+        (Some("/docs /env /usage"), "also d on an instance"),
         (Some("/save /load"), "persist and restore instances"),
-        (Some("/stop [id]"), "also x on a band"),
+        (Some("/stop [id]"), "also x on an instance"),
         (Some("/quit"), "also Ctrl-C"),
     ]
 }

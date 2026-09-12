@@ -5,18 +5,45 @@ use std::collections::HashMap;
 
 use crate::cli::input_state::InputState;
 use crate::state::{ClientId, ServerId};
+use crate::tui::activity::{ActivityFeed, Tracker};
 use crate::tui::chat::ChatState;
 use crate::tui::hit::HitRegistry;
+use crate::tui::inspector::InspectorTab;
+use crate::tui::metrics::Throughput;
 use crate::tui::modal::Modal;
-use crate::tui::projection::RailSnapshot;
+use crate::tui::projection::{ClientRow, RailSnapshot, ServerRow};
 use crate::tui::theme::Styles;
 use crate::ui::App;
 
-/// Stable identity of a rail band across re-polls.
+/// Stable identity of an instance across re-polls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UiKey {
     Server(ServerId),
     Client(ClientId),
+}
+
+impl UiKey {
+    pub fn section(&self) -> Section {
+        match self {
+            UiKey::Server(_) => Section::Servers,
+            UiKey::Client(_) => Section::Clients,
+        }
+    }
+
+    /// `server #1` / `client #4`, for chat lines and titles.
+    pub fn describe(&self) -> String {
+        match self {
+            UiKey::Server(id) => format!("server #{}", id.as_u32()),
+            UiKey::Client(id) => format!("client #{}", id.as_u32()),
+        }
+    }
+
+    pub fn raw_id(&self) -> u32 {
+        match self {
+            UiKey::Server(id) => id.as_u32(),
+            UiKey::Client(id) => id.as_u32(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,63 +53,74 @@ pub enum Section {
 }
 
 /// Where keyboard input goes when no modal is open.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Tab walks Instances → Inspector → Activity → ChatInput; Esc steps back
+/// towards typing. `ChatHistory` is the chat pane scrolled away from its
+/// tail — the same pane, in a mode where the arrows move the view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
+    Instances,
+    Inspector,
+    Activity,
     ChatInput,
     ChatHistory,
-    Rail(RailSel),
 }
 
-/// The rail selection: an index into the one flat list of tree rows.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct RailSel {
-    /// `None` = the rail is focused but nothing is selected yet.
-    pub row: Option<usize>,
-}
-
-impl RailSel {
-    pub fn new() -> Self {
-        Self { row: None }
-    }
-}
-
-/// Per-instance UI state that must survive re-polls: which nodes are expanded.
-#[derive(Debug, Clone, Default)]
-pub struct BandUiState {
-    pub tree: crate::tui::tree::TreeState,
-}
-
-/// Rail-wide UI state.
+/// The instance list's own state.
 #[derive(Debug, Default)]
-pub struct RailUiState {
-    pub bands: HashMap<UiKey, BandUiState>,
-    /// First visible row of the rail's single scrolling list.
+pub struct InstancesUi {
+    /// The selected row, by identity rather than index, so a re-poll that
+    /// reorders or removes instances cannot silently move the cursor onto a
+    /// different one.
+    pub selected: Option<UiKey>,
+    /// Cursor on a `+ new …` row, which belongs to no instance.
+    pub on_new: Option<Section>,
+    /// Where the cursor last was, so a vanished instance hands the cursor to
+    /// its neighbour rather than to nothing.
+    pub last_index: usize,
+    /// First visible row.
     pub scroll: usize,
+    /// Throughput history per instance, sampled once a second.
+    pub metrics: HashMap<UiKey, Throughput>,
 }
 
-impl RailUiState {
-    pub fn band_mut(&mut self, key: UiKey) -> &mut BandUiState {
-        self.bands.entry(key).or_default()
-    }
+/// Which peer the traffic tab is narrowed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrafficFilter {
+    #[default]
+    All,
+    /// One connection; `None` is the connectionless bucket.
+    Peer(Option<u32>),
+}
 
-    pub fn band(&self, key: UiKey) -> Option<&BandUiState> {
-        self.bands.get(&key)
-    }
+/// The inspector's own state. Tab and item survive moving between instances
+/// on purpose: comparing two servers' traffic means pressing ↓, not ↓ then
+/// re-finding the tab.
+#[derive(Debug)]
+pub struct InspectorUi {
+    pub tab: InspectorTab,
+    /// Selected item (index into the tab's selectable items).
+    pub item: usize,
+    /// `Some(i)` when the cursor is on the i-th action-bar button.
+    pub bar: Option<usize>,
+    /// First visible body line.
+    pub scroll: usize,
+    pub filter: TrafficFilter,
+}
 
-    /// Drop state for bands that no longer exist, so a long session does not
-    /// accumulate entries for stopped servers.
-    pub fn prune(&mut self, snapshot: &RailSnapshot) {
-        let live: std::collections::HashSet<UiKey> = snapshot
-            .servers
-            .iter()
-            .map(|s| UiKey::Server(s.id))
-            .chain(snapshot.clients.iter().map(|c| UiKey::Client(c.id)))
-            .collect();
-        self.bands.retain(|key, _| live.contains(key));
+impl Default for InspectorUi {
+    fn default() -> Self {
+        Self {
+            tab: InspectorTab::Overview,
+            item: 0,
+            bar: None,
+            scroll: 0,
+            filter: TrafficFilter::All,
+        }
     }
 }
 
-/// Status-bar model (the indicators the legacy sticky footer carried).
+/// Status-bar model.
 #[derive(Debug, Clone, Default)]
 pub struct StatusModel {
     pub model: String,
@@ -97,13 +135,65 @@ pub struct StatusModel {
     pub active_conversations: usize,
 }
 
+/// A borrowed view of either kind of instance row.
+#[derive(Debug, Clone, Copy)]
+pub enum InstanceRef<'a> {
+    Server(&'a ServerRow),
+    Client(&'a ClientRow),
+}
+
+impl<'a> InstanceRef<'a> {
+    pub fn key(&self) -> UiKey {
+        match self {
+            InstanceRef::Server(s) => UiKey::Server(s.id),
+            InstanceRef::Client(c) => UiKey::Client(c.id),
+        }
+    }
+
+    pub fn protocol(&self) -> &str {
+        match self {
+            InstanceRef::Server(s) => &s.protocol,
+            InstanceRef::Client(c) => &c.protocol,
+        }
+    }
+
+    pub fn routing(&self) -> Option<&crate::scripting::EventHandlerConfig> {
+        match self {
+            InstanceRef::Server(s) => s.routing.as_ref(),
+            InstanceRef::Client(c) => c.routing.as_ref(),
+        }
+    }
+
+    pub fn intercepts(&self) -> &[crate::state::intercepts::InterceptView] {
+        match self {
+            InstanceRef::Server(s) => &s.intercepts,
+            InstanceRef::Client(c) => &c.intercepts,
+        }
+    }
+
+    pub fn requests(&self) -> &[crate::state::app_state::AccessLogEntry] {
+        match self {
+            InstanceRef::Server(s) => &s.requests,
+            InstanceRef::Client(c) => &c.requests,
+        }
+    }
+
+    /// `http#1`-style tag used by the feed and the inspector title.
+    pub fn tag(&self) -> String {
+        format!("{}#{}", self.protocol().to_lowercase(), self.key().raw_id())
+    }
+}
+
 pub struct DashboardApp {
     /// Legacy display state reused for command history, log level and caps.
     pub core: App,
     pub chat: ChatState,
+    pub activity: ActivityFeed,
+    pub tracker: Tracker,
     pub input: InputState,
     pub focus: Focus,
-    pub rail: RailUiState,
+    pub instances: InstancesUi,
+    pub inspector: InspectorUi,
     pub snapshot: RailSnapshot,
     pub modals: Vec<Modal>,
     pub hits: HitRegistry,
@@ -113,7 +203,7 @@ pub struct DashboardApp {
     pub mouse_capture: bool,
     pub should_quit: bool,
     /// Clone of the status channel, so modal actions (create/update/send) can
-    /// stream their progress into the same chat pane.
+    /// stream their progress into the same panes.
     pub status_tx: tokio::sync::mpsc::UnboundedSender<String>,
     /// Results of spawned actions (see `crate::tui::uimsg`). Network work must
     /// never be awaited on the event loop.
@@ -136,9 +226,12 @@ impl DashboardApp {
             llm_client,
             core,
             chat: ChatState::new(),
+            activity: ActivityFeed::new(),
+            tracker: Tracker::default(),
             input: InputState::new(),
             focus: Focus::ChatInput,
-            rail: RailUiState::default(),
+            instances: InstancesUi::default(),
+            inspector: InspectorUi::default(),
             snapshot: RailSnapshot::default(),
             modals: Vec::new(),
             hits: HitRegistry::default(),
@@ -158,80 +251,195 @@ impl DashboardApp {
         self.modals.last_mut()
     }
 
-    /// Number of bands in a section, per the last snapshot.
-    pub fn band_count(&self, section: Section) -> usize {
-        match section {
-            Section::Servers => self.snapshot.servers.len(),
-            Section::Clients => self.snapshot.clients.len(),
+    /// Take a freshly built snapshot: derive activity from the change, keep
+    /// the selection meaningful, drop per-instance state for instances that
+    /// are gone.
+    pub fn absorb_snapshot(&mut self, snapshot: RailSnapshot) {
+        let events = self.tracker.diff(&snapshot);
+        for event in events {
+            self.activity.push(event);
+        }
+        self.snapshot = snapshot;
+        self.prune();
+        self.clamp_selection();
+        self.dirty = true;
+    }
+
+    /// Record one throughput sample per instance. Called on the 1s stats
+    /// tick, so a sample is bytes per second.
+    pub fn sample_metrics(&mut self) {
+        for server in &self.snapshot.servers {
+            let (mut rx, mut tx) = (0u64, 0u64);
+            for c in &server.conns {
+                rx += c.bytes_received;
+                tx += c.bytes_sent;
+            }
+            for c in &server.recent {
+                rx += c.bytes_received;
+                tx += c.bytes_sent;
+            }
+            self.instances
+                .metrics
+                .entry(UiKey::Server(server.id))
+                .or_default()
+                .sample(rx, tx);
+        }
+        for client in &self.snapshot.clients {
+            let (rx, tx) = client
+                .connection
+                .as_ref()
+                .map(|c| (c.bytes_received, c.bytes_sent))
+                .unwrap_or((0, 0));
+            self.instances
+                .metrics
+                .entry(UiKey::Client(client.id))
+                .or_default()
+                .sample(rx, tx);
         }
     }
 
-    /// The key of the band at `index` in `section`, if it exists.
-    pub fn band_key(&self, section: Section, index: usize) -> Option<UiKey> {
-        match section {
-            Section::Servers => self
-                .snapshot
-                .servers
-                .get(index)
-                .map(|s| UiKey::Server(s.id)),
-            Section::Clients => self
-                .snapshot
-                .clients
-                .get(index)
-                .map(|c| UiKey::Client(c.id)),
-        }
+    fn prune(&mut self) {
+        let live: std::collections::HashSet<UiKey> = self
+            .snapshot
+            .servers
+            .iter()
+            .map(|s| UiKey::Server(s.id))
+            .chain(self.snapshot.clients.iter().map(|c| UiKey::Client(c.id)))
+            .collect();
+        self.instances.metrics.retain(|key, _| live.contains(key));
     }
 
-    /// Locate a band by key in the current snapshot.
-    pub fn locate(&self, key: UiKey) -> Option<(Section, usize)> {
-        match key {
-            UiKey::Server(id) => self
-                .snapshot
-                .servers
-                .iter()
-                .position(|s| s.id == id)
-                .map(|i| (Section::Servers, i)),
-            UiKey::Client(id) => self
-                .snapshot
-                .clients
-                .iter()
-                .position(|c| c.id == id)
-                .map(|i| (Section::Clients, i)),
-        }
-    }
-
-    /// Clamp the rail selection to what the latest snapshot actually contains.
+    /// Keep the selection pointing at something that exists.
     ///
-    /// Row indices come from the previous frame; a collapse, a stopped server
-    /// or a reaped connection can shorten the list underneath the cursor.
+    /// A stopped server or a removed client takes its row with it; the cursor
+    /// moves to the row that now occupies its place (or the last one), not to
+    /// nothing. With no instances at all, the cursor sits on `+ new server`
+    /// when the list is focused, so Enter always does something.
     pub fn clamp_selection(&mut self) {
-        let rows = crate::tui::render::band::rail_row_count(self);
-        if let Focus::Rail(sel) = &mut self.focus {
-            match sel.row {
-                _ if rows == 0 => sel.row = None,
-                // A focused rail always has a cursor. Without this, creating
-                // the first server left nothing selected, so `c`, `e` and `r`
-                // silently did nothing until you pressed an arrow key.
-                None => sel.row = Some(0),
-                Some(row) if row >= rows => sel.row = Some(rows - 1),
-                _ => {}
+        use crate::tui::rail::{list_rows, ListRow};
+        let rows = list_rows(&self.snapshot);
+        let instance_rows: Vec<(usize, UiKey)> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match r {
+                ListRow::Instance(key) => Some((i, *key)),
+                _ => None,
+            })
+            .collect();
+
+        if let Some(key) = self.instances.selected {
+            if let Some((index, _)) = instance_rows.iter().find(|(_, k)| *k == key) {
+                self.instances.last_index = *index;
+                self.instances.on_new = None;
+                return;
+            }
+            // Gone: hand the cursor to the neighbour that now sits where it was.
+            let replacement = instance_rows
+                .iter()
+                .filter(|(i, _)| *i >= self.instances.last_index)
+                .min_by_key(|(i, _)| *i)
+                .or_else(|| instance_rows.last())
+                .map(|(i, k)| (*i, *k));
+            match replacement {
+                Some((index, key)) => {
+                    self.instances.selected = Some(key);
+                    self.instances.last_index = index;
+                    self.instances.on_new = None;
+                    self.inspector.item = 0;
+                    self.inspector.scroll = 0;
+                    self.inspector.filter = TrafficFilter::All;
+                }
+                None => {
+                    self.instances.selected = None;
+                    if self.focus == Focus::Inspector {
+                        self.focus = Focus::Instances;
+                    }
+                    if self.instances.on_new.is_none() {
+                        self.instances.on_new = Some(Section::Servers);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Nothing selected. When the list (or inspector) is focused, a cursor
+        // must exist: the first instance, else `+ new server`.
+        if self.instances.on_new.is_none() {
+            if let Some((index, key)) = instance_rows.first() {
+                if matches!(self.focus, Focus::Instances | Focus::Inspector) {
+                    self.instances.selected = Some(*key);
+                    self.instances.last_index = *index;
+                }
+            } else if self.focus == Focus::Instances {
+                self.instances.on_new = Some(Section::Servers);
             }
         }
+        if self.instances.selected.is_none() && self.focus == Focus::Inspector {
+            self.focus = Focus::Instances;
+        }
     }
 
-    /// The instance owning the selected row, if any.
-    pub fn selected_instance(&self) -> Option<UiKey> {
-        let Focus::Rail(sel) = &self.focus else {
-            return None;
-        };
-        let row = sel.row?;
-        crate::tui::render::band::rail_rows(self)
-            .get(row)
-            .and_then(|r| r.key)
+    /// Select an instance and reset the inspector's cursor for it.
+    pub fn select(&mut self, key: UiKey) {
+        if self.instances.selected != Some(key) {
+            self.inspector.item = 0;
+            self.inspector.scroll = 0;
+            self.inspector.bar = None;
+            self.inspector.filter = TrafficFilter::All;
+        }
+        self.instances.selected = Some(key);
+        self.instances.on_new = None;
+        self.clamp_selection();
+    }
+
+    pub fn selected(&self) -> Option<UiKey> {
+        self.instances.selected
+    }
+
+    pub fn server_row(&self, id: ServerId) -> Option<&ServerRow> {
+        self.snapshot.servers.iter().find(|s| s.id == id)
+    }
+
+    pub fn client_row(&self, id: ClientId) -> Option<&ClientRow> {
+        self.snapshot.clients.iter().find(|c| c.id == id)
+    }
+
+    pub fn instance(&self, key: UiKey) -> Option<InstanceRef<'_>> {
+        match key {
+            UiKey::Server(id) => self.server_row(id).map(InstanceRef::Server),
+            UiKey::Client(id) => self.client_row(id).map(InstanceRef::Client),
+        }
+    }
+
+    pub fn selected_instance(&self) -> Option<InstanceRef<'_>> {
+        self.selected().and_then(|key| self.instance(key))
+    }
+
+    /// Pending intercepts across every instance, oldest first.
+    pub fn waiting_count(&self) -> usize {
+        self.snapshot
+            .servers
+            .iter()
+            .map(|s| s.intercepts.len())
+            .sum::<usize>()
+            + self
+                .snapshot
+                .clients
+                .iter()
+                .map(|c| c.intercepts.len())
+                .sum::<usize>()
     }
 
     pub fn push_system(&mut self, text: impl Into<String>) {
         self.chat.push(crate::tui::chat::EntryKind::System, text);
+        self.dirty = true;
+    }
+
+    pub fn push_error(&mut self, text: impl Into<String>) {
+        self.chat.push(
+            crate::tui::chat::EntryKind::Log(crate::ui::app::LogLevel::Error),
+            text,
+        );
         self.dirty = true;
     }
 }

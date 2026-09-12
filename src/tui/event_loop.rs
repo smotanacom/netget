@@ -88,7 +88,8 @@ pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
     let mut cleanup_tick = interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
 
     refresh_status(&mut app, &ctx.state).await;
-    app.snapshot = projection::build_snapshot(&ctx.state).await;
+    let snapshot = projection::build_snapshot(&ctx.state).await;
+    app.absorb_snapshot(snapshot);
 
     info!("Dashboard TUI started");
 
@@ -102,8 +103,8 @@ pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
                 Ok(line) => {
                     if line == "__UPDATE_UI__" {
                         needs_repoll = true;
-                    } else if app.chat.push_status_line(&line) {
-                        app.dirty = true;
+                    } else {
+                        route_line(&mut app, &line);
                     }
                     drained += 1;
                 }
@@ -111,10 +112,8 @@ pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
             }
         }
         if needs_repoll {
-            app.snapshot = projection::build_snapshot(&ctx.state).await;
-            app.rail.prune(&app.snapshot);
-            app.clamp_selection();
-            app.dirty = true;
+            let snapshot = projection::build_snapshot(&ctx.state).await;
+            app.absorb_snapshot(snapshot);
         }
 
         tokio::select! {
@@ -128,16 +127,16 @@ pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
                             break;
                         }
                         // A UI-initiated mutation should show immediately.
-                        app.snapshot = projection::build_snapshot(&ctx.state).await;
-                        app.clamp_selection();
+                        let snapshot = projection::build_snapshot(&ctx.state).await;
+                        app.absorb_snapshot(snapshot);
                     }
                     Some(Ok(Event::Mouse(mouse))) => {
                         let outcome = keymap::handle_mouse(&mut app, mouse, &ctx.state).await;
                         if matches!(outcome, Outcome::Quit) {
                             break;
                         }
-                        app.snapshot = projection::build_snapshot(&ctx.state).await;
-                        app.clamp_selection();
+                        let snapshot = projection::build_snapshot(&ctx.state).await;
+                        app.absorb_snapshot(snapshot);
                     }
                     Some(Ok(Event::Resize(_, _))) => {
                         app.dirty = true;
@@ -151,9 +150,8 @@ pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
             }
             Some(msg) = ctx.ui_rx.recv() => {
                 keymap::handle_ui_msg(&mut app, msg);
-                app.snapshot = projection::build_snapshot(&ctx.state).await;
-                app.rail.prune(&app.snapshot);
-                app.clamp_selection();
+                let snapshot = projection::build_snapshot(&ctx.state).await;
+                app.absorb_snapshot(snapshot);
             }
             Some(request) = ctx.web_approval_rx.recv() => {
                 app.modals.push(Modal::WebApproval {
@@ -174,10 +172,10 @@ pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
             }
             _ = stats_tick.tick() => {
                 refresh_status(&mut app, &ctx.state).await;
-                app.snapshot = projection::build_snapshot(&ctx.state).await;
-                app.rail.prune(&app.snapshot);
-                app.clamp_selection();
-                app.dirty = true;
+                let snapshot = projection::build_snapshot(&ctx.state).await;
+                app.absorb_snapshot(snapshot);
+                // Once a second, so a sample is bytes per second.
+                app.sample_metrics();
             }
             _ = cleanup_tick.tick() => {
                 ctx.state.cleanup_old_servers(SERVER_CLEANUP_TIMEOUT_SECS).await;
@@ -198,6 +196,31 @@ pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
     // Persist any settings the toggles changed.
     let _ = ctx.settings.lock().await;
     Ok(())
+}
+
+/// Send one status-channel line to the pane it belongs in.
+///
+/// `[LEVEL]` lines are the machine talking and go to the feed; the model's
+/// reasoning and replies, and command output, go to the chat. An error is
+/// shown in both — whoever caused it is looking at the chat.
+fn route_line(app: &mut DashboardApp, line: &str) {
+    use crate::tui::chat::{route_status_line, Routed};
+    use crate::ui::app::LogLevel;
+    match route_status_line(line) {
+        Routed::Control => {}
+        Routed::Activity(level, text) => {
+            if level == LogLevel::Error {
+                app.chat
+                    .push(crate::tui::chat::EntryKind::Log(level), text.clone());
+            }
+            app.activity.push_log(level, text);
+            app.dirty = true;
+        }
+        Routed::Chat(kind, text) => {
+            app.chat.push(kind, text);
+            app.dirty = true;
+        }
+    }
 }
 
 async fn refresh_status(app: &mut DashboardApp, state: &AppState) {

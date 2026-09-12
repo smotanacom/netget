@@ -9,40 +9,51 @@ Three ways to run it: interactive TUI (default), headless (`--mcp` / `--mcp-http
 
 **The interactive TUI is the full-screen ratatui dashboard (`src/tui/`)**; the older
 rolling-terminal TUI (`src/cli/rolling_tui.rs` + `sticky_footer.rs`) is still there behind
-`--legacy-tui`. Chat is on the left, unchanged in contract — `UserCommand::parse` is shared, so
-every slash command still works. The right-hand rail is **one borderless tree** of every server
-and client, and is the first way to **create and modify instances without the LLM**.
+`--legacy-tui`. `UserCommand::parse` is shared, so every slash command still works in both.
+`src/tui/CLAUDE.md` is the design document; the short version:
+
+- **Left column is management.** An **instance list** (one line per server and client:
+  status glyph, id, protocol, address, live peers, a 30-second throughput sparkline, and a
+  **driver badge**) over a tabbed **inspector** for the selected instance — `overview`,
+  `peers`/`connections`, `traffic`, `rules`, `config`, and `send` for clients — each tab with
+  its own **action bar** of buttons. Each section of the list ends in its `+ new …` row.
+- **Right column is what is happening.** An **activity feed** derived from snapshot diffs
+  (instances starting, peers connecting, every request with its answer, questions parked for
+  you — Enter opens the thing a line names) plus the `[LEVEL]` log lines, over the **chat**
+  (the conversation with the model and command output) with the input box at the bottom.
+  The chat pane sizes itself to its content, so a session that never talks to a model gives
+  the feed the whole column.
+- **Manual first, model optional.** The **driver** (`driver.rs`) is one word for an
+  instance's wildcard rule: `MANUAL` (every unmatched event parks for you), `LLM` (no
+  wildcard; the instruction answers), `SILENT` (`*` → static, no actions), `RULES` (a custom
+  wildcard). `m`, or `[ driver: … ]` in the bar, cycles MANUAL → LLM → SILENT as a hot
+  handler-table swap that keeps every specific rule. The rules tab edits the table inline
+  (add / edit open the routing modal; delete / move apply headlessly through the same
+  `RoutingModel`). Instances created here default to `*` → manual.
 
 Everything applies through `cli::management`'s `ServerForm`/`ClientForm`/`update_*`, so
 validation and the hot-apply vs restart split are identical to the LLM and MCP paths. The forms
 submit only *changed* fields — re-sending an unchanged port or host reads as a change and forces
 a needless restart.
 
-**Every action is a row** (`tree::RowAction`), placed under the thing it acts on, rather than a
-button somewhere: `[ edit config ]` under `config`, `[ + add handler ]` under `handlers`,
-`[ + connect a … ]` and `[ message this peer ]` under `peers`, `[ disconnect ]` /
-`[ connect ]` / `[ remove client ]` on a client, `[ + new server ]` / `[ + new client ]` at the
-foot of the rail. Enter and a mouse click go through the same `activate_row`, so the two cannot
-drift. A client's own protocol verbs are inlined as rows too (telnet's `[ send_command ]`,
-`[ send_text ]`), and pressing one opens the composer already on that action's parameters;
-`projection::is_initiable_action` keeps response-only verbs (`wait_for_more`) and duplicates of
-the lifecycle rows (`disconnect`) out of that list, while `n` still opens the full vocabulary.
+**Every action is an `InstanceAction`** (`inspector.rs`), executed by `actions::run` whether it
+came from a letter (`x` stop, `e` edit, `r` rules, `m` driver, `c` connect a client to a
+server, `n` send through a client, `w` wireshark, `d` docs, `a`/`A` new server/client), from
+Enter on an action-bar button, from a click on it, or from Enter on an inspector item (a peer
+narrows the traffic tab to it; a request opens its full request/response; a rule edits it; a
+config row opens the form; a verb opens the composer on its parameters; a parked request opens
+the answer modal). Tab walks instances → inspector → activity → chat; Esc steps back towards
+typing. No modal requires a chord: every button is a Tab stop, and the text editor's Tab leaves
+the text for `[ Accept ]` / `[ Cancel ]`.
 
-A server's live peer gets the same treatment where the protocol registered a peer handle
-(`server/peer_support.rs`; `tcp` and `telnet` have): `[ message this peer ]` opens the composer
-on the server's wire verbs, `[ disconnect this peer ]` runs its `close_connection` through the
-same handle (half-close + marked closed at once, because a peer that never reads — our own
-client parked on a manual question — would otherwise leave the row "live" after you hung up).
-A protocol without a handle shows one dim row saying so instead of nothing. A peer whose request
-is parked for you is flagged `⚠ waiting for your answer` on its own row; the activatable question
-row stays first under the instance.
-
-`config` and `handlers` are **collapsed by default** — settings, not traffic; `peers` is open.
-The letter shortcuts still work (`a` add, `e` config, `r` handlers, `c` connect a client,
-`n` compose, `x` stop/remove, F1 help), but nothing depends on knowing them — and **no modal
-requires a chord**. Every button is a Tab stop: in the text editor Tab leaves the text for
-`[ Accept ]` / `[ Cancel ]` (it used to insert a tab, leaving Ctrl-S as the only way out); the
-form, composer and routing editors have no Ctrl-S/Ctrl-J bindings any more, only their buttons.
+A server's live peer gets `[ message ]` and `[ disconnect ]` in the peers tab's bar where the
+protocol registered a peer handle (`server/peer_support.rs`; `tcp` and `telnet` have);
+`[ disconnect ]` runs its `close_connection` through the same handle (half-close + marked
+closed at once, because a peer that never reads — our own client parked on a manual question —
+would otherwise stay "live" after you hung up). Without a handle the buttons stay, disabled,
+and say why. A peer whose request is parked is flagged on its own row, in the list badge
+(`⚠1`), in the overview's first line, in the feed and in the status bar — which is clickable
+and opens the oldest one.
 
 **Answering a parked request is the composer, not a JSON box.** The intercept modal offers three
 things: `[ Compose answer… ]` opens `ComposerModel::for_intercept` — pick one of the protocol's
@@ -51,14 +62,16 @@ Space flips it), Send resolves the intercept and closes both modals; `[ Answer w
 resolves with zero actions (acknowledge, say nothing — a real answer, distinct from a timeout);
 `[ Fail closed ]` refuses. Raw JSON is still one button away inside the composer, and for an
 intercept it accepts an array so a multi-action answer is possible; it is never the starting
-point. The earlier "Compose actions… (JSON editor) + Send response" pair was the reported
-confusion: two buttons whose difference was invisible, and a free-form JSON field nobody could
-fill.
+point.
 
 Stopping is immediate: only the bulk actions (stop all, quit) still confirm.
 
-**`[ view in wireshark ]`** (`w`, and a `[ View in Wireshark ]` button on the create/edit form so
-the capture can be running *before* the instance starts) opens a modal with a paste-ready
+`tests/dashboard_frame_test.rs` renders whole frames into ratatui's `TestBackend` — the way to
+see what a layout change does to a populated screen without a pty, and the place to assert on
+it. The pty snapshots in `tests/terminal_snapshot/` prove the real binary paints.
+
+**`[ wireshark ]`** (`w`, in the overview and config bars, and a `[ View in Wireshark ]` button on
+the create/edit form so the capture can be running *before* the instance starts) opens a modal with a paste-ready
 `wireshark -k …` / `tshark -l …` line, plus the pieces separately: interface, BPF capture filter,
 display filter and a `-d` decode-as clause. NetGet writes no pcap; `src/tui/wireshark.rs` is a
 pure table of NetGet protocol → transport + Wireshark dissector name, and every name in it was
