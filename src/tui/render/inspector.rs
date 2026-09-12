@@ -41,17 +41,19 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     } else if app.inspector.item >= item_count {
         app.inspector.item = item_count - 1;
     }
-    if let Some(bar) = app.inspector.bar {
-        if bar >= view.bar.len() {
-            app.inspector.bar = view.bar.len().checked_sub(1);
-        }
-    }
 
     let title = Line::from(vec![Span::styled(
         format!(" {} ", view.title),
         app.styles.title,
     )]);
-    let block = pane_block(app, focused).title(title);
+    let hint = if focused {
+        " ↑↓ items · ←→ tab · Enter open · Space actions "
+    } else {
+        " Space actions "
+    };
+    let block = pane_block(app, focused)
+        .title(title)
+        .title_bottom(Span::styled(hint, app.styles.dimmed));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     app.hits.push(inner, HitTarget::InspectorBody);
@@ -59,52 +61,21 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         return;
     }
 
-    let mut y = inner.y;
     draw_tabs(
         frame,
         app,
         &view,
         Rect {
-            y,
+            y: inner.y,
             height: 1,
             ..inner
         },
     );
-    y += 1;
-
-    let bar_lines = bar_lines(app, &view, inner.width as usize, focused);
-    for (row, line) in bar_lines.iter().enumerate() {
-        if y >= inner.y + inner.height {
-            return;
-        }
-        frame.render_widget(
-            Paragraph::new(line.line.clone()),
-            Rect {
-                y,
-                height: 1,
-                ..inner
-            },
-        );
-        for (index, x, width) in &line.hits {
-            app.hits.push(
-                Rect {
-                    x: inner.x + *x,
-                    y,
-                    width: *width,
-                    height: 1,
-                },
-                HitTarget::InspectorBar(*index),
-            );
-        }
-        let _ = row;
-        y += 1;
-    }
-
     let body = Rect {
         x: inner.x,
-        y,
+        y: inner.y + 1,
         width: inner.width,
-        height: inner.y + inner.height - y,
+        height: inner.height.saturating_sub(1),
     };
     if body.height == 0 {
         return;
@@ -115,7 +86,7 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
 fn draw_welcome(frame: &mut Frame, app: &DashboardApp, area: Rect) {
     let key = |k: &'static str, what: &'static str| {
         Line::from(vec![
-            Span::styled(format!("  {k:<5}"), app.styles.accent),
+            Span::styled(format!("  {k:<6}"), app.styles.accent),
             Span::styled(what, app.styles.dimmed),
         ])
     };
@@ -123,10 +94,10 @@ fn draw_welcome(frame: &mut Frame, app: &DashboardApp, area: Rect) {
         Line::from(""),
         Line::from(Span::styled("  Nothing selected yet.", app.styles.normal)),
         Line::from(""),
-        key("a", "start a server"),
-        key("A", "start a client"),
-        key("↑ ↓", "pick an instance to inspect"),
-        key("Tab", "move between panes"),
+        key("a", "start a server or a client"),
+        key("↑ ↓", "pick one; ↓ walks into it"),
+        key("Enter", "everything you can do to it"),
+        key("Tab", "to the feed and the chat"),
         key("F1", "every key"),
         Line::from(""),
         Line::from(Span::styled(
@@ -214,58 +185,6 @@ fn draw_tabs(frame: &mut Frame, app: &mut DashboardApp, view: &InspectorView, ar
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-struct BarLine<'a> {
-    line: Line<'a>,
-    /// `(button index, x offset, width)` for hit-testing.
-    hits: Vec<(usize, u16, u16)>,
-}
-
-/// The action bar, wrapped onto as many lines as the width needs.
-fn bar_lines<'a>(
-    app: &DashboardApp,
-    view: &InspectorView,
-    width: usize,
-    focused: bool,
-) -> Vec<BarLine<'a>> {
-    let mut lines: Vec<BarLine> = Vec::new();
-    let mut spans: Vec<Span> = Vec::new();
-    let mut hits: Vec<(usize, u16, u16)> = Vec::new();
-    let mut x = 0usize;
-    for (index, button) in view.bar.iter().enumerate() {
-        let label = format!("[ {} ]", button.label);
-        let label_width = label.chars().count();
-        if x > 0 && x + 1 + label_width > width {
-            lines.push(BarLine {
-                line: Line::from(std::mem::take(&mut spans)),
-                hits: std::mem::take(&mut hits),
-            });
-            x = 0;
-        }
-        if x > 0 {
-            spans.push(Span::raw(" "));
-            x += 1;
-        }
-        let is_focused = focused && app.inspector.bar == Some(index);
-        let style = if is_focused {
-            app.styles.selected
-        } else if !button.enabled {
-            app.styles.dimmed
-        } else {
-            app.styles.button
-        };
-        spans.push(Span::styled(label, style));
-        hits.push((index, x as u16, label_width as u16));
-        x += label_width;
-    }
-    if !spans.is_empty() || lines.is_empty() {
-        lines.push(BarLine {
-            line: Line::from(spans),
-            hits,
-        });
-    }
-    lines
-}
-
 fn draw_body(
     frame: &mut Frame,
     app: &mut DashboardApp,
@@ -275,7 +194,6 @@ fn draw_body(
 ) {
     let item_lines = view.item_lines();
     let selected_line = item_lines.get(app.inspector.item).copied();
-    let on_bar = app.inspector.bar.is_some();
 
     // Scroll so the selected item stays visible.
     let viewport = area.height as usize;
@@ -297,7 +215,7 @@ fn draw_body(
     for (screen_index, line) in view.lines.iter().skip(offset).take(viewport).enumerate() {
         let absolute = offset + screen_index;
         let is_item = line.item.is_some();
-        let is_selected = is_item && selected_line == Some(absolute) && !on_bar;
+        let is_selected = is_item && selected_line == Some(absolute);
         let gutter = if is_item && selected_line == Some(absolute) {
             "▸ "
         } else {

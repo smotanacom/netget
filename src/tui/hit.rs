@@ -16,8 +16,6 @@ pub enum HitTarget {
     InspectorBody,
     /// A tab in the inspector's strip.
     InspectorTab(crate::tui::inspector::InspectorTab),
-    /// A button in the inspector's action bar, by index.
-    InspectorBar(usize),
     /// A selectable line in the inspector's body, by item ordinal.
     InspectorItem(usize),
     /// The activity feed (scroll wheel target).

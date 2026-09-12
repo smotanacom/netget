@@ -30,7 +30,16 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         Span::styled("· CLIENTS ", app.styles.title),
         Span::styled(format!("{clients} "), app.styles.dimmed),
     ]);
-    let block = pane_block(app, focused).title(title);
+    let block = pane_block(app, focused)
+        .title(title)
+        .title_bottom(Span::styled(
+            if focused {
+                " ↑↓ pick · ←→ tab · Enter actions "
+            } else {
+                " Tab here "
+            },
+            app.styles.dimmed,
+        ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
@@ -60,7 +69,7 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
         let is_cursor = cursor == Some(absolute);
         lines.push(match row {
             ListRow::Header(section, count) => header_line(app, *section, *count, width),
-            ListRow::New(section) => new_line(app, *section, is_cursor, focused),
+            ListRow::New => new_line(app, is_cursor, focused),
             ListRow::Instance(key) => match crate::tui::rail::line_for(&app.snapshot, *key) {
                 Some(line) => instance_line(app, &line, width, is_cursor, focused),
                 None => Line::from(""),
@@ -95,8 +104,8 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
 
 /// Which list row the cursor is on, if any.
 pub fn cursor_index(app: &DashboardApp, rows: &[ListRow]) -> Option<usize> {
-    if let Some(section) = app.instances.on_new {
-        return rows.iter().position(|r| *r == ListRow::New(section));
+    if app.instances.on_new {
+        return rows.iter().position(|r| *r == ListRow::New);
     }
     let key = app.instances.selected?;
     rows.iter().position(|r| *r == ListRow::Instance(key))
@@ -116,13 +125,9 @@ fn header_line<'a>(app: &DashboardApp, section: Section, count: usize, width: us
     ])
 }
 
-fn new_line<'a>(app: &DashboardApp, section: Section, cursor: bool, focused: bool) -> Line<'a> {
-    let label = match section {
-        Section::Servers => "  + new server",
-        Section::Clients => "  + new client",
-    };
+fn new_line<'a>(app: &DashboardApp, cursor: bool, focused: bool) -> Line<'a> {
     let style = row_style(app, app.styles.button, cursor, focused);
-    Line::from(Span::styled(label.to_string(), style))
+    Line::from(Span::styled("  + new server or client".to_string(), style))
 }
 
 /// Selection styling: inverted while the list has focus, accent-marked when

@@ -23,14 +23,17 @@ the model-selection code.
  2 servers · 1 client │ ⚠ 1 waiting │ llm: qwen3 │ log:INFO │ F1 keys
 ```
 
-**Left column = management.** The **instance list** on top is one line per server and
-client: status glyph, id, protocol, address, live peer count, a 30-second throughput
-sparkline, and a **driver badge** saying who answers this instance's events. Under each
-section sits its `+ new …` row, where the instance it creates will appear. Below the list,
-the **inspector** shows the selected instance in tabs — `overview`, `peers` (for a client:
-`connections`), `traffic`, `rules`, `config`, and for clients `send` — each with its own
-**action bar** of buttons (Tab stops, clickable). The inspector never grows the list: a busy
-instance scrolls inside its own pane.
+**Left column = management, one continuous space.** The **instance list** on top is one
+line per server and client: status glyph, id, protocol, address, live peer count, a
+30-second throughput sparkline, and a **driver badge** saying who answers this instance's
+events. One `+ new server or client` row at the foot opens a picker that lists both kinds
+together. Below the list, the **inspector** shows the selected instance in tabs —
+`overview`, `peers` (for a client: `connections`), `traffic`, `rules`, `config`, and for
+clients `send`. ↑/↓ walk the list *into* the inspector's items and back; ←/→ flip the tab
+from anywhere in the column; Enter or Space (or a right click) opens the **action menu** — a
+vertical list of everything that can be done to the selected item and then to the instance,
+each with the letter that runs it without the menu. Nothing wraps, nothing needs Tab. The
+inspector never grows the list: a busy instance scrolls inside its own pane.
 
 **Right column = what is happening.** The **activity feed** is the machine's view: instances
 starting/stopping, peers connecting/closing, every request with the action that answered it
@@ -59,8 +62,8 @@ The dashboard is built around driving instances yourself. Three mechanisms carry
   the bar. Add and edit open the routing modal (`modal/routing.rs`); delete and move rebuild
   the table headlessly through `RoutingModel` and apply the same way.
 - **Send tab / message a peer**: a client's own verbs as rows (Enter opens the composer on
-  that verb's parameters); a server's live peer gets `[ message ]` and `[ disconnect ]` where
-  the protocol registered a peer handle (`server/peer_support.rs`).
+  that verb's parameters); a server's live peer gets *message* and *disconnect* entries in
+  the action menu where the protocol registered a peer handle (`server/peer_support.rs`).
 
 Instances created here default to `*` → manual (see `modal/form.rs`), so the first thing you
 see after starting a server and poking it with `curl` is `⚠ … waiting for YOUR answer`, in
@@ -75,7 +78,7 @@ the list badge, the inspector overview, the feed, and the status bar.
 | `event_loop.rs` | terminal lifecycle; the select loop; status-line routing; snapshot absorption |
 | `projection.rs` | `AppState` → owned `RailSnapshot` (`ServerRow` / `ClientRow`) under short locks |
 | `rail.rs` | the instance list model: rows, per-instance line, status glyphs |
-| `inspector.rs` | tabs, action bar, per-tab lines and selectable items |
+| `inspector.rs` | tabs, per-tab lines and selectable items, the action menu's entries |
 | `driver.rs` | `Driver` detection from a handler table and rebuilding the table for a new driver |
 | `activity.rs` | the feed ring, and `Tracker::diff`, which turns two snapshots into events |
 | `metrics.rs` | per-instance throughput samples, rates, sparklines, byte formatting |
@@ -85,11 +88,11 @@ the list badge, the inspector overview, the feed, and the status bar.
 | `modal_keys.rs` | input handling for every modal |
 | `hit.rs` | per-frame hit-test registry for the mouse |
 | `render/` | one file per pane plus `overlay.rs` for modals |
-| `modal/` | forms, composer, routing editor, intercept answer, picker, help, wireshark |
+| `modal/` | forms, composer, routing editor, intercept answer, picker, action menu, help, wireshark |
 | `wireshark.rs` | protocol → dissector/capture-filter table |
 
 The rule that keeps keyboard and mouse from drifting: an action is an `InstanceAction`, run
-by `actions::run`, whatever produced it — a letter, Enter on a bar button, a click on it.
+by `actions::run`, whatever produced it — a letter, a menu entry, Enter on an item, a click.
 
 ## Things that must not run on the event loop
 
@@ -128,6 +131,12 @@ originating modal on success and leaves it open showing the error on failure.
   had are back in the chat input, taking precedence over the Ctrl-E/Ctrl-W toggles while a
   line is being typed; the pty harness gained `PtyScreen` and renders unpainted cells as
   spaces, and all six snapshots were re-recorded as real screens.
+
+- 2026-09-12 (third pass, from operator feedback): one picker for both kinds (`+ new server
+  or client`, `a`); the wrapping action bar is gone — the action menu (Enter/Space/right
+  click) lists item-specific entries then the instance's, with letters; the left column is
+  walked with ↑/↓ (list flows into inspector items) and ←/→ flips tabs anywhere in it, so
+  Tab is only for changing column; ↓ past the feed's newest line lands in the chat.
 
 ## Next steps
 

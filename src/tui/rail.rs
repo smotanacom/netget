@@ -1,8 +1,9 @@
 //! The instance list: one line per server and client.
 //!
 //! The list is the overview and stays one line per instance whatever is
-//! happening inside it; depth lives in the inspector. Each section ends with
-//! the row that adds to it, where the new instance will appear.
+//! happening inside it; depth lives in the inspector. One row at the foot
+//! starts a new instance of either kind — the picker lists servers and
+//! clients together, so there is nothing to choose before choosing.
 
 use crate::tui::app::{Section, UiKey};
 use crate::tui::driver::{driver_of, Driver};
@@ -12,12 +13,13 @@ use crate::tui::projection::{ClientRow, RailSnapshot, ServerRow};
 pub enum ListRow {
     Header(Section, usize),
     Instance(UiKey),
-    New(Section),
+    /// `+ new server or client`, at the foot.
+    New,
 }
 
-/// Servers, then clients, each with its header and its `+ new` row.
+/// Servers, then clients, each under its header; the `+ new` row last.
 pub fn list_rows(snapshot: &RailSnapshot) -> Vec<ListRow> {
-    let mut rows = Vec::with_capacity(snapshot.servers.len() + snapshot.clients.len() + 4);
+    let mut rows = Vec::with_capacity(snapshot.servers.len() + snapshot.clients.len() + 3);
     rows.push(ListRow::Header(Section::Servers, snapshot.servers.len()));
     rows.extend(
         snapshot
@@ -25,7 +27,6 @@ pub fn list_rows(snapshot: &RailSnapshot) -> Vec<ListRow> {
             .iter()
             .map(|s| ListRow::Instance(UiKey::Server(s.id))),
     );
-    rows.push(ListRow::New(Section::Servers));
     rows.push(ListRow::Header(Section::Clients, snapshot.clients.len()));
     rows.extend(
         snapshot
@@ -33,11 +34,11 @@ pub fn list_rows(snapshot: &RailSnapshot) -> Vec<ListRow> {
             .iter()
             .map(|c| ListRow::Instance(UiKey::Client(c.id))),
     );
-    rows.push(ListRow::New(Section::Clients));
+    rows.push(ListRow::New);
     rows
 }
 
-/// Rows the cursor can land on: instances and the `+ new` rows.
+/// Rows the cursor can land on: instances and the `+ new` row.
 pub fn is_selectable(row: &ListRow) -> bool {
     !matches!(row, ListRow::Header(..))
 }

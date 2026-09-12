@@ -243,7 +243,7 @@ fn the_button_is_a_wireshark_action_on_servers_and_clients() {
 
     let ui = InspectorUi::default();
     let has_wireshark = |view: &inspector::InspectorView| {
-        view.bar
+        view.actions
             .iter()
             .any(|b| b.action == InstanceAction::Wireshark && b.label.contains("wireshark"))
     };
@@ -266,7 +266,7 @@ fn the_button_is_a_wireshark_action_on_servers_and_clients() {
         client_counterpart: None,
         intercepts: Vec::new(),
     };
-    // The overview bar carries it, and so does the config tab's.
+    // The action menu carries it whichever tab is open.
     let view = inspector::build(InstanceRef::Server(&server), &ui, None, 60);
     assert_eq!(view.tab, InspectorTab::Overview);
     assert!(has_wireshark(&view));

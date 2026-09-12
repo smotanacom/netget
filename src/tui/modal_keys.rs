@@ -72,6 +72,7 @@ pub(crate) async fn handle_modal_key(
         Some(Modal::Composer(_)) => return handle_composer_key(app, key, state).await,
         Some(Modal::Routing(_)) => return handle_routing_key(app, key, state).await,
         Some(Modal::Intercept(_)) => return handle_intercept_key(app, key, state).await,
+        Some(Modal::ActionMenu(_)) => return handle_action_menu_key(app, key, state).await,
         _ => {}
     }
 
@@ -93,7 +94,6 @@ async fn handle_picker_key(app: &mut DashboardApp, key: KeyEvent, state: &AppSta
     use crate::tui::modal::protocol_picker;
 
     let Some(Modal::ProtocolPicker {
-        section,
         entries,
         filter,
         selected,
@@ -129,7 +129,7 @@ async fn handle_picker_key(app: &mut DashboardApp, key: KeyEvent, state: &AppSta
             let Some(entry) = matches.get(*selected) else {
                 return Outcome::Continue;
             };
-            let section = *section;
+            let section = entry.kind;
             let protocol = entry.name.clone();
             let remote = prefill_remote.clone();
             let default_port = if entry.has_binding_defaults {
@@ -991,6 +991,64 @@ fn example_actions(actions: &[crate::llm::actions::ActionDefinition]) -> String 
         }
         None => "[]".to_string(),
     }
+}
+
+/// The action menu: ↑/↓, Enter or Space runs the entry, a letter runs the
+/// entry it names, Esc closes.
+async fn handle_action_menu_key(
+    app: &mut DashboardApp,
+    key: KeyEvent,
+    state: &AppState,
+) -> Outcome {
+    let Some(Modal::ActionMenu(menu)) = app.modals.last_mut() else {
+        return Outcome::Continue;
+    };
+    match key.code {
+        KeyCode::Esc => {
+            app.modals.pop();
+        }
+        KeyCode::Up => menu.move_selection(-1),
+        KeyCode::Down => menu.move_selection(1),
+        KeyCode::Home => menu.selected = 0,
+        KeyCode::End => menu.selected = menu.items.len().saturating_sub(1),
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            let index = menu.selected;
+            run_action_menu_item(app, index, state).await;
+        }
+        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(index) = menu.by_key(c) {
+                run_action_menu_item(app, index, state).await;
+            }
+        }
+        _ => {}
+    }
+    Outcome::Continue
+}
+
+/// Run one menu entry: the menu closes first, so the action's own modal
+/// (a form, the composer) is what is left on top. A disabled entry only
+/// explains itself.
+pub(crate) async fn run_action_menu_item(app: &mut DashboardApp, index: usize, state: &AppState) {
+    let Some(Modal::ActionMenu(menu)) = app.modals.last() else {
+        return;
+    };
+    let Some(item) = menu.items.get(index).cloned() else {
+        return;
+    };
+    let key = menu.key;
+    if !item.enabled {
+        if let Some(Modal::ActionMenu(menu)) = app.modals.last_mut() {
+            menu.selected = index;
+        }
+        app.push_system(format!(
+            "{}: {}",
+            item.label,
+            item.why_disabled.unwrap_or_default()
+        ));
+        return;
+    }
+    app.modals.pop();
+    crate::tui::actions::run(app, key, item.action, state).await;
 }
 
 /// Point the open modal's selection at the row that was clicked.

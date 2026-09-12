@@ -5,28 +5,36 @@
 /// section heading.
 pub fn help_lines() -> Vec<(Option<&'static str>, &'static str)> {
     vec![
-        (None, "Panes"),
+        (None, "Moving around"),
+        (
+            Some("↑ / ↓"),
+            "walk the left column: the list flows into the inspector's items",
+        ),
+        (
+            Some("← / →"),
+            "flip the inspector's tab, from the list or the inspector",
+        ),
         (
             Some("Tab / Shift-Tab"),
-            "instances → inspector → activity → chat",
+            "management column → activity → chat (or click)",
         ),
         (Some("Esc"), "step back: inspector → list → chat"),
         (Some("F2"), "right column: balanced → chat only → feed only"),
         (Some("Ctrl-T"), "free the mouse for native text selection"),
         (Some("F1"), "this help"),
         (Some("Ctrl-C"), "quit"),
-        (None, "Instances (the list, top left)"),
+        (None, "Instances"),
         (
-            Some("↑ / ↓"),
-            "pick an instance; Enter or → opens it in the inspector",
+            Some("Enter / Space"),
+            "the action menu for the selected instance (right-click too)",
         ),
         (
-            Some("a  /  A"),
-            "start a server / start a client (protocol picker)",
+            Some("a"),
+            "start a server or a client — one picker lists both",
         ),
         (
-            Some("+ new server"),
-            "the last row of each section does the same",
+            Some("+ new server or client"),
+            "the last row of the list does the same",
         ),
         (Some("x"), "stop a server / remove a client — immediate"),
         (
@@ -46,22 +54,13 @@ pub fn help_lines() -> Vec<(Option<&'static str>, &'static str)> {
         (Some("w"), "Wireshark / tshark capture recipe"),
         (Some("d"), "protocol description and maturity, into chat"),
         (Some("1 … 6"), "jump to an inspector tab"),
-        (None, "Inspector (bottom left)"),
-        (Some("← / →"), "switch tab — or move along the action bar"),
-        (
-            Some("↑ / ↓"),
-            "move through the tab's items; ↑ past the top reaches the buttons",
-        ),
-        (Some("Enter"), "press the button, or act on the item:"),
+        (None, "Inspector items — Enter acts, Space lists more"),
         (
             Some("  a peer"),
-            "narrow traffic to it ([ message ] / [ disconnect ] in the bar)",
+            "narrow traffic to it; message / disconnect in the menu",
         ),
         (Some("  a request"), "open its full request and response"),
-        (
-            Some("  a rule"),
-            "edit it ([ + add ] [ delete ] [ up ] [ down ] in the bar)",
-        ),
+        (Some("  a rule"), "edit it; add / delete / move in the menu"),
         (Some("  a config row"), "open the edit form"),
         (
             Some("  a verb (send tab)"),

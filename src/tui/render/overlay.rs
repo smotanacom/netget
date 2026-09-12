@@ -74,7 +74,9 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
             Vec::new()
         }
         // Rendered separately below (their own panes and button rows).
-        Modal::Composer(_) | Modal::Routing(_) | Modal::Intercept(_) => Vec::new(),
+        Modal::Composer(_) | Modal::Routing(_) | Modal::Intercept(_) | Modal::ActionMenu(_) => {
+            Vec::new()
+        }
     };
 
     let scroll = match modal {
@@ -94,6 +96,35 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     app.hits.push(rect, HitTarget::ModalBody);
+
+    // The action menu: one entry per line, the letter beside it.
+    if let Some(Modal::ActionMenu(menu)) = app.modals.last() {
+        let mut lines: Vec<Line> = Vec::with_capacity(menu.items.len());
+        let mut offsets: Vec<u16> = Vec::with_capacity(menu.items.len());
+        for (index, item) in menu.items.iter().enumerate() {
+            offsets.push(lines.len() as u16);
+            let selected = index == menu.selected;
+            let key = item.key.map(|k| k.to_string()).unwrap_or_default();
+            let (label_style, key_style) = if selected {
+                (app.styles.selected, app.styles.selected)
+            } else if !item.enabled {
+                (app.styles.dimmed, app.styles.dimmed)
+            } else {
+                (app.styles.normal, app.styles.accent)
+            };
+            let mut spans = vec![
+                Span::styled(format!(" {key:>1} "), key_style),
+                Span::styled(format!(" {}", item.label), label_style),
+            ];
+            if let Some(why) = &item.why_disabled {
+                spans.push(Span::styled(format!("  — {why}"), app.styles.dimmed));
+            }
+            lines.push(Line::from(spans));
+        }
+        frame.render_widget(Paragraph::new(lines), inner);
+        push_row_hits(app, inner, &offsets);
+        return;
+    }
 
     // The instance form: fields, then Apply / Cancel.
     if let Some(Modal::Form(form)) = app.modals.last() {
@@ -304,8 +335,13 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp, area: Rect) {
                 | crate::protocol::metadata::DevelopmentState::Stable => app.styles.success,
                 _ => app.styles.warning,
             };
+            let kind_style = match entry.kind {
+                crate::tui::app::Section::Servers => app.styles.server,
+                crate::tui::app::Section::Clients => app.styles.client,
+            };
             list.push(Line::from(vec![
-                Span::styled(format!("  {:<22}", entry.name), style),
+                Span::styled(format!("  {:<18}", entry.name), style),
+                Span::styled(format!("{:<8}", entry.kind_label()), kind_style),
                 Span::styled(format!("{:<12}", entry.badge()), badge_style),
                 Span::styled(
                     crate::utils::truncate_for_log(&entry.description, 70),
@@ -478,6 +514,7 @@ fn picker_detail_lines<'a>(
 
     let mut lines = vec![Line::from(vec![
         Span::styled(entry.name.clone(), app.styles.accent),
+        Span::styled(format!(" {}", entry.kind_label()), app.styles.normal),
         Span::styled(format!("  {}", entry.badge()), app.styles.dimmed),
     ])];
     lines.push(Line::from(Span::styled(
@@ -485,9 +522,12 @@ fn picker_detail_lines<'a>(
         app.styles.normal,
     )));
     lines.push(Line::from(Span::styled(
-        match entry.default_port {
-            Some(port) => format!("starts on port {port}"),
-            None => "starts on an OS-assigned port (0)".to_string(),
+        match (entry.kind, entry.default_port) {
+            (crate::tui::app::Section::Clients, _) => {
+                "asks for the address to connect to".to_string()
+            }
+            (_, Some(port)) => format!("starts on port {port}"),
+            (_, None) => "starts on an OS-assigned port (0)".to_string(),
         },
         app.styles.dimmed,
     )));

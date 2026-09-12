@@ -81,12 +81,10 @@ pub async fn run(app: &mut DashboardApp, key: UiKey, action: InstanceAction, sta
             app.inspector.tab = InspectorTab::Traffic;
             app.inspector.item = 0;
             app.inspector.scroll = 0;
-            app.inspector.bar = None;
         }
         InstanceAction::ClearTrafficFilter => {
             app.inspector.filter = TrafficFilter::All;
             app.inspector.item = 0;
-            app.inspector.bar = None;
         }
         InstanceAction::Disconnect => {
             if let UiKey::Client(id) = key {
@@ -604,27 +602,56 @@ fn open_wireshark(app: &mut DashboardApp, key: UiKey) {
     });
 }
 
-/// Open the protocol picker for a section. `prefill_remote` aims a new
-/// client at a specific address.
+/// Open the protocol picker — servers and clients in one list. `prefill_remote`
+/// aims a new client at a specific address.
 pub async fn open_protocol_picker(
     app: &mut DashboardApp,
-    section: Section,
     prefill_remote: Option<String>,
     state: &AppState,
 ) {
     let caps = state.get_system_capabilities().await;
-    let entries = crate::tui::modal::protocol_picker::entries(section, &caps);
+    let entries = crate::tui::modal::protocol_picker::all_entries(&caps);
     if entries.is_empty() {
-        app.push_system("No protocols compiled into this build for that side.");
+        app.push_system("No protocols compiled into this build.");
         return;
     }
     app.modals.push(Modal::ProtocolPicker {
-        section,
         entries,
         filter: String::new(),
         selected: 0,
         prefill_remote,
     });
+}
+
+/// Open the action menu for the selected instance, built for the cursor's
+/// position: the open tab, and the selected item when the inspector has the
+/// cursor.
+pub fn open_action_menu(app: &mut DashboardApp) {
+    use crate::tui::modal::action_menu::ActionMenuModel;
+    let Some(instance) = app.selected_instance() else {
+        return;
+    };
+    let key = instance.key();
+    let view = crate::tui::inspector::build(
+        instance,
+        &app.inspector,
+        app.instances.metrics.get(&key),
+        60,
+    );
+    // From the list, the menu is about the instance, not whatever item the
+    // inspector's cursor last rested on.
+    let items = if app.focus == crate::tui::app::Focus::Inspector {
+        view.actions
+    } else {
+        crate::tui::inspector::menu_items(instance, view.tab, None, app.inspector.filter)
+    };
+    if items.is_empty() {
+        return;
+    }
+    app.modals
+        .push(Modal::ActionMenu(Box::new(ActionMenuModel::new(
+            key, view.title, items,
+        ))));
 }
 
 /// Jump to the oldest parked request anywhere and open its answer modal.

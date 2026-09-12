@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use crate::events::EventHandler;
 use crate::state::app_state::AppState;
 use crate::tui::actions;
-use crate::tui::app::{DashboardApp, Focus, Section, UiKey};
+use crate::tui::app::{DashboardApp, Focus, UiKey};
 use crate::tui::hit::{HitTarget, SegmentId};
 use crate::tui::inspector::{self, InspectorTab, InstanceAction};
 use crate::tui::modal::Modal;
@@ -133,30 +133,25 @@ pub async fn handle_key(
 
 /// Instances → Inspector → Activity → Chat → Instances. The inspector is
 /// skipped when nothing is selected (there is nothing in it to focus).
+/// Three stops: the management column (list and inspector together), the
+/// feed, the chat. Inside the management column the arrows do the moving.
 fn cycle_focus(app: &mut DashboardApp, backward: bool) {
-    let order = [
-        Focus::Instances,
-        Focus::Inspector,
-        Focus::Activity,
-        Focus::ChatInput,
-    ];
-    let current = match app.focus {
-        Focus::ChatHistory => 3,
-        other => order.iter().position(|f| *f == other).unwrap_or(3),
+    let column = |f: Focus| match f {
+        Focus::Instances | Focus::Inspector => 0,
+        Focus::Activity => 1,
+        Focus::ChatInput | Focus::ChatHistory => 2,
     };
-    let mut next = current;
-    for _ in 0..order.len() {
-        next = if backward {
-            (next + order.len() - 1) % order.len()
-        } else {
-            (next + 1) % order.len()
-        };
-        if order[next] == Focus::Inspector && app.selected().is_none() {
-            continue;
-        }
-        break;
-    }
-    app.focus = order[next];
+    let current = column(app.focus);
+    let next = if backward {
+        (current + 2) % 3
+    } else {
+        (current + 1) % 3
+    };
+    app.focus = match next {
+        0 => Focus::Instances,
+        1 => Focus::Activity,
+        _ => Focus::ChatInput,
+    };
     if app.focus == Focus::Activity {
         app.activity.cursor = None;
     }
@@ -326,11 +321,10 @@ fn move_list_cursor(app: &mut DashboardApp, delta: isize) {
 fn set_list_cursor(app: &mut DashboardApp, row: ListRow) {
     match row {
         ListRow::Instance(key) => app.select(key),
-        ListRow::New(section) => {
+        ListRow::New => {
             app.instances.selected = None;
-            app.instances.on_new = Some(section);
+            app.instances.on_new = true;
             app.inspector.item = 0;
-            app.inspector.bar = None;
         }
         ListRow::Header(..) => {}
     }
@@ -342,17 +336,11 @@ fn list_cursor_row(app: &DashboardApp) -> Option<ListRow> {
 }
 
 /// Letters that act on the selected instance from either left pane.
+/// Letters that act on the selected instance from either left pane.
 async fn instance_letter(app: &mut DashboardApp, code: KeyCode, state: &AppState) -> bool {
-    match code {
-        KeyCode::Char('a') => {
-            actions::open_protocol_picker(app, Section::Servers, None, state).await;
-            return true;
-        }
-        KeyCode::Char('A') => {
-            actions::open_protocol_picker(app, Section::Clients, None, state).await;
-            return true;
-        }
-        _ => {}
+    if matches!(code, KeyCode::Char('a') | KeyCode::Char('A')) {
+        actions::open_protocol_picker(app, None, state).await;
+        return true;
     }
     let Some(key) = app.selected() else {
         return false;
@@ -387,8 +375,25 @@ fn jump_to_tab(app: &mut DashboardApp, index: usize) {
     let tabs = InspectorTab::for_key(key);
     if let Some(tab) = tabs.get(index) {
         set_tab(app, *tab);
-        app.focus = Focus::Inspector;
     }
+}
+
+/// ←/→ anywhere in the management column flips the inspector's tab, so
+/// instances can be browsed with ↑/↓ and compared on one tab without
+/// leaving the list.
+fn step_tab(app: &mut DashboardApp, backward: bool) {
+    let Some(key) = app.selected() else {
+        return;
+    };
+    let tabs = InspectorTab::for_key(key);
+    let current = inspector::effective_tab(key, app.inspector.tab);
+    let pos = tabs.iter().position(|t| *t == current).unwrap_or(0);
+    let next = if backward {
+        (pos + tabs.len() - 1) % tabs.len()
+    } else {
+        (pos + 1) % tabs.len()
+    };
+    set_tab(app, tabs[next]);
 }
 
 fn set_tab(app: &mut DashboardApp, tab: InspectorTab) {
@@ -396,26 +401,57 @@ fn set_tab(app: &mut DashboardApp, tab: InspectorTab) {
         app.inspector.tab = tab;
         app.inspector.item = 0;
         app.inspector.scroll = 0;
-        app.inspector.bar = None;
     }
+}
+
+/// How many items the inspector has for the selected instance right now.
+fn inspector_item_count(app: &DashboardApp) -> usize {
+    app.selected_instance()
+        .map(|instance| {
+            let key = instance.key();
+            inspector::build(
+                instance,
+                &app.inspector,
+                app.instances.metrics.get(&key),
+                60,
+            )
+            .item_count()
+        })
+        .unwrap_or(0)
+}
+
+/// Whether the cursor sits on the last selectable list row.
+fn at_list_end(app: &DashboardApp) -> bool {
+    let rows = list_rows(&app.snapshot);
+    let last = rows.iter().rposition(is_selectable);
+    crate::tui::render::rail::cursor_index(app, &rows) == last
 }
 
 async fn handle_instances_key(app: &mut DashboardApp, key: KeyEvent, state: &AppState) -> Outcome {
     match key.code {
-        KeyCode::Down => move_list_cursor(app, 1),
+        // ↓ past the last row walks into the inspector's items.
+        KeyCode::Down => {
+            if at_list_end(app) {
+                if app.selected().is_some() && inspector_item_count(app) > 0 {
+                    app.focus = Focus::Inspector;
+                    app.inspector.item = 0;
+                }
+            } else {
+                move_list_cursor(app, 1);
+            }
+        }
         KeyCode::Up => move_list_cursor(app, -1),
         KeyCode::PageDown => move_list_cursor(app, 10),
         KeyCode::PageUp => move_list_cursor(app, -10),
         KeyCode::Home => move_list_cursor(app, isize::MIN / 2),
         KeyCode::End => move_list_cursor(app, isize::MAX / 2),
-        KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ') => match list_cursor_row(app) {
-            Some(ListRow::New(section)) => {
-                actions::open_protocol_picker(app, section, None, state).await;
+        KeyCode::Left => step_tab(app, true),
+        KeyCode::Right => step_tab(app, false),
+        KeyCode::Enter | KeyCode::Char(' ') => match list_cursor_row(app) {
+            Some(ListRow::New) => {
+                actions::open_protocol_picker(app, None, state).await;
             }
-            Some(ListRow::Instance(_)) => {
-                app.focus = Focus::Inspector;
-                app.inspector.bar = None;
-            }
+            Some(ListRow::Instance(_)) => actions::open_action_menu(app),
             _ => {}
         },
         KeyCode::Esc => {
@@ -446,84 +482,41 @@ async fn handle_inspector_key(app: &mut DashboardApp, key: KeyEvent, state: &App
         60,
     );
     let items = view.item_count();
-    let tabs = view.tabs.clone();
-    let tab_pos = tabs.iter().position(|t| *t == view.tab).unwrap_or(0);
 
     match key.code {
         KeyCode::Esc => {
             app.focus = Focus::Instances;
-            app.inspector.bar = None;
         }
-        KeyCode::Left | KeyCode::Right => {
-            let backward = key.code == KeyCode::Left;
-            match app.inspector.bar {
-                Some(index) if !view.bar.is_empty() => {
-                    let len = view.bar.len();
-                    app.inspector.bar = Some(if backward {
-                        (index + len - 1) % len
-                    } else {
-                        (index + 1) % len
-                    });
-                }
-                _ => {
-                    let next = if backward {
-                        (tab_pos + tabs.len() - 1) % tabs.len()
-                    } else {
-                        (tab_pos + 1) % tabs.len()
-                    };
-                    set_tab(app, tabs[next]);
-                }
+        KeyCode::Left => step_tab(app, true),
+        KeyCode::Right => step_tab(app, false),
+        // ↑ past the first item walks back up into the list.
+        KeyCode::Up => {
+            if app.inspector.item == 0 || items == 0 {
+                app.focus = Focus::Instances;
+                app.instances.on_new = false;
+            } else {
+                app.inspector.item -= 1;
             }
         }
-        KeyCode::Up => match app.inspector.bar {
-            Some(_) => {}
-            None if app.inspector.item == 0 || items == 0 => {
-                if !view.bar.is_empty() {
-                    app.inspector.bar = Some(0);
-                }
+        KeyCode::Down => {
+            if app.inspector.item + 1 < items {
+                app.inspector.item += 1;
             }
-            None => app.inspector.item -= 1,
-        },
-        KeyCode::Down => match app.inspector.bar {
-            Some(_) => {
-                app.inspector.bar = None;
-                app.inspector.item = 0;
-            }
-            None if app.inspector.item + 1 < items => app.inspector.item += 1,
-            None => {}
-        },
+        }
         KeyCode::PageDown => {
-            app.inspector.bar = None;
             app.inspector.item = (app.inspector.item + 10).min(items.saturating_sub(1));
         }
-        KeyCode::PageUp => {
-            app.inspector.bar = None;
-            app.inspector.item = app.inspector.item.saturating_sub(10);
-        }
-        KeyCode::Home => {
-            app.inspector.bar = None;
-            app.inspector.item = 0;
-        }
-        KeyCode::End => {
-            app.inspector.bar = None;
-            app.inspector.item = items.saturating_sub(1);
-        }
-        KeyCode::Enter | KeyCode::Char(' ') => match app.inspector.bar {
-            Some(index) => {
-                if let Some(button) = view.bar.get(index) {
-                    if button.enabled {
-                        actions::run(app, key_id, button.action, state).await;
-                    } else if let Some(why) = &button.why_disabled {
-                        app.push_system(format!("[ {} ]: {why}", button.label));
-                    }
-                }
+        KeyCode::PageUp => app.inspector.item = app.inspector.item.saturating_sub(10),
+        KeyCode::Home => app.inspector.item = 0,
+        KeyCode::End => app.inspector.item = items.saturating_sub(1),
+        KeyCode::Enter => {
+            if let Some(action) = view.default_action(app.inspector.item) {
+                actions::run(app, key_id, action, state).await;
+            } else {
+                actions::open_action_menu(app);
             }
-            None => {
-                if let Some(action) = view.default_action(app.inspector.item) {
-                    actions::run(app, key_id, action, state).await;
-                }
-            }
-        },
+        }
+        KeyCode::Char(' ') => actions::open_action_menu(app),
         code => {
             if let Some(index) = tab_digit(code) {
                 jump_to_tab(app, index);
@@ -553,15 +546,14 @@ async fn handle_activity_key(app: &mut DashboardApp, key: KeyEvent, state: &AppS
                 app.activity.scroll_up(0);
             }
         }
-        KeyCode::Down => {
-            if let Some(c) = app.activity.cursor {
-                if c + 1 < visible {
-                    app.activity.cursor = Some(c + 1);
-                } else {
-                    app.activity.scroll_to_follow();
-                }
+        // ↓ past the newest line walks on into the chat.
+        KeyCode::Down => match app.activity.cursor {
+            Some(c) if c + 1 < visible => app.activity.cursor = Some(c + 1),
+            _ => {
+                app.activity.scroll_to_follow();
+                app.focus = Focus::ChatInput;
             }
-        }
+        },
         KeyCode::PageUp => {
             let cursor = app.activity.cursor.unwrap_or(visible).saturating_sub(10);
             app.activity.cursor = Some(cursor);
@@ -634,6 +626,32 @@ async fn follow_link(
 pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &AppState) -> Outcome {
     let target = app.hits.hit(event.column, event.row).cloned();
 
+    // A right click opens the action menu for whatever it lands on.
+    if event.kind == MouseEventKind::Down(MouseButton::Right) && app.modal().is_none() {
+        match target {
+            Some(HitTarget::ListRow(index)) => {
+                let rows = list_rows(&app.snapshot);
+                if let Some(ListRow::Instance(key)) = rows.get(index).copied() {
+                    app.focus = Focus::Instances;
+                    app.select(key);
+                    actions::open_action_menu(app);
+                }
+            }
+            Some(HitTarget::InspectorItem(index)) => {
+                app.focus = Focus::Inspector;
+                app.inspector.item = index;
+                actions::open_action_menu(app);
+            }
+            Some(HitTarget::InspectorBody) | Some(HitTarget::InspectorTab(_)) => {
+                app.focus = Focus::Inspector;
+                actions::open_action_menu(app);
+            }
+            _ => {}
+        }
+        app.dirty = true;
+        return Outcome::Continue;
+    }
+
     match event.kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             let up = event.kind == MouseEventKind::ScrollUp;
@@ -694,7 +712,13 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
             return crate::tui::modal_keys::run_modal_action(app, action, state).await;
         }
         if let HitTarget::ModalRow(index) = target {
-            crate::tui::modal_keys::select_modal_row(app, index);
+            // A menu entry is a verb: clicking it runs it. Every other
+            // modal's rows only select on click.
+            if matches!(app.modal(), Some(Modal::ActionMenu(_))) {
+                crate::tui::modal_keys::run_action_menu_item(app, index, state).await;
+            } else {
+                crate::tui::modal_keys::select_modal_row(app, index);
+            }
         }
         return Outcome::Continue;
     }
@@ -709,15 +733,16 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
             };
             match row {
                 ListRow::Header(..) => {}
-                ListRow::New(section) => {
+                ListRow::New => {
                     app.focus = Focus::Instances;
                     set_list_cursor(app, row);
-                    actions::open_protocol_picker(app, section, None, state).await;
+                    actions::open_protocol_picker(app, None, state).await;
                 }
                 ListRow::Instance(key) => {
-                    // First click selects; a click on the selection opens it.
+                    // First click selects; a click on the selection opens
+                    // its actions.
                     if app.selected() == Some(key) && app.focus == Focus::Instances {
-                        app.focus = Focus::Inspector;
+                        actions::open_action_menu(app);
                     } else {
                         app.focus = Focus::Instances;
                         app.select(key);
@@ -729,30 +754,10 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
             app.focus = Focus::Inspector;
             set_tab(app, tab);
         }
-        HitTarget::InspectorBar(index) => {
-            app.focus = Focus::Inspector;
-            app.inspector.bar = Some(index);
-            if let Some(instance) = app.selected_instance() {
-                let key = instance.key();
-                let view = inspector::build(
-                    instance,
-                    &app.inspector,
-                    app.instances.metrics.get(&key),
-                    60,
-                );
-                if let Some(button) = view.bar.get(index).cloned() {
-                    if button.enabled {
-                        actions::run(app, key, button.action, state).await;
-                    } else if let Some(why) = button.why_disabled {
-                        app.push_system(format!("[ {} ]: {why}", button.label));
-                    }
-                }
-            }
-        }
         HitTarget::InspectorItem(index) => {
             app.focus = Focus::Inspector;
             // First click selects; a click on the selection activates it.
-            if app.inspector.bar.is_none() && app.inspector.item == index {
+            if app.inspector.item == index {
                 if let Some(instance) = app.selected_instance() {
                     let key = instance.key();
                     let view = inspector::build(
@@ -766,7 +771,6 @@ pub async fn handle_mouse(app: &mut DashboardApp, event: MouseEvent, state: &App
                     }
                 }
             } else {
-                app.inspector.bar = None;
                 app.inspector.item = index;
             }
         }

@@ -1,5 +1,7 @@
-//! Protocol picker for `[+ server]` / `[+ client]`: a filterable list with
-//! maturity badges and a preview of what the protocol is and needs.
+//! Protocol picker for `+ new server or client`: every server and client
+//! protocol in one filterable list with maturity badges and a preview of what
+//! the protocol is and needs. `http server` and `http client` sit next to
+//! each other, so there is no kind to choose before choosing.
 
 use crate::privilege::SystemCapabilities;
 use crate::protocol::metadata::DevelopmentState;
@@ -7,6 +9,8 @@ use crate::tui::app::Section;
 
 #[derive(Debug, Clone)]
 pub struct ProtocolEntry {
+    /// Server or client.
+    pub kind: Section,
     pub name: String,
     pub description: String,
     pub state: DevelopmentState,
@@ -22,6 +26,13 @@ pub struct ProtocolEntry {
 }
 
 impl ProtocolEntry {
+    pub fn kind_label(&self) -> &'static str {
+        match self.kind {
+            Section::Servers => "server",
+            Section::Clients => "client",
+        }
+    }
+
     pub fn badge(&self) -> &'static str {
         match self.state {
             DevelopmentState::Stable => "[stable]",
@@ -54,6 +65,7 @@ pub fn entries(section: Section, caps: &SystemCapabilities) -> Vec<ProtocolEntry
                         ))
                     };
                     Some(ProtocolEntry {
+                        kind: Section::Servers,
                         name: name.to_string(),
                         description: protocol.description().to_string(),
                         state: metadata.state,
@@ -74,6 +86,7 @@ pub fn entries(section: Section, caps: &SystemCapabilities) -> Vec<ProtocolEntry
                     let protocol = registry.get(&name)?;
                     let metadata = protocol.metadata();
                     Some(ProtocolEntry {
+                        kind: Section::Clients,
                         name: name.clone(),
                         description: protocol.description().to_string(),
                         state: metadata.state,
@@ -90,34 +103,56 @@ pub fn entries(section: Section, caps: &SystemCapabilities) -> Vec<ProtocolEntry
     entries
 }
 
-/// Case-insensitive filter over name and description, ranked by how well the
-/// match fits the name.
+/// Both kinds together, sorted by name with the server before the client of
+/// the same protocol.
+pub fn all_entries(caps: &SystemCapabilities) -> Vec<ProtocolEntry> {
+    let mut all = entries(Section::Servers, caps);
+    all.extend(entries(Section::Clients, caps));
+    all.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| (a.kind == Section::Clients).cmp(&(b.kind == Section::Clients)))
+    });
+    all
+}
+
+/// Case-insensitive filter over name, kind and description, ranked by how
+/// well the match fits the name.
 ///
 /// Ranking matters once every protocol is compiled in: typing "tcp" matches
 /// Modbus, MQTT and a dozen others whose *description* mentions TCP, and an
 /// alphabetical list puts one of those first. Someone typing "tcp" wants TCP.
+/// Words after the first narrow further — `http client` is the http client.
 pub fn filter<'a>(entries: &'a [ProtocolEntry], needle: &str) -> Vec<&'a ProtocolEntry> {
-    if needle.is_empty() {
-        return entries.iter().collect();
-    }
     let needle = needle.to_lowercase();
+    let mut words = needle.split_whitespace();
+    let Some(first) = words.next() else {
+        return entries.iter().collect();
+    };
+    let rest: Vec<&str> = words.collect();
 
     let mut matches: Vec<(u8, &ProtocolEntry)> = entries
         .iter()
         .filter_map(|entry| {
             let name = entry.name.to_lowercase();
-            let rank = if name == needle {
+            let kind = entry.kind_label();
+            let description = entry.description.to_lowercase();
+            let rank = if name == first || (kind.starts_with(first) && rest.is_empty()) {
                 0
-            } else if name.starts_with(&needle) {
+            } else if name.starts_with(first) {
                 1
-            } else if name.contains(&needle) {
+            } else if name.contains(first) {
                 2
-            } else if entry.description.to_lowercase().contains(&needle) {
+            } else if description.contains(first) {
                 3
             } else {
                 return None;
             };
-            Some((rank, entry))
+            let narrowed = rest.iter().all(|word| {
+                name.contains(word) || kind.starts_with(word) || description.contains(word)
+            });
+            narrowed.then_some((rank, entry))
         })
         .collect();
 

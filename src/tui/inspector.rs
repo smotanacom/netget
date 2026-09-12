@@ -1,10 +1,11 @@
 //! The inspector: the selected instance in depth, one tab at a time.
 //!
 //! Every tab produces a list of lines, some of which are *items* the cursor
-//! can rest on, and an action bar whose buttons act on the instance or on the
-//! selected item. The renderer draws; the keymap moves the cursor; everything
-//! that *does* something is an [`InstanceAction`] run by `actions::run`, so
-//! a letter, Enter on a button and a click on it cannot diverge.
+//! can rest on, and an action menu (Space, or Enter on the instance) whose
+//! entries act on the selected item first and the instance after. The
+//! renderer draws; the keymap moves the cursor; everything that *does*
+//! something is an [`InstanceAction`] run by `actions::run`, so a letter, a
+//! menu entry and a click cannot diverge.
 
 use crate::tui::app::{InspectorUi, InstanceRef, TrafficFilter, UiKey};
 use crate::tui::driver::{driver_of, specific_rule_count};
@@ -105,22 +106,25 @@ pub enum InstanceAction {
     OpenRequest(u64),
 }
 
-/// One action-bar button.
+/// One entry of the action menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BarButton {
+pub struct MenuItem {
     pub action: InstanceAction,
     pub label: String,
-    /// A disabled button stays visible (so the capability is discoverable)
-    /// and says why when pressed.
+    /// The letter that runs it straight from the list or the menu, if any.
+    pub key: Option<char>,
+    /// A disabled entry stays visible (so the capability is discoverable)
+    /// and says why when chosen.
     pub enabled: bool,
     pub why_disabled: Option<String>,
 }
 
-impl BarButton {
+impl MenuItem {
     fn on(action: InstanceAction, label: impl Into<String>) -> Self {
         Self {
             action,
             label: label.into(),
+            key: shortcut(action),
             enabled: true,
             why_disabled: None,
         }
@@ -130,9 +134,25 @@ impl BarButton {
         Self {
             action,
             label: label.into(),
+            key: shortcut(action),
             enabled: false,
             why_disabled: Some(why.into()),
         }
+    }
+}
+
+/// The letter that runs an action without the menu, shown beside its entry.
+pub fn shortcut(action: InstanceAction) -> Option<char> {
+    match action {
+        InstanceAction::Stop => Some('x'),
+        InstanceAction::Edit => Some('e'),
+        InstanceAction::Rules => Some('r'),
+        InstanceAction::CycleDriver => Some('m'),
+        InstanceAction::ConnectClient => Some('c'),
+        InstanceAction::Send => Some('n'),
+        InstanceAction::Wireshark => Some('w'),
+        InstanceAction::Docs => Some('d'),
+        _ => None,
     }
 }
 
@@ -190,7 +210,9 @@ pub struct InspectorView {
     pub title: String,
     pub tabs: Vec<InspectorTab>,
     pub tab: InspectorTab,
-    pub bar: Vec<BarButton>,
+    /// The action menu for the cursor's position: item-specific entries
+    /// first, then the instance's own.
+    pub actions: Vec<MenuItem>,
     pub lines: Vec<InspectorLine>,
 }
 
@@ -277,11 +299,11 @@ pub fn build(
         title,
         tabs,
         tab,
-        bar: Vec::new(),
+        actions: Vec::new(),
         lines,
     };
     let selected = view.item_at(ui.item).cloned();
-    view.bar = bar_buttons(instance, tab, selected.as_ref(), ui.filter);
+    view.actions = menu_items(instance, tab, selected.as_ref(), ui.filter);
     view
 }
 
@@ -953,195 +975,200 @@ fn send_lines(instance: InstanceRef<'_>, width: usize) -> Vec<InspectorLine> {
     lines
 }
 
-fn bar_buttons(
-    instance: InstanceRef<'_>,
-    tab: InspectorTab,
-    selected: Option<&Item>,
-    filter: TrafficFilter,
-) -> Vec<BarButton> {
+/// The instance's own actions, whichever tab is open.
+fn instance_items(instance: InstanceRef<'_>) -> Vec<MenuItem> {
     let driver = driver_of(instance.routing());
-    let driver_button = BarButton::on(
+    let driver_item = MenuItem::on(
         InstanceAction::CycleDriver,
-        format!("driver: {}", driver.label()),
+        format!("driver: {} → {}", driver.label(), driver.next().label()),
     );
-    match (tab, instance) {
-        (InspectorTab::Overview, InstanceRef::Server(row)) => {
-            let mut bar = vec![
-                BarButton::on(InstanceAction::Stop, "stop"),
-                BarButton::on(InstanceAction::Edit, "edit"),
-                BarButton::on(InstanceAction::Rules, "rules"),
+    match instance {
+        InstanceRef::Server(row) => {
+            let mut items = vec![
+                MenuItem::on(InstanceAction::Stop, "stop server"),
+                MenuItem::on(InstanceAction::Edit, "edit config"),
+                MenuItem::on(InstanceAction::Rules, "rules"),
+                driver_item,
             ];
-            bar.push(match &row.client_counterpart {
-                Some(p) => BarButton::on(InstanceAction::ConnectClient, format!("+ {p} client")),
-                None => BarButton::off(
+            items.push(match &row.client_counterpart {
+                Some(p) => MenuItem::on(
                     InstanceAction::ConnectClient,
-                    "+ client",
+                    format!("connect a {p} client to it"),
+                ),
+                None => MenuItem::off(
+                    InstanceAction::ConnectClient,
+                    "connect a client to it",
                     "no client implementation for this protocol is compiled in",
                 ),
             });
-            bar.push(driver_button);
-            bar.push(BarButton::on(InstanceAction::Wireshark, "wireshark"));
-            bar.push(BarButton::on(InstanceAction::Docs, "docs"));
-            bar
+            items.push(MenuItem::on(InstanceAction::Wireshark, "wireshark"));
+            items.push(MenuItem::on(InstanceAction::Docs, "protocol docs"));
+            items
         }
-        (InspectorTab::Overview, InstanceRef::Client(row)) => {
-            let mut bar = Vec::new();
+        InstanceRef::Client(row) => {
+            let mut items = Vec::new();
             match row.send_state {
                 SendState::NotConnected => {
-                    bar.push(BarButton::on(InstanceAction::Connect, "connect"))
+                    items.push(MenuItem::on(InstanceAction::Connect, "connect"))
                 }
-                _ => bar.push(BarButton::on(InstanceAction::Disconnect, "disconnect")),
+                _ => items.push(MenuItem::on(InstanceAction::Disconnect, "disconnect")),
             }
-            bar.push(BarButton::on(InstanceAction::Stop, "remove"));
-            bar.push(match row.send_state {
+            items.push(match row.send_state {
                 SendState::Ready if !row.send_actions.is_empty() => {
-                    BarButton::on(InstanceAction::Send, "send…")
+                    MenuItem::on(InstanceAction::Send, "send…")
                 }
-                SendState::Ready => BarButton::off(
+                SendState::Ready => MenuItem::off(
                     InstanceAction::Send,
                     "send…",
                     "this protocol declares no client verbs",
                 ),
                 SendState::NotConnected => {
-                    BarButton::off(InstanceAction::Send, "send…", "not connected")
+                    MenuItem::off(InstanceAction::Send, "send…", "not connected")
                 }
-                SendState::ProtocolUnsupported => BarButton::off(
+                SendState::ProtocolUnsupported => MenuItem::off(
                     InstanceAction::Send,
                     "send…",
                     "this client's loop has no command channel yet",
                 ),
             });
-            bar.push(BarButton::on(InstanceAction::Edit, "edit"));
-            bar.push(BarButton::on(InstanceAction::Rules, "rules"));
-            bar.push(driver_button);
-            bar.push(BarButton::on(InstanceAction::Wireshark, "wireshark"));
-            bar
+            items.push(MenuItem::on(InstanceAction::Stop, "remove client"));
+            items.push(MenuItem::on(InstanceAction::Edit, "edit config"));
+            items.push(MenuItem::on(InstanceAction::Rules, "rules"));
+            items.push(driver_item);
+            items.push(MenuItem::on(InstanceAction::Wireshark, "wireshark"));
+            items.push(MenuItem::on(InstanceAction::Docs, "protocol docs"));
+            items
         }
+    }
+}
+
+/// Entries that act on the selected item of the open tab.
+fn contextual_items(
+    instance: InstanceRef<'_>,
+    tab: InspectorTab,
+    selected: Option<&Item>,
+    filter: TrafficFilter,
+) -> Vec<MenuItem> {
+    match (tab, instance) {
         (InspectorTab::Peers, InstanceRef::Server(row)) => {
             let peer = match selected {
                 Some(Item::Peer(Some(id))) => row.conns.iter().find(|c| c.id == *id && c.active),
                 _ => None,
             };
-            let mut bar = Vec::new();
+            let mut items = Vec::new();
             match peer {
                 Some(conn) if conn.can_message => {
-                    bar.push(BarButton::on(
+                    items.push(MenuItem::on(
                         InstanceAction::MessagePeer(conn.id),
-                        "message",
+                        format!("message {}", conn.remote_addr),
                     ));
-                    bar.push(BarButton::on(
+                    items.push(MenuItem::on(
                         InstanceAction::DisconnectPeer(conn.id),
-                        "disconnect",
+                        format!("disconnect {}", conn.remote_addr),
                     ));
                 }
                 Some(conn) => {
                     let why = "this protocol cannot message or disconnect a peer from here yet";
-                    bar.push(BarButton::off(
+                    items.push(MenuItem::off(
                         InstanceAction::MessagePeer(conn.id),
-                        "message",
+                        format!("message {}", conn.remote_addr),
                         why,
                     ));
-                    bar.push(BarButton::off(
+                    items.push(MenuItem::off(
                         InstanceAction::DisconnectPeer(conn.id),
-                        "disconnect",
+                        format!("disconnect {}", conn.remote_addr),
                         why,
                     ));
                 }
-                None => {
-                    let why = "select a live peer first";
-                    bar.push(BarButton::off(
-                        InstanceAction::MessagePeer(0),
-                        "message",
-                        why,
-                    ));
-                    bar.push(BarButton::off(
-                        InstanceAction::DisconnectPeer(0),
-                        "disconnect",
-                        why,
-                    ));
-                }
+                None => {}
             }
-            bar.push(match &row.client_counterpart {
-                Some(p) => BarButton::on(InstanceAction::ConnectClient, format!("+ {p} client")),
-                None => BarButton::off(
-                    InstanceAction::ConnectClient,
-                    "+ client",
-                    "no client implementation for this protocol is compiled in",
-                ),
-            });
-            bar
+            if let Some(Item::Peer(conn)) = selected {
+                items.push(MenuItem::on(
+                    InstanceAction::FilterTraffic(*conn),
+                    "only this peer's traffic",
+                ));
+            }
+            items
         }
-        (InspectorTab::Peers, InstanceRef::Client(row)) => match row.send_state {
-            SendState::NotConnected => vec![BarButton::on(InstanceAction::Connect, "connect")],
-            _ => vec![BarButton::on(InstanceAction::Disconnect, "disconnect")],
-        },
         (InspectorTab::Traffic, _) => {
-            let mut bar = vec![match selected {
-                Some(Item::Request(id)) => BarButton::on(InstanceAction::OpenRequest(*id), "open"),
-                _ => BarButton::off(InstanceAction::OpenRequest(0), "open", "select a request"),
-            }];
+            let mut items = Vec::new();
+            if let Some(Item::Request(id)) = selected {
+                items.push(MenuItem::on(
+                    InstanceAction::OpenRequest(*id),
+                    "open request and response",
+                ));
+            }
             if filter != TrafficFilter::All {
-                bar.push(BarButton::on(
+                items.push(MenuItem::on(
                     InstanceAction::ClearTrafficFilter,
                     "all peers",
                 ));
             }
-            bar
+            items
         }
         (InspectorTab::Rules, _) => {
             let count = instance.routing().map(|c| c.handlers.len()).unwrap_or(0);
-            let mut bar = vec![BarButton::on(InstanceAction::AddRule, "+ add")];
-            match selected {
-                Some(Item::Rule(index)) => {
-                    bar.push(BarButton::on(InstanceAction::EditRule(*index), "edit"));
-                    bar.push(BarButton::on(InstanceAction::DeleteRule(*index), "delete"));
-                    if count > 1 {
-                        bar.push(BarButton::on(InstanceAction::MoveRule(*index, -1), "up"));
-                        bar.push(BarButton::on(InstanceAction::MoveRule(*index, 1), "down"));
-                    }
-                }
-                _ => {
-                    bar.push(BarButton::off(
-                        InstanceAction::EditRule(0),
-                        "edit",
-                        "select a rule",
+            let mut items = vec![MenuItem::on(InstanceAction::AddRule, "add a rule")];
+            if let Some(Item::Rule(index)) = selected {
+                items.push(MenuItem::on(
+                    InstanceAction::EditRule(*index),
+                    "edit this rule",
+                ));
+                items.push(MenuItem::on(
+                    InstanceAction::DeleteRule(*index),
+                    "delete this rule",
+                ));
+                if count > 1 {
+                    items.push(MenuItem::on(
+                        InstanceAction::MoveRule(*index, -1),
+                        "move up",
                     ));
-                    bar.push(BarButton::off(
-                        InstanceAction::DeleteRule(0),
-                        "delete",
-                        "select a rule",
+                    items.push(MenuItem::on(
+                        InstanceAction::MoveRule(*index, 1),
+                        "move down",
                     ));
                 }
             }
-            bar.push(driver_button);
-            bar
+            items
         }
-        (InspectorTab::Config, _) => vec![
-            BarButton::on(InstanceAction::Edit, "edit"),
-            BarButton::on(InstanceAction::Wireshark, "wireshark"),
-        ],
-        (InspectorTab::Send, InstanceRef::Client(row)) => {
-            let mut bar = Vec::new();
-            match selected {
-                Some(Item::SendAction(index)) if row.send_state == SendState::Ready => {
-                    bar.push(BarButton::on(InstanceAction::SendAction(*index), "compose"));
-                }
-                _ => {}
+        (InspectorTab::Send, InstanceRef::Client(row)) => match selected {
+            Some(Item::SendAction(index)) if row.send_state == SendState::Ready => {
+                let name = row
+                    .send_actions
+                    .get(*index)
+                    .map(|v| v.name.clone())
+                    .unwrap_or_default();
+                vec![MenuItem::on(
+                    InstanceAction::SendAction(*index),
+                    format!("compose {name}"),
+                )]
             }
-            bar.push(match row.send_state {
-                SendState::Ready if !row.send_actions.is_empty() => {
-                    BarButton::on(InstanceAction::Send, "pick a verb…")
-                }
-                SendState::Ready => BarButton::off(InstanceAction::Send, "send…", "no verbs"),
-                SendState::NotConnected => BarButton::on(InstanceAction::Connect, "connect"),
-                SendState::ProtocolUnsupported => BarButton::off(
-                    InstanceAction::Send,
-                    "send…",
-                    "this client's loop has no command channel yet",
-                ),
-            });
-            bar
-        }
-        (InspectorTab::Send, InstanceRef::Server(_)) => Vec::new(),
+            _ => Vec::new(),
+        },
+        (InspectorTab::Overview, _) => match selected {
+            Some(Item::Intercept(id)) => vec![MenuItem::on(
+                InstanceAction::Answer(*id),
+                "answer the waiting request",
+            )],
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
     }
+}
+
+/// The whole menu for the cursor's position: what acts on the selected
+/// item, then what acts on the instance, without repeats.
+pub fn menu_items(
+    instance: InstanceRef<'_>,
+    tab: InspectorTab,
+    selected: Option<&Item>,
+    filter: TrafficFilter,
+) -> Vec<MenuItem> {
+    let mut items = contextual_items(instance, tab, selected, filter);
+    for item in instance_items(instance) {
+        if !items.iter().any(|i| i.action == item.action) {
+            items.push(item);
+        }
+    }
+    items
 }

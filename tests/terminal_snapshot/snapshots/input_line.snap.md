@@ -1,21 +1,21 @@
 ╭ SERVERS 0 · CLIENTS 0 ─────────────╮╭ ACTIVITY · log:info ───────────────────╮
 │ servers ───────────────────────────││                                        │
-│  + new server                      ││ Nothing has happened yet. Instances    │
-│ clients ───────────────────────────││ starting, peers connecting, every      │
-│  + new client                      ││ request and its answer, and anything   │
-╰────────────────────────────────────╯│ waiting on you all land here.          │
-╭ nothing selected ──────────────────╮│                                        │
+│ clients ───────────────────────────││ Nothing has happened yet. Instances    │
+│  + new server or client            ││ starting, peers connecting, every      │
+╰ Tab here ──────────────────────────╯│ request and its answer, and anything   │
+╭ nothing selected ──────────────────╮│ waiting on you all land here.          │
 │                                    ││                                        │
 │  Nothing selected yet.             ││                                        │
 │                                    ││                                        │
-│  a    start a server               ││                                        │
-│  A    start a client               │╰────────────────────────────────────────╯
-│  ↑ ↓  pick an instance to inspect  │╭ CHAT ──────────────────────────────────╮
-│  Tab  move between panes           ││  s found.                              │
-│  F1   every key                    ││     Please ensure Ollama is running: ht│
-│                                    ││  tps://ollama.ai                       │
-│  Or ask the model in chat — “start ││     Use `/model` to list and select a m│
-│an http server on 8080”.            ││  odel once Ollama is running.          │
+│  a     start a server or a client  ││                                        │
+│  ↑ ↓   pick one; ↓ walks into it   ││                                        │
+│  Enter everything you can do to it │╰────────────────────────────────────────╯
+│  Tab   to the feed and the chat    │╭ CHAT ──────────────────────────────────╮
+│  F1    every key                   ││  s found.                              │
+│                                    ││     Please ensure Ollama is running: ht│
+│  Or ask the model in chat — “start ││  tps://ollama.ai                       │
+│an http server on 8080”.            ││     Use `/model` to list and select a m│
+│                                    ││  odel once Ollama is running.          │
 │                                    │╰────────────────────────────────────────╯
 │                                    │╭ no model · /commands only · F2 layout ─╮
 │                                    ││> listen on port 21                     │

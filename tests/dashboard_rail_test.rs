@@ -123,7 +123,7 @@ fn snapshot(servers: Vec<ServerRow>, clients: Vec<ClientRow>) -> RailSnapshot {
 // ---------------------------------------------------------------- the list
 
 #[test]
-fn the_list_is_sections_instances_and_a_new_row_per_section() {
+fn the_list_is_sections_instances_and_one_new_row() {
     let snap = snapshot(
         vec![server(Vec::new(), Vec::new())],
         vec![client(ClientStatus::Connected, SendState::Ready)],
@@ -134,21 +134,20 @@ fn the_list_is_sections_instances_and_a_new_row_per_section() {
         vec![
             ListRow::Header(Section::Servers, 1),
             ListRow::Instance(UiKey::Server(ServerId::new(1))),
-            ListRow::New(Section::Servers),
             ListRow::Header(Section::Clients, 1),
             ListRow::Instance(UiKey::Client(ClientId::new(4))),
-            ListRow::New(Section::Clients),
+            ListRow::New,
         ]
     );
     assert!(!is_selectable(&rows[0]));
     assert!(is_selectable(&rows[1]));
-    assert!(is_selectable(&rows[2]), "the + new row is a cursor stop");
+    assert!(is_selectable(&rows[4]), "the + new row is a cursor stop");
 }
 
 #[test]
-fn an_empty_list_still_has_both_new_rows() {
+fn an_empty_list_still_has_the_new_row() {
     let rows = list_rows(&RailSnapshot::default());
-    assert_eq!(rows.iter().filter(|r| is_selectable(r)).count(), 2);
+    assert_eq!(rows.iter().filter(|r| is_selectable(r)).count(), 1);
 }
 
 #[test]
@@ -319,15 +318,20 @@ fn the_overview_leads_with_what_is_waiting_for_you() {
         "uptime is shown: {text:?}"
     );
 
-    // The overview bar: lifecycle, edit, rules, the counterpart client, the driver.
-    let actions: Vec<InstanceAction> = view.bar.iter().map(|b| b.action).collect();
-    assert_eq!(actions[0], InstanceAction::Stop);
+    // The menu: lifecycle, edit, rules, the driver, the counterpart client.
+    let actions: Vec<InstanceAction> = view.actions.iter().map(|b| b.action).collect();
+    assert_eq!(
+        actions[0],
+        InstanceAction::Answer(9),
+        "what acts on the selected item comes first"
+    );
+    assert_eq!(actions[1], InstanceAction::Stop, "then the instance's own");
     assert!(actions.contains(&InstanceAction::ConnectClient));
     assert!(actions.contains(&InstanceAction::CycleDriver));
     assert!(view
-        .bar
+        .actions
         .iter()
-        .any(|b| b.action == InstanceAction::CycleDriver && b.label == "driver: MANUAL"));
+        .any(|b| b.action == InstanceAction::CycleDriver && b.label == "driver: MANUAL → LLM"));
 }
 
 #[test]
@@ -366,7 +370,7 @@ fn the_peers_tab_lists_live_then_closed_and_arms_the_bar_for_a_live_peer() {
 
     // Selected: a live peer with a handle → message and disconnect enabled.
     let message = view
-        .bar
+        .actions
         .iter()
         .find(|b| b.action == InstanceAction::MessagePeer(1))
         .expect("message button");
@@ -384,10 +388,10 @@ fn the_peers_tab_lists_live_then_closed_and_arms_the_bar_for_a_live_peer() {
     };
     let view = inspector::build(InstanceRef::Server(&row), &ui, None, 60);
     let message = view
-        .bar
+        .actions
         .iter()
         .find(|b| b.action == InstanceAction::MessagePeer(2))
-        .expect("message button");
+        .expect("message entry");
     assert!(!message.enabled);
     assert!(message
         .why_disabled
@@ -424,7 +428,7 @@ fn the_traffic_tab_is_newest_first_and_narrows_to_a_peer() {
         .text()
         .contains("tcp_data_received → send_tcp_data"));
     assert!(!view
-        .bar
+        .actions
         .iter()
         .any(|b| b.action == InstanceAction::ClearTrafficFilter));
 
@@ -438,7 +442,7 @@ fn the_traffic_tab_is_newest_first_and_narrows_to_a_peer() {
     assert_eq!(view.item_at(0), Some(&Item::Request(2)));
     assert!(view.lines[0].text().contains("only peer 127.0.0.1:40002"));
     assert!(view
-        .bar
+        .actions
         .iter()
         .any(|b| b.action == InstanceAction::ClearTrafficFilter && b.enabled));
 }
@@ -471,7 +475,7 @@ fn the_rules_tab_lists_rules_in_match_order_with_their_kind() {
     assert!(texts[1].contains("* → MANUAL"), "{}", texts[1]);
     assert_eq!(view.default_action(1), Some(InstanceAction::EditRule(1)));
     let actions: Vec<InstanceAction> = view
-        .bar
+        .actions
         .iter()
         .filter(|b| b.enabled)
         .map(|b| b.action)
@@ -540,7 +544,7 @@ fn a_client_offers_its_verbs_on_the_send_tab_and_connect_when_down() {
     assert!(view.lines[1].text().contains("send_text"));
     assert!(view.lines[1].text().contains("Send raw text"));
     assert!(view
-        .bar
+        .actions
         .iter()
         .any(|b| b.action == InstanceAction::SendAction(1) && b.enabled));
 
@@ -549,9 +553,9 @@ fn a_client_offers_its_verbs_on_the_send_tab_and_connect_when_down() {
     let down = client(ClientStatus::Disconnected, SendState::NotConnected);
     let ui = InspectorUi::default();
     let view = inspector::build(InstanceRef::Client(&down), &ui, None, 80);
-    assert_eq!(view.bar[0].action, InstanceAction::Connect);
+    assert_eq!(view.actions[0].action, InstanceAction::Connect);
     let send = view
-        .bar
+        .actions
         .iter()
         .find(|b| b.action == InstanceAction::Send)
         .unwrap();
@@ -561,9 +565,9 @@ fn a_client_offers_its_verbs_on_the_send_tab_and_connect_when_down() {
     // A protocol whose loop has no command channel says so.
     let stuck = client(ClientStatus::Connected, SendState::ProtocolUnsupported);
     let view = inspector::build(InstanceRef::Client(&stuck), &ui, None, 80);
-    assert_eq!(view.bar[0].action, InstanceAction::Disconnect);
+    assert_eq!(view.actions[0].action, InstanceAction::Disconnect);
     let send = view
-        .bar
+        .actions
         .iter()
         .find(|b| b.action == InstanceAction::Send)
         .unwrap();

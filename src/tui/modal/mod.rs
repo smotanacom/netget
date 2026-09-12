@@ -4,6 +4,7 @@
 //! → handler → script editor — unwinds naturally with Esc. The topmost modal
 //! owns all input while it is open.
 
+pub mod action_menu;
 pub mod composer;
 pub mod confirm;
 pub mod form;
@@ -102,9 +103,8 @@ pub enum Modal {
         plan: Box<crate::tui::wireshark::CapturePlan>,
         scroll: u16,
     },
-    /// Choose a protocol for a new server/client.
+    /// Choose a protocol — and with it the kind — for a new instance.
     ProtocolPicker {
-        section: Section,
         entries: Vec<ProtocolEntry>,
         filter: String,
         selected: usize,
@@ -125,6 +125,8 @@ pub enum Modal {
     Routing(Box<routing::RoutingModel>),
     /// Answer a request a `manual` rule parked for you.
     Intercept(Box<intercept::InterceptModel>),
+    /// Everything that can be done to the selected instance, as a list.
+    ActionMenu(Box<action_menu::ActionMenuModel>),
 }
 
 impl Modal {
@@ -142,10 +144,7 @@ impl Modal {
             Modal::Wireshark { plan, .. } => {
                 format!("View in Wireshark — {}", plan.target.protocol)
             }
-            Modal::ProtocolPicker { section, .. } => match section {
-                Section::Servers => "New server — pick a protocol".to_string(),
-                Section::Clients => "New client — pick a protocol".to_string(),
-            },
+            Modal::ProtocolPicker { .. } => "New server or client — pick a protocol".to_string(),
             Modal::Form(form) => match &form.mode {
                 form::FormMode::Create(Section::Servers) => {
                     format!("New {} server", form.protocol)
@@ -185,6 +184,7 @@ impl Modal {
                     format!("Answer this reply — client #{}", id.as_u32())
                 }
             },
+            Modal::ActionMenu(menu) => menu.subject.clone(),
         }
     }
 
@@ -240,6 +240,7 @@ impl Modal {
             Modal::Intercept(_) => {
                 "Tab moves between the buttons · Enter act · Esc keeps it waiting"
             }
+            Modal::ActionMenu(_) => "↑/↓ · Enter or the letter · Esc",
         }
     }
 
@@ -303,6 +304,15 @@ impl Modal {
                     })
                     .unwrap_or(0);
                 ModalSize::new(72, 75, 120, payload + 7 + CHROME)
+            }
+            Modal::ActionMenu(menu) => {
+                let widest = menu
+                    .items
+                    .iter()
+                    .map(|i| i.label.chars().count() + 6)
+                    .max()
+                    .unwrap_or(20) as u16;
+                ModalSize::new(60, 70, widest.max(28) + 4, menu.items.len() as u16 + CHROME)
             }
             Modal::Routing(model) => {
                 let rows = match &model.draft {

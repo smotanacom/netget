@@ -177,8 +177,7 @@ fn an_empty_dashboard_says_what_to_do_at_the_minimum_size() {
     let text = dump(&lines);
     println!("{text}");
     assert!(text.contains("SERVERS 0 · CLIENTS 0"));
-    assert!(text.contains("+ new server"));
-    assert!(text.contains("+ new client"));
+    assert!(text.contains("+ new server or client"));
     assert!(text.contains("Nothing selected yet"));
     assert!(text.contains("start a server"));
     assert!(text.contains("ACTIVITY"));
@@ -241,8 +240,10 @@ fn a_populated_dashboard_shows_every_instance_and_the_selected_one_in_depth() {
     // The inspector: title, tabs, bar, and the waiting line first.
     assert!(text.contains("#1 http 127.0.0.1:8080"));
     assert!(text.contains("overview"));
-    assert!(text.contains("[ stop ]"));
-    assert!(text.contains("[ driver: MANUAL ]"));
+    assert!(
+        text.contains("Space actions"),
+        "the inspector says how to act:\n{text}"
+    );
     assert!(text.contains("YOUR answer needed · http_request from :53121"));
     assert!(text.contains("up 2m13s"));
     assert!(text.contains("↓1.2K ↑50.7K"), "{text}");
@@ -298,7 +299,6 @@ fn every_tab_renders_for_both_kinds_at_the_minimum_size() {
     let text = dump(&frame(&mut app, 100, 30));
     println!("{text}");
     assert!(text.contains("send_command"));
-    assert!(text.contains("[ compose ]"));
     // The traffic tab lists requests newest first with the peer's port.
     app.select(UiKey::Server(ServerId::new(1)));
     app.inspector.tab = InspectorTab::Traffic;
@@ -314,7 +314,6 @@ fn every_tab_renders_for_both_kinds_at_the_minimum_size() {
         "newest first: {}",
         lines[first]
     );
-    assert!(text.contains("[ open ]"));
 }
 
 #[test]
@@ -409,4 +408,48 @@ fn f2_gives_one_right_pane_the_whole_column() {
         RightLayout::Balanced.next().next().next(),
         RightLayout::Balanced
     );
+}
+
+#[test]
+fn the_action_menu_lists_verbs_vertically_with_their_letters() {
+    use netget::tui::modal::Modal;
+    let mut app = app();
+    app.absorb_snapshot(populated());
+    app.focus = Focus::Instances;
+    app.select(UiKey::Server(ServerId::new(1)));
+    netget::tui::actions::open_action_menu(&mut app);
+    assert!(matches!(app.modals.last(), Some(Modal::ActionMenu(_))));
+    let lines = frame(&mut app, 80, 24);
+    let text = dump(&lines);
+    println!("{text}");
+    assert!(
+        text.contains("#1 http 127.0.0.1:8080"),
+        "titled by the instance"
+    );
+    let stop = lines
+        .iter()
+        .find(|l| l.contains("stop server"))
+        .expect("stop entry");
+    assert!(
+        stop.contains(" x "),
+        "the letter sits beside the entry: {stop}"
+    );
+    let edit = lines
+        .iter()
+        .position(|l| l.contains("edit config"))
+        .unwrap();
+    let stop_at = lines
+        .iter()
+        .position(|l| l.contains("stop server"))
+        .unwrap();
+    assert_eq!(edit, stop_at + 1, "one entry per line, nothing wraps");
+    assert!(text.contains("driver: MANUAL → LLM"));
+
+    // A disabled entry is listed with its reason rather than hidden.
+    app.modals.clear();
+    app.select(UiKey::Client(ClientId::new(3)));
+    app.snapshot.clients[0].send_state = netget::tui::projection::SendState::NotConnected;
+    netget::tui::actions::open_action_menu(&mut app);
+    let text = dump(&frame(&mut app, 100, 30));
+    assert!(text.contains("send…  — not connected"), "{text}");
 }

@@ -1437,18 +1437,19 @@ mod tests {
         send_ctrl(&mut pty, 'c');
     }
 
-    /// The management path with no model at all: Tab to the list, `a` for a
-    /// server, pick tcp, `2` opens its peers tab in the inspector, `x` stops
-    /// it. Every wait is on the text the previous key must produce, so
-    /// nothing here is a fixed sleep; one `PtyScreen` is fed throughout, so
-    /// each screen is the whole terminal rather than the cells that changed.
+    /// The management path with no model at all: Tab to the list, `a` for the
+    /// picker, `tcp server`, `→` flips to its peers tab, Space opens the
+    /// action menu, `x` stops it. Every wait is on the text the previous key
+    /// must produce, so nothing here is a fixed sleep; one `PtyScreen` is fed
+    /// throughout, so each screen is the whole terminal rather than the cells
+    /// that changed.
     #[test]
     fn test_dashboard_starts_and_stops_a_server_from_the_keyboard() {
         let (mut pty, _child) = spawn_netget();
         let mut screen = PtyScreen::new();
 
         let first = screen.wait_until(&mut pty, Duration::from_secs(20), |s| {
-            s.contains("SERVERS 0") && s.contains("+ new server")
+            s.contains("SERVERS 0") && s.contains("+ new server or client")
         });
         assert!(first.contains("SERVERS 0"), "no first frame:\n{first}");
 
@@ -1463,23 +1464,30 @@ mod tests {
             "picker did not open:\n{picker}"
         );
 
-        // Filter to tcp and choose it: it starts on defaults (an OS port),
-        // and becomes the selection, so the inspector shows its action bar.
-        send_input(&mut pty, "tcp");
+        // One list holds both kinds: "tcp server" narrows to the server. It
+        // starts on defaults (an OS port) and becomes the selection, so the
+        // inspector shows it.
+        send_input(&mut pty, "tcp server");
+        let narrowed = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("filter: tcp server")
+        });
+        assert!(narrowed.contains("filter: tcp server"), "{narrowed}");
         send_enter(&mut pty);
         let running = screen.wait_until(&mut pty, Duration::from_secs(20), |s| {
-            s.contains("listening on 127.0") && s.contains("#1  tcp") && s.contains("[ stop ]")
+            s.contains("listening on 127.0")
+                && s.contains("#1  tcp")
+                && s.contains("#1 tcp 127.0.0.1")
         });
         assert!(
             running.contains("listening on 127.0"),
             "the feed did not report the server:\n{running}"
         );
         assert!(
-            running.contains("#1  tcp"),
-            "the list did not show it:\n{running}"
+            running.contains("#1 tcp 127.0.0.1"),
+            "the new server is selected and inspected:\n{running}"
         );
         assert!(
-            running.contains("[ driver: MANUAL ]"),
+            running.contains("MANUAL"),
             "a server made here is driven by the human:\n{running}"
         );
         assert!(
@@ -1487,17 +1495,24 @@ mod tests {
             "the picker must have closed:\n{running}"
         );
 
-        // `2` jumps to the peers tab and focuses the inspector.
-        send_input(&mut pty, "2");
+        // → flips the inspector to the peers tab without leaving the list.
+        write_all_blocking(&mut pty, b"\x1b[C");
         let peers = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
-            s.contains("no connections yet") && s.contains("[ message ]")
+            s.contains("no connections yet")
         });
         assert!(
-            peers.contains("[ message ]"),
+            peers.contains("no connections yet"),
             "peers tab did not open:\n{peers}"
         );
 
-        // `x` stops it, immediately: the list empties, the chat and the feed say so.
+        // Space opens the action menu: one entry per line, letters beside.
+        send_input(&mut pty, " ");
+        let menu = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
+            s.contains("stop server") && s.contains("wireshark")
+        });
+        assert!(menu.contains("stop server"), "menu did not open:\n{menu}");
+
+        // `x` in the menu stops it: the list empties, the chat and the feed say so.
         send_input(&mut pty, "x");
         let stopped = screen.wait_until(&mut pty, Duration::from_secs(10), |s| {
             s.contains("SERVERS 0") && s.contains("Stopped server #1")

@@ -12,11 +12,14 @@ rolling-terminal TUI (`src/cli/rolling_tui.rs` + `sticky_footer.rs`) is still th
 `--legacy-tui`. `UserCommand::parse` is shared, so every slash command still works in both.
 `src/tui/CLAUDE.md` is the design document; the short version:
 
-- **Left column is management.** An **instance list** (one line per server and client:
-  status glyph, id, protocol, address, live peers, a 30-second throughput sparkline, and a
-  **driver badge**) over a tabbed **inspector** for the selected instance — `overview`,
-  `peers`/`connections`, `traffic`, `rules`, `config`, and `send` for clients — each tab with
-  its own **action bar** of buttons. Each section of the list ends in its `+ new …` row.
+- **Left column is management, one continuous space.** An **instance list** (one line per
+  server and client: status glyph, id, protocol, address, live peers, a 30-second throughput
+  sparkline, and a **driver badge**) over a tabbed **inspector** for the selected instance —
+  `overview`, `peers`/`connections`, `traffic`, `rules`, `config`, and `send` for clients.
+  ↑/↓ walk the list into the inspector's items and back, ←/→ flip the tab from anywhere in
+  the column, and Enter/Space/right-click open the **action menu**: a vertical list of what
+  can be done to the selected item and then to the instance, each with its letter. One
+  `+ new server or client` row at the foot opens a picker listing both kinds together.
 - **Right column is what is happening.** An **activity feed** derived from snapshot diffs
   (instances starting, peers connecting, every request with its answer, questions parked for
   you — Enter opens the thing a line names) plus the `[LEVEL]` log lines, over the **chat**
@@ -38,20 +41,20 @@ a needless restart.
 
 **Every action is an `InstanceAction`** (`inspector.rs`), executed by `actions::run` whether it
 came from a letter (`x` stop, `e` edit, `r` rules, `m` driver, `c` connect a client to a
-server, `n` send through a client, `w` wireshark, `d` docs, `a`/`A` new server/client), from
-Enter on an action-bar button, from a click on it, or from Enter on an inspector item (a peer
-narrows the traffic tab to it; a request opens its full request/response; a rule edits it; a
-config row opens the form; a verb opens the composer on its parameters; a parked request opens
-the answer modal). Tab walks instances → inspector → activity → chat; Esc steps back towards
-typing. No modal requires a chord: every button is a Tab stop, and the text editor's Tab leaves
-the text for `[ Accept ]` / `[ Cancel ]`.
+server, `n` send through a client, `w` wireshark, `d` docs, `a` new instance), from a menu
+entry, from a click, or from Enter on an inspector item (a peer narrows the traffic tab to it;
+a request opens its full request/response; a rule edits it; a config row opens the form; a
+verb opens the composer on its parameters; a parked request opens the answer modal). Tab
+changes column (management → activity → chat); Esc steps back towards typing. No modal
+requires a chord: every button is a Tab stop, and the text editor's Tab leaves the text for
+`[ Accept ]` / `[ Cancel ]`.
 
-A server's live peer gets `[ message ]` and `[ disconnect ]` in the peers tab's bar where the
+A server's live peer gets *message* and *disconnect* entries in the action menu where the
 protocol registered a peer handle (`server/peer_support.rs`; `tcp` and `telnet` have);
-`[ disconnect ]` runs its `close_connection` through the same handle (half-close + marked
-closed at once, because a peer that never reads — our own client parked on a manual question —
-would otherwise stay "live" after you hung up). Without a handle the buttons stay, disabled,
-and say why. A peer whose request is parked is flagged on its own row, in the list badge
+*disconnect* runs its `close_connection` through the same handle (half-close + marked closed
+at once, because a peer that never reads — our own client parked on a manual question — would
+otherwise stay "live" after you hung up). Without a handle the entries stay, disabled, and
+say why. A peer whose request is parked is flagged on its own row, in the list badge
 (`⚠1`), in the overview's first line, in the feed and in the status bar — which is clickable
 and opens the oldest one.
 
@@ -70,8 +73,8 @@ Stopping is immediate: only the bulk actions (stop all, quit) still confirm.
 see what a layout change does to a populated screen without a pty, and the place to assert on
 it. The pty snapshots in `tests/terminal_snapshot/` prove the real binary paints.
 
-**`[ wireshark ]`** (`w`, in the overview and config bars, and a `[ View in Wireshark ]` button on
-the create/edit form so the capture can be running *before* the instance starts) opens a modal with a paste-ready
+**wireshark** (`w`, an action-menu entry, and a `[ View in Wireshark ]` button on the create/edit
+form so the capture can be running *before* the instance starts) opens a modal with a paste-ready
 `wireshark -k …` / `tshark -l …` line, plus the pieces separately: interface, BPF capture filter,
 display filter and a `-d` decode-as clause. NetGet writes no pcap; `src/tui/wireshark.rs` is a
 pure table of NetGet protocol → transport + Wireshark dissector name, and every name in it was

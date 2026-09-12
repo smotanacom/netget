@@ -73,8 +73,9 @@ pub struct InstancesUi {
     /// reorders or removes instances cannot silently move the cursor onto a
     /// different one.
     pub selected: Option<UiKey>,
-    /// Cursor on a `+ new …` row, which belongs to no instance.
-    pub on_new: Option<Section>,
+    /// Cursor on the `+ new server or client` row, which belongs to no
+    /// instance.
+    pub on_new: bool,
     /// Where the cursor last was, so a vanished instance hands the cursor to
     /// its neighbour rather than to nothing.
     pub last_index: usize,
@@ -101,8 +102,6 @@ pub struct InspectorUi {
     pub tab: InspectorTab,
     /// Selected item (index into the tab's selectable items).
     pub item: usize,
-    /// `Some(i)` when the cursor is on the i-th action-bar button.
-    pub bar: Option<usize>,
     /// First visible body line.
     pub scroll: usize,
     pub filter: TrafficFilter,
@@ -113,7 +112,6 @@ impl Default for InspectorUi {
         Self {
             tab: InspectorTab::Overview,
             item: 0,
-            bar: None,
             scroll: 0,
             filter: TrafficFilter::All,
         }
@@ -301,7 +299,7 @@ impl DashboardApp {
         // server" reopened the picker, and the thing you just made sat one
         // row above, unselected.
         if let Some(key) = newest {
-            if self.instances.selected.is_none() || self.instances.on_new.is_some() {
+            if self.instances.selected.is_none() || self.instances.on_new {
                 self.select(key);
             }
         }
@@ -394,7 +392,7 @@ impl DashboardApp {
         if let Some(key) = self.instances.selected {
             if let Some((index, _)) = instance_rows.iter().find(|(_, k)| *k == key) {
                 self.instances.last_index = *index;
-                self.instances.on_new = None;
+                self.instances.on_new = false;
                 return;
             }
             // Gone: hand the cursor to the neighbour that now sits where it was.
@@ -408,7 +406,7 @@ impl DashboardApp {
                 Some((index, key)) => {
                     self.instances.selected = Some(key);
                     self.instances.last_index = index;
-                    self.instances.on_new = None;
+                    self.instances.on_new = false;
                     self.inspector.item = 0;
                     self.inspector.scroll = 0;
                     self.inspector.filter = TrafficFilter::All;
@@ -418,9 +416,7 @@ impl DashboardApp {
                     if self.focus == Focus::Inspector {
                         self.focus = Focus::Instances;
                     }
-                    if self.instances.on_new.is_none() {
-                        self.instances.on_new = Some(Section::Servers);
-                    }
+                    self.instances.on_new = true;
                 }
             }
             return;
@@ -428,14 +424,14 @@ impl DashboardApp {
 
         // Nothing selected. When the list (or inspector) is focused, a cursor
         // must exist: the first instance, else `+ new server`.
-        if self.instances.on_new.is_none() {
+        if !self.instances.on_new {
             if let Some((index, key)) = instance_rows.first() {
                 if matches!(self.focus, Focus::Instances | Focus::Inspector) {
                     self.instances.selected = Some(*key);
                     self.instances.last_index = *index;
                 }
             } else if self.focus == Focus::Instances {
-                self.instances.on_new = Some(Section::Servers);
+                self.instances.on_new = true;
             }
         }
         if self.instances.selected.is_none() && self.focus == Focus::Inspector {
@@ -448,11 +444,10 @@ impl DashboardApp {
         if self.instances.selected != Some(key) {
             self.inspector.item = 0;
             self.inspector.scroll = 0;
-            self.inspector.bar = None;
             self.inspector.filter = TrafficFilter::All;
         }
         self.instances.selected = Some(key);
-        self.instances.on_new = None;
+        self.instances.on_new = false;
         self.clamp_selection();
     }
 
