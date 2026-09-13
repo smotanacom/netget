@@ -14,7 +14,7 @@
 //
 // The wasm bundle is built by ./web/build.sh into docs/demo/pkg/.
 
-const PKG = './demo/pkg/netget_web.js';
+const PKG = '../demo/pkg/netget_web.js';
 const WEBLLM_URL = 'https://esm.run/@mlc-ai/web-llm@0.2.85';
 
 const WEBLLM_MODELS = [
