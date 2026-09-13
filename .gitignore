@@ -44,3 +44,6 @@ netget_db_*.db
 
 # Snapshot test output written only on mismatch; never committed.
 *.actual.snap.md
+
+# Built by ./web/build.sh; deployed by .github/workflows/pages.yml
+/docs/demo/pkg/

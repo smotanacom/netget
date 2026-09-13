@@ -884,6 +884,56 @@ rather than a hardcoded copy:
 depends on neither, because `kubectl` speaks JSON to an apiserver by default. Derive this table
 from `Cargo.toml` and `build.rs` rather than trusting it — it has been wrong.
 
+## Browser build (wasm32) — the landing-page demo
+
+netget.net runs NetGet itself in the page: the dashboard, the `tcp`/`telnet`/`http` servers
+and the LLM plumbing compiled to `wasm32-unknown-unknown` (`crates/netget-web`, built by
+`./web/build.sh`, page in `docs/`). `web/README.md` is the operating manual; what matters
+for anyone touching the tree:
+
+- **Protocol code is compiled unchanged.** On wasm32 the names `tokio` and `crossterm` mean
+  the shim crates `crates/netget-tokio-wasm` and `crates/netget-crossterm-wasm`, bound at the
+  crate root with `extern crate … as` in `src/lib.rs`. The tokio shim re-exports real tokio's
+  `sync`/`io`/macros and supplies `spawn` (the JS event loop), `time` (`setTimeout`), and
+  `net` — a **virtual loopback**: `TcpListener::bind` claims a port in a table,
+  `TcpStream::connect` hands the listener an in-memory duplex. A protocol that only uses
+  `tokio::net::Tcp*`, `tokio::io`, `tokio::sync` and `tokio::time` needs no `#[cfg]` at all.
+  UDP reports `Unsupported`; `process`/`fs`/`signal` compile and fail at runtime.
+- **Cargo forbids one dependency name resolving to different packages per target**, which is
+  why the shims are *not* `tokio = { package = … }` renames in a target table. Same-source
+  dependencies with different features per target are fine; that is how `syntect`,
+  `ratatui` and `tui-textarea` differ between the two `[target.'cfg(…)'.dependencies]`
+  tables.
+- **`std::time::Instant::now()` and `SystemTime::now()` panic on wasm32, and the compiler
+  cannot tell you.** Use `crate::utils::clock::{Instant, SystemTime, UNIX_EPOCH}` (std on
+  native; on wasm the tokio shim's `performance.now()` clock, offset ten years so
+  `Instant::now() - window` in the rate limiter cannot underflow on a fresh page). The
+  compiled subset has been converted; a protocol added to `crates/netget-web/Cargo.toml`
+  must be converted too, or it panics on its first connection. `std::process::id()` is the
+  same kind of trap: `clock::process_id()`.
+- **The LLM backend is `LlmBackend::Bridge`** (`src/llm/bridge.rs`): every request the client
+  would have sent over HTTP is a `BridgeRequest` on a channel — full messages, tools, model —
+  and the page answers it with WebLLM, a local Ollama, or the visitor typing. The
+  Ollama/OpenAI backends (`reqwest`, `ollama-rs`) are `#[cfg(not(target_arch = "wasm32"))]`;
+  the circuit breaker deliberately ignores the bridge, since a slow person is not an outage.
+  `tests/llm_bridge_test.rs` pins the mapping natively; `web/test/smoke.mjs` drives the real
+  bundle under Node (dashboard paints, `start_server`, connect, model round-trip, bytes back)
+  and CI's `wasm-web` job runs both.
+- **The dashboard loop is generic** (`event_loop::run_loop` over any ratatui `Backend` and any
+  `Stream` of crossterm events); the web crate's backend emits ANSI into xterm.js and its
+  input translates DOM `KeyboardEvent`s. The scheduled-task ticker moved out of the legacy
+  rolling TUI into `src/cli/scheduled_tasks.rs` so the dashboard does not drag crossterm's
+  terminal code in.
+- **Building on macOS needs `llvm-ar`** (`rustup component add llvm-tools`): the system `ar`
+  writes a broken archive for ring's wasm objects and the failure shows up only at link time
+  as `undefined symbol: ring_core_…`. `web/build.sh` handles it; if ring was already built
+  wrong, `cargo clean -p ring --target wasm32-unknown-unknown --release` once. ring is there
+  because `http` pulls rustls/rcgen, which now build with `default-features = false` and the
+  `ring` provider — the `aws-lc-rs` default is a C library that does not build for wasm.
+- Publishing: `.github/workflows/pages.yml` builds the bundle and deploys `docs/` to GitHub
+  Pages; `docs/demo/pkg/` is gitignored. The repository's Pages source has to be "GitHub
+  Actions" for the demo to be live; with "deploy from /docs" the page shows a banner instead.
+
 ## MCP surface
 
 `--mcp` (stdio) and `--mcp-http PORT` expose tools sharing the TUI's code paths. See

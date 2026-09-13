@@ -20,6 +20,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 
     <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+    <link rel="stylesheet" href="css/demo.css">
 </head>
 <body>
 
@@ -31,27 +33,130 @@
         </span>
     </nav>
 
-    <!-- Hero -->
-    <header class="hero">
+    <!-- Hero: NetGet itself, running in the page -->
+    <header class="hero hero-demo">
         <h1>Describe a server.<br><span class="accent">Get a server.</span></h1>
         <p class="hero-sub">
             NetGet puts an LLM behind 50+ network protocols.<br>
-            Plain English in, a mock HTTP, SSH, DNS or MySQL server out.
+            This is the real thing, compiled to WebAssembly and running in your browser. Try it.
         </p>
+    </header>
 
-        <div class="term term-hero">
-            <div class="term-bar">
-                <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-                <span class="term-title">netget</span>
+    <section class="demo" id="demo">
+        <div class="demo-head">
+            <h2>Live: NetGet in your browser</h2>
+            <p>The dashboard on the left is NetGet's own TUI. Its servers listen on a virtual network inside the page; the clients on the right connect to them. Every request to the model is shown in full, and you can be the model.</p>
+        </div>
+        <div class="demo-banner" id="demo-banner">Loading NetGet…</div>
+
+        <div class="demo-grid">
+            <!-- Left: the dashboard -->
+            <div class="pane">
+                <div class="pane-bar">
+                    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+                    <span class="pane-title">netget</span>
+                    <span class="muted">wasm32 · virtual network</span>
+                    <span class="spacer"></span>
+                    <span class="model-badge is-you" id="dash-model">model: you</span>
+                </div>
+                <div class="term-host"><div id="dash-term"></div></div>
+                <div class="pane-foot">
+                    <span>Quick start:</span>
+                    <span id="quick-starts" class="server-list"></span>
+                </div>
+                <div class="pane-foot">
+                    <span>Servers:</span>
+                    <span id="server-list" class="server-list"><span class="muted">none yet</span></span>
+                </div>
+                <div class="pane-foot">
+                    <span><kbd>a</kbd> new server or client · <kbd>Tab</kbd> between columns · <kbd>F1</kbd> every key · type in the box at the bottom right to talk to the model</span>
+                </div>
             </div>
-            <div class="term-body" id="hero-term">
-                <div class="line"><span class="prompt">&gt;</span> <span class="typed">http server on 8080, mock a payments API</span><span class="caret"></span></div>
-                <div class="line out"><span class="tag-info">INFO</span> HTTP listening on :8080</div>
-                <div class="line out"><span class="tag-req">REQ</span>  POST /charge {"amount": 4200}</div>
-                <div class="line out"><span class="tag-llm">LLM</span>  200 {"status": "paid", "id": "ch_8f3k2"}</div>
+
+            <!-- Right: clients and the model -->
+            <div class="demo-side">
+                <div class="pane">
+                    <div class="tabs" id="client-tabs">
+                        <button data-tab="telnet" class="is-active">Telnet client</button>
+                        <button data-tab="browser">Browser</button>
+                        <button data-tab="raw">Raw TCP</button>
+                    </div>
+                    <div data-panel="telnet">
+                        <div class="row">
+                            <label>port <input type="text" class="port" id="telnet-port" value="2323"></label>
+                            <button class="btn btn-primary" id="telnet-connect">Connect</button>
+                            <label><input type="checkbox" id="telnet-echo" checked> local echo</label>
+                        </div>
+                        <div class="term-host"><div id="telnet-term"></div></div>
+                    </div>
+                    <div data-panel="browser" hidden>
+                        <div class="browser-window" id="browser-window">
+                            <div class="browser-chrome">
+                                <input type="text" id="browser-url" value="http://localhost:8080/" spellcheck="false">
+                                <button class="btn btn-primary" id="browser-go">Go</button>
+                            </div>
+                            <iframe id="browser-frame" sandbox="" title="Response" hidden></iframe>
+                            <pre id="browser-pre">Start an HTTP server in the dashboard, then press Go.</pre>
+                            <details class="browser-meta">
+                                <summary id="browser-status">no response yet</summary>
+                                <pre id="browser-headers"></pre>
+                            </details>
+                        </div>
+                    </div>
+                    <div data-panel="raw" hidden>
+                        <div class="row">
+                            <label>port <input type="text" class="port" id="raw-port" value="7000"></label>
+                            <button class="btn btn-primary" id="raw-connect">Connect</button>
+                            <button class="btn" id="raw-close">Close</button>
+                        </div>
+                        <div class="raw-log" id="raw-log"></div>
+                        <div class="row">
+                            <input type="text" id="raw-input" class="grow" placeholder="text to send" spellcheck="false">
+                            <label><input type="checkbox" id="raw-newline" checked> + newline</label>
+                            <button class="btn btn-primary" id="raw-send">Send</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="pane" style="margin-top: 0.9rem">
+                    <div class="pane-bar">
+                        <span class="pane-title">the model</span>
+                        <span class="spacer"></span>
+                        <span class="model-badge is-you" id="model-badge">model: you</span>
+                    </div>
+                    <div class="llm-modes">
+                        <div class="llm-mode">
+                            <input type="radio" name="llm-mode" value="manual" id="mode-manual" checked>
+                            <label for="mode-manual">You are the model</label>
+                            <span class="status">Each request NetGet makes appears below with its full prompt; you type the answer.</span>
+                        </div>
+                        <div class="llm-mode">
+                            <input type="radio" name="llm-mode" value="webllm" id="mode-webllm">
+                            <label for="mode-webllm">WebLLM, on your GPU</label>
+                            <span class="llm-mode-body">
+                                <select id="webllm-model"></select>
+                                <button class="btn" id="webllm-load">Load model</button>
+                            </span>
+                            <span class="status" id="webllm-status">Downloads the model once (WebGPU required) and caches it in the browser.</span>
+                        </div>
+                        <div class="llm-mode">
+                            <input type="radio" name="llm-mode" value="ollama" id="mode-ollama">
+                            <label for="mode-ollama">Your local Ollama</label>
+                            <span class="llm-mode-body">
+                                <input type="text" id="ollama-url" value="http://localhost:11434" spellcheck="false">
+                                <select id="ollama-model" disabled><option>model</option></select>
+                                <button class="btn" id="ollama-connect">Connect</button>
+                            </span>
+                            <span class="status" id="ollama-status">Needs <code>OLLAMA_ORIGINS=https://netget.net ollama serve</code>.</span>
+                        </div>
+                    </div>
+                    <div class="llm-transcript" id="llm-transcript">
+                        <div class="llm-empty" id="llm-empty">No requests yet. Start a server and connect a client: the first packet that needs an answer lands here.</div>
+                    </div>
+                </div>
             </div>
         </div>
-    </header>
+    </section>
 
     <main>
 
@@ -255,5 +360,8 @@ cargo build --release --no-default-features --features tcp,http,ssh,dns,mcp-stdi
     </footer>
 
     <script src="js/main.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+    <script type="module" src="js/demo.js"></script>
 </body>
 </html>
