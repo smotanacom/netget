@@ -40,15 +40,16 @@ impl Default for IppProtocol {
 // Implement Protocol trait (common functionality)
 impl Protocol for IppProtocol {
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
-        vec![
-                crate::llm::actions::ParameterDefinition {
-                    name: "send_first".to_string(),
-                    type_hint: "boolean".to_string(),
-                    description: "Accepted and ignored: IPP is strictly request/response over HTTP, so the server never speaks first".to_string(),
-                    required: false,
-                    example: serde_json::json!(false),
-                },
-            ]
+        vec![crate::llm::actions::ParameterDefinition {
+            name: "send_first".to_string(),
+            type_hint: "boolean".to_string(),
+            description: "Unsupported by this server and refused if set to true. IPP is \
+                         strictly request/response over HTTP, so the server cannot speak \
+                         before a request arrives."
+                .to_string(),
+            required: false,
+            example: serde_json::json!(false),
+        }]
     }
 
     /// No async actions.
@@ -183,6 +184,11 @@ impl Server for IppProtocol {
     > {
         Box::pin(async move {
             use crate::server::ipp::IppServer;
+            // `send_first` stays declared so a caller that passes `false` still validates - an
+            // undeclared key is refused outright - but `true` is refused rather than ignored.
+            // It was read here, threaded through spawn, and dropped at the far end as
+            // `_send_first`: a knob advertised to the model, plumbed through three hops, and
+            // silently doing nothing. IPP: IPP is request/response over HTTP, where the server cannot speak before a request arrives.
             let send_first = ctx
                 .startup_params
                 .as_ref()
@@ -190,6 +196,11 @@ impl Server for IppProtocol {
                 .transpose()?
                 .flatten()
                 .unwrap_or(false);
+            if send_first {
+                return Err(anyhow::anyhow!(
+                    "send_first is not supported by the IPP server: IPP is request/response over HTTP, where the server cannot speak before a request arrives"
+                ));
+            }
 
             IppServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),

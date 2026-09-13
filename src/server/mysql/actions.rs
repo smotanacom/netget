@@ -42,7 +42,8 @@ impl Protocol for MysqlProtocol {
                 crate::llm::actions::ParameterDefinition {
                     name: "send_first".to_string(),
                     type_hint: "boolean".to_string(),
-                    description: "Whether the server should send the first message after connection (not typically needed for this protocol)".to_string(),
+                    description: "Unsupported by this server and refused if set to true. MySQL: the server already sends its initial handshake packet unconditionally, because the protocol requires it - there is nothing for this flag to turn on."
+                        .to_string(),
                     required: false,
                     example: serde_json::json!(false),
                 },
@@ -179,6 +180,11 @@ impl Server for MysqlProtocol {
     > {
         Box::pin(async move {
             use crate::server::mysql::MysqlServer;
+            // `send_first` stays declared so a caller that passes `false` still validates - an
+            // undeclared key is refused outright - but `true` is refused rather than ignored.
+            // It was read here, threaded through spawn, and dropped at the far end as
+            // `_send_first`: a knob advertised to the model, plumbed through three hops, and
+            // silently doing nothing. MySQL: the server already sends its initial handshake packet unconditionally, because the protocol requires it - there is nothing for this flag to turn on.
             let send_first = ctx
                 .startup_params
                 .as_ref()
@@ -186,6 +192,11 @@ impl Server for MysqlProtocol {
                 .transpose()?
                 .flatten()
                 .unwrap_or(false);
+            if send_first {
+                return Err(anyhow::anyhow!(
+                    "send_first is not supported by the MySQL server: the server already sends its initial handshake packet unconditionally, because the protocol requires it - there is nothing for this flag to turn on"
+                ));
+            }
 
             MysqlServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),

@@ -133,6 +133,11 @@ impl Server for JsonRpcProtocol {
     > {
         Box::pin(async move {
             use crate::server::jsonrpc::JsonRpcServer;
+            // `send_first` stays declared so a caller that passes `false` still validates - an
+            // undeclared key is refused outright - but `true` is refused rather than ignored.
+            // It was read here, threaded through spawn, and dropped at the far end as
+            // `_send_first`: a knob advertised to the model, plumbed through three hops, and
+            // silently doing nothing. JSON-RPC: a request must precede any response, and an unsolicited notification is not what this flag was offering.
             let send_first = ctx
                 .startup_params
                 .as_ref()
@@ -140,6 +145,11 @@ impl Server for JsonRpcProtocol {
                 .transpose()?
                 .flatten()
                 .unwrap_or(false);
+            if send_first {
+                return Err(anyhow::anyhow!(
+                    "send_first is not supported by the JSON-RPC server: a request must precede any response, and an unsolicited notification is not what this flag was offering"
+                ));
+            }
 
             JsonRpcServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
