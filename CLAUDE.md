@@ -836,9 +836,25 @@ protocol compiled in.** Build it with the **`all-protocols`** feature, release â
 compiled surface, rebuild and reinstall:
 
 ```bash
-./cargo-isolated.sh build --release --no-default-features --features all-protocols && \
+./cargo-isolated.sh build --release --no-default-features \
+    --features all-protocols,mcp-stdio,mcp-http && \
   cp target/release/netget /Users/matus/bin/.netget.new && \
   mv -f /Users/matus/bin/.netget.new /Users/matus/bin/netget   # atomic; safe if netget is running
+```
+
+**`all-protocols` does NOT include `mcp-stdio`, and this command omitted them until
+September 2026.** The name reads as "everything", and it is not â€” it is every *protocol*.
+Following it produced a binary that answers `--mcp` with `Error: MCP STDIO mode requires the
+'mcp-stdio' feature`, which is exactly how the maintainer runs it. Nothing catches this: the
+build succeeds, the binary starts, and only the one invocation that matters fails. Smoke-test
+the installed binary over its own MCP surface rather than trusting `--version`:
+
+```bash
+printf '%s\n%s\n%s\n' \
+ '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}' \
+ '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+ '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_protocols","arguments":{}}}' \
+ | timeout 45 /Users/matus/bin/netget --mcp 2>&1 | head -c 300
 ```
 
 The atomic `mv` matters: the maintainer runs `netget --mcp` interactively, and overwriting the
