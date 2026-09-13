@@ -58,24 +58,21 @@ use std::path::{Path, PathBuf};
 
 /// `role:protocol:file_line:key` for every model-supplied code narrowed without a prior check.
 ///
-/// **Two entries, both real defects, both in a directory this pass was not allowed to touch.**
-/// They are not exempt and not disputed — `src/server/torrent_dht/` was being edited by another
-/// agent while this ratchet was written, and editing it concurrently is how `master` gets a
-/// half-landed change. The fix is the same one the other twelve protocols took:
+/// **Empty, and it must stay that way.** It held two entries until September 2026, both in
+/// `src/server/torrent_dht/`, deferred only because that directory was being edited by another
+/// agent when this ratchet was written — editing it concurrently is how `master` gets a
+/// half-landed change, not because the defects were disputed.
 ///
-/// `send_find_node_response` and `send_get_peers_response` each build a BitTorrent **compact
-/// peer entry** — four IP bytes followed by a big-endian port — from a `nodes` / `peers` array
-/// the model supplies. `node.get("port")?.as_u64()? as u16` wraps, so `65536` becomes `0` and
-/// `66079` becomes `543`: the querying DHT client is handed a contact it will then dial, on a
-/// port nobody named. Bound to `1..=65535` before `to_be_bytes()`, and drop the entry (the
-/// surrounding combinator is already a `filter_map` returning `Option`) rather than emitting a
-/// nonsense contact.
-const NARROWED_MODEL_VALUE_BASELINE: &[&str] = &[
-    "server:torrent_dht:actions.rs:231:port",
-    "server:torrent_dht:actions.rs:310:port",
-];
+/// They are fixed now. `send_find_node_response` and `send_get_peers_response` each build a
+/// BitTorrent **compact peer entry** — four IP bytes then a big-endian port — from an array the
+/// model supplies, and `node.get("port")?.as_u64()? as u16` wrapped: `65536` became `0` and
+/// `66079` became `543`, so the querying DHT client was handed a contact it would then dial on
+/// a port nobody named. Both now go through `u16::try_from` and drop the entry, which the
+/// surrounding `filter_map` already had the shape for.
+///
+/// Adding a line here is not how you pass this test. Range-check before the cast.
+const NARROWED_MODEL_VALUE_BASELINE: &[&str] = &[];
 
-/// Widths a model-supplied number can silently lose its meaning in.
 const NARROWING: &[&str] = &["u8", "u16", "i16", "i32", "u32"];
 
 /// Key-name segments that mean "this number *is* the decision".
