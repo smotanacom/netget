@@ -42,7 +42,7 @@ impl Protocol for MssqlProtocol {
             name: "send_first".to_string(),
             type_hint: "boolean".to_string(),
             description:
-                "Whether the server should send the first message after connection (not typically needed for this protocol)"
+                "Unsupported by this server and refused if set to true. MSSQL: the client opens with a PRELOGIN packet and the server answers it; TDS has no server-first message."
                     .to_string(),
             required: false,
             example: serde_json::json!(false),
@@ -175,6 +175,11 @@ impl Server for MssqlProtocol {
     > {
         Box::pin(async move {
             use crate::server::mssql::MssqlServer;
+            // `send_first` stays declared so a caller that passes `false` still validates - an
+            // undeclared key is refused outright - but `true` is refused rather than ignored.
+            // It was read here, threaded through spawn, and dropped at the far end as
+            // `_send_first`: a knob advertised to the model, plumbed through three hops, and
+            // silently doing nothing. MSSQL: the client opens with a PRELOGIN packet and the server answers it; TDS has no server-first message.
             let send_first = ctx
                 .startup_params
                 .as_ref()
@@ -182,6 +187,11 @@ impl Server for MssqlProtocol {
                 .transpose()?
                 .flatten()
                 .unwrap_or(false);
+            if send_first {
+                return Err(anyhow::anyhow!(
+                    "send_first is not supported by the MSSQL server: the client opens with a PRELOGIN packet and the server answers it; TDS has no server-first message"
+                ));
+            }
 
             MssqlServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),

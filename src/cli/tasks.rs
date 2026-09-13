@@ -1,9 +1,6 @@
-//! The scheduled-task ticker: run every task whose time has come.
-//!
-//! Called once a second by every front end - the dashboard, the legacy rolling TUI, the
-//! non-interactive runner and MCP mode - so it lives here, in a module none of them own,
-//! rather than inside the legacy TUI where it started. The browser build compiles this file
-//! and not `rolling_tui.rs`, which is one reason for the split.
+//! Scheduled-task execution: the 1s tick every interactive and non-interactive
+//! mode runs, which fires each due task through the model with the action
+//! vocabulary its scope allows.
 
 use tokio::sync::mpsc;
 
@@ -20,7 +17,7 @@ pub async fn execute_due_tasks_public(
 }
 
 /// Execute all tasks that are due
-pub(crate) async fn execute_due_tasks(
+async fn execute_due_tasks(
     state: &AppState,
     llm_client: &OllamaClient,
     status_tx: &mpsc::UnboundedSender<String>,

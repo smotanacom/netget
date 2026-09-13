@@ -246,7 +246,15 @@ impl TorrentDhtProtocol {
                     .filter_map(|node| {
                         let id = hex::decode(node.get("id")?.as_str()?).ok()?;
                         let ip = node.get("ip")?.as_str()?;
-                        let port = node.get("port")?.as_u64()? as u16;
+                        // A compact node entry is four IP bytes and a big-endian port, and
+                        // the querying client dials whatever it is handed. `as u16` wraps, so
+                        // 65536 became 0 and 66079 became 543 - a contact on a port nobody
+                        // named. Drop the entry instead; the combinator is already a
+                        // filter_map, so one bad node does not cost the whole response.
+                        let port = u16::try_from(node.get("port")?.as_u64()?).ok()?;
+                        if port == 0 {
+                            return None;
+                        }
                         let ip_parts: Vec<u8> =
                             ip.split('.').filter_map(|s| s.parse().ok()).collect();
                         if ip_parts.len() != 4 || id.len() != 20 {
@@ -325,7 +333,12 @@ impl TorrentDhtProtocol {
                 .iter()
                 .filter_map(|peer| {
                     let ip = peer.get("ip")?.as_str()?;
-                    let port = peer.get("port")?.as_u64()? as u16;
+                    // Same as send_find_node_response above: a wrapped port is a contact the
+                    // peer will dial and nobody is listening on.
+                    let port = u16::try_from(peer.get("port")?.as_u64()?).ok()?;
+                    if port == 0 {
+                        return None;
+                    }
                     let ip_parts: Vec<u8> = ip.split('.').filter_map(|s| s.parse().ok()).collect();
                     if ip_parts.len() != 4 {
                         return None;

@@ -44,7 +44,8 @@ impl Protocol for PostgresqlProtocol {
                 crate::llm::actions::ParameterDefinition {
                     name: "send_first".to_string(),
                     type_hint: "boolean".to_string(),
-                    description: "Whether the server should send the first message after connection (not typically needed for PostgreSQL)".to_string(),
+                    description: "Unsupported by this server and refused if set to true. PostgreSQL: the frontend sends the StartupMessage first, and a byte before it is a protocol violation the client cannot parse."
+                        .to_string(),
                     required: false,
                     example: json!(false),
                 },
@@ -180,6 +181,11 @@ impl Server for PostgresqlProtocol {
     > {
         Box::pin(async move {
             use crate::server::postgresql::PostgresqlServer;
+            // `send_first` stays declared so a caller that passes `false` still validates - an
+            // undeclared key is refused outright - but `true` is refused rather than ignored.
+            // It was read here, threaded through spawn, and dropped at the far end as
+            // `_send_first`: a knob advertised to the model, plumbed through three hops, and
+            // silently doing nothing. PostgreSQL: the frontend sends the StartupMessage first, and a byte before it is a protocol violation the client cannot parse.
             let send_first = ctx
                 .startup_params
                 .as_ref()
@@ -187,6 +193,11 @@ impl Server for PostgresqlProtocol {
                 .transpose()?
                 .flatten()
                 .unwrap_or(false);
+            if send_first {
+                return Err(anyhow::anyhow!(
+                    "send_first is not supported by the PostgreSQL server: the frontend sends the StartupMessage first, and a byte before it is a protocol violation the client cannot parse"
+                ));
+            }
 
             PostgresqlServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),

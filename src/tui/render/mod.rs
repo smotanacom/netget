@@ -35,7 +35,7 @@ pub fn draw(frame: &mut Frame, app: &mut DashboardApp) {
 
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         let notice = Paragraph::new(format!(
-            "Terminal too small: {}x{} (need {}x{}).\nResize, or run with --legacy-tui.",
+            "Terminal too small: {}x{} (need {}x{}). Resize the window.",
             area.width, area.height, MIN_WIDTH, MIN_HEIGHT
         ))
         .style(app.styles.warning);

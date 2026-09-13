@@ -4,9 +4,9 @@
 │    Nothing is running yet.         ││                                        │
 │                                    ││                                        │
 │    That row, or a, picks a protocol││                                        │
-│    and starts it. The instance sho…││  NetGet — a starts a server or client, │
-│    up here with its buttons, peers,││  Tab reaches them, F1 lists every key (│
-│    rules and config, and stays.    ││  --legacy-tui for the old UI)          │
+│    and starts it. The instance sho…││                                        │
+│    up here with its buttons, peers,││  NetGet — a starts a server or client, │
+│    rules and config, and stays.    ││  Tab reaches them, F1 lists every key  │
 │    ↑↓ walk the rows, ←→ the button…││  ✗  Ollama is not available or no model│
 │                                    ││  s found.                              │
 │    Or ask the model in the chat:   ││     Please ensure Ollama is running: ht│

@@ -200,9 +200,16 @@ fn validate_static_mode(protocol_name: &str, example: &serde_json::Value) -> Res
                         protocol_name
                     ));
                 }
-                if actions.map(|a| a.is_empty()).unwrap_or(true) {
+                // A MISSING `actions` key is still an error, but an EMPTY array is not: it
+                // means "answer with nothing", which is a real answer and distinct from a
+                // timeout. `tests/empty_static_handler_test.rs` measures that it suppresses
+                // the LLM call — with a no-handler control, so the zero means something — and
+                // `src/tui/modal/form.rs` emits exactly that shape for every dashboard-created
+                // client's connect event. Rejecting it here contradicted both and pushed
+                // protocols into writing a script handler where an empty list would do.
+                if actions.is_none() {
                     return Err(format!(
-                        "{}: Static handler 'actions' array is empty",
+                        "{}: Static handler has no 'actions' array",
                         protocol_name
                     ));
                 }

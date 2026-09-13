@@ -7,7 +7,7 @@
 //!
 //! `cursor_col` is a **character index** — a count of Unicode scalar values into the
 //! current line — and never a byte offset. Every method in this file must agree on
-//! that, and the renderer (`sticky_footer::position_cursor`) counts characters too.
+//! that, and the renderer counts characters too.
 //!
 //! This file previously mixed the two: `insert_char`, `insert_newline`, `delete_char`,
 //! `delete_char_forward` and `delete_to_end_of_line` treated `cursor_col` as a byte

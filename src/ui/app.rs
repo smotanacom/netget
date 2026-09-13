@@ -1,7 +1,7 @@
 //! Simplified application state for rolling terminal
 //!
 //! This module provides the minimal state needed for the rolling terminal interface.
-//! Most rendering logic has moved to sticky_footer.rs.
+//! Rendering lives in `src/tui/`; this keeps the shared command-line state.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write as _};

@@ -8,9 +8,9 @@
 │    up here with its buttons, peers,││                                        │
 │    rules and config, and stays.    ││                                        │
 │    ↑↓ walk the rows, ←→ the button…││                                        │
-│                                    ││  NetGet — a starts a server or client, │
-│    Or ask the model in the chat:   ││  Tab reaches them, F1 lists every key (│
-│    “start an http server on 8080”. ││  --legacy-tui for the old UI)          │
+│                                    ││                                        │
+│    Or ask the model in the chat:   ││  NetGet — a starts a server or client, │
+│    “start an http server on 8080”. ││  Tab reaches them, F1 lists every key  │
 │                                    ││  ✗  Ollama is not available or no model│
 │                                    ││  s found.                              │
 │                                    ││     Please ensure Ollama is running: ht│

@@ -5,9 +5,6 @@
 //! happening and of the conversation, with the input box at the bottom. See
 //! `src/tui/CLAUDE.md` for the design.
 //!
-//! The legacy rolling TUI remains available behind `--legacy-tui`; both share
-//! the same startup construction, status channel, tick cadences and command
-//! grammar.
 
 pub mod actions;
 pub mod activity;
@@ -46,8 +43,7 @@ use app::DashboardApp;
 use event_loop::LoopContext;
 use theme::Styles;
 
-/// Entry point, mirroring `run_rolling_tui`'s signature so `cli::run` picks
-/// one with a single branch.
+/// Entry point: the interactive UI.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn run_dashboard(
     state: AppState,
@@ -153,14 +149,7 @@ async fn prepare_dashboard(
     let styles = Styles::from_palette(&palette);
     let mut app = DashboardApp::new(core, styles, status_tx.clone(), ui_tx, llm_client.clone());
 
-    app.push_system(format!(
-        "NetGet — a starts a server or client, Tab reaches them, F1 lists every key{}",
-        if args.legacy_tui {
-            ""
-        } else {
-            " (--legacy-tui for the old UI)"
-        }
-    ));
+    app.push_system("NetGet — a starts a server or client, Tab reaches them, F1 lists every key");
     for message in resolved.messages {
         app.push_system(message);
     }

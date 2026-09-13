@@ -11,21 +11,18 @@ pub mod management;
 pub mod model_select;
 #[cfg(not(target_arch = "wasm32"))]
 mod non_interactive;
-#[cfg(not(target_arch = "wasm32"))]
-mod rolling_tui;
-pub mod scheduled_tasks;
 pub mod server_startup;
 #[cfg(not(target_arch = "wasm32"))]
 mod setup;
-#[cfg(not(target_arch = "wasm32"))]
-mod sticky_footer;
+mod tasks;
 #[cfg(not(target_arch = "wasm32"))]
 mod terminal_cleanup;
 pub mod theme;
 
 // Re-exported so MCP mode (`src/mcp_stdio`) can drive the scheduled-task ticker on the
-// same code path the TUI and non-interactive runner use.
-pub(crate) use scheduled_tasks::execute_due_tasks_public;
+// same code path the TUI and non-interactive runner use, without exposing the whole
+// private `tasks` module.
+pub(crate) use tasks::execute_due_tasks_public;
 
 use anyhow::Result;
 pub use args::Args;
@@ -337,32 +334,18 @@ pub async fn run() -> Result<()> {
         debug!("Creating EventHandler...");
         let event_handler = EventHandler::new(state.clone(), llm.clone());
 
-        // Both UIs manage the terminal themselves (no init_terminal needed).
-        if args.legacy_tui {
-            debug!("Entering legacy rolling TUI...");
-            rolling_tui::run_rolling_tui(
-                state,
-                app,
-                event_handler,
-                llm,
-                settings,
-                &args,
-                color_palette,
-            )
-            .await
-        } else {
-            debug!("Entering dashboard TUI...");
-            crate::tui::run_dashboard(
-                state,
-                app,
-                event_handler,
-                llm,
-                settings,
-                &args,
-                color_palette,
-            )
-            .await
-        }
+        // The dashboard manages the terminal itself (no init_terminal needed).
+        debug!("Entering dashboard TUI...");
+        crate::tui::run_dashboard(
+            state,
+            app,
+            event_handler,
+            llm,
+            settings,
+            &args,
+            color_palette,
+        )
+        .await
     } else {
         // No prompt and no terminal available
         anyhow::bail!(

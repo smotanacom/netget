@@ -13,7 +13,7 @@
 //! due scheduled tasks (`execute_due_tasks`), because a feedback batch is the same shape of
 //! work: timer-driven, LLM-answered, and it adjusts a running instance.
 //!
-//! Coverage follows that timer exactly — the TUI (`rolling_tui`) and non-interactive mode
+//! Coverage follows that timer exactly — the dashboard (`tui::event_loop`) and non-interactive mode
 //! drive it; MCP mode does not run a task timer at all, so neither scheduled tasks nor
 //! feedback fire there. That is a pre-existing MCP gap, not a property of this module.
 

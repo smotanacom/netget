@@ -44,7 +44,8 @@ impl Protocol for RedisProtocol {
                 crate::llm::actions::ParameterDefinition {
                     name: "send_first".to_string(),
                     type_hint: "boolean".to_string(),
-                    description: "Whether the server should send the first message after connection (not typically needed for Redis)".to_string(),
+                    description: "Unsupported by this server and refused if set to true. Redis: a RESP server answers commands and never speaks first; an unsolicited reply would desynchronise every client's command pipeline."
+                        .to_string(),
                     required: false,
                     example: json!(false),
                 },
@@ -180,6 +181,11 @@ impl Server for RedisProtocol {
     > {
         Box::pin(async move {
             use crate::server::redis::RedisServer;
+            // `send_first` stays declared so a caller that passes `false` still validates - an
+            // undeclared key is refused outright - but `true` is refused rather than ignored.
+            // It was read here, threaded through spawn, and dropped at the far end as
+            // `_send_first`: a knob advertised to the model, plumbed through three hops, and
+            // silently doing nothing. Redis: a RESP server answers commands and never speaks first; an unsolicited reply would desynchronise every client's command pipeline.
             let send_first = ctx
                 .startup_params
                 .as_ref()
@@ -187,6 +193,11 @@ impl Server for RedisProtocol {
                 .transpose()?
                 .flatten()
                 .unwrap_or(false);
+            if send_first {
+                return Err(anyhow::anyhow!(
+                    "send_first is not supported by the Redis server: a RESP server answers commands and never speaks first; an unsolicited reply would desynchronise every client's command pipeline"
+                ));
+            }
 
             RedisServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),

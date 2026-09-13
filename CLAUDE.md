@@ -7,9 +7,9 @@ what to say on the wire, either by reasoning per-request or via deterministic ha
 Three ways to run it: interactive TUI (default), headless (`--mcp` / `--mcp-http`, see
 `src/mcp_stdio/CLAUDE.md`), and non-interactive one-shot (`src/cli/non_interactive.rs`).
 
-**The interactive TUI is the full-screen ratatui dashboard (`src/tui/`)**; the older
-rolling-terminal TUI (`src/cli/rolling_tui.rs` + `sticky_footer.rs`) is still there behind
-`--legacy-tui`. `UserCommand::parse` is shared, so every slash command still works in both.
+**The interactive TUI is the full-screen ratatui dashboard (`src/tui/`)**, the only
+interactive UI — the rolling-terminal TUI that used to sit behind `--legacy-tui` was removed
+in September 2026, and the scheduled-task tick it owned lives in `src/cli/tasks.rs`.
 `src/tui/CLAUDE.md` is the design document; the short version:
 
 - **Left column is every instance, always visible.** A scrollable canvas of **cards**: each
@@ -17,9 +17,12 @@ rolling-terminal TUI (`src/cli/rolling_tui.rs` + `sticky_footer.rs`) is still th
   a 30-second sparkline, a **driver badge**), the requests parked for you, a facts line, its
   **buttons as an aligned grid**, and its sections — `peers` (each peer with its own buttons
   and its requests beneath), `rules` (each rule with delete / ↑ / ↓ beside it), `config`;
-  `send` and `connections` for a client. Nothing is selected or drilled into: ↑/↓ walk every
-  row, ←/→ walk a row's buttons (and fold / unfold a section), Enter acts, letters act on the
-  card under the cursor. One `+ new server or client` row at the foot opens a picker listing
+  `send` and `connections` for a client. Under every peer and every client connection sits
+  the **conversation on it** — one row per message in, one per message out, oldest first,
+  each opening the full entry — with `[ send message ]` beneath, and `[ + <proto> client ]`
+  at the foot of a server's peers. Nothing is selected or drilled into: ↑/↓ walk every row,
+  ←/→ walk a row's buttons (and fold / unfold a section), Enter acts, letters act on the card
+  under the cursor. One `+ new server or client` row at the foot opens a picker listing
   both kinds together.
 - **Right column is one stream.** Machine events derived from snapshot diffs (instances
   starting, peers connecting, every request with its answer, questions parked for you —
@@ -114,8 +117,13 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (36 protocols as of September 11 2026;
-  re-derive, the count drifts every pass). The original ten are
+- **Beta** — human-reviewed, works against real clients (37 protocols as of September 13 2026;
+  re-derive, the count drifts every pass). `ollama` joined in September 2026: `ollama-rs` is
+  pointed at NetGet's own Ollama server and deserialises our `/api/tags`, `/api/generate` and
+  `/api/chat` envelopes for itself. It is an unconditional dependency rather than an
+  `optional = true` one, so unlike `amqp`'s `lapin` the evidence actually runs where the gate
+  runs; and it is not circular, because this server frames with hyper and serde_json and never
+  touches the crate — the quinn precedent, not the tokio-tungstenite one. The original ten are
   `dns`, `doh`, `dot`, `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`; August 2026 added
   fourteen that are each driven by the protocol's own third-party client in a test that is **not**
   `#[ignore]`d — `amqp` (lapin), `cassandra` (scylla), `coap` (coap-lite), `imap` (async-imap),
@@ -252,7 +260,17 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   reports one `NONE`: `src/server/http_common/actions.rs`, which is a shared response helper
   with no `impl Protocol` and no registry entry, so it declares no state correctly.
 - **Incomplete** — hidden from the LLM entirely (`is_available_to_llm()` returns false). **None
-  remain.** The last one, `bluetooth_ble_beacon`, was a platform limit rather than unfinished
+  remain — but that claim was false for months and nobody noticed, which is the useful part.**
+  The `nfc` *client* sat at `Incomplete` until September 2026, so the model could not see it at
+  all, while this section said none remained. The lesson is that `Incomplete` is invisible by
+  construction: nothing surfaces it, no test fails, and the protocol simply never appears in a
+  tool list. It is now a ratchet — `tests/no_protocol_is_hidden_from_the_model_test.rs` reads
+  the source tree, so it holds at the six-protocol CI gate as well as at `--all-features`, and
+  its allow-list is empty. Note it matches `.state(...)` specifically: every occurrence in
+  `src/docs.rs` and the TUI is a `match` arm rendering the variant, and a bare substring search
+  reports all of them.
+
+  The last *deliberate* one, `bluetooth_ble_beacon`, was a platform limit rather than unfinished
   work, and was resolved by making the platform explicit rather than by hiding the protocol:
   - A beacon *is* its advertising payload, and `CBPeripheralManager.startAdvertising:` accepts
     only `CBAdvertisementDataLocalNameKey` and `CBAdvertisementDataServiceUUIDsKey`; every other
@@ -723,10 +741,9 @@ pass each, and all four present as *product* bugs:
   has to; afterwards a write can return `EAGAIN` part-way and be abandoned, and `Pty`'s `Write`
   impl reports the short write as success. The symptom is a *truncated command*, which looks
   exactly like a UI dropping keystrokes. Retry against a deadline.
-- **Never wait on a fixed sleep.** The rolling TUI processes roughly one keystroke per render
-  cycle, so a 33-character command takes ~1.3s idle and longer under `--test-threads`. Wait for
-  the condition, then let the frame settle — a predicate can go true mid-repaint, between the
-  status block and the status line.
+- **Never wait on a fixed sleep.** A 33-character command took ~1.3s to land in the old
+  rolling TUI and longer under `--test-threads`. Wait for the condition (`PtyScreen::wait_until`
+  keeps one vt100 parser for the whole test), then let the frame settle.
 - **A capture that builds a fresh vt100 `Parser` from only the bytes read in that call is not
   idempotent.** Calling it twice renders the second from a blank screen. Polling needs one parser
   fed for the whole wait.
@@ -819,9 +836,25 @@ protocol compiled in.** Build it with the **`all-protocols`** feature, release �
 compiled surface, rebuild and reinstall:
 
 ```bash
-./cargo-isolated.sh build --release --no-default-features --features all-protocols && \
+./cargo-isolated.sh build --release --no-default-features \
+    --features all-protocols,mcp-stdio,mcp-http && \
   cp target/release/netget /Users/matus/bin/.netget.new && \
   mv -f /Users/matus/bin/.netget.new /Users/matus/bin/netget   # atomic; safe if netget is running
+```
+
+**`all-protocols` does NOT include `mcp-stdio`, and this command omitted them until
+September 2026.** The name reads as "everything", and it is not — it is every *protocol*.
+Following it produced a binary that answers `--mcp` with `Error: MCP STDIO mode requires the
+'mcp-stdio' feature`, which is exactly how the maintainer runs it. Nothing catches this: the
+build succeeds, the binary starts, and only the one invocation that matters fails. Smoke-test
+the installed binary over its own MCP surface rather than trusting `--version`:
+
+```bash
+printf '%s\n%s\n%s\n' \
+ '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}' \
+ '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+ '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_protocols","arguments":{}}}' \
+ | timeout 45 /Users/matus/bin/netget --mcp 2>&1 | head -c 300
 ```
 
 The atomic `mv` matters: the maintainer runs `netget --mcp` interactively, and overwriting the
@@ -842,18 +875,18 @@ every detail worth acting on.** It said the feature "initializes a Metal context
 crashes "the instant the TUI renders". It is not Metal and not startup: `gpu` pulls in `gfxinfo`,
 whose macOS `MacGpuInfo::load_pct()` over-releases a `CFDictionary`, and the extra `CFRelease`
 raises `EXC_BREAKPOINT`/SIGTRAP inside CoreFoundation. `SystemStatsMonitor::get_stats` is the only
-caller and `run_rolling_tui` is the only caller of *that*, on a one-second interval — so the crash
-landed a second or two **after** the first paint, only in the `--legacy-tui` rolling TUI, and never
-in the dashboard. `src/system_stats.rs` now compiles the `gfxinfo` call out on macOS
+caller and the since-removed rolling TUI was the only caller of *that*, on a one-second interval —
+so the crash landed a second or two **after** the first paint, only there, and never in the
+dashboard. `src/system_stats.rs` now compiles the `gfxinfo` call out on macOS
 (`cfg(all(feature = "gpu", not(target_os = "macos")))`) and reports `N/A`, which is what the
 operator saw anyway wherever the stat was unsupported. Linux and Windows are unaffected.
 
 The stack is worth keeping because it is not catchable: the crash is inside a `Drop`, so there is
 no fallible call to wrap and `catch_unwind` cannot see it. It surfaced only because
 `tests/terminal_snapshot` is the one suite that *runs the TUI*, and only once those tests were
-pointed at `--legacy-tui` — before that they exercised the dashboard and never touched the path.
+pointed at the rolling TUI — before that they exercised the dashboard and never touched the path.
 
-The TUI installs a native-crash terminal restorer (`crash_restore` in `src/cli/rolling_tui.rs`): a
+The TUI installs a native-crash terminal restorer (`src/cli/crash_restore.rs`): a
 SIGSEGV/SIGABRT/SIGTRAP from a C/ObjC library bypasses Rust's `Drop`/panic machinery, so without it
 a crash leaves the shell wedged in raw mode. The handler restores cooked mode + cursor before the
 process dies. It is a safety net, not a licence to ship a crashing binary — fix the crash too.
@@ -921,9 +954,8 @@ for anyone touching the tree:
   and CI's `wasm-web` job runs both.
 - **The dashboard loop is generic** (`event_loop::run_loop` over any ratatui `Backend` and any
   `Stream` of crossterm events); the web crate's backend emits ANSI into xterm.js and its
-  input translates DOM `KeyboardEvent`s. The scheduled-task ticker moved out of the legacy
-  rolling TUI into `src/cli/scheduled_tasks.rs` so the dashboard does not drag crossterm's
-  terminal code in.
+  input translates DOM `KeyboardEvent`s. The scheduled-task ticker (`src/cli/tasks.rs`) is
+  compiled for wasm too; it uses `utils::clock`.
 - **Building on macOS needs `llvm-ar`** (`rustup component add llvm-tools`): the system `ar`
   writes a broken archive for ring's wasm objects and the failure shows up only at link time
   as `undefined symbol: ring_core_…`. `web/build.sh` handles it; if ring was already built
@@ -1418,24 +1450,10 @@ Read before assuming a subsystem is sound:
   because `tests/helpers/netget.rs` passes `--llm-max-concurrent 1000` to every E2E test, so
   the shipped value was exercised by no test at all; `tests/llm_concurrency_default_test.rs`
   now runs with the flag omitted entirely.
-- **Typing a slash command in the `--legacy-tui` rolling TUI destroys the visible output.**
-  Open, and recorded rather than fixed. `update_slash_suggestions_and_render`
-  (`src/cli/rolling_tui.rs`) swaps the footer to `FooterContent::SlashCommands` and calls
-  `footer.render()` directly, skipping the scroll-region and push-content-up bookkeeping that
-  `update_ui_from_state` runs for every *other* height change. The suggestion popup is up to ten
-  entries plus two separators, so on 80x24 the footer jumps 9 → 16 rows with no DECSTBM update
-  and no push: it paints over the output rows, and `StickyFooter::render` then clears
-  `max(old, new)` of them. Nothing keeps a copy of the scrollback, so those rows are gone.
-  Measured on the byte stream — ten lines present after `/test 10`, `ESC[2K` on rows 9-24 during
-  the next slash command, nothing left after.
-
-  **Routing the popup through that bookkeeping is not the fix, and was tried.** The suggestion
-  list changes on every keystroke, so the footer expands and shrinks once per character and
-  `blank_lines_buffer` does not balance across the cycle; the result was strictly worse (all ten
-  lines scrolled away rather than six overwritten). A real fix means the footer stops being a
-  destructive overlay. The dashboard is unaffected — it renders whole frames into the alternate
-  screen — which is why this sits below the bar for reworking deprecated code.
-  `tests/terminal_snapshot/mod.rs` carries the measurement, and its snapshots record the damage.
+- **The rolling TUI's slash-command popup destroyed visible output; the TUI is gone.** The
+  defect (a footer painted over the scroll region with no push-up, measured on the byte stream)
+  lived in `sticky_footer.rs`, which was deleted with the `--legacy-tui` mode in September 2026.
+  The dashboard renders whole frames into the alternate screen and never had it.
 - **The 10-second idle sweep is for connectionless protocols only — declare it.**
   `AppState::cleanup_old_connections` (ticked by the TUI and the MCP loop) evicts any connection
   whose `last_activity` is older than 10s. It exists for UDP/raw/link-level servers, whose

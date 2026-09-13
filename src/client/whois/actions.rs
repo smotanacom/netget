@@ -162,7 +162,7 @@ impl Protocol for WhoisClientProtocol {
         // `client_llm_action_set` for the model and `client_action_names_for_pattern` for
         // `event_handlers` validation, which no longer reads the sync list alone.
         //
-        // The copy stays because a third reader still does: `cli::rolling_tui`'s
+        // The copy stays because a third reader still does: `cli::tasks`'s
         // `execute_single_task` builds a client-scoped scheduled task's action list from
         // `get_sync_actions()` and nothing else, and `ConversationHandler` rejects anything
         // outside it. Drop this list and a scheduled task on a WHOIS client can no longer
