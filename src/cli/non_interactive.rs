@@ -340,7 +340,7 @@ pub(crate) async fn run_server(
 
             // Execute due tasks every 1 second, and drain any feedback that has become due
             _ = task_execution_interval.tick() => {
-                crate::cli::rolling_tui::execute_due_tasks_public(state, &llm, &status_tx).await;
+                crate::cli::execute_due_tasks_public(state, &llm, &status_tx).await;
                 crate::llm::feedback::execute_due_feedback(state, &llm, &status_tx).await;
             }
         }

@@ -31,7 +31,7 @@ pub enum RequestKind {
     /// message is a wall of protocol documentation.
     DocumentationRetry,
 
-    /// A scheduled task firing (`src/cli/rolling_tui.rs` sends the fixed user
+    /// A scheduled task firing (`src/cli/tasks.rs` sends the fixed user
     /// message "Execute the task."). Timer-driven, so there is no event id —
     /// what identifies the run sits in the system prompt's `Trigger:` block.
     ScheduledTask,

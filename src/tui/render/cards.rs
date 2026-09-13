@@ -7,7 +7,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::tui::app::{DashboardApp, Focus};
-use crate::tui::cards::{self, Row};
+use crate::tui::cards::Row;
 use crate::tui::hit::HitTarget;
 use crate::tui::rail::fit;
 

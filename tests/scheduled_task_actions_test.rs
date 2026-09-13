@@ -1,6 +1,6 @@
 //! Regression tests for the scheduled-task LLM action list.
 //!
-//! `execute_single_task` (src/cli/rolling_tui.rs) used to hand an empty
+//! `execute_single_task` (src/cli/tasks.rs) used to hand an empty
 //! `Vec<ActionDefinition>` to `ConversationHandler`, while
 //! `PromptBuilder::build_task_execution_prompt` advertised a real action list to the model.
 //! `ConversationHandler` derives `valid_action_names` from the list it is given and has no

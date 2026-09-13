@@ -184,10 +184,10 @@ impl SystemStatsMonitor {
         // The crash is in a `Drop`, so there is no fallible call to wrap and
         // `catch_unwind` cannot see it.
         //
-        // It only ever showed up in the rolling TUI because `run_rolling_tui` is the only caller
+        // It only ever showed up in the rolling TUI because `run_rolling_tui` (since removed) was the only caller
         // of `get_stats` — the dashboard never asks for GPU stats — and it ticks once a second,
         // so a `--features gpu` build died a second or two after painting. That is what the
-        // `crash_restore` handler in `rolling_tui.rs` was catching: the terminal was restored
+        // `crash_restore` handler was catching: the terminal was restored
         // and the process still died.
         //
         // Reporting `N/A` on macOS is what the operator saw anyway on the machines where the

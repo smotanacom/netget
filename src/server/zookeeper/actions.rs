@@ -104,7 +104,7 @@ fn zookeeper_data_action() -> ActionDefinition {
         parameters,
         example: json!({
             "type": "zookeeper_data",
-            "xid": "{{event.xid}}",
+            "xid": 3,
             "zxid": 100,
             "data": "postgres://localhost:5432"
         }),
@@ -146,7 +146,7 @@ fn zookeeper_children_action() -> ActionDefinition {
         parameters,
         example: json!({
             "type": "zookeeper_children",
-            "xid": "{{event.xid}}",
+            "xid": 3,
             "zxid": 200,
             "children": ["web", "api", "db"]
         }),
@@ -190,7 +190,7 @@ fn zookeeper_stat_action() -> ActionDefinition {
         parameters,
         example: json!({
             "type": "zookeeper_stat",
-            "xid": "{{event.xid}}",
+            "xid": 3,
             "zxid": 100,
             "data_length": 25
         }),
@@ -224,7 +224,7 @@ fn zookeeper_created_action() -> ActionDefinition {
         parameters,
         example: json!({
             "type": "zookeeper_created",
-            "xid": "{{event.xid}}",
+            "xid": 3,
             "zxid": 300,
             "path": "/services/web"
         }),
@@ -325,7 +325,7 @@ pub static ZOOKEEPER_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
          handled by the server and never appear here.",
         json!({
             "type": "zookeeper_data",
-            "xid": "{{event.xid}}",
+            "xid": 3,
             "zxid": 100,
             "data": "postgres://localhost:5432"
         }),
@@ -334,8 +334,12 @@ pub static ZOOKEEPER_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         Parameter {
             name: "xid".to_string(),
             type_hint: "integer".to_string(),
-            description: "Request transaction ID. Echo this back as the response `xid` — a \
-                          static handler can do so with {{event.xid}}."
+            description: "Request transaction ID, an integer: echo back the `xid` the event \
+                          carried. The examples show a literal because that is what an LLM \
+                          answer must contain - nothing substitutes into a model's reply. A \
+                          static handler is the other case and may write the placeholder \
+                          {{event.xid}}, which the handler executor interpolates before \
+                          dispatch."
                 .to_string(),
             required: true,
         },
@@ -537,7 +541,7 @@ print(json.dumps({"actions": actions}))"#;
                         "actions": [{
                             "type": "zookeeper_data",
                             // Echo the request's xid; a literal would break correlation.
-                            "xid": "{{event.xid}}",
+                            "xid": 3,
                             "zxid": 1,
                             "data": "hello"
                         }]
@@ -558,6 +562,11 @@ impl Server for ZookeeperProtocol {
     > {
         Box::pin(async move {
             use crate::server::zookeeper::ZookeeperServer;
+            // `send_first` stays declared so a caller that passes `false` still validates - an
+            // undeclared key is refused outright - but `true` is refused rather than ignored.
+            // It was read here, threaded through spawn, and dropped at the far end as
+            // `_send_first`: a knob advertised to the model, plumbed through three hops, and
+            // silently doing nothing. ZooKeeper: the client sends a ConnectRequest first and the server's reply is framed against it.
             let send_first = ctx
                 .startup_params
                 .as_ref()
@@ -565,6 +574,11 @@ impl Server for ZookeeperProtocol {
                 .transpose()?
                 .flatten()
                 .unwrap_or(false);
+            if send_first {
+                return Err(anyhow::anyhow!(
+                    "send_first is not supported by the ZooKeeper server: the client sends a ConnectRequest first and the server's reply is framed against it"
+                ));
+            }
 
             ZookeeperServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
