@@ -6,6 +6,7 @@
 pub mod action_helper;
 pub mod actions; // Centralized helper for LLM calls
 pub mod agent_queue; // Agent-answered LLM request queue (MCP --llm-agent mode)
+pub mod bridge; // Requests handed to a host (the browser page) that owns the model
 pub mod circuit_breaker; // Fail-fast guard for an unreachable LLM backend
 pub mod conversation; // Conversation-based LLM interaction
 pub mod conversation_state; // Conversation history management
@@ -69,6 +70,9 @@ pub use ollama_client::Message;
 
 // Agent-answered LLM request queue
 pub use agent_queue::{LlmRequestQueue, PendingLlmRequest};
+
+// Host-answered LLM requests (the browser build)
+pub use bridge::{BridgeReply, BridgeRequest, BridgeRequestKind, LlmBridge};
 
 // LLM backend circuit breaker
 pub use circuit_breaker::{
