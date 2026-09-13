@@ -1,6 +1,7 @@
 //! CLI module - handles command-line interface and application startup
 
 mod args;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod banner;
 pub mod client_startup;
 pub mod crash_restore;
@@ -8,18 +9,23 @@ pub mod easy_startup;
 pub mod input_state;
 pub mod management;
 pub mod model_select;
+#[cfg(not(target_arch = "wasm32"))]
 mod non_interactive;
+#[cfg(not(target_arch = "wasm32"))]
 mod rolling_tui;
+pub mod scheduled_tasks;
 pub mod server_startup;
+#[cfg(not(target_arch = "wasm32"))]
 mod setup;
+#[cfg(not(target_arch = "wasm32"))]
 mod sticky_footer;
+#[cfg(not(target_arch = "wasm32"))]
 mod terminal_cleanup;
 pub mod theme;
 
 // Re-exported so MCP mode (`src/mcp_stdio`) can drive the scheduled-task ticker on the
-// same code path the TUI and non-interactive runner use, without exposing the whole
-// private `rolling_tui` module.
-pub(crate) use rolling_tui::execute_due_tasks_public;
+// same code path the TUI and non-interactive runner use.
+pub(crate) use scheduled_tasks::execute_due_tasks_public;
 
 use anyhow::Result;
 pub use args::Args;
@@ -33,6 +39,7 @@ use crate::state::app_state::AppState;
 use crate::ui::App;
 
 /// Create the LLM client from CLI args, branching on --openai-url vs --ollama-url
+#[cfg(not(target_arch = "wasm32"))]
 pub fn create_llm_client(args: &Args) -> Result<OllamaClient> {
     let mut client = create_llm_client_inner(args)?;
     if let Some(secs) = args.llm_request_timeout {
@@ -44,6 +51,7 @@ pub fn create_llm_client(args: &Args) -> Result<OllamaClient> {
     Ok(client)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn create_llm_client_inner(args: &Args) -> Result<OllamaClient> {
     if let Some(ref openai_url) = args.openai_url {
         let api_key = args.resolve_api_key().ok_or_else(|| {
@@ -68,6 +76,7 @@ fn create_llm_client_inner(args: &Args) -> Result<OllamaClient> {
 }
 
 /// Main CLI entry point
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn run() -> Result<()> {
     let args = Args::parse();
 
@@ -376,6 +385,7 @@ pub async fn run() -> Result<()> {
 /// whose behaviour is fully described by `--client-handlers` connects and runs
 /// without an LLM backend being reachable at all. A model is still configured
 /// when one was requested, for clients that fall back to the `instruction`.
+#[cfg(not(target_arch = "wasm32"))]
 async fn run_client(protocol: &str, args: &Args) -> Result<()> {
     use std::sync::Arc;
     use std::time::Duration;
@@ -530,6 +540,7 @@ async fn run_client(protocol: &str, args: &Args) -> Result<()> {
 /// routes straight to `server_startup::start_server_from_action`, the same
 /// function the MCP `start_server` tool and the actions-JSON loader use, then
 /// hands off to the shared non-interactive server loop.
+#[cfg(not(target_arch = "wasm32"))]
 async fn run_server_direct(protocol: &str, args: &Args) -> Result<()> {
     use tokio::sync::mpsc;
 
@@ -674,6 +685,7 @@ async fn run_server_direct(protocol: &str, args: &Args) -> Result<()> {
 }
 
 /// Run a simple protocol in non-interactive mode
+#[cfg(not(target_arch = "wasm32"))]
 async fn run_simple_protocol(protocol: &str, args: &Args) -> Result<()> {
     use crate::protocol::EASY_REGISTRY;
     use std::sync::Arc;

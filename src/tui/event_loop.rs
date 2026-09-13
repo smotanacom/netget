@@ -3,18 +3,33 @@
 //! All four legacy tick cadences are preserved: 100ms UI, 1s scheduled
 //! tasks + feedback, 1s stats/projection, 5s state reapers. The task tick in
 //! particular is load-bearing — without it scheduled tasks never fire.
+//!
+//! The loop itself ([`run_loop`]) is generic over the ratatui backend it draws
+//! to and the stream of input events it reads, and owns no terminal. [`run`]
+//! is the native front: raw mode, alternate screen, `CrosstermBackend` on
+//! stdout and crossterm's `EventStream`. The browser build
+//! (`crates/netget-web`) calls `run_loop` with a backend that emits ANSI into
+//! xterm.js and a channel of events built from DOM `KeyboardEvent`s, and the
+//! dashboard cannot tell the difference.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{stdout, Stdout};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEventKind};
+#[cfg(not(target_arch = "wasm32"))]
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, EventStream};
+use crossterm::event::{Event, KeyEventKind};
+#[cfg(not(target_arch = "wasm32"))]
 use crossterm::execute;
+#[cfg(not(target_arch = "wasm32"))]
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
+use ratatui::backend::Backend;
+#[cfg(not(target_arch = "wasm32"))]
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::{mpsc, Mutex};
@@ -37,8 +52,10 @@ const CONNECTION_CLEANUP_TIMEOUT_SECS: u64 = 10;
 const CONNECTIONLESS_CLEANUP_TIMEOUT_SECS: u64 = 10;
 
 /// Restores the terminal on drop, so a panic cannot leave it wedged.
+#[cfg(not(target_arch = "wasm32"))]
 struct TerminalGuard;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen);
@@ -58,7 +75,9 @@ pub struct LoopContext {
     pub ui_rx: mpsc::UnboundedReceiver<crate::tui::uimsg::UiMsg>,
 }
 
-pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
+/// Run the dashboard on the process's own terminal.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn run(app: DashboardApp, ctx: LoopContext) -> Result<()> {
     // Arm the native-crash restorer BEFORE raw mode, with the extra bytes that
     // leave the alternate screen and mouse capture.
     crate::cli::crash_restore::install(crate::cli::crash_restore::ALT_SCREEN_EXTRA);
@@ -80,7 +99,24 @@ pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
     let mut terminal: Terminal<CrosstermBackend<Stdout>> = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let mut event_stream = EventStream::new();
+    let event_stream = EventStream::new();
+    run_loop(&mut terminal, event_stream, app, ctx).await
+}
+
+/// The dashboard loop over any backend and any source of input events.
+///
+/// Returns when the user quits or `events` ends. The caller owns the terminal
+/// and whatever it took to set it up.
+pub async fn run_loop<B, S>(
+    terminal: &mut Terminal<B>,
+    mut events: S,
+    mut app: DashboardApp,
+    mut ctx: LoopContext,
+) -> Result<()>
+where
+    B: Backend,
+    S: Stream<Item = std::io::Result<Event>> + Unpin,
+{
     let mut ui_tick = interval(Duration::from_millis(100));
     let mut task_tick = interval(Duration::from_secs(1));
     task_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -117,7 +153,7 @@ pub async fn run(mut app: DashboardApp, mut ctx: LoopContext) -> Result<()> {
         }
 
         tokio::select! {
-            maybe_event = event_stream.next() => {
+            maybe_event = events.next() => {
                 match maybe_event {
                     Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
                         let outcome = keymap::handle_key(

@@ -117,10 +117,11 @@ pub mod grpc;
 #[cfg(feature = "grpc")]
 pub use grpc::actions::GrpcClientProtocol;
 
-// http client
-#[cfg(feature = "http")]
+// http client. Not on wasm32: it is reqwest end to end, and a browser fetch future is not
+// `Send`, which the client trait requires. The HTTP *server* is unaffected.
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
-#[cfg(feature = "http")]
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub use http::actions::HttpClientProtocol;
 
 // http2 client

@@ -49,13 +49,14 @@ use super::environment::ScriptingEnvironment;
 use super::types::{
     parse_script_response, ScriptConfig, ScriptInput, ScriptLanguage, ScriptResponse,
 };
+use crate::utils::clock::Instant;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;

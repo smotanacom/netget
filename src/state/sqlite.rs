@@ -2,6 +2,7 @@
 //!
 //! Provides database instances, schema tracking, and query execution for protocols
 
+use crate::utils::clock::Instant;
 #[cfg(feature = "sqlite")]
 use anyhow::{Context, Result};
 #[cfg(feature = "sqlite")]
@@ -11,8 +12,7 @@ use std::collections::HashMap;
 #[cfg(feature = "sqlite")]
 use std::path::PathBuf;
 #[cfg(feature = "sqlite")]
-use std::sync::Mutex;
-use std::time::Instant; // Always import for DatabaseInstance fields
+use std::sync::Mutex; // Always import for DatabaseInstance fields
 
 use crate::state::{ClientId, ServerId};
 

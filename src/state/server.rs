@@ -1,9 +1,9 @@
 //! Server instance management
 
+use crate::utils::clock::Instant;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use crate::server::connection::ConnectionId;
 
@@ -236,9 +236,9 @@ pub struct ClosedConnectionSummary {
 /// Wall-clock milliseconds for a past `Instant` (the `SystemTime::now() -
 /// elapsed` idiom used elsewhere in this file for log naming).
 fn instant_to_unix_ms(at: Instant) -> u64 {
-    let system_time = std::time::SystemTime::now() - at.elapsed();
+    let system_time = crate::utils::clock::SystemTime::now() - at.elapsed();
     system_time
-        .duration_since(std::time::UNIX_EPOCH)
+        .duration_since(crate::utils::clock::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
@@ -374,12 +374,12 @@ impl ServerInstance {
 
         // Calculate the absolute time when the server was created
         // by subtracting the elapsed time from now
-        let now = std::time::SystemTime::now();
+        let now = crate::utils::clock::SystemTime::now();
         let elapsed = self.created_at.elapsed();
         let created_system_time = now - elapsed;
 
         // Convert to DateTime for formatting
-        let timestamp: chrono::DateTime<chrono::Local> = created_system_time.into();
+        let timestamp = crate::utils::clock::to_local_datetime(created_system_time);
         let timestamp_str = timestamp.format("%Y_%m_%d_%H_%M_%S").to_string();
 
         let log_filename = format!("netget_{}_{}.log", output_name, timestamp_str);

@@ -48,7 +48,72 @@ use theme::Styles;
 
 /// Entry point, mirroring `run_rolling_tui`'s signature so `cli::run` picks
 /// one with a single branch.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn run_dashboard(
+    state: AppState,
+    core: App,
+    event_handler: EventHandler,
+    llm_client: OllamaClient,
+    settings: Settings,
+    args: &crate::cli::Args,
+    palette: ColorPalette,
+) -> Result<()> {
+    let (app, ctx) = prepare_dashboard(
+        state,
+        core,
+        event_handler,
+        llm_client,
+        settings,
+        args,
+        palette,
+    )
+    .await?;
+    event_loop::run(app, ctx).await
+}
+
+/// The dashboard on a caller-supplied terminal and input stream: the browser
+/// build's entry point (`crates/netget-web`), where the terminal is xterm.js
+/// and the events come from the DOM. Same construction as [`run_dashboard`];
+/// `on_ready` receives the status channel once the loop is about to start.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_dashboard_on<B, S>(
+    terminal: &mut ratatui::Terminal<B>,
+    events: S,
+    state: AppState,
+    core: App,
+    event_handler: EventHandler,
+    llm_client: OllamaClient,
+    settings: Settings,
+    args: &crate::cli::Args,
+    palette: ColorPalette,
+    on_ready: Option<Box<dyn FnOnce(mpsc::UnboundedSender<String>)>>,
+) -> Result<()>
+where
+    B: ratatui::backend::Backend,
+    S: futures::Stream<Item = std::io::Result<crossterm::event::Event>> + Unpin,
+{
+    let (app, ctx) = prepare_dashboard(
+        state,
+        core,
+        event_handler,
+        llm_client,
+        settings,
+        args,
+        palette,
+    )
+    .await?;
+    // The caller gets the dashboard's own status channel, so anything it starts on the
+    // side (the page's quick-start buttons go through `ServerForm::create`) logs into the
+    // same stream and repaints the same cards.
+    if let Some(ready) = on_ready {
+        ready(ctx.status_tx.clone());
+    }
+    event_loop::run_loop(terminal, events, app, ctx).await
+}
+
+/// Everything `run_dashboard` does before the loop: resolve the model, wire
+/// the channels, build the `DashboardApp`.
+async fn prepare_dashboard(
     state: AppState,
     mut core: App,
     event_handler: EventHandler,
@@ -56,7 +121,7 @@ pub async fn run_dashboard(
     settings: Settings,
     args: &crate::cli::Args,
     palette: ColorPalette,
-) -> Result<()> {
+) -> Result<(DashboardApp, LoopContext)> {
     let settings = Arc::new(Mutex::new(settings));
 
     // Resolve the model exactly as the legacy TUI does (shared module).
@@ -101,6 +166,7 @@ pub async fn run_dashboard(
     }
 
     // ASCII banner streams into chat like any other status output.
+    #[cfg(not(target_arch = "wasm32"))]
     if args.show_art {
         let base_url = resolved.base_url.clone();
         let model = resolved.model.clone();
@@ -122,5 +188,5 @@ pub async fn run_dashboard(
         ui_rx,
     };
 
-    event_loop::run(app, ctx).await
+    Ok((app, ctx))
 }

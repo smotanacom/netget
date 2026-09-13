@@ -669,7 +669,8 @@ fn build_task(
     task_def: ServerTaskDefinition,
 ) -> crate::state::task::ScheduledTask {
     use crate::state::task::{ScheduledTask, TaskId, TaskStatus, TaskType};
-    use std::time::{Duration, Instant};
+    use crate::utils::clock::Instant;
+    use std::time::Duration;
 
     let task_type = if task_def.recurring {
         TaskType::Recurring {

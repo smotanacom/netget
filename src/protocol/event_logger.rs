@@ -12,9 +12,9 @@ use crate::protocol::log_template::{LogLevel, LogTemplate};
 use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::state::ServerId;
+use crate::utils::clock::Instant;
 use serde_json::Value;
 use std::net::SocketAddr;
-use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, trace};
 

@@ -332,6 +332,8 @@ fn check_tool_in_path(tool: &str) -> bool {
     let which_cmd = "which";
     #[cfg(windows)]
     let which_cmd = "where";
+    #[cfg(not(any(unix, windows)))]
+    let which_cmd = "which";
 
     let output = Command::new(which_cmd).arg(tool).output();
 
