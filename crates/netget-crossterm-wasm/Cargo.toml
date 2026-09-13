@@ -1,0 +1,17 @@
+[package]
+name = "netget-crossterm-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "crossterm's event and colour types, without a terminal behind them, for wasm32-unknown-unknown. NetGet's dashboard matches on crossterm::event::KeyCode in a few hundred places; on the web those keys come from a browser KeyboardEvent instead, and this crate is what `crossterm` resolves to on that target."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+bitflags = "2"
+# Same versions the root crate pins, so `From<Color> for ratatui::style::Color` and
+# `From<KeyEvent> for tui_textarea::Input` here are the impls the dashboard would get from the
+# real crates' `crossterm` features.
+ratatui = { version = "0.29", default-features = false }
+tui-textarea = { version = "0.7", default-features = false, features = ["ratatui", "no-backend"] }

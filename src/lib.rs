@@ -3,6 +3,16 @@
 //! A Rust CLI application that allows an LLM to control network protocols
 //! and act as a server or client for various protocols (TCP, FTP, etc.).
 
+// The browser build has no OS underneath. On wasm32 the names `tokio` and `crossterm` mean
+// the shim crates under `crates/`: the JS event loop as executor, a virtual loopback network,
+// and crossterm's key/colour types without a terminal. Binding them here, once, at the crate
+// root is what lets every `tokio::spawn` and `KeyCode::Char` in the tree compile unchanged.
+// See crates/netget-tokio-wasm/src/lib.rs for what is real tokio and what is not.
+#[cfg(target_arch = "wasm32")]
+extern crate netget_crossterm_wasm as crossterm;
+#[cfg(target_arch = "wasm32")]
+extern crate netget_tokio_wasm as tokio;
+
 pub mod cli;
 pub mod client;
 pub mod display;
