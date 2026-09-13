@@ -117,8 +117,13 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (36 protocols as of September 11 2026;
-  re-derive, the count drifts every pass). The original ten are
+- **Beta** — human-reviewed, works against real clients (37 protocols as of September 13 2026;
+  re-derive, the count drifts every pass). `ollama` joined in September 2026: `ollama-rs` is
+  pointed at NetGet's own Ollama server and deserialises our `/api/tags`, `/api/generate` and
+  `/api/chat` envelopes for itself. It is an unconditional dependency rather than an
+  `optional = true` one, so unlike `amqp`'s `lapin` the evidence actually runs where the gate
+  runs; and it is not circular, because this server frames with hyper and serde_json and never
+  touches the crate — the quinn precedent, not the tokio-tungstenite one. The original ten are
   `dns`, `doh`, `dot`, `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`; August 2026 added
   fourteen that are each driven by the protocol's own third-party client in a test that is **not**
   `#[ignore]`d — `amqp` (lapin), `cassandra` (scylla), `coap` (coap-lite), `imap` (async-imap),
@@ -255,7 +260,17 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   reports one `NONE`: `src/server/http_common/actions.rs`, which is a shared response helper
   with no `impl Protocol` and no registry entry, so it declares no state correctly.
 - **Incomplete** — hidden from the LLM entirely (`is_available_to_llm()` returns false). **None
-  remain.** The last one, `bluetooth_ble_beacon`, was a platform limit rather than unfinished
+  remain — but that claim was false for months and nobody noticed, which is the useful part.**
+  The `nfc` *client* sat at `Incomplete` until September 2026, so the model could not see it at
+  all, while this section said none remained. The lesson is that `Incomplete` is invisible by
+  construction: nothing surfaces it, no test fails, and the protocol simply never appears in a
+  tool list. It is now a ratchet — `tests/no_protocol_is_hidden_from_the_model_test.rs` reads
+  the source tree, so it holds at the six-protocol CI gate as well as at `--all-features`, and
+  its allow-list is empty. Note it matches `.state(...)` specifically: every occurrence in
+  `src/docs.rs` and the TUI is a `match` arm rendering the variant, and a bare substring search
+  reports all of them.
+
+  The last *deliberate* one, `bluetooth_ble_beacon`, was a platform limit rather than unfinished
   work, and was resolved by making the platform explicit rather than by hiding the protocol:
   - A beacon *is* its advertising payload, and `CBPeripheralManager.startAdvertising:` accepts
     only `CBAdvertisementDataLocalNameKey` and `CBAdvertisementDataServiceUUIDsKey`; every other
