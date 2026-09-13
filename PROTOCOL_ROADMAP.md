@@ -10,7 +10,37 @@ meant to be edited rather than superseded. If an item lands, change its row;
 do not write a new file about it. When every row here reads `landed`, fold the
 durable lessons into `CLAUDE.md` and delete this file.
 
-## Where this stands (4 September 2026)
+## Programme 2 — complete (13 September 2026)
+
+**All 39 batches are merged and pushed.** Every server and client protocol has had
+a pass against the eight-point rubric below. Roughly 200 defects were fixed. The
+counts drift; re-derive rather than quoting these.
+
+Promotions earned during the pass: `kubernetes` (server) and `ollama` to `Beta`,
+each on evidence that was checked rather than taken on report. `nfc`'s client went
+`Incomplete` → `Experimental` — `Incomplete` makes `is_available_to_llm()` false, so
+the model could not see it at all, which contradicted the claim elsewhere that no
+`Incomplete` protocols remain.
+
+**The defect classes worth carrying forward**, in rough order of how often they
+recurred and how quietly they failed:
+
+| Class | The shape it takes |
+|---|---|
+| Fail-open default | An omitted field becomes an affirmative answer. NFC and usb-smartcard both defaulted an APDU status word to `90 00`, in two layers each, so an *omission approved an authentication*. |
+| Narrowing cast | `as u16` on a model- or wire-supplied number. `65736 as u16 == 200`. It turned refusals into successes, and in Modbus it turned a typo into a plausible *fail-closed* answer — the first instance to land on the safety mechanism itself. |
+| A test that encodes the bug | The BLE HID descriptors, the GATT UUID keying, and one bcdHID assertion were all *documented as the interface*. A green suite proves nothing when the only real parser lives on someone else's machine. |
+| An advertised knob that does nothing | `send_first` in seven servers; `auto_advertise` in the BLE base; every BLE sensor profile's script-mode example, which assigned a local and printed nothing so the event fell back to the LLM. |
+| A bound decided by configuration rather than by the answer | tuntap skipped its LLM budget whenever a script handler was *configured*, but the executor falls back to the model when the language is missing — so the shipped example on a box without `python3` was one uncounted model call per packet at wire rate. |
+| Unbounded pre-auth input | Request bodies, URB assembly buffers, TLV walks. usb-fido2 reserved up to 64 KiB from one 64-byte packet, on unlimited channels, indefinitely. |
+| A client that reaches the vendor instead of the target | The `openai` client fell back to real OpenAI with the operator's key; the `openapi` client took its base URL from a model-supplied spec ahead of the operator's address. |
+
+Two things that made these findable and are worth keeping: **agents stayed inside
+their boundaries and reported across them** (the NFC → usb-smartcard handover, the
+`bluetooth_ble_presenter` ownership gap), and **every promotion was re-derived from
+the evidence rather than accepted from a summary**.
+
+## Where Programme 1 stood (4 September 2026)
 
 **All 30 protocols have landed**: 8 servers, 8 clients, 14 root/privileged. Four
 are `Beta`; the other 26 are `Experimental`, each with its *reason* recorded
