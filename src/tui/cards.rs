@@ -4,8 +4,8 @@
 //! There is no selection step. The whole column is one list of rows: a
 //! card's header, the requests parked for the human, its facts, its buttons
 //! (an aligned grid, never a ragged wrap), then collapsible sections —
-//! `peers` with each peer's requests beneath it, `rules`, `config`, and for
-//! a client `send` and `connections`. ↑/↓ walk the rows, ←/→ walk the
+//! `peers` with the conversation on each peer beneath it and a send button
+//! under that, `rules`, `config`, and for a client `send` and `connections`. ↑/↓ walk the rows, ←/→ walk the
 //! buttons on a row, Enter acts on whatever the cursor is on. Everything
 //! that *does* something is an [`InstanceAction`] run by `actions::run`, so a
 //! letter, a button and a click cannot diverge.
@@ -299,24 +299,13 @@ pub fn instance_buttons(instance: InstanceRef<'_>) -> Vec<Button> {
         format!("driver → {}", driver.next().label()),
     );
     match instance {
-        InstanceRef::Server(row) => {
+        InstanceRef::Server(_) => {
             let mut buttons = vec![
                 Button::on(InstanceAction::Stop, "stop"),
                 Button::on(InstanceAction::Edit, "edit"),
                 Button::on(InstanceAction::Rules, "rules"),
                 driver_button,
             ];
-            buttons.push(match &row.client_counterpart {
-                Some(p) => Button::on(
-                    InstanceAction::ConnectClient,
-                    format!("+ {} client", p.to_lowercase()),
-                ),
-                None => Button::off(
-                    InstanceAction::ConnectClient,
-                    "+ client",
-                    "no client implementation for this protocol is compiled in",
-                ),
-            });
             buttons.push(Button::on(InstanceAction::Wireshark, "wireshark"));
             buttons.push(Button::on(InstanceAction::Docs, "docs"));
             buttons
@@ -395,44 +384,139 @@ fn group_row(key: UiKey, group: Group, state: &CardState, detail: String) -> (Ro
     (row, open)
 }
 
-/// The rows a list of children contributes, capped, with "… N more".
-fn capped(
+/// The keys a protocol's payload is most likely to carry its text under,
+/// in the order they are tried.
+const PAYLOAD_KEYS: [&str; 14] = [
+    "data", "text", "command", "line", "message", "body", "payload", "query", "path", "url",
+    "domain", "name", "key", "value",
+];
+
+/// One line for a request or an action: the payload's text if there is an
+/// obvious one, else the object compacted. What crossed the wire, not the
+/// JSON around it.
+pub fn payload_summary(value: &serde_json::Value) -> String {
+    let text = match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Object(map) => {
+            // A request line reads as one: `GET /index.html`.
+            if let (Some(method), Some(path)) = (
+                map.get("method").and_then(|v| v.as_str()),
+                map.get("path")
+                    .or_else(|| map.get("uri"))
+                    .and_then(|v| v.as_str()),
+            ) {
+                return format!("{method} {path}");
+            }
+            let picked = PAYLOAD_KEYS.iter().find_map(|k| map.get(*k));
+            match picked {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
+                None => {
+                    let rest: Vec<String> = map
+                        .iter()
+                        .filter(|(k, _)| *k != "type" && *k != "connection_id")
+                        .map(|(k, v)| match v {
+                            serde_json::Value::String(s) => format!("{k}={s}"),
+                            other => format!("{k}={other}"),
+                        })
+                        .collect();
+                    rest.join(" ")
+                }
+            }
+        }
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    text.replace('\r', "").replace('\n', "⏎")
+}
+
+/// An access-log entry as the messages that crossed the wire: what came in
+/// (the event), then what went out (each action). An injected send is
+/// recorded with the action as its request, so it is one outgoing row.
+fn message_rows(key: UiKey, depth: u16, entry: &AccessLogEntry) -> Vec<Row> {
+    let time = format!("{} ", clock(entry.unix_ms));
+    let open = Activate::Action(InstanceAction::OpenRequest(entry.id));
+    let mut rows = Vec::new();
+    if entry.event_type == "injected_action" {
+        let kind = entry
+            .request
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("action");
+        let mut row = Row::new(Some(key), depth);
+        row.spans = vec![
+            (time, Tone::Dim),
+            ("→ ".to_string(), Tone::Good),
+            (format!("{kind} "), Tone::Dim),
+            (payload_summary(&entry.request), Tone::Normal),
+        ];
+        row.on_enter = open;
+        rows.push(row);
+        return rows;
+    }
+    let mut incoming = Row::new(Some(key), depth);
+    incoming.spans = vec![
+        (time.clone(), Tone::Dim),
+        ("← ".to_string(), Tone::Accent),
+        (format!("{} ", entry.event_type), Tone::Dim),
+        (payload_summary(&entry.request), Tone::Normal),
+    ];
+    incoming.on_enter = open.clone();
+    rows.push(incoming);
+    for action in &entry.response {
+        let kind = action
+            .get("type")
+            .and_then(|t| t.as_str())
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| {
+                // Failure envelopes and outcomes: their single key names them.
+                action
+                    .as_object()
+                    .and_then(|o| o.keys().next().cloned())
+                    .unwrap_or_else(|| "action".to_string())
+            });
+        let mut outgoing = Row::new(Some(key), depth);
+        outgoing.spans = vec![
+            ("         ".to_string(), Tone::Dim),
+            ("→ ".to_string(), Tone::Good),
+            (format!("{kind} "), Tone::Dim),
+            (payload_summary(action), Tone::Normal),
+        ];
+        outgoing.on_enter = open.clone();
+        rows.push(outgoing);
+    }
+    rows
+}
+
+/// The conversation on one connection, oldest first, capped to the latest
+/// entries with an "… N earlier" row that lifts the cap.
+fn conversation(
     rows: &mut Vec<Row>,
     state: &CardState,
     node: &NodeId,
     key: UiKey,
     depth: u16,
-    children: Vec<Vec<Row>>,
+    entries: &[&AccessLogEntry],
 ) {
     let limit = state.limit_for(node);
-    let total = children.len();
+    let total = entries.len();
     let shown = total.min(limit);
-    for child in children.into_iter().take(shown) {
-        rows.extend(child);
-    }
     if total > shown {
-        let mut more = Row::note(key, depth, format!("… {} more", total - shown), Tone::Dim);
+        let mut more = Row::note(
+            key,
+            depth,
+            format!("… {} earlier", total - shown),
+            Tone::Dim,
+        );
         more.on_enter = Activate::ShowAll(node.clone());
         rows.push(more);
     }
-}
-
-fn request_row(key: UiKey, depth: u16, entry: &AccessLogEntry) -> Row {
-    let answer = crate::tui::modal::request_detail::answer_summary(entry);
-    let mut row = Row::new(Some(key), depth);
-    row.spans = vec![
-        (format!("{} ", clock(entry.unix_ms)), Tone::Dim),
-        (
-            format!("{} → {answer}", entry.event_type),
-            if entry.response.is_empty() {
-                Tone::Dim
-            } else {
-                Tone::Normal
-            },
-        ),
-    ];
-    row.on_enter = Activate::Action(InstanceAction::OpenRequest(entry.id));
-    row
+    for entry in &entries[total - shown..] {
+        rows.extend(message_rows(key, depth, entry));
+    }
+    if total == 0 {
+        rows.push(Row::note(key, depth, "(nothing exchanged yet)", Tone::Dim));
+    }
 }
 
 fn waiting_rows(instance: InstanceRef<'_>, rows: &mut Vec<Row>) {
@@ -744,7 +828,7 @@ fn server_rows(
 
     rows.extend(button_rows(key, 1, instance_buttons(instance), width));
 
-    // Peers, each with its requests beneath.
+    // Peers, each with the conversation on it beneath.
     let live = row.conns.iter().filter(|c| c.active).count();
     let (group, open) = group_row(
         key,
@@ -780,7 +864,7 @@ fn server_rows(
                 ),
                 (
                     format!(
-                        " ↓{} ↑{} · {} req{}",
+                        " ↓{} ↑{} · {}{}",
                         human_bytes(conn.bytes_received),
                         human_bytes(conn.bytes_sent),
                         mine.len(),
@@ -795,35 +879,32 @@ fn server_rows(
             peer.on_enter = Activate::Toggle(node.clone());
             peer.expanded = Some(peer_open);
             if conn.active {
-                if conn.can_message {
-                    peer.buttons
-                        .push(Button::on(InstanceAction::MessagePeer(conn.id), "message"));
-                    peer.buttons.push(Button::on(
-                        InstanceAction::DisconnectPeer(conn.id),
-                        "disconnect",
-                    ));
+                peer.buttons.push(if conn.can_message {
+                    Button::on(InstanceAction::DisconnectPeer(conn.id), "disconnect")
                 } else {
-                    let why = "this protocol cannot message or disconnect a peer from here yet";
-                    peer.buttons.push(Button::off(
-                        InstanceAction::MessagePeer(conn.id),
-                        "message",
-                        why,
-                    ));
-                    peer.buttons.push(Button::off(
+                    Button::off(
                         InstanceAction::DisconnectPeer(conn.id),
                         "disconnect",
-                        why,
-                    ));
-                }
+                        "this protocol cannot disconnect a peer from here yet",
+                    )
+                });
             }
             rows.push(peer);
             if peer_open {
-                let children: Vec<Vec<Row>> = mine
-                    .iter()
-                    .rev()
-                    .map(|e| vec![request_row(key, 3, e)])
-                    .collect();
-                capped(&mut rows, state, &node, key, 3, children);
+                conversation(&mut rows, state, &node, key, 3, &mine);
+                if conn.active {
+                    let mut send = Row::new(Some(key), 3);
+                    send.buttons.push(if conn.can_message {
+                        Button::on(InstanceAction::MessagePeer(conn.id), "send message")
+                    } else {
+                        Button::off(
+                            InstanceAction::MessagePeer(conn.id),
+                            "send message",
+                            "this protocol cannot message a peer from here yet",
+                        )
+                    });
+                    rows.push(send);
+                }
             }
         }
         for closed in &row.recent {
@@ -841,7 +922,7 @@ fn server_rows(
                 (closed.remote_addr.clone(), Tone::Dim),
                 (
                     format!(
-                        " ↓{} ↑{} · {} req (closed)",
+                        " ↓{} ↑{} · {} (closed)",
                         human_bytes(closed.bytes_received),
                         human_bytes(closed.bytes_sent),
                         mine.len()
@@ -853,12 +934,7 @@ fn server_rows(
             peer.expanded = Some(peer_open);
             rows.push(peer);
             if peer_open {
-                let children: Vec<Vec<Row>> = mine
-                    .iter()
-                    .rev()
-                    .map(|e| vec![request_row(key, 3, e)])
-                    .collect();
-                capped(&mut rows, state, &node, key, 3, children);
+                conversation(&mut rows, state, &node, key, 3, &mine);
             }
         }
         let loose: Vec<&AccessLogEntry> = row
@@ -873,18 +949,13 @@ fn server_rows(
             let mut bucket = Row::new(Some(key), 2);
             bucket.spans = vec![
                 ("· (connectionless)".to_string(), Tone::Dim),
-                (format!(" · {} req", loose.len()), Tone::Dim),
+                (format!(" · {}", loose.len()), Tone::Dim),
             ];
             bucket.on_enter = Activate::Toggle(node.clone());
             bucket.expanded = Some(bucket_open);
             rows.push(bucket);
             if bucket_open {
-                let children: Vec<Vec<Row>> = loose
-                    .iter()
-                    .rev()
-                    .map(|e| vec![request_row(key, 3, e)])
-                    .collect();
-                capped(&mut rows, state, &node, key, 3, children);
+                conversation(&mut rows, state, &node, key, 3, &loose);
             }
         }
         if !any {
@@ -900,6 +971,20 @@ fn server_rows(
                 Tone::Dim,
             ));
         }
+        // Connecting a client belongs with the peers it will join.
+        let mut add = Row::new(Some(key), 2);
+        add.buttons.push(match &row.client_counterpart {
+            Some(p) => Button::on(
+                InstanceAction::ConnectClient,
+                format!("+ {} client", p.to_lowercase()),
+            ),
+            None => Button::off(
+                InstanceAction::ConnectClient,
+                "+ client",
+                "no client implementation for this protocol is compiled in",
+            ),
+        });
+        rows.push(add);
     }
 
     rule_rows(instance, state, &mut rows);
@@ -1019,16 +1104,35 @@ fn client_rows(
         }
     }
 
-    // Connections: every attempt, its requests beneath (attributed by time).
+    // Connections: every attempt, the conversation on it beneath (attributed
+    // by time), and the way to add to it.
     let connection_count = row.history.len().max(usize::from(row.connection.is_some()));
     let (group, open) = group_row(
         key,
         Group::Connections,
         state,
-        format!("{connection_count} · {} req", row.requests.len()),
+        format!("{connection_count} · {} messages", row.requests.len()),
     );
     rows.push(group);
     if open {
+        let send_button = || match row.send_state {
+            SendState::Ready if !row.send_actions.is_empty() => {
+                Button::on(InstanceAction::Send, "send message")
+            }
+            SendState::Ready => Button::off(
+                InstanceAction::Send,
+                "send message",
+                "this protocol declares no client verbs",
+            ),
+            SendState::NotConnected => {
+                Button::off(InstanceAction::Send, "send message", "not connected")
+            }
+            SendState::ProtocolUnsupported => Button::off(
+                InstanceAction::Send,
+                "send message",
+                "this client's loop has no command channel yet",
+            ),
+        };
         if row.history.is_empty() {
             match &row.connection {
                 Some(c) => {
@@ -1040,7 +1144,7 @@ fn client_rows(
                         (c.remote_addr.clone(), Tone::Normal),
                         (
                             format!(
-                                " ↓{} ↑{} · {} req",
+                                " ↓{} ↑{} · {}",
                                 human_bytes(c.bytes_received),
                                 human_bytes(c.bytes_sent),
                                 row.requests.len()
@@ -1052,13 +1156,11 @@ fn client_rows(
                     r.expanded = Some(conn_open);
                     rows.push(r);
                     if conn_open {
-                        let children: Vec<Vec<Row>> = row
-                            .requests
-                            .iter()
-                            .rev()
-                            .map(|e| vec![request_row(key, 3, e)])
-                            .collect();
-                        capped(&mut rows, state, &node, key, 3, children);
+                        let all: Vec<&AccessLogEntry> = row.requests.iter().collect();
+                        conversation(&mut rows, state, &node, key, 3, &all);
+                        let mut send = Row::new(Some(key), 3);
+                        send.buttons.push(send_button());
+                        rows.push(send);
                     }
                 }
                 None => rows.push(Row::note(key, 2, "(no connections yet)", Tone::Dim)),
@@ -1092,13 +1194,13 @@ fn client_rows(
                         if live {
                             let c = row.connection.as_ref().expect("checked above");
                             format!(
-                                " ↓{} ↑{} · {} req",
+                                " ↓{} ↑{} · {}",
                                 human_bytes(c.bytes_received),
                                 human_bytes(c.bytes_sent),
                                 mine.len()
                             )
                         } else {
-                            format!(" {} · {} req", attempt.outcome, mine.len())
+                            format!(" {} · {}", attempt.outcome, mine.len())
                         },
                         Tone::Dim,
                     ),
@@ -1107,12 +1209,12 @@ fn client_rows(
                 r.expanded = Some(conn_open);
                 rows.push(r);
                 if conn_open {
-                    let children: Vec<Vec<Row>> = mine
-                        .iter()
-                        .rev()
-                        .map(|e| vec![request_row(key, 3, e)])
-                        .collect();
-                    capped(&mut rows, state, &node, key, 3, children);
+                    conversation(&mut rows, state, &node, key, 3, &mine);
+                    if live {
+                        let mut send = Row::new(Some(key), 3);
+                        send.buttons.push(send_button());
+                        rows.push(send);
+                    }
                 }
             }
         }

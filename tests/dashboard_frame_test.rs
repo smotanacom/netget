@@ -199,7 +199,8 @@ fn a_populated_dashboard_shows_every_instance_with_its_buttons_and_sections() {
     app.sample_metrics();
     app.focus = Focus::Cards;
 
-    let lines = frame(&mut app, 120, 40);
+    // Tall enough for all three cards with their sections open.
+    let lines = frame(&mut app, 120, 60);
     let text = dump(&lines);
     println!("{text}");
 

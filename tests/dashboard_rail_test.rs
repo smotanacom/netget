@@ -319,7 +319,6 @@ fn a_card_shows_facts_then_an_aligned_button_grid_then_its_sections() {
         InstanceAction::Edit,
         InstanceAction::Rules,
         InstanceAction::CycleDriver,
-        InstanceAction::ConnectClient,
         InstanceAction::Wireshark,
         InstanceAction::Docs,
     ] {
@@ -473,7 +472,7 @@ fn peers_carry_their_buttons_and_unfold_into_their_requests() {
         .iter()
         .find(|r| r.on_enter == Activate::Toggle(NodeId::Peer(key, None)))
         .unwrap();
-    assert!(loose.text().contains("1 req"));
+    assert!(loose.text().contains("· 1"));
 }
 
 #[test]
@@ -657,4 +656,94 @@ fn byte_and_duration_formatting_is_compact() {
     assert_eq!(human_duration(12), "12s");
     assert_eq!(human_duration(133), "2m13s");
     assert_eq!(human_duration(3_840), "1h04m");
+}
+
+#[test]
+fn payload_summaries_read_as_what_crossed_the_wire() {
+    use netget::tui::cards::payload_summary;
+    assert_eq!(
+        payload_summary(&serde_json::json!({"data": "hello\n"})),
+        "hello⏎"
+    );
+    assert_eq!(
+        payload_summary(
+            &serde_json::json!({"method": "GET", "path": "/index.html", "headers": {}})
+        ),
+        "GET /index.html"
+    );
+    assert_eq!(
+        payload_summary(&serde_json::json!({"type": "send_http_response", "status": 200})),
+        "status=200"
+    );
+    assert_eq!(
+        payload_summary(&serde_json::json!({"command": "ls -la", "encoding": "utf8"})),
+        "ls -la"
+    );
+    assert_eq!(payload_summary(&serde_json::json!("raw")), "raw");
+}
+
+#[test]
+fn a_client_connection_shows_its_conversation_with_a_send_button() {
+    let mut row = client(ClientStatus::Connected, SendState::Ready);
+    row.connection = Some(netget::tui::projection::ConnRow {
+        id: 1,
+        remote_addr: "127.0.0.1:2323".into(),
+        bytes_received: 5,
+        bytes_sent: 6,
+        active: true,
+        can_message: false,
+    });
+    row.requests = vec![
+        AccessLogEntry {
+            id: 1,
+            unix_ms: 1_700_000_000_000,
+            server_id: None,
+            client_id: Some(4),
+            protocol: "telnet".into(),
+            connection_id: None,
+            event_type: "telnet_data_received".into(),
+            request: serde_json::json!({"text": "login: "}),
+            response: vec![serde_json::json!({"type": "send_text", "text": "admin"})],
+        },
+        AccessLogEntry {
+            id: 2,
+            unix_ms: 1_700_000_001_000,
+            server_id: None,
+            client_id: Some(4),
+            protocol: "telnet".into(),
+            connection_id: None,
+            event_type: "injected_action".into(),
+            request: serde_json::json!({"type": "send_command", "command": "ls"}),
+            response: vec![serde_json::json!({"Sent": {"bytes_sent": 3}})],
+        },
+    ];
+    let key = UiKey::Client(ClientId::new(4));
+    let snap = snapshot(Vec::new(), vec![row]);
+    let rows = rows_for(&snap, &CardState::default(), 80);
+    let card = card_rows(&rows, key);
+    let conn = card
+        .iter()
+        .position(|r| r.on_enter == Activate::Toggle(NodeId::Attempt(key, 0)))
+        .expect("the live connection row");
+    assert!(
+        card[conn + 1]
+            .text()
+            .contains("← telnet_data_received login: "),
+        "{}",
+        card[conn + 1].text()
+    );
+    assert!(
+        card[conn + 2].text().contains("→ send_text admin"),
+        "{}",
+        card[conn + 2].text()
+    );
+    assert!(
+        card[conn + 3].text().contains("→ send_command ls"),
+        "an injected send is one outgoing row: {}",
+        card[conn + 3].text()
+    );
+    let send = &card[conn + 4];
+    assert_eq!(send.buttons[0].action, InstanceAction::Send);
+    assert_eq!(send.buttons[0].label, "send message");
+    assert!(send.buttons[0].enabled);
 }

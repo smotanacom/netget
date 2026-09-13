@@ -165,7 +165,7 @@ impl Protocol for TelnetClientProtocol {
     /// was rejected as an unknown action until that was fixed centrally.
     ///
     /// The copy stays because a third reader still takes the sync list by itself:
-    /// `cli::rolling_tui`'s `execute_single_task` builds a **client-scoped scheduled task**'s
+    /// `cli::tasks`'s `execute_single_task` builds a **client-scoped scheduled task**'s
     /// action list from `get_sync_actions()` alone, and `ConversationHandler` rejects
     /// everything outside it. Union there too and this list can go.
     fn get_sync_actions(&self) -> Vec<ActionDefinition> {

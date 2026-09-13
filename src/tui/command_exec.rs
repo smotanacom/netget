@@ -1,9 +1,8 @@
 //! Sink-based execution of the remaining `UserCommand` variants.
 //!
-//! The rolling TUI implements these against its `StickyFooter`; the dashboard
-//! needs the same information as plain lines. Rather than refactor the legacy
-//! renderer, this module re-derives the read-only reports from `AppState` and
-//! the registries, and routes the state-changing ones through the same APIs.
+//! The read-only reports are derived from `AppState` and the registries as
+//! plain lines; the state-changing ones route through the same APIs the rest
+//! of the dashboard uses.
 
 use tokio::sync::mpsc;
 
@@ -82,9 +81,7 @@ pub async fn execute(
             Some(m) => vec![format!("Status note: {m}")],
             None => vec!["Status note cleared".to_string()],
         },
-        other => vec![format!(
-            "'{other:?}' is not available in the dashboard yet — run with --legacy-tui for it"
-        )],
+        other => vec![format!("'{other:?}' is not available in the dashboard yet")],
     }
 }
 

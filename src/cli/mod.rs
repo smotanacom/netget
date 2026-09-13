@@ -9,17 +9,16 @@ pub mod input_state;
 pub mod management;
 pub mod model_select;
 mod non_interactive;
-mod rolling_tui;
 pub mod server_startup;
 mod setup;
-mod sticky_footer;
+mod tasks;
 mod terminal_cleanup;
 pub mod theme;
 
 // Re-exported so MCP mode (`src/mcp_stdio`) can drive the scheduled-task ticker on the
 // same code path the TUI and non-interactive runner use, without exposing the whole
-// private `rolling_tui` module.
-pub(crate) use rolling_tui::execute_due_tasks_public;
+// private `tasks` module.
+pub(crate) use tasks::execute_due_tasks_public;
 
 use anyhow::Result;
 pub use args::Args;
@@ -328,32 +327,18 @@ pub async fn run() -> Result<()> {
         debug!("Creating EventHandler...");
         let event_handler = EventHandler::new(state.clone(), llm.clone());
 
-        // Both UIs manage the terminal themselves (no init_terminal needed).
-        if args.legacy_tui {
-            debug!("Entering legacy rolling TUI...");
-            rolling_tui::run_rolling_tui(
-                state,
-                app,
-                event_handler,
-                llm,
-                settings,
-                &args,
-                color_palette,
-            )
-            .await
-        } else {
-            debug!("Entering dashboard TUI...");
-            crate::tui::run_dashboard(
-                state,
-                app,
-                event_handler,
-                llm,
-                settings,
-                &args,
-                color_palette,
-            )
-            .await
-        }
+        // The dashboard manages the terminal itself (no init_terminal needed).
+        debug!("Entering dashboard TUI...");
+        crate::tui::run_dashboard(
+            state,
+            app,
+            event_handler,
+            llm,
+            settings,
+            &args,
+            color_palette,
+        )
+        .await
     } else {
         // No prompt and no terminal available
         anyhow::bail!(

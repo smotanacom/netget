@@ -717,7 +717,7 @@ fn build_task(
 //
 // The field *model*, prefill, and the collected-values → form assembly all live
 // here (next to `ServerForm`/`ClientForm`, and unit-testable without a live TUI);
-// `rolling_tui` owns only the keystroke plumbing that drives it.
+// The UI owns only the keystroke plumbing that drives it.
 
 /// Which operation an [`InteractiveForm`] will perform on submit.
 #[derive(Debug, Clone, PartialEq, Eq)]

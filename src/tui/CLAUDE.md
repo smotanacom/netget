@@ -1,9 +1,8 @@
 # The dashboard (`src/tui/`) — NetGet Console
 
-The default interactive UI. A full-screen ratatui frame, repainted whole into the alternate
-screen. The older rolling-terminal TUI (`src/cli/rolling_tui.rs`) is still behind
-`--legacy-tui`; both share `UserCommand::parse`, the status channel, the tick cadences and
-the model-selection code.
+The interactive UI. A full-screen ratatui frame, repainted whole into the alternate screen.
+(The rolling-terminal TUI that used to sit behind `--legacy-tui` was removed in September
+2026; `src/cli/tasks.rs` keeps the scheduled-task tick it owned.)
 
 ## The shape of the screen
 
@@ -33,9 +32,16 @@ card is its summary line (status glyph, id, protocol, address, live peers, a 30-
 sparkline, a **driver badge**), the requests parked for you, a facts line (status, uptime,
 traffic, rate), the driver, then its **buttons as an aligned grid** — every cell as wide
 as the widest label, as many per row as fit — and its **sections**: `peers` (each peer
-with its buttons and its requests beneath it), `rules` (each rule with delete / ↑ / ↓
-beside it and `+ add rule` below), `config` (each setting opens the form); a client has
-`send` (its verbs) and `connections` instead of `peers`. Nothing is selected and nothing
+with `[ disconnect ]` on its row and, beneath it, **the conversation on that connection**:
+one row per message in `←` and per message out `→`, oldest first, the latest few with an
+"… N earlier" row that lifts the cap, each row opening the full entry, then
+`[ send message ]`; `[ + <proto> client ]` at the foot), `rules` (each rule with delete /
+↑ / ↓ beside it and `+ add rule` below), `config` (each setting opens the form); a client
+has `send` (its verbs) and `connections` (each attempt with its conversation and
+`[ send message ]`) instead of `peers`. `cards::payload_summary` turns a request or an
+action into the text that crossed the wire (`data`, `text`, `command`, `GET /path`, …)
+rather than the JSON around it; an injected send is logged as `injected_action` with the
+action as its request and renders as one outgoing row. Nothing is selected and nothing
 is drilled into: ↑/↓ walk every row, ←/→ walk a row's buttons (and fold / unfold a
 section), Enter presses the button or acts on the row, and the letters (`x e r m c n w d`)
 act on the card under the cursor. `+ new server or client` at the foot opens one picker
@@ -136,6 +142,9 @@ originating modal on success and leaves it open showing the error on failure.
   line is being typed; the pty harness gained `PtyScreen` and renders unpainted cells as
   spaces, and all six snapshots were re-recorded as real screens.
 
+- 2026-09-13: the conversation on each connection (in / out rows, send button beneath,
+  `+ client` under the peers); the legacy rolling TUI, `--legacy-tui` and its ten pty tests
+  removed.
 - 2026-09-12 (third pass, from operator feedback): the list + inspector split and the
   popup menu are gone. Every instance is a card that is always open with its buttons (an
   aligned grid) and sections; ↑/↓ walk every row, ←/→ the buttons; Tab only changes column.

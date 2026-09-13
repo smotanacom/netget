@@ -164,7 +164,7 @@ const DOCUMENTATION_RETRY_MARKERS: &[&str] = &[
 ];
 
 /// The literal user message a scheduled-task run sends
-/// (`src/cli/rolling_tui.rs`). Everything that identifies the task lives in
+/// (`src/cli/tasks.rs`). Everything that identifies the task lives in
 /// the system prompt, which ends with `\n\nTrigger: Scheduled task '<name>' …`.
 const SCHEDULED_TASK_TRIGGER_MESSAGE: &str = "Execute the task.";
 
