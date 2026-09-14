@@ -60,8 +60,13 @@ const netget = new NetGet({
         if (ctx >= 0) {
             try { context = JSON.parse(user.content.slice(ctx + 'Context data:'.length)); } catch (e) { /* prompt-only */ }
         }
-        const text = String(context.data ?? context.content ?? context.text ?? '');
-        const reply = { actions: [{ type: 'send_tcp_data', data: text.toUpperCase() }] };
+        const text = String(context.data ?? context.data_preview ?? context.content ?? context.text ?? '');
+        // Answer in the vocabulary of whichever server asked: TCP echoes uppercased, UDP
+        // reverses.
+        const isUdp = req.messages.some((m) => m.content.includes('send_udp_response'));
+        const reply = isUdp
+            ? { actions: [{ type: 'send_udp_response', data: [...text.trim()].reverse().join(''), encoding: 'text' }] }
+            : { actions: [{ type: 'send_tcp_data', data: text.toUpperCase() }] };
         return JSON.stringify({ content: JSON.stringify(reply), prompt_tokens: 10, completion_tokens: 5 });
     },
 });
@@ -100,8 +105,29 @@ try {
     await waitFor(() => /tcp/i.test(screen.slice(-20000)), 'the tcp card on screen');
 
     netget.close(conn);
-    console.log('ok: dashboard painted, server started, virtual connection round-tripped through the model bridge');
-    console.log('    requests:', requests.length, '| received:', JSON.stringify(received.join('')), '| closed:', closed);
+
+    // UDP: a datagram server on the virtual network, a page-side socket, one round trip.
+    const UDP_PORT = 5555;
+    let udpStarted = null;
+    netget.start_server(JSON.stringify({
+        protocol: 'udp', port: UDP_PORT,
+        instruction: 'Reply to every datagram with its text reversed.',
+    }), (json) => { udpStarted = JSON.parse(json); });
+    await waitFor(() => udpStarted !== null, 'start_server (udp) to answer');
+    if (udpStarted.error) fail('start_server udp: ' + udpStarted.error);
+    await waitFor(() => Array.from(netget.bound_udp_ports()).includes(UDP_PORT), `udp port ${UDP_PORT} to be bound`);
+
+    const datagrams = [];
+    const sock = netget.udp_open((bytes, fromPort) => datagrams.push([dec.decode(bytes), fromPort]));
+    const before = requests.length;
+    if (!netget.udp_send(sock, UDP_PORT, enc.encode('abc'))) fail('udp_send() reported the socket is gone');
+    await waitFor(() => requests.length > before, 'the UDP model request', 20000);
+    await waitFor(() => datagrams.some(([t]) => t.includes('cba')), 'the reversed datagram', 20000);
+    if (datagrams[0][1] !== UDP_PORT) fail('reply came from port ' + datagrams[0][1] + ', expected ' + UDP_PORT);
+    netget.udp_close(sock);
+
+    console.log('ok: dashboard painted, tcp and udp servers started, virtual connections round-tripped through the model bridge');
+    console.log('    requests:', requests.length, '| tcp received:', JSON.stringify(received.join('')), '| udp received:', JSON.stringify(datagrams), '| closed:', closed);
     process.exit(0);
 } catch (e) {
     fail(e.message || String(e));

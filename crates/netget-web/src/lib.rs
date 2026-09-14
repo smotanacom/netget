@@ -66,6 +66,8 @@ struct Inner {
     /// Outbound byte queues of the page's open connections, by id.
     conns: RefCell<HashMap<u32, mpsc::UnboundedSender<Vec<u8>>>>,
     next_conn: Cell<u32>,
+    /// Outbound datagram queues of the page's open UDP sockets, by id: (port, payload).
+    udps: RefCell<HashMap<u32, mpsc::UnboundedSender<(u16, Vec<u8>)>>>,
     /// The dashboard's status channel, once the loop hands it over.
     status_tx: RefCell<Option<mpsc::UnboundedSender<String>>>,
 }
@@ -151,6 +153,7 @@ impl NetGet {
             llm_handler: RefCell::new(opt_fn(&options, "onLlm")),
             conns: RefCell::new(HashMap::new()),
             next_conn: Cell::new(1),
+            udps: RefCell::new(HashMap::new()),
             status_tx: RefCell::new(None),
         });
 
@@ -279,9 +282,14 @@ impl NetGet {
 
     // ----- virtual network ----------------------------------------------------------------
 
-    /// Ports with a server listening on the virtual network.
+    /// TCP ports with a server listening on the virtual network.
     pub fn listening_ports(&self) -> Vec<u16> {
         tokio::net::listening_ports()
+    }
+
+    /// UDP ports with a server bound on the virtual network.
+    pub fn bound_udp_ports(&self) -> Vec<u16> {
+        tokio::net::bound_udp_ports()
     }
 
     /// The servers NetGet has, as a JSON array of
@@ -381,6 +389,30 @@ impl NetGet {
         id
     }
 
+    /// Open a UDP socket on an ephemeral port of the virtual network. `on_datagram(bytes:
+    /// Uint8Array, fromPort: number)` is called for every datagram that arrives.
+    pub fn udp_open(&self, on_datagram: Function) -> u32 {
+        let id = self.inner.next_conn.get();
+        self.inner.next_conn.set(id.wrapping_add(1).max(1));
+        let (tx, rx) = mpsc::unbounded_channel::<(u16, Vec<u8>)>();
+        self.inner.udps.borrow_mut().insert(id, tx);
+        spawn_local(relay_udp(self.inner.clone(), id, rx, on_datagram));
+        id
+    }
+
+    /// Send one datagram from a socket opened with [`NetGet::udp_open`] to `port`.
+    pub fn udp_send(&self, id: u32, port: u16, data: &[u8]) -> bool {
+        match self.inner.udps.borrow().get(&id) {
+            Some(tx) => tx.send((port, data.to_vec())).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Close a socket opened with [`NetGet::udp_open`].
+    pub fn udp_close(&self, id: u32) {
+        self.inner.udps.borrow_mut().remove(&id);
+    }
+
     /// Send bytes on a connection opened with [`NetGet::connect`].
     pub fn send(&self, id: u32, data: &[u8]) -> bool {
         match self.inner.conns.borrow().get(&id) {
@@ -459,6 +491,43 @@ fn describe_js(value: &JsValue) -> String {
                 .and_then(|m| m.as_string())
         })
         .unwrap_or_else(|| format!("{value:?}"))
+}
+
+/// One page-side UDP socket: datagrams from servers to `on_datagram`, datagrams from the
+/// page to whichever port each names.
+async fn relay_udp(
+    inner: Rc<Inner>,
+    id: u32,
+    mut rx: mpsc::UnboundedReceiver<(u16, Vec<u8>)>,
+    on_datagram: Function,
+) {
+    let socket = match tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await {
+        Ok(s) => s,
+        Err(e) => {
+            inner.udps.borrow_mut().remove(&id);
+            web_sys::console::error_1(&JsValue::from_str(&format!("netget: udp bind: {e}")));
+            return;
+        }
+    };
+    let mut buf = vec![0u8; 65_536];
+    loop {
+        tokio::select! {
+            received = socket.recv_from(&mut buf) => match received {
+                Ok((n, from)) => {
+                    let chunk = Uint8Array::from(&buf[..n]);
+                    let _ = on_datagram.call2(&JsValue::NULL, &chunk, &JsValue::from_f64(from.port() as f64));
+                }
+                Err(_) => break,
+            },
+            outbound = rx.recv() => match outbound {
+                Some((port, bytes)) => {
+                    let _ = socket.send_to(&bytes, ("127.0.0.1", port)).await;
+                }
+                None => break,
+            },
+        }
+    }
+    inner.udps.borrow_mut().remove(&id);
 }
 
 /// One page-side connection: bytes from the server to `on_data`, bytes from the page to

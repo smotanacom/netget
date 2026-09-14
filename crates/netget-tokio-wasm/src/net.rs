@@ -9,6 +9,8 @@
 //! - [`TcpStream::connect`] looks the port up, builds a [`tokio::io::duplex`] pair, hands the
 //!   listener's end to its accept queue and returns the other. `ConnectionRefused` if nothing
 //!   listens there, as on a real loopback.
+//! - [`UdpSocket::bind`] claims a port the same way; `send_to` delivers a datagram to the
+//!   socket bound on the destination port, with the sender's address attached.
 //!
 //! Everything else on the page (the demo's Telnet terminal, the fake browser) is a
 //! `TcpStream::connect` away, so the protocol servers are exercised through the same
@@ -35,6 +37,7 @@ type Incoming = (TcpStream, SocketAddr);
 
 struct Registry {
     listeners: HashMap<u16, mpsc::UnboundedSender<Incoming>>,
+    udp: HashMap<u16, mpsc::UnboundedSender<Datagram>>,
     next_ephemeral: u16,
     next_peer_port: u16,
 }
@@ -44,6 +47,7 @@ fn registry() -> &'static Mutex<Registry> {
     REGISTRY.get_or_init(|| {
         Mutex::new(Registry {
             listeners: HashMap::new(),
+            udp: HashMap::new(),
             next_ephemeral: FIRST_EPHEMERAL,
             next_peer_port: 32768,
         })
@@ -439,14 +443,28 @@ pub mod tcp {
     }
 }
 
-/// UDP has no virtual counterpart yet; every operation reports `Unsupported`. The type exists
-/// so code that names it compiles.
-#[derive(Debug)]
+/// A datagram socket on the virtual network.
+///
+/// Bound ports live in the same table as listeners, keyed separately. `send_to` looks the
+/// destination port up and delivers the datagram to that socket's queue with the sender's
+/// address attached; nothing is fragmented, reordered or lost. Multicast and broadcast
+/// addresses deliver to the socket bound on that port, if any — there is one host, so that is
+/// what "everyone on the link" means here. Multicast joins and TTLs are accepted and ignored.
 pub struct UdpSocket {
-    _private: (),
+    local: SocketAddr,
+    rx: AsyncMutex<mpsc::UnboundedReceiver<Datagram>>,
+    peer: Mutex<Option<SocketAddr>>,
+    /// A datagram taken off the queue by `readable` and not yet handed out.
+    peeked: Mutex<Option<Datagram>>,
 }
 
-fn unsupported(what: &str) -> io::Error {
+type Datagram = (Vec<u8>, SocketAddr);
+
+/// Largest datagram the virtual network carries; the wire limit, so a server that sizes
+/// its buffer for the wire is never surprised.
+const MAX_DATAGRAM: usize = 65_507;
+
+fn udp_unsupported(what: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!("{what} is not available on the browser's virtual network"),
@@ -454,35 +472,241 @@ fn unsupported(what: &str) -> io::Error {
 }
 
 impl UdpSocket {
-    pub async fn bind<A: ToSocketAddrs>(_addr: A) -> io::Result<UdpSocket> {
-        Err(unsupported("UDP"))
+    pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<UdpSocket> {
+        let requested = addr.to_socket_addr()?;
+        let (tx, rx) = mpsc::unbounded_channel();
+        let port = {
+            let mut reg = registry().lock().expect("registry lock");
+            let port = if requested.port() == 0 {
+                let mut candidate = reg.next_ephemeral;
+                let mut tries = 0u32;
+                while reg.udp.contains_key(&candidate) {
+                    candidate = candidate.checked_add(1).unwrap_or(FIRST_EPHEMERAL);
+                    tries += 1;
+                    if tries > u16::MAX as u32 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AddrInUse,
+                            "no free ephemeral port",
+                        ));
+                    }
+                }
+                reg.next_ephemeral = candidate.checked_add(1).unwrap_or(FIRST_EPHEMERAL);
+                candidate
+            } else if reg.udp.contains_key(&requested.port()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AddrInUse,
+                    format!("udp port {} is already in use", requested.port()),
+                ));
+            } else {
+                requested.port()
+            };
+            reg.udp.insert(port, tx);
+            port
+        };
+        let ip = if requested.ip().is_unspecified() {
+            LOOPBACK
+        } else {
+            requested.ip()
+        };
+        Ok(UdpSocket {
+            local: SocketAddr::new(ip, port),
+            rx: AsyncMutex::new(rx),
+            peer: Mutex::new(None),
+            peeked: Mutex::new(None),
+        })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        Err(unsupported("UDP"))
+        Ok(self.local)
     }
 
-    pub async fn send_to<A: ToSocketAddrs>(&self, _buf: &[u8], _target: A) -> io::Result<usize> {
-        Err(unsupported("UDP"))
+    pub fn peer_addr(&self) -> io::Result<SocketAddr> {
+        self.peer
+            .lock()
+            .expect("peer lock")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "socket is not connected"))
     }
 
-    pub async fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        Err(unsupported("UDP"))
+    pub async fn connect<A: ToSocketAddrs>(&self, addr: A) -> io::Result<()> {
+        let target = addr.to_socket_addr()?;
+        *self.peer.lock().expect("peer lock") = Some(SocketAddr::new(LOOPBACK, target.port()));
+        Ok(())
     }
 
-    pub async fn connect<A: ToSocketAddrs>(&self, _addr: A) -> io::Result<()> {
-        Err(unsupported("UDP"))
+    fn deliver(&self, buf: &[u8], target: SocketAddr) -> io::Result<usize> {
+        if buf.len() > MAX_DATAGRAM {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "datagram larger than the maximum",
+            ));
+        }
+        let tx = registry()
+            .lock()
+            .expect("registry lock")
+            .udp
+            .get(&target.port())
+            .cloned();
+        // As on a real host, a datagram to a port nobody listens on is silently dropped.
+        if let Some(tx) = tx {
+            let _ = tx.send((buf.to_vec(), self.local));
+        }
+        Ok(buf.len())
     }
 
-    pub async fn send(&self, _buf: &[u8]) -> io::Result<usize> {
-        Err(unsupported("UDP"))
+    pub async fn send_to<A: ToSocketAddrs>(&self, buf: &[u8], target: A) -> io::Result<usize> {
+        self.deliver(buf, target.to_socket_addr()?)
     }
 
-    pub async fn recv(&self, _buf: &mut [u8]) -> io::Result<usize> {
-        Err(unsupported("UDP"))
+    pub fn try_send_to(&self, buf: &[u8], target: SocketAddr) -> io::Result<usize> {
+        self.deliver(buf, target)
+    }
+
+    pub async fn send(&self, buf: &[u8]) -> io::Result<usize> {
+        let peer = self.peer_addr()?;
+        self.deliver(buf, peer)
+    }
+
+    pub fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
+        let peer = self.peer_addr()?;
+        self.deliver(buf, peer)
+    }
+
+    async fn next_datagram(&self) -> io::Result<Datagram> {
+        if let Some(d) = self.peeked.lock().expect("peek lock").take() {
+            return Ok(d);
+        }
+        let mut rx = self.rx.lock().await;
+        rx.recv()
+            .await
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "socket was unregistered"))
+    }
+
+    fn copy_out(buf: &mut [u8], data: &[u8]) -> usize {
+        // A datagram larger than the buffer is truncated, as recvfrom(2) does.
+        let n = data.len().min(buf.len());
+        buf[..n].copy_from_slice(&data[..n]);
+        n
+    }
+
+    pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        let (data, from) = self.next_datagram().await?;
+        Ok((Self::copy_out(buf, &data), from))
+    }
+
+    pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let peer = self.peer_addr()?;
+        loop {
+            let (data, from) = self.next_datagram().await?;
+            if from.port() == peer.port() {
+                return Ok(Self::copy_out(buf, &data));
+            }
+        }
+    }
+
+    pub async fn peek_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        let (data, from) = self.next_datagram().await?;
+        let n = Self::copy_out(buf, &data);
+        *self.peeked.lock().expect("peek lock") = Some((data, from));
+        Ok((n, from))
+    }
+
+    /// Waits until a datagram is queued. What `try_recv_from` then returns.
+    pub async fn readable(&self) -> io::Result<()> {
+        if self.peeked.lock().expect("peek lock").is_some() {
+            return Ok(());
+        }
+        let d = self.next_datagram().await?;
+        *self.peeked.lock().expect("peek lock") = Some(d);
+        Ok(())
+    }
+
+    pub async fn writable(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn try_recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        match self.peeked.lock().expect("peek lock").take() {
+            Some((data, from)) => Ok((Self::copy_out(buf, &data), from)),
+            None => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "no datagram queued",
+            )),
+        }
+    }
+
+    pub fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.try_recv_from(buf).map(|(n, _)| n)
     }
 
     pub fn set_broadcast(&self, _on: bool) -> io::Result<()> {
-        Err(unsupported("UDP"))
+        Ok(())
     }
+
+    pub fn broadcast(&self) -> io::Result<bool> {
+        Ok(true)
+    }
+
+    pub fn set_ttl(&self, _ttl: u32) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn ttl(&self) -> io::Result<u32> {
+        Ok(64)
+    }
+
+    pub fn join_multicast_v4(&self, _group: Ipv4Addr, _interface: Ipv4Addr) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn leave_multicast_v4(&self, _group: Ipv4Addr, _interface: Ipv4Addr) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn join_multicast_v6(&self, _group: &Ipv6Addr, _interface: u32) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn leave_multicast_v6(&self, _group: &Ipv6Addr, _interface: u32) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn set_multicast_ttl_v4(&self, _ttl: u32) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn set_multicast_loop_v4(&self, _on: bool) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn set_multicast_if_v4(&self, _interface: Ipv4Addr) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn from_std(_socket: std::net::UdpSocket) -> io::Result<UdpSocket> {
+        Err(udp_unsupported("adopting an OS socket"))
+    }
+}
+
+impl Drop for UdpSocket {
+    fn drop(&mut self) {
+        if let Ok(mut reg) = registry().lock() {
+            reg.udp.remove(&self.local.port());
+        }
+    }
+}
+
+impl std::fmt::Debug for UdpSocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UdpSocket")
+            .field("local", &self.local)
+            .finish()
+    }
+}
+
+/// UDP ports with a socket bound, for a page that wants to offer them to the user.
+pub fn bound_udp_ports() -> Vec<u16> {
+    let reg = registry().lock().expect("registry lock");
+    let mut ports: Vec<u16> = reg.udp.keys().copied().collect();
+    ports.sort_unstable();
+    ports
 }
