@@ -21,82 +21,26 @@
 .muted { color: var(--text); opacity: 0.55; }
 .spacer { flex: 1; }
 
-/* ---- topology strip ------------------------------------------------------------------- */
+/* ---- the three marks, shared by the diagram and the machines ---------------------- */
 
-.topology {
-    display: grid;
-    grid-template-columns: 1fr auto 1.15fr auto 1fr;
-    align-items: center;
-    gap: 0.75rem;
-    margin: 1rem 0 1.5rem;
-}
+.section-how { max-width: 780px; margin: 0 auto; padding: 0.5rem 1.25rem 1rem; }
 
-.topo-node {
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 0.8rem 0.9rem;
-    background: var(--panel);
-    display: grid;
-    grid-template-columns: auto 1fr;
-    grid-template-rows: auto auto;
-    column-gap: 0.7rem;
-    row-gap: 0.15rem;
-    min-width: 0;
-}
+.dg .box.client { stroke: var(--cyan); stroke-width: 2; }
+.dg .client-t { fill: var(--cyan); }
+.dg .box.model { stroke: var(--yellow); stroke-width: 2; }
+.dg .model-t { fill: var(--yellow); }
 
-.topo-node.is-netget {
-    border-color: var(--cyan);
-    box-shadow: 0 0 0 4px var(--glow);
-}
-
-.topo-icon { grid-row: 1 / span 2; font-size: 1.6rem; line-height: 1; align-self: center; }
-.topo-node.is-netget .topo-icon { color: var(--cyan); }
-.topo-title { font-weight: 600; }
-.topo-text { font-size: 0.82rem; color: var(--muted); }
-
-.topo-link {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.25rem;
-    min-width: 8rem;
-    text-align: center;
-}
-
-.topo-wire {
-    width: 100%;
-    height: 0;
-    border-top: 2px dashed var(--cyan);
-    position: relative;
-}
-
-.topo-wire::before, .topo-wire::after {
-    content: '';
-    position: absolute;
-    top: -5px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--cyan);
-}
-.topo-wire::before { left: -2px; }
-.topo-wire::after { right: -2px; }
-
-.topo-label {
+.mark {
     font-family: var(--mono);
-    font-size: 0.72rem;
-    color: var(--text);
+    font-size: 0.85em;
+    padding: 0.05em 0.45em;
+    border-radius: 6px;
+    border: 1.5px solid currentColor;
+    white-space: nowrap;
 }
-.topo-label small { color: var(--muted); font-family: var(--sans); font-size: 0.7rem; }
-
-@media (max-width: 900px) {
-    .topology { grid-template-columns: 1fr; }
-    .topo-link { min-width: 0; padding: 0.2rem 0; }
-    .topo-wire { width: 2px; height: 1.4rem; border-top: 0; border-left: 2px dashed var(--cyan); }
-    .topo-wire::before, .topo-wire::after { left: -3px; top: auto; }
-    .topo-wire::before { top: -4px; }
-    .topo-wire::after { bottom: -4px; }
-}
+.mark-client { color: var(--cyan); border-style: dashed; }
+.mark-netget { color: var(--green); }
+.mark-model { color: var(--yellow); }
 
 /* ---- machines ------------------------------------------------------------------------- */
 
@@ -109,7 +53,15 @@
     min-width: 0;
 }
 
-.machine-netget { border-color: var(--cyan); }
+.machine-netget { border-color: var(--green); border-width: 2px; }
+.machine-client { border-color: var(--cyan); border-style: dashed; border-width: 2px; }
+.machine-model { border-color: var(--yellow); border-width: 2px; }
+.machine-netget .machine-label { color: var(--green); }
+.machine-client .machine-label { color: var(--cyan); }
+.machine-model .machine-label { color: var(--yellow); }
+.machine-netget .machine-dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.machine-client .machine-dot { background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+.machine-model .machine-dot { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
 
 .machine-label {
     display: flex;
@@ -211,17 +163,22 @@
     left: 50%;
     top: 0;
     bottom: 0;
-    border-left: 2px dashed var(--cyan);
+    border-left: 2px dashed var(--muted);
 }
 
 .cable-tag {
     position: relative;
     font-family: var(--mono);
     font-size: 0.7rem;
-    color: var(--cyan);
+    color: var(--muted);
     background: var(--bg);
     padding: 0 0.4rem;
 }
+
+.cable-client .cable-line { border-color: var(--cyan); }
+.cable-client .cable-tag { color: var(--cyan); }
+.cable-model .cable-line { border-color: var(--yellow); }
+.cable-model .cable-tag { color: var(--yellow); }
 
 .machines-row {
     display: grid;

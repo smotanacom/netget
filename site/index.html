@@ -42,39 +42,95 @@
         </p>
     </header>
 
+        <!-- How it works -->
+        <section class="section section-how">
+            <h2>How it works</h2>
+
+            <div class="diagram">
+                <svg class="dg" viewBox="0 0 940 440" role="img" aria-label="Diagram: you or an LLM agent tell netget to open a server port; the network sends requests; netget answers via a static response, an external script runtime, or an external LLM">
+                    <defs>
+                        <marker id="arw" markerWidth="8" markerHeight="8" viewBox="0 0 10 10" refX="8" refY="5" orient="auto-start-reverse">
+                            <path d="M0,0 L10,5 L0,10 z" class="arw"/>
+                        </marker>
+                    </defs>
+
+                    <!-- left: who talks to netget -->
+                    <rect class="box" x="20" y="50" width="200" height="62" rx="10"/>
+                    <text class="icon" x="36" y="90">💻</text>
+                    <text class="t" x="68" y="77">you</text>
+                    <text class="s" x="68" y="95">netget CLI · TUI</text>
+
+                    <rect class="box" x="20" y="140" width="200" height="62" rx="10"/>
+                    <text class="icon" x="36" y="180">🤖</text>
+                    <text class="t" x="68" y="167">LLM agent</text>
+                    <text class="s" x="68" y="185">Claude · MCP STDIO</text>
+
+                    <rect class="box dashed client" x="20" y="330" width="200" height="62" rx="10"/>
+                    <text class="icon" x="36" y="370">🌐</text>
+                    <text class="t client-t" x="68" y="357">the network</text>
+                    <text class="s" x="68" y="375">curl · browser · dig</text>
+
+                    <!-- netget process -->
+                    <rect class="ngbox" x="350" y="40" width="270" height="380" rx="14"/>
+                    <text class="mg" x="374" y="70">netget</text>
+
+                    <rect class="box" x="395" y="120" width="200" height="62" rx="10"/>
+                    <text class="icon" x="411" y="160">⚡</text>
+                    <text class="t" x="443" y="147">static response</text>
+                    <text class="s" x="443" y="165">canned · zero latency</text>
+
+                    <!-- port on the process boundary -->
+                    <circle class="port" cx="350" cy="361" r="28"/>
+                    <text class="mc" x="350" y="358" text-anchor="middle">:8080</text>
+                    <text class="xs" x="350" y="374" text-anchor="middle">HTTP</text>
+                    <circle class="pulse-dot" cx="314" cy="404" r="4"/>
+                    <text class="lst" x="324" y="408">LISTENING</text>
+
+                    <!-- right: external handlers -->
+                    <rect class="box" x="710" y="150" width="210" height="62" rx="10"/>
+                    <text class="icon" x="722" y="190">📜</text>
+                    <text class="t" x="752" y="177">script runtime</text>
+                    <text class="s" x="752" y="195">JS / Python · deterministic</text>
+
+                    <rect class="box model" x="710" y="330" width="210" height="62" rx="10"/>
+                    <text class="icon" x="722" y="370">✨</text>
+                    <text class="t model-t" x="752" y="357">LLM</text>
+                    <text class="s" x="752" y="375">Ollama · any OpenAI API</text>
+
+                    <!-- arrows -->
+                    <path class="ln" d="M220,81 C280,81 305,90 344,98"/>
+                    <text class="m" x="284" y="66" text-anchor="middle">“http server on 8080”</text>
+
+                    <path class="ln" d="M220,171 C280,171 305,160 344,150"/>
+                    <text class="m" x="284" y="140" text-anchor="middle">start_server(...)</text>
+
+                    <path class="ln" d="M220,361 L314,361"/>
+                    <text class="m" x="268" y="351" text-anchor="middle">request</text>
+
+                    <path class="ln" d="M377,350 C430,320 465,240 488,186"/>
+                    <text class="m" x="412" y="270" text-anchor="end">static</text>
+
+                    <path class="ln" d="M377,352 C520,310 610,230 705,185"/>
+                    <text class="m" x="560" y="240" text-anchor="middle">script</text>
+
+                    <path class="ln" d="M378,368 C490,385 600,372 705,362"/>
+                    <text class="m" x="560" y="393" text-anchor="middle">prompt</text>
+                </svg>
+            </div>
+
+            <p class="caption">
+                Real sockets, real wire formats. NetGet handles the bytes, the handler writes the content.
+                Below, the same three run in this tab: <span class="mark mark-client">the network</span> is a client machine,
+                <span class="mark mark-netget">netget</span> is the dashboard, <span class="mark mark-model">LLM</span> is a model you pick — or you.
+            </p>
+        </section>
+
     <section class="demo" id="demo">
         <div class="demo-banner" id="demo-banner">Loading NetGet…</div>
 
-        <!-- The three machines and what joins them -->
-        <div class="topology" aria-label="How the demo is wired">
-            <div class="topo-node">
-                <div class="topo-icon">🖥</div>
-                <div class="topo-title">A client</div>
-                <div class="topo-text">Telnet, a browser, raw TCP or UDP. Ordinary clients on the page below.</div>
-            </div>
-            <div class="topo-link">
-                <span class="topo-wire"></span>
-                <span class="topo-label">virtual network<br><small>TCP &amp; UDP sockets inside the tab</small></span>
-            </div>
-            <div class="topo-node is-netget">
-                <div class="topo-icon">▣</div>
-                <div class="topo-title">NetGet</div>
-                <div class="topo-text">The real dashboard and protocol servers, unchanged, compiled to wasm.</div>
-            </div>
-            <div class="topo-link">
-                <span class="topo-wire"></span>
-                <span class="topo-label">model bridge<br><small>every prompt and reply, as JSON</small></span>
-            </div>
-            <div class="topo-node">
-                <div class="topo-icon">🧠</div>
-                <div class="topo-title">The model</div>
-                <div class="topo-text">WebLLM on your GPU, your local Ollama, or you, typing the answers.</div>
-            </div>
-        </div>
-
         <!-- Machine 1: NetGet -->
         <div class="machine machine-netget">
-            <div class="machine-label"><span class="machine-dot"></span> NetGet <span class="muted">· a server machine, in your tab</span><span class="spacer"></span><span class="model-badge is-you" id="dash-model">model: you</span></div>
+            <div class="machine-label"><span class="machine-dot"></span> netget <span class="muted">· the process, in your tab</span><span class="spacer"></span><span class="model-badge is-you" id="dash-model">model: you</span></div>
             <div class="screen"><div class="term-host"><div id="dash-term"></div></div></div>
             <div class="machine-base">
                 <div class="base-row">
@@ -93,14 +149,14 @@
         </div>
 
         <div class="cables">
-            <div class="cable"><span class="cable-line"></span><span class="cable-tag">virtual network</span></div>
-            <div class="cable"><span class="cable-line"></span><span class="cable-tag">model bridge</span></div>
+            <div class="cable cable-client"><span class="cable-line"></span><span class="cable-tag">request</span></div>
+            <div class="cable cable-model"><span class="cable-line"></span><span class="cable-tag">prompt</span></div>
         </div>
 
         <div class="machines-row">
             <!-- Machine 2: the client -->
             <div class="machine machine-client">
-                <div class="machine-label"><span class="machine-dot"></span> A client <span class="muted">· another machine on the same virtual network</span></div>
+                <div class="machine-label"><span class="machine-dot"></span> the network <span class="muted">· a client on the virtual network</span></div>
                 <div class="tabs" id="client-tabs">
                     <button data-tab="telnet" class="is-active">Telnet</button>
                     <button data-tab="browser">Browser</button>
@@ -160,7 +216,7 @@
 
             <!-- Machine 3: the model -->
             <div class="machine machine-model">
-                <div class="machine-label"><span class="machine-dot"></span> The model <span class="spacer"></span><span class="model-badge is-you" id="model-badge">model: you</span></div>
+                <div class="machine-label"><span class="machine-dot"></span> LLM <span class="spacer"></span><span class="model-badge is-you" id="model-badge">model: you</span></div>
                 <div class="llm-modes">
                     <div class="llm-mode">
                         <input type="radio" name="llm-mode" value="manual" id="mode-manual" checked>
@@ -204,86 +260,6 @@
 
     <main>
 
-        <!-- How it works -->
-        <section class="section">
-            <h2>How it works</h2>
-
-            <div class="diagram">
-                <svg class="dg" viewBox="0 0 940 440" role="img" aria-label="Diagram: you or an LLM agent tell netget to open a server port; the network sends requests; netget answers via a static response, an external script runtime, or an external LLM">
-                    <defs>
-                        <marker id="arw" markerWidth="8" markerHeight="8" viewBox="0 0 10 10" refX="8" refY="5" orient="auto-start-reverse">
-                            <path d="M0,0 L10,5 L0,10 z" class="arw"/>
-                        </marker>
-                    </defs>
-
-                    <!-- left: who talks to netget -->
-                    <rect class="box" x="20" y="50" width="200" height="62" rx="10"/>
-                    <text class="icon" x="36" y="90">💻</text>
-                    <text class="t" x="68" y="77">you</text>
-                    <text class="s" x="68" y="95">netget CLI · TUI</text>
-
-                    <rect class="box" x="20" y="140" width="200" height="62" rx="10"/>
-                    <text class="icon" x="36" y="180">🤖</text>
-                    <text class="t" x="68" y="167">LLM agent</text>
-                    <text class="s" x="68" y="185">Claude · MCP STDIO</text>
-
-                    <rect class="box dashed" x="20" y="330" width="200" height="62" rx="10"/>
-                    <text class="icon" x="36" y="370">🌐</text>
-                    <text class="t" x="68" y="357">the network</text>
-                    <text class="s" x="68" y="375">curl · browser · dig</text>
-
-                    <!-- netget process -->
-                    <rect class="ngbox" x="350" y="40" width="270" height="380" rx="14"/>
-                    <text class="mg" x="374" y="70">netget</text>
-
-                    <rect class="box" x="395" y="120" width="200" height="62" rx="10"/>
-                    <text class="icon" x="411" y="160">⚡</text>
-                    <text class="t" x="443" y="147">static response</text>
-                    <text class="s" x="443" y="165">canned · zero latency</text>
-
-                    <!-- port on the process boundary -->
-                    <circle class="port" cx="350" cy="361" r="28"/>
-                    <text class="mc" x="350" y="358" text-anchor="middle">:8080</text>
-                    <text class="xs" x="350" y="374" text-anchor="middle">HTTP</text>
-                    <circle class="pulse-dot" cx="314" cy="404" r="4"/>
-                    <text class="lst" x="324" y="408">LISTENING</text>
-
-                    <!-- right: external handlers -->
-                    <rect class="box" x="710" y="150" width="210" height="62" rx="10"/>
-                    <text class="icon" x="722" y="190">📜</text>
-                    <text class="t" x="752" y="177">script runtime</text>
-                    <text class="s" x="752" y="195">JS / Python · deterministic</text>
-
-                    <rect class="box" x="710" y="330" width="210" height="62" rx="10"/>
-                    <text class="icon" x="722" y="370">✨</text>
-                    <text class="t" x="752" y="357">LLM</text>
-                    <text class="s" x="752" y="375">Ollama · any OpenAI API</text>
-
-                    <!-- arrows -->
-                    <path class="ln" d="M220,81 C280,81 305,90 344,98"/>
-                    <text class="m" x="284" y="66" text-anchor="middle">“http server on 8080”</text>
-
-                    <path class="ln" d="M220,171 C280,171 305,160 344,150"/>
-                    <text class="m" x="284" y="140" text-anchor="middle">start_server(...)</text>
-
-                    <path class="ln" d="M220,361 L314,361"/>
-                    <text class="m" x="268" y="351" text-anchor="middle">request</text>
-
-                    <path class="ln" d="M377,350 C430,320 465,240 488,186"/>
-                    <text class="m" x="412" y="270" text-anchor="end">static</text>
-
-                    <path class="ln" d="M377,352 C520,310 610,230 705,185"/>
-                    <text class="m" x="560" y="240" text-anchor="middle">script</text>
-
-                    <path class="ln" d="M378,368 C490,385 600,372 705,362"/>
-                    <text class="m" x="560" y="393" text-anchor="middle">prompt</text>
-                </svg>
-            </div>
-
-            <p class="caption">
-                Real sockets, real wire formats. NetGet handles the bytes, the handler writes the content.
-            </p>
-        </section>
 
         <!-- Examples -->
         <section class="section">
