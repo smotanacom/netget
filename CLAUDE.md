@@ -917,6 +917,34 @@ rather than a hardcoded copy:
 depends on neither, because `kubectl` speaks JSON to an apiserver by default. Derive this table
 from `Cargo.toml` and `build.rs` rather than trusting it — it has been wrong.
 
+## The website — netget.net
+
+**The site does not deploy itself. Nothing watches this repository; a merge to master
+publishes nothing.** `site/` is the landing page and `./site/deploy.sh` is the only way it
+reaches netget.net — run it whenever you change anything under `site/`, or the live page
+stays at whatever the last person uploaded.
+
+```bash
+./site/deploy.sh        # needs AWS_PROFILE=smotana, which the script exports itself
+```
+
+It syncs `site/` to the `netget.net` S3 bucket (assets `max-age=604800`, `index.html`
+`max-age=0`) and invalidates the CloudFront distribution, so a deploy is live within seconds.
+
+Two things about it are load-bearing:
+
+- **`site/` is public and `docs/` is not.** Only `site/` is uploaded. The planning markdown in
+  `docs/` used to be served — GitHub Pages published that whole directory — and is not any
+  more. A new file under `site/` is a new public URL.
+- **`deploy.sh` excludes itself and every `*.md`.** `site/CLAUDE.md` names the bucket,
+  distribution and OAC IDs; the first run of the script published it before the exclusion
+  existed. `--delete` skips excluded paths too, so removing such a file from the bucket is a
+  manual `aws s3 rm`.
+
+Hosting is S3 + CloudFront (private bucket, OAC, ACM cert, DNS at Porkbun) — the same shape as
+the maintainer's other static sites. It replaced GitHub Pages, which cannot serve a private
+repository. `site/CLAUDE.md` has the resource IDs, the DNS records and how to change them.
+
 ## MCP surface
 
 `--mcp` (stdio) and `--mcp-http PORT` expose tools sharing the TUI's code paths. See
