@@ -48,6 +48,13 @@ const QUICK_STARTS = [
             + 'newline. Say nothing else.',
         client: 'raw',
     },
+    {
+        label: 'UDP on 5555',
+        protocol: 'udp', port: 5555,
+        instruction: 'For every datagram, reply with one datagram: the received text reversed. '
+            + 'Say nothing else.',
+        client: 'udp',
+    },
 ];
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -64,6 +71,7 @@ const app = {
     requestCount: 0,
     telnet: { term: null, conn: null, localEcho: true, port: 2323 },
     raw: { conn: null, port: 7000 },
+    udp: { sock: null, port: 5555 },
     browser: { port: 8080 },
 };
 
@@ -685,6 +693,44 @@ function wireRaw() {
     $('#raw-input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') send(); });
 }
 
+// --- raw UDP ------------------------------------------------------------------------------
+
+function udpLog(kind, text) {
+    const log = $('#udp-log');
+    const line = document.createElement('div');
+    line.className = 'raw-line raw-' + kind;
+    line.textContent = text;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+}
+
+function hexBytes(text) {
+    const clean = text.replace(/[^0-9a-fA-F]/g, '');
+    const out = new Uint8Array(Math.floor(clean.length / 2));
+    for (let i = 0; i < out.length; i += 1) out[i] = parseInt(clean.substr(i * 2, 2), 16);
+    return out;
+}
+
+function wireUdp() {
+    const send = () => {
+        if (app.udp.sock === null) {
+            app.udp.sock = app.netget.udp_open((bytes, fromPort) => {
+                udpLog('in', `:${fromPort} → ` + printable(bytes));
+            });
+            udpLog('sys', 'opened a UDP socket on the virtual network');
+        }
+        const port = parseInt($('#udp-port').value, 10) || app.udp.port;
+        app.udp.port = port;
+        const input = $('#udp-input');
+        const bytes = $('#udp-hex').checked ? hexBytes(input.value) : enc.encode(input.value);
+        app.netget.udp_send(app.udp.sock, port, bytes);
+        udpLog('out', `→ :${port} ` + printable(bytes));
+        input.value = '';
+    };
+    $('#udp-send').addEventListener('click', send);
+    $('#udp-input').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') send(); });
+}
+
 // --- tabs, quick starts, server list ---------------------------------------------------
 
 function wireTabs() {
@@ -706,11 +752,15 @@ function showTab(tabs, name) {
 
 function refreshServers() {
     if (!app.netget) return;
+    const udpPorts = new Set(Array.from(app.netget.bound_udp_ports()));
     app.netget.servers((json) => {
         const rows = JSON.parse(json);
         const el = $('#server-list');
-        if (!rows.length) { el.innerHTML = '<span class="muted">none yet — use a quick start, or press <kbd>a</kbd> in the dashboard</span>'; return; }
-        el.innerHTML = rows.map((r) => `<span class="server-chip ${r.status === 'Running' ? 'is-up' : ''}">#${r.id} ${escapeHtml(r.protocol)} :${r.port} <small>${escapeHtml(r.status)} · ${r.connections} conn</small></span>`).join('');
+        if (!rows.length) { el.innerHTML = '<span class="muted">nothing yet — use a quick start, or press <kbd>a</kbd> in the dashboard</span>'; return; }
+        el.innerHTML = rows.map((r) => {
+            const transport = udpPorts.has(r.port) ? 'udp' : 'tcp';
+            return `<span class="server-chip ${r.status === 'Running' ? 'is-up' : ''}">#${r.id} ${escapeHtml(r.protocol)} ${transport}/${r.port} <small>${escapeHtml(r.status)}${transport === 'tcp' ? ' · ' + r.connections + ' conn' : ''}</small></span>`;
+        }).join('');
     });
 }
 
@@ -733,6 +783,7 @@ function wireQuickStarts() {
                 if (q.client === 'telnet') $('#telnet-port').value = q.port;
                 if (q.client === 'browser') $('#browser-url').value = `http://localhost:${q.port}/`;
                 if (q.client === 'raw') $('#raw-port').value = q.port;
+                if (q.client === 'udp') $('#udp-port').value = q.port;
             });
         });
         box.appendChild(btn);
@@ -759,6 +810,7 @@ async function main() {
         return;
     }
     banner.hidden = true;
+    banner.textContent = '';
 
     const { term, fit } = makeTerm($('#dash-term'));
     app.dash = term;
@@ -779,6 +831,7 @@ async function main() {
     wireTelnet();
     wireBrowser();
     wireRaw();
+    wireUdp();
     wireQuickStarts();
 
     for (const r of document.querySelectorAll('input[name=llm-mode]')) {
