@@ -275,7 +275,7 @@ async fn execute_go(code: &str, input_json: &str, timeout: Duration) -> Result<(
     let temp_dir = std::env::temp_dir();
     let script_name = format!(
         "netget_script_{}_{}.go",
-        std::process::id(),
+        crate::utils::clock::process_id(),
         SCRIPT_TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
     );
     let script_path = temp_dir.join(script_name);

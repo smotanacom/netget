@@ -74,7 +74,7 @@ pub struct Stream {
     pub id: StreamId,
     pub target: String,
     pub state: StreamState,
-    pub created_at: std::time::Instant,
+    pub created_at: crate::utils::clock::Instant,
 }
 
 impl Stream {
@@ -84,7 +84,7 @@ impl Stream {
             id,
             target,
             state: StreamState::Connecting,
-            created_at: std::time::Instant::now(),
+            created_at: crate::utils::clock::Instant::now(),
         }
     }
 

@@ -174,7 +174,7 @@ impl ZookeeperServer {
 
         // Track the connection so the TUI/MCP connection list and stop_server see it.
         if let (Some(server_id), Some(remote_addr)) = (server_id, peer_addr) {
-            let now = std::time::Instant::now();
+            let now = crate::utils::clock::Instant::now();
             app_state
                 .add_connection_to_server(
                     server_id,
@@ -1012,8 +1012,8 @@ impl ZookeeperSession {
 
     /// A session id that is unique per connection and never zero (zero means "no session").
     fn mint_session_id(connection_id: ConnectionId) -> i64 {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let nanos = crate::utils::clock::SystemTime::now()
+            .duration_since(crate::utils::clock::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
         let id = ((nanos << 16) ^ u64::from(connection_id.as_u32())) & 0x7fff_ffff_ffff_ffff;

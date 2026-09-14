@@ -237,7 +237,7 @@ impl NfcServer {
                     use crate::state::server::{
                         ConnectionState, ConnectionStatus, ProtocolConnectionInfo,
                     };
-                    let now = std::time::Instant::now();
+                    let now = crate::utils::clock::Instant::now();
                     let conn_state = ConnectionState {
                         id: connection_id,
                         remote_addr,

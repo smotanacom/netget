@@ -1,9 +1,9 @@
 //! Client instance management
 
+use crate::utils::clock::Instant;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Instant;
 
 /// Unique identifier for a client instance
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -116,8 +116,8 @@ pub struct ClientConnectionAttempt {
 }
 
 fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::utils::clock::SystemTime::now()
+        .duration_since(crate::utils::clock::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
@@ -304,12 +304,12 @@ impl ClientInstance {
 
         // Calculate the absolute time when the client was created
         // by subtracting the elapsed time from now
-        let now = std::time::SystemTime::now();
+        let now = crate::utils::clock::SystemTime::now();
         let elapsed = self.created_at.elapsed();
         let created_system_time = now - elapsed;
 
         // Convert to DateTime for formatting
-        let timestamp: chrono::DateTime<chrono::Local> = created_system_time.into();
+        let timestamp = crate::utils::clock::to_local_datetime(created_system_time);
         let timestamp_str = timestamp.format("%Y_%m_%d_%H_%M_%S").to_string();
 
         let log_filename = format!("netget_{}_{}.log", output_name, timestamp_str);

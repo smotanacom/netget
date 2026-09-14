@@ -73,7 +73,7 @@ impl SqsServer {
                             ConnectionState as ServerConnectionState, ConnectionStatus,
                             ProtocolConnectionInfo,
                         };
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
                         let conn_state = ServerConnectionState {
                             id: connection_id,
                             remote_addr,
@@ -420,8 +420,8 @@ fn build_sqs_response(status: u16, request_id: &str, body: String) -> Response<F
 fn new_request_id() -> String {
     format!(
         "{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        crate::utils::clock::SystemTime::now()
+            .duration_since(crate::utils::clock::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     )

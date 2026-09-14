@@ -44,3 +44,6 @@ netget_db_*.db
 
 # Snapshot test output written only on mismatch; never committed.
 *.actual.snap.md
+
+# Built by ./web/build.sh; uploaded by ./site/deploy.sh, never committed
+/site/demo/pkg/

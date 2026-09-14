@@ -53,7 +53,7 @@ impl NtpServer {
                             ConnectionState as ServerConnectionState, ConnectionStatus,
                             ProtocolConnectionInfo,
                         };
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
                         let conn_state = ServerConnectionState {
                             id: connection_id,
                             remote_addr: peer_addr,
@@ -87,7 +87,7 @@ impl NtpServer {
 
                         tokio::spawn(async move {
                             // Get current Unix timestamp
-                            use std::time::{SystemTime, UNIX_EPOCH};
+                            use crate::utils::clock::{SystemTime, UNIX_EPOCH};
                             let current_unix_time = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
                                 .unwrap()

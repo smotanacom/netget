@@ -23,7 +23,7 @@ async fn execute_due_tasks(
     status_tx: &mpsc::UnboundedSender<String>,
 ) {
     use crate::state::task::TaskStatus;
-    use std::time::Instant;
+    use crate::utils::clock::Instant;
 
     let now = Instant::now();
     let tasks = state.get_all_tasks().await;
@@ -326,7 +326,8 @@ async fn handle_task_success(
     result: crate::state::TaskExecutionResult,
 ) {
     use crate::state::task::{TaskStatus, TaskType};
-    use std::time::{Duration, Instant};
+    use crate::utils::clock::Instant;
+    use std::time::Duration;
 
     // Record execution
     state.record_task_execution(task.id, &result).await;
@@ -381,7 +382,8 @@ async fn handle_task_failure(
     result: crate::state::TaskExecutionResult,
 ) {
     use crate::state::task::TaskStatus;
-    use std::time::{Duration, Instant};
+    use crate::utils::clock::Instant;
+    use std::time::Duration;
 
     const MAX_FAILURES: u64 = 5;
     const BACKOFF_BASE_SECS: u64 = 60; // 1 minute base backoff

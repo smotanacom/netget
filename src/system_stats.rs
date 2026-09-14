@@ -98,7 +98,7 @@ pub fn format_bytes(bytes: u64) -> String {
 /// System statistics monitor that updates at most once per second
 pub struct SystemStatsMonitor {
     system: Arc<RwLock<System>>,
-    last_update: Arc<RwLock<std::time::Instant>>,
+    last_update: Arc<RwLock<crate::utils::clock::Instant>>,
 }
 
 impl SystemStatsMonitor {
@@ -112,13 +112,13 @@ impl SystemStatsMonitor {
 
         Self {
             system: Arc::new(RwLock::new(system)),
-            last_update: Arc::new(RwLock::new(std::time::Instant::now())),
+            last_update: Arc::new(RwLock::new(crate::utils::clock::Instant::now())),
         }
     }
 
     /// Get current system stats (updates at most once per second)
     pub async fn get_stats(&self) -> SystemStats {
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         let mut last_update = self.last_update.write().await;
 
         // Only update if more than 1 second has passed

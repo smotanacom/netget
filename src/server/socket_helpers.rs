@@ -1,6 +1,7 @@
 //! Socket helper utilities for creating sockets with proper options
 
 use anyhow::Result;
+#[cfg(not(target_arch = "wasm32"))]
 use socket2::{Domain, Socket, Type};
 #[cfg(unix)]
 use std::net::Ipv4Addr;
@@ -25,6 +26,7 @@ const OSPF_ALL_DROUTERS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 6);
 ///
 /// This allows immediate port reuse after stopping a server,
 /// which is essential for quick restart workflows in the TUI.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn create_reusable_tcp_listener(addr: SocketAddr) -> Result<TcpListener> {
     let socket = if addr.is_ipv4() {
         Socket::new(Domain::IPV4, Type::STREAM, None)?
@@ -52,6 +54,7 @@ pub async fn create_reusable_tcp_listener(addr: SocketAddr) -> Result<TcpListene
 /// Create a UDP socket with SO_REUSEADDR enabled
 ///
 /// This allows immediate port reuse after stopping a server.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn create_reusable_udp_socket(addr: SocketAddr) -> Result<UdpSocket> {
     let socket = if addr.is_ipv4() {
         Socket::new(Domain::IPV4, Type::DGRAM, None)?
@@ -71,6 +74,19 @@ pub async fn create_reusable_udp_socket(addr: SocketAddr) -> Result<UdpSocket> {
     let tokio_socket = UdpSocket::from_std(std_socket)?;
 
     Ok(tokio_socket)
+}
+
+/// On the browser's virtual network (`crates/netget-tokio-wasm`) there are no socket options
+/// to set; binding is registering the port.
+#[cfg(target_arch = "wasm32")]
+pub async fn create_reusable_tcp_listener(addr: SocketAddr) -> Result<TcpListener> {
+    Ok(TcpListener::bind(addr).await?)
+}
+
+/// UDP has no virtual counterpart; this reports `Unsupported` from the shim.
+#[cfg(target_arch = "wasm32")]
+pub async fn create_reusable_udp_socket(addr: SocketAddr) -> Result<UdpSocket> {
+    Ok(UdpSocket::bind(addr).await?)
 }
 
 /// Create a raw IP socket for OSPF (protocol 89)

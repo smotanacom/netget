@@ -321,7 +321,7 @@ impl ConversationHandler {
 
     /// Generate a unique conversation ID
     fn generate_conversation_id() -> String {
-        use std::time::SystemTime;
+        use crate::utils::clock::SystemTime;
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()

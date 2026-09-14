@@ -766,8 +766,8 @@ impl IcmpServer {
         use pnet::packet::ipv4::checksum;
 
         // Get current time in milliseconds since midnight UT
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = crate::utils::clock::SystemTime::now()
+            .duration_since(crate::utils::clock::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u32;
         let receive_timestamp = now;

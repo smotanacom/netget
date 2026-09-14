@@ -23,8 +23,9 @@
 //! application error, and it resets the counter rather than advancing it. See
 //! [`is_transport_failure`].
 
+use crate::utils::clock::Instant;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Consecutive transport failures before the breaker opens.
 ///

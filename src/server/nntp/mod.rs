@@ -102,7 +102,7 @@ impl NntpServer {
         let write_half_arc = Arc::new(tokio::sync::Mutex::new(write_half));
 
         // Add connection to ServerInstance
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         let conn_state = ServerConnectionState {
             id: connection_id,
             remote_addr,

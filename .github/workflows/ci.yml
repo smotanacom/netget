@@ -284,6 +284,42 @@ jobs:
           fi
           exit $status
 
+  # The browser build (crates/netget-web): the netget library for wasm32-unknown-unknown with
+  # the tokio/crossterm shims, bindings, and a headless Node run of the bundle that starts a
+  # server, connects over the virtual network and round-trips a request through the LLM
+  # bridge. Blocking: the whole point of the shims is that protocol code compiles unchanged
+  # for the web, and only a build on that target can show it still does.
+  wasm-web:
+    name: Browser build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: llvm-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-web
+
+      - name: install wasm-bindgen at the version Cargo.lock pins
+        run: |
+          v="$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')"
+          cargo install wasm-bindgen-cli --version "$v" --locked
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: build the bundle
+        run: ./web/build.sh
+
+      - name: smoke-test the bundle headlessly
+        run: node web/test/smoke.mjs
+
   orphaned-tests:
     name: Orphaned test check
     runs-on: ubuntu-22.04

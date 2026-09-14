@@ -18,8 +18,8 @@ use std::sync::LazyLock;
 /// rather than asking the model for hex is the point: a model cannot reliably emit 68 bytes of
 /// big-endian integers, and one wrong byte desynchronizes the client for the whole connection.
 fn encode_stat(zxid: i64, version: i32, data_length: i32, num_children: i32) -> Vec<u8> {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now_ms = crate::utils::clock::SystemTime::now()
+        .duration_since(crate::utils::clock::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
 

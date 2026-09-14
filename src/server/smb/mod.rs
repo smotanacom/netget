@@ -212,7 +212,7 @@ impl SmbServer {
             .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap());
 
         // Track connection in app state
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         let conn_state = ServerConnectionState {
             id: connection_id,
             remote_addr: peer_addr,
@@ -1226,8 +1226,8 @@ impl SmbServer {
         response.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // Max write size
 
         // System time (current time in Windows FILETIME format)
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = crate::utils::clock::SystemTime::now()
+            .duration_since(crate::utils::clock::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
         let filetime = (now / 100) + 116444736000000000; // Convert to FILETIME
@@ -1353,11 +1353,11 @@ impl SmbServer {
     /// Generate a 16-byte file handle (GUID)
     #[cfg(feature = "smb")]
     fn generate_file_handle() -> Vec<u8> {
-        use std::time::SystemTime;
+        use crate::utils::clock::SystemTime;
 
         // Simple file handle generation using timestamp + random-ish data
         let now = SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+            .duration_since(crate::utils::clock::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
 

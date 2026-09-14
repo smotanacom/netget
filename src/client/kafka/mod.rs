@@ -1286,8 +1286,8 @@ fn is_fatal(e: &anyhow::Error) -> bool {
 
 /// Encode one record as a v2 record batch, the format every broker since 0.11 stores.
 fn encode_single_record(key: Option<Vec<u8>>, value: Option<Vec<u8>>) -> Result<Bytes> {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let timestamp = crate::utils::clock::SystemTime::now()
+        .duration_since(crate::utils::clock::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(-1);
 

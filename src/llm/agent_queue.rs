@@ -14,10 +14,11 @@
 //!   - a best-effort FIFO push: on enqueue the new request id is written to the
 //!     configured named pipe so an idle agent can block-read it and get woken.
 
+use crate::utils::clock::{SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;

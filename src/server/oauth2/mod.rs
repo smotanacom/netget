@@ -238,7 +238,7 @@ impl OAuth2Server {
                             ProtocolConnectionInfo,
                         };
                         use serde_json::json;
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
                         let conn_state = ServerConnectionState {
                             id: connection_id,
                             remote_addr,

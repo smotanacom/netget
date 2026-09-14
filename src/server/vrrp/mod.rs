@@ -468,7 +468,7 @@ impl VrrpServer {
             ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
         };
         let connection_id = ConnectionId::new(state.get_next_unified_id().await);
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         state
             .add_connection_to_server(
                 server_id,

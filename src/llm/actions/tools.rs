@@ -596,141 +596,173 @@ fn grep_with_context(
 
 /// Execute a web_search tool action
 pub async fn execute_web_search(query: &str) -> ToolResult {
-    use tracing::info;
-
-    info!("🔧 Tool: web_search - query=\"{}\"", query);
-    debug!("Executing web_search tool for query: {}", query);
-
-    // Check if query is a URL - if so, fetch it directly
-    if query.trim().starts_with("http://") || query.trim().starts_with("https://") {
-        return fetch_url(query.trim()).await;
+    #[cfg(target_arch = "wasm32")]
+    {
+        return ToolResult::error(
+            "web_search",
+            query.to_string(),
+            "web search is not available in the browser build".to_string(),
+        );
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use tracing::info;
 
-    // Otherwise, use DuckDuckGo HTML search (no API key required)
-    use url::form_urlencoded;
-    let encoded_query = form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
-    let url = format!("https://html.duckduckgo.com/html/?q={}", encoded_query);
+        info!("🔧 Tool: web_search - query=\"{}\"", query);
+        debug!("Executing web_search tool for query: {}", query);
 
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (compatible; NetGet/1.0)")
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap_or_default();
+        // Check if query is a URL - if so, fetch it directly
+        if query.trim().starts_with("http://") || query.trim().starts_with("https://") {
+            return fetch_url(query.trim()).await;
+        }
 
-    match client.get(&url).send().await {
-        Ok(response) => {
-            if !response.status().is_success() {
-                warn!("Web search failed with status: {}", response.status());
-                info!("  ✗ Search failed with status: {}", response.status());
-                return ToolResult::error(
-                    "web_search",
-                    query.to_string(),
-                    format!("Search failed with status: {}", response.status()),
-                );
-            }
+        // Otherwise, use DuckDuckGo HTML search (no API key required)
+        use url::form_urlencoded;
+        let encoded_query = form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
+        let url = format!("https://html.duckduckgo.com/html/?q={}", encoded_query);
 
-            match response.text().await {
-                Ok(html) => {
-                    // Parse search results from HTML
-                    let results = parse_duckduckgo_results(&html);
-                    if results.is_empty() {
-                        info!("  ⚠ No results found");
-                        ToolResult::success("web_search", query.to_string(), "No results found.")
-                    } else {
-                        debug!("Found {} search results", results.len());
-                        info!("  ✓ Found {} search results", results.len());
-                        let formatted = format_search_results(&results);
-                        ToolResult::success("web_search", query.to_string(), formatted)
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to read search response: {}", e);
-                    info!("  ✗ Failed to read response: {}", e);
-                    ToolResult::error(
+        let client = {
+            let builder =
+                reqwest::Client::builder().user_agent("Mozilla/5.0 (compatible; NetGet/1.0)");
+            // fetch() has no request timeout; reqwest's wasm builder has no method for one.
+            #[cfg(not(target_arch = "wasm32"))]
+            let builder = builder.timeout(std::time::Duration::from_secs(10));
+            builder.build().unwrap_or_default()
+        };
+
+        match client.get(&url).send().await {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    warn!("Web search failed with status: {}", response.status());
+                    info!("  ✗ Search failed with status: {}", response.status());
+                    return ToolResult::error(
                         "web_search",
                         query.to_string(),
-                        format!("Failed to read response: {}", e),
-                    )
+                        format!("Search failed with status: {}", response.status()),
+                    );
+                }
+
+                match response.text().await {
+                    Ok(html) => {
+                        // Parse search results from HTML
+                        let results = parse_duckduckgo_results(&html);
+                        if results.is_empty() {
+                            info!("  ⚠ No results found");
+                            ToolResult::success(
+                                "web_search",
+                                query.to_string(),
+                                "No results found.",
+                            )
+                        } else {
+                            debug!("Found {} search results", results.len());
+                            info!("  ✓ Found {} search results", results.len());
+                            let formatted = format_search_results(&results);
+                            ToolResult::success("web_search", query.to_string(), formatted)
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to read search response: {}", e);
+                        info!("  ✗ Failed to read response: {}", e);
+                        ToolResult::error(
+                            "web_search",
+                            query.to_string(),
+                            format!("Failed to read response: {}", e),
+                        )
+                    }
                 }
             }
-        }
-        Err(e) => {
-            error!("Web search request failed: {}", e);
-            info!("  ✗ Request failed: {}", e);
-            ToolResult::error(
-                "web_search",
-                query.to_string(),
-                format!("Request failed: {}", e),
-            )
+            Err(e) => {
+                error!("Web search request failed: {}", e);
+                info!("  ✗ Request failed: {}", e);
+                ToolResult::error(
+                    "web_search",
+                    query.to_string(),
+                    format!("Request failed: {}", e),
+                )
+            }
         }
     }
 }
 
 /// Fetch a URL directly and convert HTML to text
 async fn fetch_url(url: &str) -> ToolResult {
-    use tracing::info;
+    #[cfg(target_arch = "wasm32")]
+    {
+        return ToolResult::error(
+            "web_search",
+            url.to_string(),
+            "fetching URLs is not available in the browser build".to_string(),
+        );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use tracing::info;
 
-    info!("🔧 Tool: web_search (fetch URL) - {}", url);
-    debug!("Fetching URL directly: {}", url);
+        info!("🔧 Tool: web_search (fetch URL) - {}", url);
+        debug!("Fetching URL directly: {}", url);
 
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (compatible; NetGet/1.0)")
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .unwrap_or_default();
+        let client = {
+            let builder =
+                reqwest::Client::builder().user_agent("Mozilla/5.0 (compatible; NetGet/1.0)");
+            // fetch() has no request timeout; reqwest's wasm builder has no method for one.
+            #[cfg(not(target_arch = "wasm32"))]
+            let builder = builder.timeout(std::time::Duration::from_secs(15));
+            builder.build().unwrap_or_default()
+        };
 
-    match client.get(url).send().await {
-        Ok(response) => {
-            if !response.status().is_success() {
-                warn!("URL fetch failed with status: {}", response.status());
-                info!("  ✗ HTTP {}", response.status());
-                return ToolResult::error(
-                    "web_search",
-                    url.to_string(),
-                    format!("Failed to fetch URL: HTTP {}", response.status()),
-                );
-            }
-
-            match response.text().await {
-                Ok(html) => {
-                    // Convert HTML to plain text
-                    let text = html2text::from_read(html.as_bytes(), 120);
-
-                    if text.trim().is_empty() {
-                        info!("  ⚠ URL fetched but no text content found");
-                        ToolResult::success(
-                            "web_search",
-                            url.to_string(),
-                            "URL fetched but no text content found.",
-                        )
-                    } else {
-                        // Truncate to reasonable length (10000 chars)
-                        let truncated = crate::utils::truncate_with_notice(&text, 10000);
-
-                        debug!("Fetched URL: {} chars", truncated.len());
-                        info!("  ✓ Fetched URL: {} chars", truncated.len());
-                        ToolResult::success("web_search", url.to_string(), truncated)
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to read URL response: {}", e);
-                    info!("  ✗ Failed to read response: {}", e);
-                    ToolResult::error(
+        match client.get(url).send().await {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    warn!("URL fetch failed with status: {}", response.status());
+                    info!("  ✗ HTTP {}", response.status());
+                    return ToolResult::error(
                         "web_search",
                         url.to_string(),
-                        format!("Failed to read response: {}", e),
-                    )
+                        format!("Failed to fetch URL: HTTP {}", response.status()),
+                    );
+                }
+
+                match response.text().await {
+                    Ok(html) => {
+                        // Convert HTML to plain text
+                        let text = html2text::from_read(html.as_bytes(), 120);
+
+                        if text.trim().is_empty() {
+                            info!("  ⚠ URL fetched but no text content found");
+                            ToolResult::success(
+                                "web_search",
+                                url.to_string(),
+                                "URL fetched but no text content found.",
+                            )
+                        } else {
+                            // Truncate to reasonable length (10000 chars)
+                            let truncated = crate::utils::truncate_with_notice(&text, 10000);
+
+                            debug!("Fetched URL: {} chars", truncated.len());
+                            info!("  ✓ Fetched URL: {} chars", truncated.len());
+                            ToolResult::success("web_search", url.to_string(), truncated)
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to read URL response: {}", e);
+                        info!("  ✗ Failed to read response: {}", e);
+                        ToolResult::error(
+                            "web_search",
+                            url.to_string(),
+                            format!("Failed to read response: {}", e),
+                        )
+                    }
                 }
             }
-        }
-        Err(e) => {
-            error!("URL fetch request failed: {}", e);
-            info!("  ✗ Request failed: {}", e);
-            ToolResult::error(
-                "web_search",
-                url.to_string(),
-                format!("Request failed: {}", e),
-            )
+            Err(e) => {
+                error!("URL fetch request failed: {}", e);
+                info!("  ✗ Request failed: {}", e);
+                ToolResult::error(
+                    "web_search",
+                    url.to_string(),
+                    format!("Request failed: {}", e),
+                )
+            }
         }
     }
 }
@@ -824,47 +856,58 @@ fn format_search_results(results: &[SearchResult]) -> String {
 
 /// Execute a list_models tool action
 pub async fn execute_list_models() -> ToolResult {
-    use tracing::info;
+    #[cfg(target_arch = "wasm32")]
+    {
+        return ToolResult::error(
+            "list_models",
+            "query available models".to_string(),
+            "the browser build has no Ollama to list models from".to_string(),
+        );
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use tracing::info;
 
-    info!("🔧 Tool: list_models - querying Ollama for available models");
-    debug!("Executing list_models tool");
+        info!("🔧 Tool: list_models - querying Ollama for available models");
+        debug!("Executing list_models tool");
 
-    // Create Ollama client
-    let client = crate::llm::ollama_client::OllamaClient::new("http://localhost:11434");
+        // Create Ollama client
+        let client = crate::llm::ollama_client::OllamaClient::new("http://localhost:11434");
 
-    match client.list_models().await {
-        Ok(models) => {
-            if models.is_empty() {
-                info!("  ⚠ No models found in Ollama");
-                ToolResult::success(
+        match client.list_models().await {
+            Ok(models) => {
+                if models.is_empty() {
+                    info!("  ⚠ No models found in Ollama");
+                    ToolResult::success(
+                        "list_models",
+                        "query available models".to_string(),
+                        "No models found. Please pull a model using 'ollama pull <model-name>'.",
+                    )
+                } else {
+                    let model_count = models.len();
+                    let formatted = format!(
+                        "Available Ollama models ({} total):\n\n{}\n\nYou can use any of these models with the change_model action.",
+                        model_count,
+                        models.join("\n")
+                    );
+                    debug!("Found {} models", model_count);
+                    info!("  ✓ Found {} models", model_count);
+                    ToolResult::success(
+                        "list_models",
+                        "query available models".to_string(),
+                        formatted,
+                    )
+                }
+            }
+            Err(e) => {
+                error!("Failed to list models: {}", e);
+                info!("  ✗ Failed to list models: {}", e);
+                ToolResult::error(
                     "list_models",
                     "query available models".to_string(),
-                    "No models found. Please pull a model using 'ollama pull <model-name>'.",
-                )
-            } else {
-                let model_count = models.len();
-                let formatted = format!(
-                    "Available Ollama models ({} total):\n\n{}\n\nYou can use any of these models with the change_model action.",
-                    model_count,
-                    models.join("\n")
-                );
-                debug!("Found {} models", model_count);
-                info!("  ✓ Found {} models", model_count);
-                ToolResult::success(
-                    "list_models",
-                    "query available models".to_string(),
-                    formatted,
+                    format!("Failed to list models: {}. Is Ollama running?", e),
                 )
             }
-        }
-        Err(e) => {
-            error!("Failed to list models: {}", e);
-            info!("  ✗ Failed to list models: {}", e);
-            ToolResult::error(
-                "list_models",
-                "query available models".to_string(),
-                format!("Failed to list models: {}. Is Ollama running?", e),
-            )
         }
     }
 }
@@ -1198,7 +1241,7 @@ pub async fn execute_generate_random(
 
         // Random timestamp (Unix timestamp)
         "timestamp" | "unix_timestamp" => {
-            use std::time::{SystemTime, UNIX_EPOCH};
+            use crate::utils::clock::{SystemTime, UNIX_EPOCH};
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -1218,7 +1261,7 @@ pub async fn execute_generate_random(
 
         // Random date (ISO 8601 format)
         "date" | "iso_date" => {
-            use std::time::{SystemTime, UNIX_EPOCH};
+            use crate::utils::clock::{SystemTime, UNIX_EPOCH};
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())

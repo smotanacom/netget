@@ -24,8 +24,8 @@ type Aes128Ctr = ctr::Ctr128BE<Aes128>;
 #[derive(Debug, Clone)]
 pub struct CircuitStats {
     pub circuit_id: CircuitId,
-    pub created_at: std::time::Instant,
-    pub last_activity: std::time::Instant,
+    pub created_at: crate::utils::clock::Instant,
+    pub last_activity: crate::utils::clock::Instant,
     pub bytes_sent: u64,
     pub bytes_received: u64,
     pub active_streams: usize,
@@ -99,9 +99,9 @@ pub struct Circuit {
     /// Next hop (for extending circuits)
     pub next_hop: Option<String>,
     /// Circuit creation timestamp
-    pub created_at: std::time::Instant,
+    pub created_at: crate::utils::clock::Instant,
     /// Last activity timestamp
-    pub last_activity: std::time::Instant,
+    pub last_activity: crate::utils::clock::Instant,
     /// Total bytes sent to client
     pub bytes_sent: u64,
     /// Total bytes received from client
@@ -117,7 +117,7 @@ pub struct Circuit {
 impl Circuit {
     /// Create new circuit with crypto keys from ntor handshake
     pub fn new(id: CircuitId, key_material: KeyMaterial) -> Self {
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         Self {
             id,
             crypto: CircuitCrypto::new(key_material),
@@ -136,13 +136,13 @@ impl Circuit {
     /// Record bytes sent to client
     pub fn record_sent(&mut self, bytes: u64) {
         self.bytes_sent += bytes;
-        self.last_activity = std::time::Instant::now();
+        self.last_activity = crate::utils::clock::Instant::now();
     }
 
     /// Record bytes received from client
     pub fn record_received(&mut self, bytes: u64) {
         self.bytes_received += bytes;
-        self.last_activity = std::time::Instant::now();
+        self.last_activity = crate::utils::clock::Instant::now();
     }
 
     /// Decrypt incoming RELAY cell

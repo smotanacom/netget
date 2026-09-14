@@ -7,10 +7,10 @@ use crate::llm::actions::{
 use crate::protocol::log_template::LogTemplate;
 use crate::protocol::EventType;
 use crate::state::app_state::AppState;
+use crate::utils::clock::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// NTP protocol handler.
 ///

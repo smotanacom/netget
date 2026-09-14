@@ -2197,6 +2197,7 @@ impl EventHandler {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn handle_set_backend(&mut self, args: String, ui: &mut App) -> Result<()> {
         let parts: Vec<&str> = args.splitn(3, ' ').collect();
 
@@ -2240,6 +2241,17 @@ impl EventHandler {
                 ui.add_llm_message("✗ Unknown backend. Use: /backend ollama [url] or /backend openai <url> [api-key]".to_string());
             }
         }
+        Ok(())
+    }
+
+    /// The browser build has exactly one backend, the page's LLM bridge, so there is nothing
+    /// to switch to.
+    #[cfg(target_arch = "wasm32")]
+    async fn handle_set_backend(&mut self, _args: String, ui: &mut App) -> Result<()> {
+        ui.add_llm_message(
+            "✗ The browser build talks to the page's model bridge; pick the model on the page."
+                .to_string(),
+        );
         Ok(())
     }
 

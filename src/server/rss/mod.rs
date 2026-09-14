@@ -64,7 +64,7 @@ impl RssServer {
 
                         // Without this the connection never appears in the dashboard rail and
                         // its byte counters stay at zero for the life of the server.
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
                         app_state
                             .add_connection_to_server(
                                 server_id,

@@ -286,8 +286,8 @@ impl LlmNfsFileSystem {
             // unwrap_or_default rather than unwrap: a clock set before 1970 would otherwise
             // panic inside a connection task, where the panic is silent and the server keeps
             // reporting Running.
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            crate::utils::clock::SystemTime::now()
+                .duration_since(crate::utils::clock::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs()
         });

@@ -732,7 +732,7 @@ impl OpenIdConnectClient {
         // dropping a JoinHandle only detaches it in Tokio.
         let task_registrar = app_state.clone();
         let task_handle = tokio::spawn(async move {
-            let start_time = std::time::Instant::now();
+            let start_time = crate::utils::clock::Instant::now();
             let mut poll_count = 0;
             let interval_duration = std::time::Duration::from_secs(interval);
             let expires_duration = std::time::Duration::from_secs(expires_in);

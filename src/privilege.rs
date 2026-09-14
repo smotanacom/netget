@@ -80,6 +80,27 @@ pub struct SystemCapabilities {
 impl SystemCapabilities {
     /// Detect system capabilities at startup
     pub fn detect() -> Self {
+        // A browser page has no root, no raw sockets and no devices; and on the virtual
+        // network of the wasm build any port number binds, so the privileged-port gate in
+        // `server_startup` must not refuse 80 or 23.
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Self {
+                can_bind_privileged_ports: true,
+                has_raw_socket_access: false,
+                has_packet_capture_access: false,
+                has_bluetooth_access: false,
+                has_usb_access: false,
+                has_nfc_access: false,
+                is_root: false,
+            };
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::probe()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn probe() -> Self {
         let is_root = is_running_as_root();
         let can_bind_privileged_ports = can_bind_privileged_port();
         let has_raw_socket_access = has_raw_ip_socket_capability();
@@ -180,6 +201,11 @@ fn is_running_as_root() -> bool {
     {
         // On Windows, check if running as Administrator
         // For now, return false - can be enhanced later with Windows-specific APIs
+        false
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
         false
     }
 }
@@ -361,6 +387,11 @@ fn has_raw_ip_socket_capability() -> bool {
     {
         is_running_as_root()
     }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
 }
 
 /// Check whether this process can capture or inject frames at layer 2.
@@ -453,6 +484,11 @@ fn has_packet_capture_capability() -> bool {
     {
         // Npcap/WinPcap driver access requires Administrator.
         is_running_as_root()
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
     }
 }
 

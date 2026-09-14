@@ -267,8 +267,8 @@ impl BitcoinProtocol {
             .get("timestamp")
             .and_then(|v| v.as_i64())
             .unwrap_or_else(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                crate::utils::clock::SystemTime::now()
+                    .duration_since(crate::utils::clock::UNIX_EPOCH)
                     .unwrap()
                     .as_secs() as i64
             });

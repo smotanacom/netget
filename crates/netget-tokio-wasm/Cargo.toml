@@ -1,0 +1,23 @@
+[package]
+name = "netget-tokio-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "The subset of the tokio API NetGet uses, for wasm32-unknown-unknown: the JS event loop as the executor, timers on setTimeout, and an in-memory virtual network in place of sockets. NetGet depends on it under the name `tokio` on that target so no protocol source changes."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The runtime-independent parts of tokio itself: channels, locks, AsyncRead/AsyncWrite,
+# split/duplex, and the select!/join! macros. All of these compile and work on
+# wasm32-unknown-unknown; only tokio's executor, timers and sockets do not.
+tokio = { version = "1.41", default-features = false, features = ["sync", "macros", "io-util"] }
+futures = "0.3"
+wasm-bindgen-futures = "0.4"
+gloo-timers = { version = "0.3", features = ["futures"] }
+send_wrapper = { version = "0.6", features = ["futures"] }
+pin-project-lite = "0.2"
+# performance.now() for `time::Instant`
+js-sys = "0.3"
+wasm-bindgen = "0.2"

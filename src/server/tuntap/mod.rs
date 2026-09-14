@@ -63,11 +63,12 @@ pub mod packet;
 
 pub use actions::TunTapProtocol;
 
+use crate::utils::clock::Instant;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;

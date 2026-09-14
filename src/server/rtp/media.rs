@@ -372,8 +372,8 @@ pub fn build_rtcp_sender_report(
     octet_count: u32,
 ) -> Vec<u8> {
     // NTP timestamp: seconds since 1900 + fraction. 1900->1970 is 2_208_988_800 s.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = crate::utils::clock::SystemTime::now()
+        .duration_since(crate::utils::clock::UNIX_EPOCH)
         .unwrap_or_default();
     let ntp_secs = now.as_secs() + 2_208_988_800;
     let ntp_frac = ((now.subsec_nanos() as u64) << 32) / 1_000_000_000;

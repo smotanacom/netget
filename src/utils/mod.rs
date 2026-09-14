@@ -1,6 +1,7 @@
 //! Utility modules
 
 pub mod bencode;
+pub mod clock;
 pub mod sanitize;
 pub mod save_load;
 pub mod shutdown;

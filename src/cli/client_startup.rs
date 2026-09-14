@@ -268,8 +268,8 @@ pub async fn start_client_from_action(
         memory: String::new(),
         status: ClientStatus::Connecting,
         connection: None,
-        created_at: std::time::Instant::now(),
-        status_changed_at: std::time::Instant::now(),
+        created_at: crate::utils::clock::Instant::now(),
+        status_changed_at: crate::utils::clock::Instant::now(),
         startup_params: startup_params.clone(),
         event_handler_config,
         protocol_data: serde_json::Value::Null,
@@ -295,7 +295,8 @@ pub async fn start_client_from_action(
     if let Some(tasks) = scheduled_tasks {
         for task_def in tasks {
             use crate::state::task::{ScheduledTask, TaskId, TaskScope, TaskStatus, TaskType};
-            use std::time::{Duration, Instant};
+            use crate::utils::clock::Instant;
+            use std::time::Duration;
 
             // Determine task type
             let task_type = if task_def.recurring {

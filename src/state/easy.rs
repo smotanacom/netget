@@ -1,6 +1,6 @@
 //! Easy protocol instance management
 
-use std::time::Instant;
+use crate::utils::clock::Instant;
 use tokio::task::JoinHandle;
 
 use super::client::ClientId;

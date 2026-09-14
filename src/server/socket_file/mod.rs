@@ -172,7 +172,7 @@ impl SocketFileServer {
                             ConnectionState as ServerConnectionState, ConnectionStatus,
                             ProtocolConnectionInfo,
                         };
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
                         // Use a dummy SocketAddr since Unix sockets don't have IP addresses
                         let dummy_addr = "127.0.0.1:0".parse().unwrap();
                         let conn_state = ServerConnectionState {

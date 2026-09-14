@@ -1188,8 +1188,8 @@ impl NetGetMcpService {
             )]));
         }
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_ms = crate::utils::clock::SystemTime::now()
+            .duration_since(crate::utils::clock::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
@@ -1226,8 +1226,8 @@ impl NetGetMcpService {
     ) -> Result<CallToolResult, McpError> {
         match self.state.app_state.get_access_log(params.id).await {
             Some(e) => {
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                let now_ms = crate::utils::clock::SystemTime::now()
+                    .duration_since(crate::utils::clock::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0);
                 let age = now_ms.saturating_sub(e.unix_ms) / 1000;
@@ -1508,8 +1508,8 @@ impl NetGetMcpService {
         let actions_json =
             serde_json::to_string_pretty(&req.tools).unwrap_or_else(|_| "[]".to_string());
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_ms = crate::utils::clock::SystemTime::now()
+            .duration_since(crate::utils::clock::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let age = now_ms.saturating_sub(req.created_unix_ms) / 1000;
@@ -1568,8 +1568,8 @@ impl NetGetMcpService {
             )]));
         }
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now_ms = crate::utils::clock::SystemTime::now()
+            .duration_since(crate::utils::clock::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 

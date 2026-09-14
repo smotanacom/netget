@@ -82,7 +82,7 @@ impl BootpServer {
                             ConnectionState as ServerConnectionState, ConnectionStatus,
                             ProtocolConnectionInfo,
                         };
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
 
                         #[cfg(feature = "bootp")]
                         let _request_type = parsed_info

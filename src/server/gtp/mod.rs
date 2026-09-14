@@ -1233,7 +1233,7 @@ impl GtpServer {
         };
 
         let connection_id = ConnectionId::new(shared.state.get_next_unified_id().await);
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         shared
             .state
             .add_connection_to_server(

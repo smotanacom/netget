@@ -318,7 +318,7 @@ impl ProxyServer {
                             ConnectionState as ServerConnectionState, ConnectionStatus,
                             ProtocolConnectionInfo,
                         };
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
                         let conn_state = ServerConnectionState {
                             id: connection_id,
                             remote_addr: peer_addr,
@@ -538,7 +538,7 @@ impl ProxyServer {
     ) -> Result<()> {
         use tokio::io::AsyncWriteExt;
 
-        let start_time = std::time::Instant::now();
+        let start_time = crate::utils::clock::Instant::now();
 
         // Parse host:port from CONNECT uri.
         //
@@ -802,7 +802,7 @@ impl ProxyServer {
     ) -> Result<()> {
         use tokio::io::AsyncWriteExt;
 
-        let start_time = std::time::Instant::now();
+        let start_time = crate::utils::clock::Instant::now();
 
         // Parse HTTP request
         let request_str = String::from_utf8_lossy(request_data);
@@ -1022,7 +1022,7 @@ impl ProxyServer {
         method: &str,
         uri: &str,
         peer_addr: SocketAddr,
-        start_time: std::time::Instant,
+        start_time: crate::utils::clock::Instant,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
