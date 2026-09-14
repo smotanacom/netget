@@ -1,6 +1,6 @@
 # NetGet in the browser
 
-The landing page (`docs/index.html`, served at netget.net) runs NetGet itself: the dashboard,
+The landing page (`site/index.html`, served at netget.net) runs NetGet itself: the dashboard,
 the protocol servers and the LLM plumbing, compiled to `wasm32-unknown-unknown`. This
 directory holds the build script and the headless test; the code is in `crates/`.
 
@@ -27,9 +27,10 @@ process spawning for scripts, the HTTP client, termbg, socket2, ollama-rs — is
 rustup target add wasm32-unknown-unknown
 rustup component add llvm-tools            # llvm-ar, for ring's C objects (see below)
 cargo install wasm-bindgen-cli --version "$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock | sed -n 's/^version = "\(.*\)"/\1/p')"
-./web/build.sh                              # -> docs/demo/pkg/ (gitignored)
+./web/build.sh                              # -> site/demo/pkg/ (gitignored)
 node web/test/smoke.mjs                     # headless end-to-end check of the bundle
-cd docs && python3 -m http.server 8000      # then open http://localhost:8000/
+cd site && python3 -m http.server 8000      # then open http://localhost:8000/
+./site/deploy.sh                            # publish: S3 + CloudFront, see site/CLAUDE.md
 ```
 
 `web/build.sh --dev` skips optimisation (seconds instead of a minute, ~5x the size).
@@ -59,7 +60,7 @@ Two things the script handles that are easy to lose an hour to:
   `udp_close(id)` — a UDP one. `listening_ports()`, `bound_udp_ports()` and `servers(cb)`
   describe what is there.
 
-`docs/js/demo.js` is the page: the dashboard terminal, a Telnet terminal (with the IAC
+`site/js/demo.js` is the page: the dashboard terminal, a Telnet terminal (with the IAC
 negotiation a plain client does), a browser that speaks HTTP/1.1 over `connect()`, a raw
 socket, and the model panel with its three modes.
 

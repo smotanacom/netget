@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build the browser demo: crates/netget-web -> docs/demo/pkg/.
+# Build the browser demo: crates/netget-web -> site/demo/pkg/.
 #
-#   ./web/build.sh            size-tuned build (the `web` profile), bindings into docs/demo/pkg
+#   ./web/build.sh            size-tuned build (the `web` profile), bindings into site/demo/pkg
 #   ./web/build.sh --dev      debug build (faster, much larger .wasm)
 #
 # Needs: the wasm32-unknown-unknown target (`rustup target add wasm32-unknown-unknown`),
@@ -57,7 +57,7 @@ fi
 echo "== cargo build (profile: $profile)"
 env "${wasm_ar_env[@]}" cargo build -p netget-web --target wasm32-unknown-unknown --profile "$profile"
 
-out=docs/demo/pkg
+out=site/demo/pkg
 mkdir -p "$out"
 echo "== wasm-bindgen -> $out"
 wasm-bindgen --target web --no-typescript --out-dir "$out" \

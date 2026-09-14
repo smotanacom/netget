@@ -917,12 +917,40 @@ rather than a hardcoded copy:
 depends on neither, because `kubectl` speaks JSON to an apiserver by default. Derive this table
 from `Cargo.toml` and `build.rs` rather than trusting it — it has been wrong.
 
+## The website — netget.net
+
+**The site does not deploy itself. Nothing watches this repository; a merge to master
+publishes nothing.** `site/` is the landing page and `./site/deploy.sh` is the only way it
+reaches netget.net — run it whenever you change anything under `site/`, or the live page
+stays at whatever the last person uploaded.
+
+```bash
+./site/deploy.sh        # needs AWS_PROFILE=smotana, which the script exports itself
+```
+
+It syncs `site/` to the `netget.net` S3 bucket (assets `max-age=604800`, `index.html`
+`max-age=0`) and invalidates the CloudFront distribution, so a deploy is live within seconds.
+
+Two things about it are load-bearing:
+
+- **`site/` is public and `docs/` is not.** Only `site/` is uploaded. The planning markdown in
+  `docs/` used to be served — GitHub Pages published that whole directory — and is not any
+  more. A new file under `site/` is a new public URL.
+- **`deploy.sh` excludes itself and every `*.md`.** `site/CLAUDE.md` names the bucket,
+  distribution and OAC IDs; the first run of the script published it before the exclusion
+  existed. `--delete` skips excluded paths too, so removing such a file from the bucket is a
+  manual `aws s3 rm`.
+
+Hosting is S3 + CloudFront (private bucket, OAC, ACM cert, DNS at Porkbun) — the same shape as
+the maintainer's other static sites. It replaced GitHub Pages, which cannot serve a private
+repository. `site/CLAUDE.md` has the resource IDs, the DNS records and how to change them.
+
 ## Browser build (wasm32) — the landing-page demo
 
 netget.net runs NetGet itself in the page: the dashboard, every server protocol that compiles
 for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
 `crates/netget-web/Cargo.toml`, the exclusions and the probe that derives them are in
-`web/README.md`) and the LLM plumbing, built by `./web/build.sh`, page in `docs/`.
+`web/README.md`) and the LLM plumbing, built by `./web/build.sh`, page in `site/`.
 `web/README.md` is the operating manual; what matters for anyone touching the tree:
 
 - **Protocol code is compiled unchanged.** On wasm32 the names `tokio` and `crossterm` mean
@@ -966,9 +994,12 @@ for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
   wrong, `cargo clean -p ring --target wasm32-unknown-unknown --release` once. ring is there
   because `http` pulls rustls/rcgen, which now build with `default-features = false` and the
   `ring` provider — the `aws-lc-rs` default is a C library that does not build for wasm.
-- Publishing: `.github/workflows/pages.yml` builds the bundle and deploys `docs/` to GitHub
-  Pages; `docs/demo/pkg/` is gitignored. The repository's Pages source has to be "GitHub
-  Actions" for the demo to be live; with "deploy from /docs" the page shows a banner instead.
+- **Publishing is the site's own `./site/deploy.sh`, and the bundle is not built by it.**
+  `./web/build.sh` writes `site/demo/pkg/` (gitignored, ~17 MB of wasm, 5.7 MB gzipped);
+  `deploy.sh` refuses to run without it and uploads the `.wasm` with
+  `Content-Type: application/wasm` so browsers can compile it while it streams. Build, run
+  the smoke test, then deploy. CI's `wasm-web` job builds and smoke-tests the bundle on every
+  PR but publishes nothing, like everything else in this repository.
 
 ## MCP surface
 

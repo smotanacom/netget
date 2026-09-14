@@ -1,6 +1,6 @@
 // Headless smoke test for the browser bundle, run under Node.
 //
-// Drives docs/demo/pkg/netget_web.js the way the page does, minus the DOM: boots NetGet,
+// Drives site/demo/pkg/netget_web.js the way the page does, minus the DOM: boots NetGet,
 // checks the dashboard paints into the fake terminal, starts a TCP server through
 // `start_server`, connects to it over the virtual network, sends a line, answers the
 // model request the page receives with a `send_tcp_data` action, and asserts the bytes come
@@ -10,9 +10,9 @@
 //   ./web/build.sh && node web/test/smoke.mjs
 
 import { readFileSync } from 'node:fs';
-import init, { NetGet } from '../../docs/demo/pkg/netget_web.js';
+import init, { NetGet } from '../../site/demo/pkg/netget_web.js';
 
-const wasm = readFileSync(new URL('../../docs/demo/pkg/netget_web_bg.wasm', import.meta.url));
+const wasm = readFileSync(new URL('../../site/demo/pkg/netget_web_bg.wasm', import.meta.url));
 await init({ module_or_path: wasm });
 
 const dec = new TextDecoder();
