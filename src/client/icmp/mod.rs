@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use pnet::packet::icmp::echo_reply::EchoReplyPacket;
 use pnet::packet::icmp::time_exceeded::TimeExceededPacket;
 // Note: pnet doesn't provide timestamp_reply packet types
+use crate::utils::clock::Instant;
 use pnet::packet::icmp::{destination_unreachable::DestinationUnreachablePacket, IcmpPacket};
 use pnet::packet::icmp::{IcmpCode, IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
@@ -18,7 +19,6 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error};
 

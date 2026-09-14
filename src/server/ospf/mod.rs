@@ -8,13 +8,13 @@
 
 pub mod actions;
 
+use crate::utils::clock::Instant;
 use anyhow::{anyhow, Result};
 use hex;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace, warn};
@@ -399,7 +399,7 @@ impl OspfServer {
             use crate::state::server::{
                 ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
             };
-            let now = std::time::Instant::now();
+            let now = crate::utils::clock::Instant::now();
             app_state
                 .add_connection_to_server(
                     server_id,

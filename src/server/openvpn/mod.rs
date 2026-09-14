@@ -81,6 +81,7 @@ use crate::protocol::Event;
 use crate::server::connection::ConnectionId;
 use crate::state::app_state::AppState;
 use crate::state::server::{ConnectionState, ConnectionStatus, ProtocolConnectionInfo};
+use crate::utils::clock::Instant;
 use crate::utils::wire_failure::WireFailure;
 use actions::{OpenvpnProtocol, OPENVPN_KEY_EXCHANGE_EVENT, OPENVPN_PEER_RESET_EVENT};
 use anyhow::{Context, Result};
@@ -90,7 +91,6 @@ use peer::{Peer, PeerAdmission, PeerManager};
 use session::{ControlSession, SessionEvent, SessionManager};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
@@ -612,7 +612,7 @@ impl OpenvpnServer {
             return;
         }
 
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         app_state
             .add_connection_to_server(
                 server_id,

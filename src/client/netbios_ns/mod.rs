@@ -48,10 +48,11 @@ pub mod wire;
 
 pub use actions::NetbiosNsClientProtocol;
 
+use crate::utils::clock::Instant;
 use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::net::UdpSocket;

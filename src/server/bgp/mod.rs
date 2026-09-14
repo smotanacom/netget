@@ -267,7 +267,7 @@ async fn register_connection(
     remote_addr: SocketAddr,
 ) {
     use crate::state::server::{ConnectionState, ConnectionStatus, ProtocolConnectionInfo};
-    let now = std::time::Instant::now();
+    let now = crate::utils::clock::Instant::now();
     app_state
         .add_connection_to_server(
             server_id,
@@ -318,7 +318,7 @@ struct BgpSession {
     peer_asn4_shared: Arc<AtomicBool>,
     /// Seconds since session start at which the last message arrived, for hold-timer expiry.
     last_received: Arc<AtomicU64>,
-    started: std::time::Instant,
+    started: crate::utils::clock::Instant,
 }
 
 /// Outcome of reading one framed message off the wire.
@@ -421,7 +421,7 @@ async fn run_session(
         out_tx,
         peer_asn4_shared,
         last_received: Arc::new(AtomicU64::new(0)),
-        started: std::time::Instant::now(),
+        started: crate::utils::clock::Instant::now(),
     };
 
     let mut timer_task: Option<tokio::task::JoinHandle<()>> = None;
@@ -1146,7 +1146,7 @@ fn spawn_timers(
     hold_time: u16,
     out_tx: mpsc::UnboundedSender<Vec<u8>>,
     last_received: Arc<AtomicU64>,
-    started: std::time::Instant,
+    started: crate::utils::clock::Instant,
     shutdown: Arc<Shutdown>,
     status_tx: mpsc::UnboundedSender<String>,
     connection_id: crate::server::connection::ConnectionId,

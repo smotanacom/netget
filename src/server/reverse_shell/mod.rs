@@ -140,7 +140,7 @@ impl ReverseShellServer {
         let (mut read_half, write_half) = tokio::io::split(stream);
         let write_half = Arc::new(Mutex::new(write_half));
 
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         let conn_state = ConnectionState {
             id: connection_id,
             remote_addr,

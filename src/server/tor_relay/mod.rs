@@ -1229,7 +1229,7 @@ impl TorRelaySession {
     /// Generate a test consensus document for Arti bootstrap
     /// Returns HTTP response with minimal but valid consensus
     fn generate_test_consensus() -> Vec<u8> {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use crate::utils::clock::{SystemTime, UNIX_EPOCH};
 
         // Get current time for valid-after/until
         let now = SystemTime::now()

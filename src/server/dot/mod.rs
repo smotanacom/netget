@@ -136,7 +136,7 @@ impl DotServer {
                             ConnectionState as ServerConnectionState, ConnectionStatus,
                             ProtocolConnectionInfo,
                         };
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
                         app_state
                             .add_connection_to_server(
                                 server_id,

@@ -28,8 +28,9 @@
 //! under the peer's capacity because exceeding it means silent drops.
 
 use super::packet::Opcode;
+use crate::utils::clock::Instant;
 use std::collections::{BTreeMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Most packet ids to name in one ACK array.
 ///

@@ -477,7 +477,7 @@ impl CanServer {
             use crate::state::server::{
                 ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
             };
-            let now = std::time::Instant::now();
+            let now = crate::utils::clock::Instant::now();
             let nowhere: SocketAddr = "0.0.0.0:0"
                 .parse()
                 .expect("0.0.0.0:0 is a valid socket address");

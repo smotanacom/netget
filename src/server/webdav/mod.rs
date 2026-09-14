@@ -101,7 +101,7 @@ impl WebDavServer {
                             ConnectionState as ServerConnectionState, ConnectionStatus,
                             ProtocolConnectionInfo,
                         };
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
                         let conn_state = ServerConnectionState {
                             id: connection_id,
                             remote_addr: peer_addr,

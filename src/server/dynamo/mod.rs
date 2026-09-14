@@ -73,7 +73,7 @@ impl DynamoServer {
                             ConnectionState as ServerConnectionState, ConnectionStatus,
                             ProtocolConnectionInfo,
                         };
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
                         let conn_state = ServerConnectionState {
                             id: connection_id,
                             remote_addr,
@@ -432,8 +432,8 @@ fn build_dynamo_response(status: u16, body: String) -> Response<Full<Bytes>> {
     // Timestamp-derived request id, echoed in x-amzn-RequestId.
     let request_id = format!(
         "{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        crate::utils::clock::SystemTime::now()
+            .duration_since(crate::utils::clock::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     );

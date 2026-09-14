@@ -31,11 +31,12 @@ pub mod actions;
 pub mod media;
 
 use crate::server::connection::ConnectionId;
+use crate::utils::clock::Instant;
 use anyhow::Result;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{error, trace};
@@ -267,7 +268,7 @@ impl RtpServer {
                     .map(|c| {
                         c.bytes_received += bytes as u64;
                         c.packets_received += 1;
-                        c.last_activity = std::time::Instant::now();
+                        c.last_activity = crate::utils::clock::Instant::now();
                         c.id
                     })
             })
@@ -285,7 +286,7 @@ impl RtpServer {
                     ProtocolConnectionInfo,
                 };
                 let id = ConnectionId::new(state.get_next_unified_id().await);
-                let now = std::time::Instant::now();
+                let now = crate::utils::clock::Instant::now();
                 state
                     .add_connection_to_server(
                         server_id,

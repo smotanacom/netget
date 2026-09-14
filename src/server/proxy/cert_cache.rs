@@ -42,7 +42,7 @@ struct CachedCert {
     /// DER encoding of the private key that this certificate certifies
     key_der: Vec<u8>,
     /// When this certificate was generated
-    generated_at: std::time::Instant,
+    generated_at: crate::utils::clock::Instant,
 }
 
 /// Certificate cache for dynamically generated leaf certificates
@@ -133,7 +133,7 @@ impl CertificateCache {
                 CachedCert {
                     cert_der: cert_der.clone(),
                     key_der: key_der.clone(),
-                    generated_at: std::time::Instant::now(),
+                    generated_at: crate::utils::clock::Instant::now(),
                 },
             );
             debug!(

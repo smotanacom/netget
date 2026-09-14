@@ -51,7 +51,7 @@ pub async fn perform_mitm(
     status_tx: mpsc::UnboundedSender<String>,
     protocol: Arc<ProxyProtocol>,
 ) -> Result<()> {
-    let start_time = std::time::Instant::now();
+    let start_time = crate::utils::clock::Instant::now();
 
     info!(
         "Starting MITM for {}:{} from {}",

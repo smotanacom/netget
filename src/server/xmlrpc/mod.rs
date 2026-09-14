@@ -91,7 +91,7 @@ impl XmlRpcServer {
 
                         // Track connection in server state
                         let local_addr_conn = stream.local_addr().unwrap_or(listen_addr);
-                        let now = std::time::Instant::now();
+                        let now = crate::utils::clock::Instant::now();
 
                         let conn_state = ServerConnectionState {
                             id: connection_id,
