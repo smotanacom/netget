@@ -51,7 +51,7 @@ impl ClientRegistry {
         #[cfg(feature = "bgp")]
         self.register(Arc::new(crate::client::bgp::BgpClientProtocol::new()));
 
-        #[cfg(feature = "bitcoin")]
+        #[cfg(all(feature = "bitcoin", not(target_arch = "wasm32")))]
         self.register(Arc::new(
             crate::client::bitcoin::BitcoinClientProtocol::new(),
         ));
@@ -94,7 +94,7 @@ impl ClientRegistry {
             crate::client::dynamodb::DynamoDbClientProtocol::new(),
         ));
 
-        #[cfg(feature = "elasticsearch")]
+        #[cfg(all(feature = "elasticsearch", not(target_arch = "wasm32")))]
         self.register(Arc::new(
             crate::client::elasticsearch::ElasticsearchClientProtocol::new(),
         ));
@@ -120,7 +120,7 @@ impl ClientRegistry {
             tracing::debug!("ClientRegistry: HTTP client protocol registered");
         }
 
-        #[cfg(feature = "http2")]
+        #[cfg(all(feature = "http2", not(target_arch = "wasm32")))]
         self.register(Arc::new(crate::client::http2::Http2ClientProtocol::new()));
 
         // Real RFC 9114 HTTP/3 (the `h3` crate), so it keeps the `http3` name.
@@ -149,7 +149,7 @@ impl ClientRegistry {
         #[cfg(feature = "isis")]
         self.register(Arc::new(crate::client::isis::IsisClientProtocol::new()));
 
-        #[cfg(feature = "jsonrpc")]
+        #[cfg(all(feature = "jsonrpc", not(target_arch = "wasm32")))]
         self.register(Arc::new(
             crate::client::jsonrpc::JsonRpcClientProtocol::new(),
         ));
@@ -165,7 +165,7 @@ impl ClientRegistry {
         #[cfg(feature = "ldap")]
         self.register(Arc::new(crate::client::ldap::LdapClientProtocol::new()));
 
-        #[cfg(feature = "maven")]
+        #[cfg(all(feature = "maven", not(target_arch = "wasm32")))]
         self.register(Arc::new(crate::client::maven::MavenClientProtocol::new()));
 
         #[cfg(feature = "mcp")]
@@ -197,27 +197,27 @@ impl ClientRegistry {
         #[cfg(feature = "nntp")]
         self.register(Arc::new(crate::client::nntp::NntpClientProtocol::new()));
 
-        #[cfg(feature = "npm")]
+        #[cfg(all(feature = "npm", not(target_arch = "wasm32")))]
         self.register(Arc::new(crate::client::npm::NpmClientProtocol::new()));
 
         #[cfg(feature = "ntp")]
         self.register(Arc::new(crate::client::ntp::NtpClientProtocol::new()));
 
-        #[cfg(feature = "oauth2")]
+        #[cfg(all(feature = "oauth2", not(target_arch = "wasm32")))]
         self.register(Arc::new(crate::client::oauth2::OAuth2ClientProtocol::new()));
 
         #[cfg(feature = "openai")]
         self.register(Arc::new(crate::client::openai::OpenAiClientProtocol::new()));
 
-        #[cfg(feature = "ollama")]
+        #[cfg(all(feature = "ollama", not(target_arch = "wasm32")))]
         self.register(Arc::new(crate::client::ollama::OllamaClientProtocol::new()));
 
-        #[cfg(feature = "openapi")]
+        #[cfg(all(feature = "openapi", not(target_arch = "wasm32")))]
         self.register(Arc::new(
             crate::client::openapi::OpenApiClientProtocol::new(),
         ));
 
-        #[cfg(feature = "openidconnect")]
+        #[cfg(all(feature = "openidconnect", not(target_arch = "wasm32")))]
         self.register(Arc::new(
             crate::client::openidconnect::OpenIdConnectClientProtocol::new(),
         ));
@@ -230,7 +230,7 @@ impl ClientRegistry {
             crate::client::postgresql::PostgresqlClientProtocol::new(),
         ));
 
-        #[cfg(feature = "pypi")]
+        #[cfg(all(feature = "pypi", not(target_arch = "wasm32")))]
         self.register(Arc::new(crate::client::pypi::PypiClientProtocol::new()));
 
         #[cfg(feature = "mssql")]
@@ -327,7 +327,7 @@ impl ClientRegistry {
             crate::client::torrent_peer::TorrentPeerClientProtocol::new(),
         ));
 
-        #[cfg(feature = "torrent-tracker")]
+        #[cfg(all(feature = "torrent-tracker", not(target_arch = "wasm32")))]
         self.register(Arc::new(
             crate::client::torrent_tracker::TorrentTrackerClientProtocol::new(),
         ));

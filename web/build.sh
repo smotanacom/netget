@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the browser demo: crates/netget-web -> docs/demo/pkg/.
 #
-#   ./web/build.sh            release build, bindings into docs/demo/pkg
+#   ./web/build.sh            size-tuned build (the `web` profile), bindings into docs/demo/pkg
 #   ./web/build.sh --dev      debug build (faster, much larger .wasm)
 #
 # Needs: the wasm32-unknown-unknown target (`rustup target add wasm32-unknown-unknown`),
@@ -13,8 +13,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-profile=release
-profile_dir=release
+profile=web
+profile_dir=web
 wasm_ar_env=()
 if [[ "${1:-}" == "--dev" ]]; then
     profile=dev
@@ -63,7 +63,7 @@ echo "== wasm-bindgen -> $out"
 wasm-bindgen --target web --no-typescript --out-dir "$out" \
     "target/wasm32-unknown-unknown/$profile_dir/netget_web.wasm"
 
-if command -v wasm-opt >/dev/null 2>&1 && [[ "$profile" == "release" ]]; then
+if command -v wasm-opt >/dev/null 2>&1 && [[ "$profile" == "web" ]]; then
     echo "== wasm-opt -Oz"
     wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int \
         -o "$out/netget_web_bg.wasm" "$out/netget_web_bg.wasm"

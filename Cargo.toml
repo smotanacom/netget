@@ -1176,3 +1176,12 @@ tonic-build = "0.12"
 # Keep prebuilt binaries small: symbols stripped, thin LTO.
 strip = "symbols"
 lto = "thin"
+
+# The browser bundle (crates/netget-web, ./web/build.sh): size over speed. With 68 protocols
+# compiled in, the .wasm is what the visitor downloads, and it is not CPU-bound.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"

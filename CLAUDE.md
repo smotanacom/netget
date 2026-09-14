@@ -919,19 +919,22 @@ from `Cargo.toml` and `build.rs` rather than trusting it — it has been wrong.
 
 ## Browser build (wasm32) — the landing-page demo
 
-netget.net runs NetGet itself in the page: the dashboard, the `tcp`/`telnet`/`http` servers
-and the LLM plumbing compiled to `wasm32-unknown-unknown` (`crates/netget-web`, built by
-`./web/build.sh`, page in `docs/`). `web/README.md` is the operating manual; what matters
-for anyone touching the tree:
+netget.net runs NetGet itself in the page: the dashboard, every server protocol that compiles
+for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
+`crates/netget-web/Cargo.toml`, the exclusions and the probe that derives them are in
+`web/README.md`) and the LLM plumbing, built by `./web/build.sh`, page in `docs/`.
+`web/README.md` is the operating manual; what matters for anyone touching the tree:
 
 - **Protocol code is compiled unchanged.** On wasm32 the names `tokio` and `crossterm` mean
   the shim crates `crates/netget-tokio-wasm` and `crates/netget-crossterm-wasm`, bound at the
   crate root with `extern crate … as` in `src/lib.rs`. The tokio shim re-exports real tokio's
   `sync`/`io`/macros and supplies `spawn` (the JS event loop), `time` (`setTimeout`), and
   `net` — a **virtual loopback**: `TcpListener::bind` claims a port in a table,
-  `TcpStream::connect` hands the listener an in-memory duplex. A protocol that only uses
-  `tokio::net::Tcp*`, `tokio::io`, `tokio::sync` and `tokio::time` needs no `#[cfg]` at all.
-  UDP reports `Unsupported`; `process`/`fs`/`signal` compile and fail at runtime.
+  `TcpStream::connect` hands the listener an in-memory duplex, `UdpSocket::bind` claims a
+  port and `send_to` delivers a datagram to whoever is bound there. A protocol that only
+  uses `tokio::net`, `tokio::io`, `tokio::sync` and `tokio::time` needs no `#[cfg]` at all;
+  `process`/`fs`/`signal` compile and fail at runtime. What keeps a protocol out is a
+  *dependency* that wants real sockets (`mio`), a C library, or a device.
 - **Cargo forbids one dependency name resolving to different packages per target**, which is
   why the shims are *not* `tokio = { package = … }` renames in a target table. Same-source
   dependencies with different features per target are fine; that is how `syntect`,
@@ -940,10 +943,11 @@ for anyone touching the tree:
 - **`std::time::Instant::now()` and `SystemTime::now()` panic on wasm32, and the compiler
   cannot tell you.** Use `crate::utils::clock::{Instant, SystemTime, UNIX_EPOCH}` (std on
   native; on wasm the tokio shim's `performance.now()` clock, offset ten years so
-  `Instant::now() - window` in the rate limiter cannot underflow on a fresh page). The
-  compiled subset has been converted; a protocol added to `crates/netget-web/Cargo.toml`
-  must be converted too, or it panics on its first connection. `std::process::id()` is the
-  same kind of trap: `clock::process_id()`.
+  `Instant::now() - window` in the rate limiter cannot underflow on a fresh page). All of
+  `src/` is converted; keep new code on the alias. Because the shim's `Instant` is its own
+  type, a stray `std::time::Instant` in anything the browser build compiles is a compile
+  error there, which is the check. `std::process::id()` is the same kind of trap:
+  `clock::process_id()`.
 - **The LLM backend is `LlmBackend::Bridge`** (`src/llm/bridge.rs`): every request the client
   would have sent over HTTP is a `BridgeRequest` on a channel — full messages, tools, model —
   and the page answers it with WebLLM, a local Ollama, or the visitor typing. The
