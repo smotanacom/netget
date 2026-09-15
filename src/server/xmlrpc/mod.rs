@@ -118,42 +118,46 @@ impl XmlRpcServer {
                         let protocol_clone = protocol.clone();
 
                         // Spawn connection handler
-                        tokio::spawn(async move {
-                            let io = hyper_util::rt::TokioIo::new(stream);
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let io = hyper_util::rt::TokioIo::new(stream);
 
-                            // Create service function for this connection
-                            let service = hyper::service::service_fn(|req| {
-                                handle_xmlrpc_request(
-                                    req,
-                                    connection_id,
-                                    server_id,
-                                    remote_addr,
-                                    llm_clone.clone(),
-                                    state_clone.clone(),
-                                    status_clone.clone(),
-                                    protocol_clone.clone(),
-                                )
-                            });
+                                // Create service function for this connection
+                                let service = hyper::service::service_fn(|req| {
+                                    handle_xmlrpc_request(
+                                        req,
+                                        connection_id,
+                                        server_id,
+                                        remote_addr,
+                                        llm_clone.clone(),
+                                        state_clone.clone(),
+                                        status_clone.clone(),
+                                        protocol_clone.clone(),
+                                    )
+                                });
 
-                            // Serve HTTP/1 connection
-                            if let Err(e) = hyper::server::conn::http1::Builder::new()
-                                .serve_connection(io, service)
-                                .await
-                            {
-                                Log::new(Some(&status_clone)).error(format!(
-                                    "XML-RPC connection {} error: {}",
-                                    connection_id, e
-                                ));
-                            }
+                                // Serve HTTP/1 connection
+                                if let Err(e) = hyper::server::conn::http1::Builder::new()
+                                    .serve_connection(io, service)
+                                    .await
+                                {
+                                    Log::new(Some(&status_clone)).error(format!(
+                                        "XML-RPC connection {} error: {}",
+                                        connection_id, e
+                                    ));
+                                }
 
-                            // Mark connection as closed
-                            state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            Log::new(Some(&status_clone))
-                                .info(format!("XML-RPC connection {} closed", connection_id));
-                            let _ = status_clone.send("__UPDATE_UI__".to_string());
-                        });
+                                // Mark connection as closed
+                                state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                Log::new(Some(&status_clone))
+                                    .info(format!("XML-RPC connection {} closed", connection_id));
+                                let _ = status_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

@@ -125,61 +125,65 @@ impl HttpServer {
                         let filter_clone = filter.clone();
 
                         // Spawn a task to handle this connection
-                        tokio::spawn(async move {
-                            // Perform TLS handshake if TLS is enabled
-                            if let Some(acceptor) = tls_acceptor_clone {
-                                match acceptor.accept(stream).await {
-                                    Ok(tls_stream) => {
-                                        Log::new(Some(&status_tx_clone)).debug(format!(
-                                            "{} TLS handshake complete with {}",
-                                            protocol_name, remote_addr
-                                        ));
-                                        let io = TokioIo::new(tls_stream);
-                                        Self::serve_connection(
-                                            io,
-                                            connection_id,
-                                            server_id,
-                                            llm_client_clone,
-                                            app_state_clone.clone(),
-                                            status_tx_clone.clone(),
-                                            protocol_clone,
-                                            filter_clone,
-                                        )
-                                        .await;
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Perform TLS handshake if TLS is enabled
+                                if let Some(acceptor) = tls_acceptor_clone {
+                                    match acceptor.accept(stream).await {
+                                        Ok(tls_stream) => {
+                                            Log::new(Some(&status_tx_clone)).debug(format!(
+                                                "{} TLS handshake complete with {}",
+                                                protocol_name, remote_addr
+                                            ));
+                                            let io = TokioIo::new(tls_stream);
+                                            Self::serve_connection(
+                                                io,
+                                                connection_id,
+                                                server_id,
+                                                llm_client_clone,
+                                                app_state_clone.clone(),
+                                                status_tx_clone.clone(),
+                                                protocol_clone,
+                                                filter_clone,
+                                            )
+                                            .await;
+                                        }
+                                        Err(e) => {
+                                            Log::new(Some(&status_tx_clone)).warn(format!(
+                                                "{} TLS handshake failed: {}",
+                                                protocol_name, e
+                                            ));
+                                        }
                                     }
-                                    Err(e) => {
-                                        Log::new(Some(&status_tx_clone)).warn(format!(
-                                            "{} TLS handshake failed: {}",
-                                            protocol_name, e
-                                        ));
-                                    }
+                                } else {
+                                    // No TLS, use plain TCP
+                                    let io = TokioIo::new(stream);
+                                    Self::serve_connection(
+                                        io,
+                                        connection_id,
+                                        server_id,
+                                        llm_client_clone,
+                                        app_state_clone.clone(),
+                                        status_tx_clone.clone(),
+                                        protocol_clone,
+                                        filter_clone,
+                                    )
+                                    .await;
                                 }
-                            } else {
-                                // No TLS, use plain TCP
-                                let io = TokioIo::new(stream);
-                                Self::serve_connection(
-                                    io,
-                                    connection_id,
-                                    server_id,
-                                    llm_client_clone,
-                                    app_state_clone.clone(),
-                                    status_tx_clone.clone(),
-                                    protocol_clone,
-                                    filter_clone,
-                                )
-                                .await;
-                            }
 
-                            // Mark connection as closed
-                            app_state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            Log::new(Some(&status_tx_clone)).info(format!(
-                                "{} connection {connection_id} closed",
-                                protocol_name
-                            ));
-                            let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                        });
+                                // Mark connection as closed
+                                app_state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                Log::new(Some(&status_tx_clone)).info(format!(
+                                    "{} connection {connection_id} closed",
+                                    protocol_name
+                                ));
+                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))
@@ -363,41 +367,45 @@ async fn handle_http_request_inner(
                     let protocol_clone = protocol.clone();
                     let filter_clone = filter.clone();
 
-                    tokio::spawn(async move {
-                        // Wait for upgrade to complete
-                        match hyper::upgrade::on(req).await {
-                            Ok(upgraded) => {
-                                Log::new(Some(&status_tx_clone)).info(format!(
-                                    "Upgraded connection {} to HTTP/2",
-                                    connection_id
-                                ));
+                    // Tracked, not detached: stop_server must abort this task too.
+                    let task_owner = app_state.clone();
+                    task_owner
+                        .spawn_server_task(server_id, async move {
+                            // Wait for upgrade to complete
+                            match hyper::upgrade::on(req).await {
+                                Ok(upgraded) => {
+                                    Log::new(Some(&status_tx_clone)).info(format!(
+                                        "Upgraded connection {} to HTTP/2",
+                                        connection_id
+                                    ));
 
-                                // Perform h2 handshake on the upgraded connection
-                                use hyper_util::rt::TokioIo;
-                                let io = TokioIo::new(upgraded);
+                                    // Perform h2 handshake on the upgraded connection
+                                    use hyper_util::rt::TokioIo;
+                                    let io = TokioIo::new(upgraded);
 
-                                // Use h2 server to handle the upgraded connection
-                                if let Err(e) = handle_upgraded_h2c_connection(
-                                    io,
-                                    connection_id,
-                                    server_id,
-                                    llm_clone,
-                                    app_state_clone,
-                                    status_tx_clone,
-                                    protocol_clone,
-                                    filter_clone,
-                                )
-                                .await
-                                {
-                                    error!("Error handling upgraded h2c connection: {}", e);
+                                    // Use h2 server to handle the upgraded connection
+                                    if let Err(e) = handle_upgraded_h2c_connection(
+                                        io,
+                                        connection_id,
+                                        server_id,
+                                        llm_clone,
+                                        app_state_clone,
+                                        status_tx_clone,
+                                        protocol_clone,
+                                        filter_clone,
+                                    )
+                                    .await
+                                    {
+                                        error!("Error handling upgraded h2c connection: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    Log::new(Some(&status_tx_clone))
+                                        .warn(format!("HTTP/2 upgrade failed: {}", e));
                                 }
                             }
-                            Err(e) => {
-                                Log::new(Some(&status_tx_clone))
-                                    .warn(format!("HTTP/2 upgrade failed: {}", e));
-                            }
-                        }
-                    });
+                        })
+                        .await;
 
                     // Return 101 Switching Protocols
                     let response = Response::builder()
@@ -697,23 +705,27 @@ where
                 let filter_clone = filter.clone();
 
                 // Spawn task to handle this HTTP/2 request
-                tokio::spawn(async move {
-                    if let Err(e) = crate::server::http2::h2_server::handle_h2_request(
-                        request,
-                        send_response,
-                        connection_id,
-                        server_id,
-                        llm_clone,
-                        app_state_clone,
-                        status_tx_clone,
-                        protocol_clone,
-                        filter_clone,
-                    )
-                    .await
-                    {
-                        error!("Error handling h2c request: {}", e);
-                    }
-                });
+                // Tracked, not detached: stop_server must abort this task too.
+                let task_owner = app_state.clone();
+                task_owner
+                    .spawn_server_task(server_id, async move {
+                        if let Err(e) = crate::server::http2::h2_server::handle_h2_request(
+                            request,
+                            send_response,
+                            connection_id,
+                            server_id,
+                            llm_clone,
+                            app_state_clone,
+                            status_tx_clone,
+                            protocol_clone,
+                            filter_clone,
+                        )
+                        .await
+                        {
+                            error!("Error handling h2c request: {}", e);
+                        }
+                    })
+                    .await;
             }
             None => {
                 // Connection closed

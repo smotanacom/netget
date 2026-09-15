@@ -194,51 +194,55 @@ impl SamlIdpServer {
                         let protocol_clone = protocol.clone();
 
                         // Spawn a task to handle this connection
-                        tokio::spawn(async move {
-                            let status_tx = status_tx_for_task;
-                            let io = TokioIo::new(stream);
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let status_tx = status_tx_for_task;
+                                let io = TokioIo::new(stream);
 
-                            // Clone for service_fn closure
-                            let llm_for_service = llm_client_clone.clone();
-                            let state_for_service = app_state_clone.clone();
-                            let status_for_service = status_tx.clone();
-                            let protocol_for_service = protocol_clone.clone();
+                                // Clone for service_fn closure
+                                let llm_for_service = llm_client_clone.clone();
+                                let state_for_service = app_state_clone.clone();
+                                let status_for_service = status_tx.clone();
+                                let protocol_for_service = protocol_clone.clone();
 
-                            // Create a service that handles SAML IDP requests with LLM
-                            let service = service_fn(move |req: Request<Incoming>| {
-                                let llm_clone = llm_for_service.clone();
-                                let state_clone = state_for_service.clone();
-                                let status_clone = status_for_service.clone();
-                                let protocol_clone = protocol_for_service.clone();
-                                handle_saml_idp_request(
-                                    req,
-                                    connection_id,
-                                    server_id,
-                                    remote_addr,
-                                    llm_clone,
-                                    state_clone,
-                                    status_clone,
-                                    protocol_clone,
-                                )
-                            });
+                                // Create a service that handles SAML IDP requests with LLM
+                                let service = service_fn(move |req: Request<Incoming>| {
+                                    let llm_clone = llm_for_service.clone();
+                                    let state_clone = state_for_service.clone();
+                                    let status_clone = status_for_service.clone();
+                                    let protocol_clone = protocol_for_service.clone();
+                                    handle_saml_idp_request(
+                                        req,
+                                        connection_id,
+                                        server_id,
+                                        remote_addr,
+                                        llm_clone,
+                                        state_clone,
+                                        status_clone,
+                                        protocol_clone,
+                                    )
+                                });
 
-                            // Serve the connection
-                            if let Err(e) =
-                                http1::Builder::new().serve_connection(io, service).await
-                            {
-                                error!(
-                                    "Error serving SAML IDP connection {}: {}",
-                                    connection_id, e
-                                );
-                            }
+                                // Serve the connection
+                                if let Err(e) =
+                                    http1::Builder::new().serve_connection(io, service).await
+                                {
+                                    error!(
+                                        "Error serving SAML IDP connection {}: {}",
+                                        connection_id, e
+                                    );
+                                }
 
-                            // Remove connection when done
-                            debug!("SAML IDP connection {} closed", connection_id);
-                            app_state_clone
-                                .remove_connection_from_server(server_id, connection_id)
-                                .await;
-                            let _ = status_tx.send("__UPDATE_UI__".to_string());
-                        });
+                                // Remove connection when done
+                                debug!("SAML IDP connection {} closed", connection_id);
+                                app_state_clone
+                                    .remove_connection_from_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_tx.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

@@ -270,36 +270,39 @@ impl OciRegistryServer {
                         let status_tx_conn = status_tx.clone();
                         let protocol = protocol.clone();
 
-                        tokio::spawn(async move {
-                            let io = TokioIo::new(stream);
-                            let app_state_service = app_state_conn.clone();
-                            let status_tx_service = status_tx_conn.clone();
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let io = TokioIo::new(stream);
+                                let app_state_service = app_state_conn.clone();
+                                let status_tx_service = status_tx_conn.clone();
 
-                            let service = service_fn(move |req: Request<Incoming>| {
-                                handle_oci_request(
-                                    req,
-                                    connection_id,
-                                    remote_addr,
-                                    llm_client.clone(),
-                                    app_state_service.clone(),
-                                    status_tx_service.clone(),
-                                    protocol.clone(),
-                                    server_id,
-                                    version_check,
-                                )
-                            });
+                                let service = service_fn(move |req: Request<Incoming>| {
+                                    handle_oci_request(
+                                        req,
+                                        connection_id,
+                                        remote_addr,
+                                        llm_client.clone(),
+                                        app_state_service.clone(),
+                                        status_tx_service.clone(),
+                                        protocol.clone(),
+                                        server_id,
+                                        version_check,
+                                    )
+                                });
 
-                            if let Err(err) =
-                                http1::Builder::new().serve_connection(io, service).await
-                            {
-                                debug!("OCI registry connection ended: {:?}", err);
-                            }
+                                if let Err(err) =
+                                    http1::Builder::new().serve_connection(io, service).await
+                                {
+                                    debug!("OCI registry connection ended: {:?}", err);
+                                }
 
-                            app_state_conn
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            let _ = status_tx_conn.send("__UPDATE_UI__".to_string());
-                        });
+                                app_state_conn
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_tx_conn.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

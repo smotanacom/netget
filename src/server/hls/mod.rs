@@ -155,22 +155,27 @@ impl HlsServer {
                         let state = app_state.clone();
                         let stx = status_tx.clone();
                         let proto = protocol.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                remote_addr,
-                                connection_id,
-                                server_id,
-                                llm,
-                                state,
-                                stx.clone(),
-                                proto,
-                            )
-                            .await
-                            {
-                                Log::new(Some(&stx)).debug(format!("HLS connection ended: {}", e));
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    remote_addr,
+                                    connection_id,
+                                    server_id,
+                                    llm,
+                                    state,
+                                    stx.clone(),
+                                    proto,
+                                )
+                                .await
+                                {
+                                    Log::new(Some(&stx))
+                                        .debug(format!("HLS connection ended: {}", e));
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         console_error!(status_tx, "HLS accept error: {}", e);

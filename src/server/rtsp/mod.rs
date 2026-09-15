@@ -105,23 +105,27 @@ impl RtspServer {
                         let state = app_state.clone();
                         let stx = status_tx.clone();
                         let proto = protocol.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                remote_addr,
-                                connection_id,
-                                server_id,
-                                llm,
-                                state,
-                                stx.clone(),
-                                proto,
-                            )
-                            .await
-                            {
-                                Log::new(Some(&stx))
-                                    .debug(format!("RTSP connection closed: {}", e));
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    remote_addr,
+                                    connection_id,
+                                    server_id,
+                                    llm,
+                                    state,
+                                    stx.clone(),
+                                    proto,
+                                )
+                                .await
+                                {
+                                    Log::new(Some(&stx))
+                                        .debug(format!("RTSP connection closed: {}", e));
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("RTSP accept error: {}", e));

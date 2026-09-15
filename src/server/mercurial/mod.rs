@@ -134,44 +134,48 @@ impl MercurialServer {
                         let protocol_clone = protocol.clone();
 
                         // Spawn a task to handle this connection
-                        tokio::spawn(async move {
-                            let io = TokioIo::new(stream);
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let io = TokioIo::new(stream);
 
-                            // Clone for service closure
-                            let status_for_service = status_tx_clone.clone();
-                            let app_state_for_service = app_state_clone.clone();
+                                // Clone for service closure
+                                let status_for_service = status_tx_clone.clone();
+                                let app_state_for_service = app_state_clone.clone();
 
-                            // Create a service that handles Mercurial HTTP requests with LLM
-                            let service = service_fn(move |req: Request<Incoming>| {
-                                let ctx = RequestContext {
-                                    llm_client: llm_client_clone.clone(),
-                                    app_state: app_state_for_service.clone(),
-                                    status_tx: status_for_service.clone(),
-                                    protocol: protocol_clone.clone(),
-                                    connection_id,
-                                    server_id,
-                                    remote_addr,
-                                };
-                                handle_mercurial_request(req, ctx)
-                            });
+                                // Create a service that handles Mercurial HTTP requests with LLM
+                                let service = service_fn(move |req: Request<Incoming>| {
+                                    let ctx = RequestContext {
+                                        llm_client: llm_client_clone.clone(),
+                                        app_state: app_state_for_service.clone(),
+                                        status_tx: status_for_service.clone(),
+                                        protocol: protocol_clone.clone(),
+                                        connection_id,
+                                        server_id,
+                                        remote_addr,
+                                    };
+                                    handle_mercurial_request(req, ctx)
+                                });
 
-                            // Serve HTTP/1 on this connection
-                            if let Err(err) =
-                                http1::Builder::new().serve_connection(io, service).await
-                            {
-                                error!("Error serving Mercurial connection: {:?}", err);
-                            }
+                                // Serve HTTP/1 on this connection
+                                if let Err(err) =
+                                    http1::Builder::new().serve_connection(io, service).await
+                                {
+                                    error!("Error serving Mercurial connection: {:?}", err);
+                                }
 
-                            // Mark connection as closed
-                            app_state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            let _ = status_tx_clone.send(format!(
-                                "[INFO] Mercurial connection {} closed",
-                                connection_id
-                            ));
-                            let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                        });
+                                // Mark connection as closed
+                                app_state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_tx_clone.send(format!(
+                                    "[INFO] Mercurial connection {} closed",
+                                    connection_id
+                                ));
+                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("Failed to accept Mercurial connection: {}", e);
