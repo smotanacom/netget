@@ -68,6 +68,11 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 all                      # Run all E2E tests with mocks"
             echo "  $0 amqp tcp                 # Run AMQP and TCP tests with mocks"
             echo "  $0 --use-ollama whois       # Run WHOIS tests with real Ollama"
+            echo ""
+            echo "For the scored real-model eval (pass rates, failure diagnoses, a"
+            echo "published results file) see ./run-eval.sh, which is a different thing:"
+            echo "this script runs the pass/fail suites, that one measures whether a"
+            echo "model can drive a protocol from its own action descriptions."
             echo "  $0 --dry-run tor            # Preview what would be executed"
             exit 0
             ;;
@@ -304,15 +309,22 @@ for protocol in "${PROTOCOLS[@]}"; do
         --features "$all_required_features"
     )
 
-    # Add test arguments (--use-ollama and/or verbose)
-    if [ "$USE_OLLAMA" = true ] || [ "$VERBOSE" = true ]; then
-        TEST_CMD+=(--)
-        if [ "$USE_OLLAMA" = true ]; then
-            TEST_CMD+=(--use-ollama)
-        fi
-        if [ "$VERBOSE" = true ]; then
-            TEST_CMD+=(--nocapture --test-threads=1)
-        fi
+    # Real-Ollama mode travels in NETGET_USE_OLLAMA (exported above), never as a
+    # test argument.
+    #
+    # This script used to append `-- --use-ollama`, and that did not merely fail
+    # to help — it broke the mode it was advertising. libtest parses everything
+    # after `--` itself and rejects an unknown flag outright:
+    #
+    #     $ <test-binary> --use-ollama
+    #     error: Unrecognized option: 'use-ollama'
+    #
+    # so the process exited before a single test ran, and the script reported the
+    # protocol FAILED. `./test-e2e.sh --use-ollama <protocol>` could not work in
+    # that form. `tests/helpers/netget.rs` documents the same trap, and the arg
+    # scan it keeps is only for a custom harness that forwards unknown flags.
+    if [ "$VERBOSE" = true ]; then
+        TEST_CMD+=(-- --nocapture --test-threads=1)
     fi
 
     # Run the test (or show what would be run in dry-run mode)

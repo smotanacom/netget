@@ -695,8 +695,34 @@ impl ActionResponse {
         };
         let clean_json = &json_str[json_start..];
 
-        // Try parsing as a single object first (most common case)
-        if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(clean_json) {
+        // Take the FIRST complete JSON value and ignore whatever follows it.
+        //
+        // `serde_json::from_str` requires the *whole* string to be one value, and that single
+        // property discarded 29 of 30 answers in the first real-model eval
+        // (`EVAL_RESULTS.md`). Small models routinely append prose after the JSON:
+        //
+        //     {"actions": [{"type": "send_http_response", "status": 200, …}]}
+        //     Explanation: Since this is an HTTP request event, I'm emitting a …
+        //
+        // The model had named the right action with the right parameters *every time*, and
+        // NetGet threw the reply away with `Invalid JSON` — so the protocol behaved as though
+        // the backend had failed. Nothing in the suite could see it, because every mock
+        // returns exactly the JSON the test author wrote; the defect lives precisely in the
+        // gap between a mock and a model.
+        //
+        // The trailing-fence case already worked (the stripper above cuts at the closing
+        // ```), which is why this looked like a fenced-output problem rather than a parsing
+        // one.
+        //
+        // `StreamDeserializer` stops at the end of the first value instead of demanding it be
+        // the last thing in the string. A string that is entirely one value parses exactly as
+        // before, so this only ever widens what is accepted.
+        let first_value = serde_json::Deserializer::from_str(clean_json)
+            .into_iter::<serde_json::Value>()
+            .next()
+            .and_then(|r| r.ok());
+
+        if let Some(json_value) = first_value {
             use crate::llm::actions::tools::ToolAction;
             match json_value {
                 // Case 1: Full response object with tools and/or actions fields
