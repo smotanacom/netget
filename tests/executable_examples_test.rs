@@ -241,12 +241,24 @@ fn the_example_audit_has_something_to_inspect() {
     if out.checked < 100 {
         return;
     }
+    // The signal this guards is ZERO, not "fewer than eleven". If `is_context_rejection`
+    // stops matching — because an executor reworded its error — every context rejection turns
+    // into a reported offender and the real findings are buried in them. One match proves the
+    // classifier still fires.
+    //
+    // It asserted `> 10` until September 2026, and that number only holds near
+    // `--all-features`: at twelve protocol features the audit sees over a hundred examples and
+    // exactly four context rejections, so the build went red for a reason unrelated to the
+    // code. That is the third time a coverage guard in this repository has failed that way, and
+    // the second time in this same file — the fix above scaled `checked` and left this one
+    // absolute.
     assert!(
-        out.context_skipped > 10,
-        "only {} rejections were classified as needing runtime context. That number is stable \
-         and non-trivial; a sudden zero means the executors' wording changed and the exclusion \
-         no longer matches, which would bury real findings",
-        out.context_skipped
+        out.context_skipped > 0,
+        "no rejection at all was classified as needing runtime context, across {} examples. \
+         `is_context_rejection` has stopped matching — most likely an executor reworded its \
+         error — so every context rejection is now being reported as an offender and any real \
+         finding is buried among them",
+        out.checked
     );
     assert!(
         out.context_skipped < out.checked / 4,
