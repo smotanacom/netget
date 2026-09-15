@@ -356,7 +356,7 @@ impl WebRtcServerData {
         use crate::state::server::{
             ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
         };
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         let unspecified = SocketAddr::from(([0, 0, 0, 0], 0));
         let conn_state = ServerConnectionState {
             id: connection_id,

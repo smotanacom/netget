@@ -92,7 +92,7 @@ impl LdapServer {
                                 ConnectionState as ServerConnectionState, ConnectionStatus,
                                 ProtocolConnectionInfo,
                             };
-                            let now = std::time::Instant::now();
+                            let now = crate::utils::clock::Instant::now();
                             let local_addr = stream.local_addr().unwrap_or(local_addr);
                             app_state
                                 .add_connection_to_server(

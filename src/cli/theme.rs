@@ -1,4 +1,5 @@
 use crossterm::style::Color;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 use tracing::debug;
 
@@ -132,6 +133,7 @@ impl ColorPalette {
 /// Note: termbg can leave the terminal in a bad state on some terminals
 /// (especially macOS Terminal.app). We wrap detection in catch_unwind and
 /// flush any stale input afterwards.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn detect_theme() -> Option<Theme> {
     use std::panic::catch_unwind;
 
@@ -176,6 +178,7 @@ pub fn detect_theme() -> Option<Theme> {
 /// like Apple Terminal) often still export this. Falling back here is what
 /// keeps a dark terminal from landing on the neutral palette, whose blue is
 /// barely readable on black — the exact complaint this fixes.
+#[cfg(not(target_arch = "wasm32"))]
 fn theme_from_colorfgbg() -> Option<Theme> {
     let value = std::env::var("COLORFGBG").ok()?;
     let bg = value.rsplit(';').next()?.trim().parse::<u8>().ok()?;
@@ -191,6 +194,7 @@ fn theme_from_colorfgbg() -> Option<Theme> {
 
 /// Flush any pending input from stdin without blocking
 /// This cleans up any stale escape sequences that termbg may have left
+#[cfg(not(target_arch = "wasm32"))]
 fn flush_stdin_nonblocking() {
     use std::io::Read;
 
@@ -226,6 +230,12 @@ fn flush_stdin_nonblocking() {
     // the same issues with termbg
     #[cfg(not(unix))]
     {}
+}
+
+/// There is no terminal to query in the browser; the page passes its theme in explicitly.
+#[cfg(target_arch = "wasm32")]
+pub fn detect_theme() -> Option<Theme> {
+    None
 }
 
 /// Parse theme from string (for CLI flag)

@@ -22,9 +22,9 @@ pub mod bgp;
 pub use bgp::actions::BgpClientProtocol;
 
 // bitcoin client
-#[cfg(feature = "bitcoin")]
+#[cfg(all(feature = "bitcoin", not(target_arch = "wasm32")))]
 pub mod bitcoin;
-#[cfg(feature = "bitcoin")]
+#[cfg(all(feature = "bitcoin", not(target_arch = "wasm32")))]
 pub use bitcoin::actions::BitcoinClientProtocol;
 
 // bluetooth-ble client
@@ -88,9 +88,9 @@ pub mod dynamodb;
 pub use dynamodb::actions::DynamoDbClientProtocol;
 
 // elasticsearch client
-#[cfg(feature = "elasticsearch")]
+#[cfg(all(feature = "elasticsearch", not(target_arch = "wasm32")))]
 pub mod elasticsearch;
-#[cfg(feature = "elasticsearch")]
+#[cfg(all(feature = "elasticsearch", not(target_arch = "wasm32")))]
 pub use elasticsearch::actions::ElasticsearchClientProtocol;
 
 // etcd client
@@ -117,16 +117,18 @@ pub mod grpc;
 #[cfg(feature = "grpc")]
 pub use grpc::actions::GrpcClientProtocol;
 
-// http client
-#[cfg(feature = "http")]
+// Clients gated with `not(target_arch = "wasm32")` are reqwest end to end, and a browser
+// fetch future is not `Send`, which the client trait requires. Their *servers* are in the
+// browser build; see web/README.md for the list.
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
-#[cfg(feature = "http")]
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub use http::actions::HttpClientProtocol;
 
 // http2 client
-#[cfg(feature = "http2")]
+#[cfg(all(feature = "http2", not(target_arch = "wasm32")))]
 pub mod http2;
-#[cfg(feature = "http2")]
+#[cfg(all(feature = "http2", not(target_arch = "wasm32")))]
 pub use http2::actions::Http2ClientProtocol;
 
 // http3 client
@@ -172,9 +174,9 @@ pub mod isis;
 pub use isis::actions::IsisClientProtocol;
 
 // jsonrpc client
-#[cfg(feature = "jsonrpc")]
+#[cfg(all(feature = "jsonrpc", not(target_arch = "wasm32")))]
 pub mod jsonrpc;
-#[cfg(feature = "jsonrpc")]
+#[cfg(all(feature = "jsonrpc", not(target_arch = "wasm32")))]
 pub use jsonrpc::actions::JsonRpcClientProtocol;
 
 // kafka client (pure Rust, shares the broker's kafka-protocol codecs)
@@ -196,9 +198,9 @@ pub mod ldap;
 pub use ldap::actions::LdapClientProtocol;
 
 // maven client
-#[cfg(feature = "maven")]
+#[cfg(all(feature = "maven", not(target_arch = "wasm32")))]
 pub mod maven;
-#[cfg(feature = "maven")]
+#[cfg(all(feature = "maven", not(target_arch = "wasm32")))]
 pub use maven::actions::MavenClientProtocol;
 
 // mcp client
@@ -256,9 +258,9 @@ pub mod nntp;
 pub use nntp::actions::NntpClientProtocol;
 
 // npm client
-#[cfg(feature = "npm")]
+#[cfg(all(feature = "npm", not(target_arch = "wasm32")))]
 pub mod npm;
-#[cfg(feature = "npm")]
+#[cfg(all(feature = "npm", not(target_arch = "wasm32")))]
 pub use npm::actions::NpmClientProtocol;
 
 // ntp client
@@ -268,9 +270,9 @@ pub mod ntp;
 pub use ntp::actions::NtpClientProtocol;
 
 // oauth2 client
-#[cfg(feature = "oauth2")]
+#[cfg(all(feature = "oauth2", not(target_arch = "wasm32")))]
 pub mod oauth2;
-#[cfg(feature = "oauth2")]
+#[cfg(all(feature = "oauth2", not(target_arch = "wasm32")))]
 pub use oauth2::actions::OAuth2ClientProtocol;
 
 // openai client
@@ -280,21 +282,21 @@ pub mod openai;
 pub use openai::actions::OpenAiClientProtocol;
 
 // ollama client
-#[cfg(feature = "ollama")]
+#[cfg(all(feature = "ollama", not(target_arch = "wasm32")))]
 pub mod ollama;
-#[cfg(feature = "ollama")]
+#[cfg(all(feature = "ollama", not(target_arch = "wasm32")))]
 pub use ollama::actions::OllamaClientProtocol;
 
 // openapi client
-#[cfg(feature = "openapi")]
+#[cfg(all(feature = "openapi", not(target_arch = "wasm32")))]
 pub mod openapi;
-#[cfg(feature = "openapi")]
+#[cfg(all(feature = "openapi", not(target_arch = "wasm32")))]
 pub use openapi::actions::OpenApiClientProtocol;
 
 // openidconnect client
-#[cfg(feature = "openidconnect")]
+#[cfg(all(feature = "openidconnect", not(target_arch = "wasm32")))]
 pub mod openidconnect;
-#[cfg(feature = "openidconnect")]
+#[cfg(all(feature = "openidconnect", not(target_arch = "wasm32")))]
 pub use openidconnect::actions::OpenIdConnectClientProtocol;
 
 // ospf client
@@ -310,9 +312,9 @@ pub mod postgresql;
 pub use postgresql::actions::PostgresqlClientProtocol;
 
 // pypi client
-#[cfg(feature = "pypi")]
+#[cfg(all(feature = "pypi", not(target_arch = "wasm32")))]
 pub mod pypi;
-#[cfg(feature = "pypi")]
+#[cfg(all(feature = "pypi", not(target_arch = "wasm32")))]
 pub use pypi::actions::PypiClientProtocol;
 
 // mssql client
@@ -484,9 +486,9 @@ pub mod torrent_peer;
 pub use torrent_peer::actions::TorrentPeerClientProtocol;
 
 // torrent_tracker client
-#[cfg(feature = "torrent-tracker")]
+#[cfg(all(feature = "torrent-tracker", not(target_arch = "wasm32")))]
 pub mod torrent_tracker;
-#[cfg(feature = "torrent-tracker")]
+#[cfg(all(feature = "torrent-tracker", not(target_arch = "wasm32")))]
 pub use torrent_tracker::actions::TorrentTrackerClientProtocol;
 
 // turn client

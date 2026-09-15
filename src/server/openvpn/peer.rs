@@ -5,9 +5,10 @@
 //! a scan cannot pin every slot forever.
 
 use crate::server::connection::ConnectionId;
+use crate::utils::clock::Instant;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 /// Whether this server has decided to answer a peer.

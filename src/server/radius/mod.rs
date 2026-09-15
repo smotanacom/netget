@@ -216,7 +216,7 @@ impl RadiusServer {
             ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
         };
         let connection_id = ConnectionId::new(state.get_next_unified_id().await);
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         let conn_state = ServerConnectionState {
             id: connection_id,
             remote_addr: peer_addr,

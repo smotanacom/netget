@@ -22,12 +22,12 @@ use super::packet::{ControlFrame, Opcode};
 use super::reliable::{fragment, ReliableReceiver, ReliableSender};
 use super::tls_channel;
 use crate::server::connection::ConnectionId;
+use crate::utils::clock::Instant;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::Mutex;
 
 /// Most control-channel plaintext held while waiting for the rest of a message.

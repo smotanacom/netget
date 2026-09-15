@@ -560,8 +560,8 @@ pub async fn start_server_from_action(
         status: ServerStatus::Starting,
         connections: Default::default(),
         local_addr: None,
-        created_at: std::time::Instant::now(),
-        status_changed_at: std::time::Instant::now(),
+        created_at: crate::utils::clock::Instant::now(),
+        status_changed_at: crate::utils::clock::Instant::now(),
         startup_params: startup_params.clone(),
         event_handler_config: None,
         protocol_data: serde_json::Value::Null,
@@ -606,7 +606,8 @@ pub async fn start_server_from_action(
     if let Some(tasks) = scheduled_tasks {
         for task_def in tasks {
             use crate::state::task::{ScheduledTask, TaskId, TaskScope, TaskStatus, TaskType};
-            use std::time::{Duration, Instant};
+            use crate::utils::clock::Instant;
+            use std::time::Duration;
 
             // Determine task type
             let task_type = if task_def.recurring {
@@ -684,8 +685,15 @@ pub async fn start_server_from_action(
     let llm_client = if let Some(client) = state.get_llm_client().await {
         client
     } else {
-        let ollama_url = state.get_ollama_url().await;
-        OllamaClient::new(ollama_url)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let ollama_url = state.get_ollama_url().await;
+            OllamaClient::new(ollama_url)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            anyhow::bail!("no LLM client is configured; the browser build installs one at startup")
+        }
     }
     // Attach the per-server status channel so event-template lifecycle logs
     // (rendered via EventLogContext) reach the TUI, not just netget.log.

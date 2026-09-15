@@ -17,62 +17,70 @@ pub struct ModelInfo {
 
 /// Query Ollama for available models and return detailed information
 pub async fn query_available_models(ollama_url: &str) -> Result<Vec<ModelInfo>> {
-    // Built through the shared helper, not `Client::new()`: this call has a 5-second timeout,
-    // and pointing it at a literal IP used to spend all five inside `getaddrinfo("127.0.0.1")`
-    // under load. It surfaced as `bluetooth_read_request` handlers "answering" in exactly
-    // 5.003s with zero calls reaching the backend — the read failed closed on a timeout that
-    // was pure name resolution. See `crate::llm::ollama_client::client_for_endpoint`.
-    let client = crate::llm::ollama_client::client_for_endpoint(ollama_url);
-    let url = format!("{}/api/tags", ollama_url);
-    let response = client
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-        .context("Failed to connect to Ollama API. Is Ollama running?")?;
-
-    if !response.status().is_success() {
-        anyhow::bail!("Ollama API returned error status: {}", response.status());
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = ollama_url;
+        anyhow::bail!("the browser build has no Ollama to query; models come from the page");
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Built through the shared helper, not `Client::new()`: this call has a 5-second timeout,
+        // and pointing it at a literal IP used to spend all five inside `getaddrinfo("127.0.0.1")`
+        // under load. It surfaced as `bluetooth_read_request` handlers "answering" in exactly
+        // 5.003s with zero calls reaching the backend — the read failed closed on a timeout that
+        // was pure name resolution. See `crate::llm::ollama_client::client_for_endpoint`.
+        let client = crate::llm::ollama_client::client_for_endpoint(ollama_url);
+        let url = format!("{}/api/tags", ollama_url);
+        let response = client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+            .context("Failed to connect to Ollama API. Is Ollama running?")?;
 
-    let body = response
-        .text()
-        .await
-        .context("Failed to read response from Ollama")?;
-
-    // Parse the response
-    let json: serde_json::Value =
-        serde_json::from_str(&body).context("Failed to parse Ollama API response")?;
-
-    let models = json
-        .get("models")
-        .and_then(|m| m.as_array())
-        .context("Ollama API response missing 'models' array")?;
-
-    let mut result = Vec::new();
-    for model in models {
-        let name = model
-            .get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("")
-            .to_string();
-        let size = model.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
-        let modified_at = model
-            .get("modified_at")
-            .and_then(|m| m.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        if !name.is_empty() {
-            result.push(ModelInfo {
-                name,
-                size,
-                modified_at,
-            });
+        if !response.status().is_success() {
+            anyhow::bail!("Ollama API returned error status: {}", response.status());
         }
-    }
 
-    Ok(result)
+        let body = response
+            .text()
+            .await
+            .context("Failed to read response from Ollama")?;
+
+        // Parse the response
+        let json: serde_json::Value =
+            serde_json::from_str(&body).context("Failed to parse Ollama API response")?;
+
+        let models = json
+            .get("models")
+            .and_then(|m| m.as_array())
+            .context("Ollama API response missing 'models' array")?;
+
+        let mut result = Vec::new();
+        for model in models {
+            let name = model
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            let size = model.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
+            let modified_at = model
+                .get("modified_at")
+                .and_then(|m| m.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if !name.is_empty() {
+                result.push(ModelInfo {
+                    name,
+                    size,
+                    modified_at,
+                });
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 /// Select the best model from available models

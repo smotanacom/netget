@@ -540,7 +540,7 @@ impl CdpServer {
     ) {
         use crate::state::server::{ConnectionState, ConnectionStatus, ProtocolConnectionInfo};
 
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         // A MAC is not a socket address and `ConnectionState` has nowhere else to put one, so
         // the readable form goes in `protocol_info` and the address field is the unspecified
         // one. `isis` stuffs a fabricated address into the field and it renders as nonsense.

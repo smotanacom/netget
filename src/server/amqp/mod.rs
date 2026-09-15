@@ -275,7 +275,7 @@ async fn handle_connection(
         let _ = writer_write_half.lock().await.flush().await;
     });
 
-    let now = std::time::Instant::now();
+    let now = crate::utils::clock::Instant::now();
     let conn_state = ConnectionState {
         id: connection_id,
         remote_addr: peer_addr,

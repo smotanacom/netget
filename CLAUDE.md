@@ -953,6 +953,62 @@ Hosting is S3 + CloudFront (private bucket, OAC, ACM cert, DNS at Porkbun) — t
 the maintainer's other static sites. It replaced GitHub Pages, which cannot serve a private
 repository. `site/CLAUDE.md` has the resource IDs, the DNS records and how to change them.
 
+## Browser build (wasm32) — the landing-page demo
+
+netget.net runs NetGet itself in the page: the dashboard, every server protocol that compiles
+for `wasm32-unknown-unknown` (68 features, TCP and UDP; the list is
+`crates/netget-web/Cargo.toml`, the exclusions and the probe that derives them are in
+`web/README.md`) and the LLM plumbing, built by `./web/build.sh`, page in `site/`.
+`web/README.md` is the operating manual; what matters for anyone touching the tree:
+
+- **Protocol code is compiled unchanged.** On wasm32 the names `tokio` and `crossterm` mean
+  the shim crates `crates/netget-tokio-wasm` and `crates/netget-crossterm-wasm`, bound at the
+  crate root with `extern crate … as` in `src/lib.rs`. The tokio shim re-exports real tokio's
+  `sync`/`io`/macros and supplies `spawn` (the JS event loop), `time` (`setTimeout`), and
+  `net` — a **virtual loopback**: `TcpListener::bind` claims a port in a table,
+  `TcpStream::connect` hands the listener an in-memory duplex, `UdpSocket::bind` claims a
+  port and `send_to` delivers a datagram to whoever is bound there. A protocol that only
+  uses `tokio::net`, `tokio::io`, `tokio::sync` and `tokio::time` needs no `#[cfg]` at all;
+  `process`/`fs`/`signal` compile and fail at runtime. What keeps a protocol out is a
+  *dependency* that wants real sockets (`mio`), a C library, or a device.
+- **Cargo forbids one dependency name resolving to different packages per target**, which is
+  why the shims are *not* `tokio = { package = … }` renames in a target table. Same-source
+  dependencies with different features per target are fine; that is how `syntect`,
+  `ratatui` and `tui-textarea` differ between the two `[target.'cfg(…)'.dependencies]`
+  tables.
+- **`std::time::Instant::now()` and `SystemTime::now()` panic on wasm32, and the compiler
+  cannot tell you.** Use `crate::utils::clock::{Instant, SystemTime, UNIX_EPOCH}` (std on
+  native; on wasm the tokio shim's `performance.now()` clock, offset ten years so
+  `Instant::now() - window` in the rate limiter cannot underflow on a fresh page). All of
+  `src/` is converted; keep new code on the alias. Because the shim's `Instant` is its own
+  type, a stray `std::time::Instant` in anything the browser build compiles is a compile
+  error there, which is the check. `std::process::id()` is the same kind of trap:
+  `clock::process_id()`.
+- **The LLM backend is `LlmBackend::Bridge`** (`src/llm/bridge.rs`): every request the client
+  would have sent over HTTP is a `BridgeRequest` on a channel — full messages, tools, model —
+  and the page answers it with WebLLM, a local Ollama, or the visitor typing. The
+  Ollama/OpenAI backends (`reqwest`, `ollama-rs`) are `#[cfg(not(target_arch = "wasm32"))]`;
+  the circuit breaker deliberately ignores the bridge, since a slow person is not an outage.
+  `tests/llm_bridge_test.rs` pins the mapping natively; `web/test/smoke.mjs` drives the real
+  bundle under Node (dashboard paints, `start_server`, connect, model round-trip, bytes back)
+  and CI's `wasm-web` job runs both.
+- **The dashboard loop is generic** (`event_loop::run_loop` over any ratatui `Backend` and any
+  `Stream` of crossterm events); the web crate's backend emits ANSI into xterm.js and its
+  input translates DOM `KeyboardEvent`s. The scheduled-task ticker (`src/cli/tasks.rs`) is
+  compiled for wasm too; it uses `utils::clock`.
+- **Building on macOS needs `llvm-ar`** (`rustup component add llvm-tools`): the system `ar`
+  writes a broken archive for ring's wasm objects and the failure shows up only at link time
+  as `undefined symbol: ring_core_…`. `web/build.sh` handles it; if ring was already built
+  wrong, `cargo clean -p ring --target wasm32-unknown-unknown --release` once. ring is there
+  because `http` pulls rustls/rcgen, which now build with `default-features = false` and the
+  `ring` provider — the `aws-lc-rs` default is a C library that does not build for wasm.
+- **Publishing is the site's own `./site/deploy.sh`, and the bundle is not built by it.**
+  `./web/build.sh` writes `site/demo/pkg/` (gitignored, ~17 MB of wasm, 5.7 MB gzipped);
+  `deploy.sh` refuses to run without it and uploads the `.wasm` with
+  `Content-Type: application/wasm` so browsers can compile it while it streams. Build, run
+  the smoke test, then deploy. CI's `wasm-web` job builds and smoke-tests the bundle on every
+  PR but publishes nothing, like everything else in this repository.
+
 ## MCP surface
 
 `--mcp` (stdio) and `--mcp-http PORT` expose tools sharing the TUI's code paths. See

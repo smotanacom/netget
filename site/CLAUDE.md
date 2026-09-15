@@ -1,7 +1,9 @@
 # netget.net — the landing page
 
-Four files, no build step: `index.html`, `css/style.css`, `js/main.js`, `favicon.svg`.
-`./deploy.sh` is the whole publishing pipeline.
+`index.html`, `css/`, `js/`, `favicon.svg`, and `demo/pkg/` — the NetGet-in-the-browser
+bundle, which is the one thing here that is built: `./web/build.sh` from the repository root
+writes it (gitignored), `web/README.md` explains it, and `./deploy.sh` refuses to run
+without it. `./deploy.sh` is the whole publishing pipeline.
 
 What is in this directory is public, with one exception: `deploy.sh` and every `*.md` —
 this file included — are excluded from the sync, because this one names infrastructure IDs.

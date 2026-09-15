@@ -577,8 +577,8 @@ async fn execute_script_handler(
             );
             let conv_id = format!(
                 "script-{}-{:x}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                crate::utils::clock::SystemTime::now()
+                    .duration_since(crate::utils::clock::UNIX_EPOCH)
                     .unwrap()
                     .as_millis(),
                 rand::random::<u32>()

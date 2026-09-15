@@ -354,7 +354,7 @@ impl BgpClient {
         shutdown: Arc<Shutdown>,
     ) -> Result<()> {
         let last_received = Arc::new(AtomicU64::new(0));
-        let started = std::time::Instant::now();
+        let started = crate::utils::clock::Instant::now();
 
         let mut timer_task: Option<tokio::task::AbortHandle> = None;
         let result = Self::read_loop_inner(
@@ -404,7 +404,7 @@ impl BgpClient {
         timer_task: &mut Option<tokio::task::AbortHandle>,
         shutdown: &Arc<Shutdown>,
         last_received: &Arc<AtomicU64>,
-        started: std::time::Instant,
+        started: crate::utils::clock::Instant,
     ) -> Result<()> {
         loop {
             if shutdown.is_set() {
@@ -996,7 +996,7 @@ impl BgpClient {
         hold_time: u16,
         client_id: ClientId,
         last_received: Arc<AtomicU64>,
-        started: std::time::Instant,
+        started: crate::utils::clock::Instant,
         shutdown: Arc<Shutdown>,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Option<tokio::task::JoinHandle<()>> {

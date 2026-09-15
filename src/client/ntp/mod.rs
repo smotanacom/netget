@@ -466,7 +466,7 @@ impl NtpClient {
         packet[0] = 0x1b; // 00 011 011 = LI=0, VN=3, Mode=3
 
         // Set transmit timestamp to current time
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use crate::utils::clock::{SystemTime, UNIX_EPOCH};
         let unix_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

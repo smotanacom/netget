@@ -40,10 +40,11 @@
 //! request/response exchange, so waiting for it would only convert a fast refusal
 //! into a slow one.
 
+use crate::utils::clock::Instant;
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 

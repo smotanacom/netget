@@ -7,6 +7,7 @@ use crate::llm::circuit_breaker::{is_transport_failure, BreakerStatus, CircuitBr
 use crate::logging::emit::Log;
 use anyhow::{Context, Result};
 use bytes::Bytes;
+#[cfg(not(target_arch = "wasm32"))]
 use ollama_rs::Ollama;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -24,8 +25,10 @@ enum LlmBackend {
     /// store, on macOS through Security.framework, synchronously. Doing that on every LLM
     /// call parks a runtime worker every time. It is built once, here, with the same
     /// literal-IP resolver short-circuit as the `ollama-rs` client.
+    #[cfg(not(target_arch = "wasm32"))]
     Ollama(Ollama, reqwest::Client),
     /// OpenAI-compatible API via reqwest
+    #[cfg(not(target_arch = "wasm32"))]
     OpenAI {
         client: reqwest::Client,
         base_url: String,
@@ -36,6 +39,14 @@ enum LlmBackend {
     Queue {
         queue: std::sync::Arc<crate::llm::agent_queue::LlmRequestQueue>,
         /// How long to wait for the agent's answer before erroring.
+        timeout: std::time::Duration,
+    },
+    /// No HTTP at all: each request is handed to whoever drains the bridge — the browser
+    /// page in the wasm build (WebLLM, a local Ollama it forwards to, or the person at the
+    /// keyboard) — and its answer is used as the model's. See `crate::llm::bridge`.
+    Bridge {
+        bridge: std::sync::Arc<crate::llm::bridge::LlmBridge>,
+        /// How long to wait for the host's answer before erroring.
         timeout: std::time::Duration,
     },
 }
@@ -513,6 +524,7 @@ pub struct TokenUsage {
 
 impl TokenUsage {
     /// Create from ollama-rs GenerationResponse
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_response(response: &ollama_rs::generation::completion::GenerationResponse) -> Self {
         let prompt_tokens = response.prompt_eval_count.unwrap_or(0) as u64;
         let completion_tokens = response.eval_count.unwrap_or(0) as u64;
@@ -881,6 +893,7 @@ pub fn host_of(url_or_host: &str) -> &str {
 /// A hostname is left alone: resolving `localhost` or a real name is the resolver's job, and
 /// `/etc/hosts` or split-horizon DNS may legitimately point it somewhere unexpected. Only the
 /// case where resolution has exactly one correct answer is short-circuited.
+#[cfg(not(target_arch = "wasm32"))]
 fn without_dns_for_literal_ip(
     builder: reqwest::ClientBuilder,
     host: &str,
@@ -900,6 +913,7 @@ fn without_dns_for_literal_ip(
 /// (`--ollama-url`, `--openai-url`). It applies [`without_dns_for_literal_ip`], and building
 /// it once per endpoint rather than once per request is the other half of the same lesson —
 /// see the note on [`LlmBackend::Ollama`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn client_for_endpoint(base_url: &str) -> reqwest::Client {
     without_dns_for_literal_ip(reqwest::Client::builder(), base_url)
         .build()
@@ -907,6 +921,7 @@ pub fn client_for_endpoint(base_url: &str) -> reqwest::Client {
 }
 
 /// As [`client_for_endpoint`], bounded by `timeout`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn client_for_endpoint_with_timeout(
     base_url: &str,
     timeout: std::time::Duration,
@@ -920,10 +935,27 @@ pub fn client_for_endpoint_with_timeout(
 ///
 /// One constructor so the reqwest-level bound and [`OllamaClient::request_timeout`] cannot
 /// disagree; see [`OllamaClient::with_request_timeout`] for what that disagreement cost.
+#[cfg(not(target_arch = "wasm32"))]
 fn openai_http_client(timeout: std::time::Duration, base_url: &str) -> reqwest::Client {
     without_dns_for_literal_ip(reqwest::Client::builder().timeout(timeout), base_url)
         .build()
         .expect("Failed to build HTTP client")
+}
+
+/// The browser's `fetch()` does its own name resolution and offers no timeout knob, so on
+/// wasm32 both constructors are a plain client. Nothing in the web build contacts an LLM
+/// over HTTP anyway (see `LlmBackend::Bridge`); these exist for `model_selection`.
+#[cfg(target_arch = "wasm32")]
+pub fn client_for_endpoint(_base_url: &str) -> reqwest::Client {
+    reqwest::Client::new()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn client_for_endpoint_with_timeout(
+    _base_url: &str,
+    _timeout: std::time::Duration,
+) -> reqwest::Client {
+    reqwest::Client::new()
 }
 
 /// Default completion-token budget for one backend call.
@@ -959,6 +991,7 @@ pub struct OllamaClient {
 
 impl OllamaClient {
     /// Create a new Ollama client
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(base_url: impl Into<String>) -> Self {
         let url_str = base_url.into();
 
@@ -1003,6 +1036,7 @@ impl OllamaClient {
 
     /// Create a default client pointing to localhost
     #[allow(clippy::should_implement_trait)]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn default() -> Self {
         let ollama = Ollama::default();
         Self {
@@ -1017,6 +1051,7 @@ impl OllamaClient {
     }
 
     /// Create a new client for an OpenAI-compatible API endpoint
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new_openai(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         let client = openai_http_client(DEFAULT_REQUEST_TIMEOUT, &base_url);
@@ -1052,26 +1087,49 @@ impl OllamaClient {
         }
     }
 
-    /// Returns the backend type as a string ("ollama", "openai", or "agent")
+    /// Create a client whose every request is answered by whoever drains `bridge` — the
+    /// browser page, in the wasm build. No model is contacted by NetGet itself.
+    pub fn new_bridge(
+        bridge: std::sync::Arc<crate::llm::bridge::LlmBridge>,
+        timeout: std::time::Duration,
+    ) -> Self {
+        Self {
+            backend: LlmBackend::Bridge { bridge, timeout },
+            status_tx: None,
+            mock_config_file: None,
+            app_state: None,
+            breaker: std::sync::Arc::new(CircuitBreaker::default()),
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            max_tokens: DEFAULT_MAX_TOKENS,
+        }
+    }
+
+    /// Returns the backend type as a string ("ollama", "openai", "agent" or "bridge")
     pub fn backend_type(&self) -> &str {
         match &self.backend {
+            #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::Ollama(..) => "ollama",
+            #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::OpenAI { .. } => "openai",
             LlmBackend::Queue { .. } => "agent",
+            LlmBackend::Bridge { .. } => "bridge",
         }
     }
 
     /// Returns the base URL of the current backend
     pub fn backend_url(&self) -> String {
         match &self.backend {
+            #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::Ollama(ollama, _) => {
                 // ollama-rs doesn't expose the URL directly, reconstruct from known state
                 // The URL was parsed in new(), but we can't easily get it back.
                 // For display purposes, use a best-effort approach.
                 format!("{}", ollama.uri())
             }
+            #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::OpenAI { base_url, .. } => base_url.clone(),
             LlmBackend::Queue { .. } => "(calling agent)".to_string(),
+            LlmBackend::Bridge { .. } => "(host bridge)".to_string(),
         }
     }
 
@@ -1109,6 +1167,7 @@ impl OllamaClient {
     /// the reasoning appears live rather than after the whole body is buffered. A
     /// non-streaming single-object body (the test mock, any `stream:false` backend)
     /// simply arrives as one trailing line with no newline and is handled the same.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn read_ollama_stream(
         &self,
         mut http_response: reqwest::Response,
@@ -1178,6 +1237,7 @@ impl OllamaClient {
     /// reasoning appears live. It also buffers the raw body: if no SSE frame was
     /// seen (a non-streaming backend, or the single-object test mock), the whole
     /// body is parsed once as a completion object.
+    #[cfg(not(target_arch = "wasm32"))]
     async fn read_openai_stream(
         &self,
         mut http_response: reqwest::Response,
@@ -1268,11 +1328,14 @@ impl OllamaClient {
     /// timeout the user had asked for.
     pub fn with_request_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.request_timeout = timeout;
-        if let LlmBackend::OpenAI {
-            client, base_url, ..
-        } = &mut self.backend
+        #[cfg(not(target_arch = "wasm32"))]
         {
-            *client = openai_http_client(timeout, base_url);
+            if let LlmBackend::OpenAI {
+                client, base_url, ..
+            } = &mut self.backend
+            {
+                *client = openai_http_client(timeout, base_url);
+            }
         }
         self
     }
@@ -1312,10 +1375,12 @@ impl OllamaClient {
     /// not answered yet, which is not a transport fault, and tripping on a slow human-driven
     /// agent would break the `--llm-agent` flow outright.
     fn breaker_applies(&self) -> bool {
-        matches!(
-            self.backend,
-            LlmBackend::Ollama(..) | LlmBackend::OpenAI { .. }
-        )
+        match self.backend {
+            #[cfg(not(target_arch = "wasm32"))]
+            LlmBackend::Ollama(..) | LlmBackend::OpenAI { .. } => true,
+            // A queued or bridged request waits on an agent or a person, not a transport.
+            LlmBackend::Queue { .. } | LlmBackend::Bridge { .. } => false,
+        }
     }
 
     /// Fail fast if the backend is known to be down.
@@ -1417,6 +1482,7 @@ impl OllamaClient {
 
         // Dispatch to the appropriate backend
         let (response_text, token_usage) = match &self.backend {
+            #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::Ollama(ollama, http_client) => {
                 // Streamed `/api/generate`: `stream: true` returns NDJSON deltas we
                 // forward live (reasoning) while accumulating the full response. Called
@@ -1488,6 +1554,7 @@ impl OllamaClient {
                 (acc.content, usage)
             }
 
+            #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::OpenAI {
                 client,
                 base_url,
@@ -1556,6 +1623,45 @@ impl OllamaClient {
                     anyhow::bail!("✗  OpenAI API error: {}", err);
                 }
                 (acc.content.clone(), acc.token_usage())
+            }
+
+            LlmBackend::Bridge { bridge, timeout } => {
+                // No model here: the host answers. The prompt goes over as one user message,
+                // the way the OpenAI arm sends it.
+                let (id, rx) = bridge.submit(
+                    crate::llm::bridge::BridgeRequestKind::Generate,
+                    model.to_string(),
+                    vec![Message::user(prompt)],
+                    Vec::new(),
+                );
+                let reply = await_bridge_reply(id, rx, *timeout).await?;
+                let usage = TokenUsage {
+                    prompt_tokens: reply.prompt_tokens,
+                    completion_tokens: reply.completion_tokens,
+                    total_tokens: reply.prompt_tokens + reply.completion_tokens,
+                };
+                // A host that answered a prompt with native tool calls (a model that
+                // prefers them) is folded into the action envelope the text path parses.
+                let text = match reply.content {
+                    Some(content) if !content.trim().is_empty() => content,
+                    _ if !reply.tool_calls.is_empty() => {
+                        let actions: Vec<serde_json::Value> = reply
+                            .tool_calls
+                            .into_iter()
+                            .map(|call| {
+                                let mut action = call.arguments;
+                                if !action.is_object() {
+                                    action = serde_json::json!({});
+                                }
+                                action["type"] = serde_json::Value::String(call.name);
+                                action
+                            })
+                            .collect();
+                        serde_json::json!({ "actions": actions }).to_string()
+                    }
+                    _ => String::new(),
+                };
+                (text, usage)
             }
 
             LlmBackend::Queue { queue, timeout } => {
@@ -1674,10 +1780,12 @@ impl OllamaClient {
         ));
 
         let chat_response = match &self.backend {
+            #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::Ollama(ollama, http_client) => {
                 self.chat_with_tools_ollama(ollama, http_client, request)
                     .await?
             }
+            #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::OpenAI {
                 client,
                 base_url,
@@ -1689,6 +1797,34 @@ impl OllamaClient {
             LlmBackend::Queue { queue, timeout } => {
                 self.chat_with_tools_queue(queue.clone(), *timeout, request)
                     .await?
+            }
+            LlmBackend::Bridge { bridge, timeout } => {
+                let (id, rx) = bridge.submit(
+                    crate::llm::bridge::BridgeRequestKind::Chat,
+                    request.model.clone(),
+                    request.messages.clone(),
+                    request.tools.clone(),
+                );
+                let reply = await_bridge_reply(id, rx, *timeout).await?;
+                let tool_calls = reply
+                    .tool_calls
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, call)| ToolCall {
+                        id: call.id.unwrap_or_else(|| format!("bridge-{}-{}", id, i)),
+                        function_name: call.name,
+                        arguments: call.arguments,
+                    })
+                    .collect();
+                ChatResponse {
+                    content: reply.content,
+                    tool_calls,
+                    token_usage: TokenUsage {
+                        prompt_tokens: reply.prompt_tokens,
+                        completion_tokens: reply.completion_tokens,
+                        total_tokens: reply.prompt_tokens + reply.completion_tokens,
+                    },
+                }
             }
         };
 
@@ -1785,6 +1921,7 @@ impl OllamaClient {
     }
 
     /// Ollama backend: /api/chat with tools
+    #[cfg(not(target_arch = "wasm32"))]
     async fn chat_with_tools_ollama(
         &self,
         ollama: &Ollama,
@@ -1901,6 +2038,7 @@ impl OllamaClient {
     }
 
     /// OpenAI backend: /v1/chat/completions with tools
+    #[cfg(not(target_arch = "wasm32"))]
     async fn chat_with_tools_openai(
         &self,
         client: &reqwest::Client,
@@ -2144,6 +2282,8 @@ impl OllamaClient {
     /// List available models from the backend
     pub async fn list_models(&self) -> Result<Vec<String>> {
         match &self.backend {
+            LlmBackend::Bridge { bridge, .. } => Ok(bridge.models()),
+            #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::Ollama(ollama, _) => {
                 // ollama-rs applies no timeout of its own, so an unreachable host that
                 // silently drops packets would hang this call — and `is_available()` with it
@@ -2159,6 +2299,7 @@ impl OllamaClient {
                     .map_err(|e| anyhow::anyhow!("Failed to list models: {}", e))?;
                 Ok(models.into_iter().map(|m| m.name).collect())
             }
+            #[cfg(not(target_arch = "wasm32"))]
             LlmBackend::OpenAI {
                 client,
                 base_url,
@@ -2195,8 +2336,34 @@ impl OllamaClient {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for OllamaClient {
     fn default() -> Self {
         OllamaClient::default()
+    }
+}
+
+/// Await the host's answer to a bridge request, bounded by `timeout`.
+///
+/// The three failure shapes are kept distinct in the message: the host said no (its own
+/// text, which the page chose to show), the host dropped the request, and the host never
+/// answered. Only the first is the model's doing.
+async fn await_bridge_reply(
+    id: u64,
+    rx: tokio::sync::oneshot::Receiver<Result<crate::llm::bridge::BridgeReply, String>>,
+    timeout: std::time::Duration,
+) -> Result<crate::llm::bridge::BridgeReply> {
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(Ok(reply))) => Ok(reply),
+        Ok(Ok(Err(message))) => anyhow::bail!("✗  The model host reported an error: {}", message),
+        Ok(Err(_)) => anyhow::bail!(
+            "bridge: LLM request #{} was dropped before it was answered",
+            id
+        ),
+        Err(_) => anyhow::bail!(
+            "bridge: LLM request #{} timed out after {:?} without an answer",
+            id,
+            timeout
+        ),
     }
 }

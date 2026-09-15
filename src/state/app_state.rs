@@ -56,9 +56,9 @@ pub struct ConversationInfo {
     /// Details text (truncated input, context, etc.)
     pub details: String,
     /// When the conversation started
-    pub start_time: std::time::Instant,
+    pub start_time: crate::utils::clock::Instant,
     /// When the conversation ended (None if still active)
-    pub end_time: Option<std::time::Instant>,
+    pub end_time: Option<crate::utils::clock::Instant>,
 }
 
 /// Operating mode for the application
@@ -609,9 +609,9 @@ impl AppState {
     /// Generate a unique instance ID for this NetGet process
     /// Format: claude-{pid}-{timestamp}-{random4}
     fn generate_instance_id() -> String {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use crate::utils::clock::{SystemTime, UNIX_EPOCH};
 
-        let pid = std::process::id();
+        let pid = crate::utils::clock::process_id();
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1136,7 +1136,7 @@ impl AppState {
     pub async fn update_server_status(&self, id: ServerId, status: super::server::ServerStatus) {
         if let Some(server) = self.inner.write().await.servers.get_mut(&id) {
             server.status = status;
-            server.status_changed_at = std::time::Instant::now();
+            server.status_changed_at = crate::utils::clock::Instant::now();
         }
     }
 
@@ -1228,7 +1228,7 @@ impl AppState {
     /// Draining here — under the same write lock that stamps the timestamp — is what makes
     /// the caller safe to run from a 1s timer: two ticks can never take the same entries.
     pub async fn take_due_feedback(&self, debounce: std::time::Duration) -> Vec<DueFeedback> {
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         let mut due = Vec::new();
         let mut inner = self.inner.write().await;
 
@@ -1615,7 +1615,7 @@ impl AppState {
     /// Cleanup old closed connections (removes connections that have been closed for more than max_age_secs)
     pub async fn cleanup_closed_connections(&self, max_age_secs: u64) {
         use super::server::ConnectionStatus;
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
 
         let mut inner = self.inner.write().await;
         for server in inner.servers.values_mut() {
@@ -1647,7 +1647,7 @@ impl AppState {
     /// LLM-initiated `close_server` left entries in `AppState` forever.
     pub async fn cleanup_old_servers(&self, max_age_secs: u64) {
         use super::server::ServerStatus;
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
 
         let mut inner = self.inner.write().await;
         let to_remove: Vec<ServerId> = inner
@@ -1694,7 +1694,7 @@ impl AppState {
         if let Some(server) = self.inner.write().await.servers.get_mut(&server_id) {
             if let Some(conn) = server.get_connection_mut(connection_id) {
                 conn.status = ConnectionStatus::Closed;
-                conn.status_changed_at = std::time::Instant::now();
+                conn.status_changed_at = crate::utils::clock::Instant::now();
             }
         }
 
@@ -1996,7 +1996,7 @@ impl AppState {
                 if let Some(ps) = packets_sent {
                     conn.packets_sent += ps;
                 }
-                conn.last_activity = std::time::Instant::now();
+                conn.last_activity = crate::utils::clock::Instant::now();
             }
         }
     }
@@ -2011,7 +2011,7 @@ impl AppState {
         if let Some(server) = self.inner.write().await.servers.get_mut(&server_id) {
             if let Some(conn) = server.connections.get_mut(&connection_id) {
                 conn.status = status;
-                conn.status_changed_at = std::time::Instant::now();
+                conn.status_changed_at = crate::utils::clock::Instant::now();
             }
         }
     }
@@ -2287,7 +2287,7 @@ impl AppState {
         if let Some(client) = self.inner.write().await.clients.get_mut(&id) {
             client.record_status_transition(&status);
             client.status = status;
-            client.status_changed_at = std::time::Instant::now();
+            client.status_changed_at = crate::utils::clock::Instant::now();
         }
     }
 
@@ -2380,7 +2380,7 @@ impl AppState {
     /// Cleanup old disconnected clients (removes clients that have been disconnected for more than max_age_secs)
     pub async fn cleanup_old_clients(&self, max_age_secs: u64) {
         use super::client::ClientStatus;
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
 
         let mut inner = self.inner.write().await;
         let to_remove: Vec<ClientId> = inner
@@ -2709,7 +2709,7 @@ impl AppState {
     }
 
     /// Update task next execution time
-    pub async fn update_task_next_execution(&self, id: TaskId, next: std::time::Instant) {
+    pub async fn update_task_next_execution(&self, id: TaskId, next: crate::utils::clock::Instant) {
         if let Some(task) = self.inner.write().await.tasks.get_mut(&id) {
             task.next_execution = next;
         }
@@ -2824,7 +2824,7 @@ impl AppState {
             id,
             source,
             details,
-            start_time: std::time::Instant::now(),
+            start_time: crate::utils::clock::Instant::now(),
             end_time: None,
         };
 
@@ -2835,14 +2835,14 @@ impl AppState {
     pub async fn end_conversation(&self, id: &str) {
         let mut inner = self.inner.write().await;
         if let Some(conv) = inner.conversations.iter_mut().find(|c| c.id == id) {
-            conv.end_time = Some(std::time::Instant::now());
+            conv.end_time = Some(crate::utils::clock::Instant::now());
         }
     }
 
     /// Get all active conversations and recently-completed ones (within 1 second)
     pub async fn get_active_conversations(&self) -> Vec<ConversationInfo> {
         let inner = self.inner.read().await;
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
 
         inner
             .conversations
@@ -2874,7 +2874,7 @@ impl AppState {
     /// Clean up old completed conversations (older than 1 second)
     pub async fn cleanup_old_conversations(&self) {
         let mut inner = self.inner.write().await;
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
 
         inner.conversations.retain(|conv| {
             // Keep if still active
@@ -2969,8 +2969,8 @@ impl AppState {
         request: serde_json::Value,
         response: Vec<serde_json::Value>,
     ) -> u64 {
-        let unix_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let unix_ms = crate::utils::clock::SystemTime::now()
+            .duration_since(crate::utils::clock::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let (server_id, client_id) = match owner {

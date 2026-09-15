@@ -5,6 +5,10 @@ edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/smotanacom/netget"
 
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
 [features]
 default = ["all-protocols"]
 
@@ -690,7 +694,6 @@ sha1 = ["dep:sha1"]
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.41", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec", "compat"] }
 tokio-stream = "0.1"
 
@@ -703,18 +706,13 @@ openssl-sys = { version = "0.9", optional = true, features = ["vendored"] }
 
 # Terminal UI - crossterm (rolling terminal) + ratatui (full-screen dashboard).
 # ratatui is pinned to 0.29: 0.30 moves to crossterm 0.29 and we pin crossterm 0.28.
-crossterm = { version = "0.28", features = ["event-stream"] }
-ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
-tui-textarea = "0.7"
 futures = "0.3"
 textwrap = "0.16"
-termbg = "0.5"  # Terminal background detection for adaptive theming
 
 # HTTP client for Ollama
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "http2"] }
 
 # Ollama Rust client
-ollama-rs = { version = "0.3.3", features = ["stream"] }
 
 # HTTP server
 hyper = { version = "1.5", features = ["full"] }
@@ -742,20 +740,15 @@ hex = "0.4"
 base64 = "0.22"
 
 # Socket options (SO_REUSEADDR)
-socket2 = "0.5"
-
-# File locking for cross-process synchronization
-fs2 = "0.4"
 
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Syntax highlighting for script code
-syntect = "5.3"
 
 # Utilities
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde", "wasmbind"] }  # wasmbind: js Date on wasm32, inert elsewhere
 time = { version = "0.3", features = ["macros", "formatting"] }  # Time handling for rcgen certificates
 url = "2.5"  # URL parsing for web approval prompts
 regex = "1.11"
@@ -788,8 +781,10 @@ hickory-server = { version = "0.24", optional = true }
 hickory-proto = { version = "0.24", optional = true }
 
 # TLS support for DoT and DoH
-rustls = { version = "0.23", features = ["ring"], optional = true }
-tokio-rustls = { version = "0.26", optional = true }
+# default-features off: the default `aws_lc_rs` provider is a C library that does not build for
+# wasm32, and the binary installs the `ring` provider explicitly anyway (src/bin/netget.rs).
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"], optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"], optional = true }
 rustls-pemfile = { version = "2.0", optional = true }
 webpki-roots = { version = "0.26", optional = true }  # Root certificates for TLS verification
 
@@ -1083,6 +1078,43 @@ sha1 = { version = "0.10", optional = true }
 # is declared directly because ble-peripheral-rust exposes no way to set ManufacturerData or
 # ServiceData, which is the entire content of a beacon. Optional and target-gated: enabling the
 # feature on macOS/Windows is a no-op and the protocol refuses to start there.
+# ---------------------------------------------------------------------------------------------
+# Native only. Each of these needs an operating system: a tty (crossterm, termbg), sockets
+# (tokio's net/process/signal features, socket2, ollama-rs through them) or a C library
+# (syntect's onig). The wasm32 table below supplies the same names for the browser build.
+# ---------------------------------------------------------------------------------------------
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.41", features = ["full"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
+tui-textarea = "0.7"
+termbg = "0.5"  # Terminal background detection for adaptive theming
+ollama-rs = { version = "0.3.3", features = ["stream"] }
+socket2 = "0.5"  # Socket options (SO_REUSEADDR)
+fs2 = "0.4"  # File locking for cross-process synchronization (nothing in src/ uses it today)
+syntect = "5.3"
+
+# ---------------------------------------------------------------------------------------------
+# wasm32-unknown-unknown: the browser demo (crates/netget-web). `tokio` and `crossterm` are
+# shim crates - see crates/netget-tokio-wasm and crates/netget-crossterm-wasm - bound to those
+# names in src/lib.rs so the protocol servers and the dashboard compile without a `#[cfg]` at
+# each use. The rest are per-crate switches their upstream needs on this target.
+# ---------------------------------------------------------------------------------------------
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Cargo forbids one dependency name resolving to different packages per target, so these keep
+# their own names here and `src/lib.rs` binds them as `tokio` and `crossterm` for the whole
+# crate with `extern crate netget_tokio_wasm as tokio;` (only on this target).
+netget-tokio-wasm = { path = "crates/netget-tokio-wasm" }
+netget-crossterm-wasm = { path = "crates/netget-crossterm-wasm" }
+ratatui = { version = "0.29", default-features = false }
+tui-textarea = { version = "0.7", default-features = false, features = ["ratatui", "no-backend"] }
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }  # onig needs a C compiler
+web-time = "1"  # std::time::Instant panics on this target; see src/utils/clock.rs
+getrandom = { version = "0.2", features = ["js"] }  # rand, rcgen
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }  # rustls/rcgen
+rustls-pki-types = { version = "1", features = ["web"] }  # UnixTime::now on wasm
+uuid = { version = "1.11", features = ["js"] }  # v4 needs a randomness source
+
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17", optional = true, features = ["bluetoothd"] }
 # SocketCAN is an AF_CAN socket family that exists only in the Linux kernel. Target-gated for the
@@ -1144,3 +1176,12 @@ tonic-build = "0.12"
 # Keep prebuilt binaries small: symbols stripped, thin LTO.
 strip = "symbols"
 lto = "thin"
+
+# The browser bundle (crates/netget-web, ./web/build.sh): size over speed. With 68 protocols
+# compiled in, the .wasm is what the visitor downloads, and it is not CPU-bound.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"

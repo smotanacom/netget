@@ -430,9 +430,9 @@ async fn handle_initialize_inner(
                 bytes_received: 0,
                 packets_sent: 0,
                 packets_received: 0,
-                last_activity: std::time::Instant::now(),
+                last_activity: crate::utils::clock::Instant::now(),
                 status: ConnectionStatus::Active,
-                status_changed_at: std::time::Instant::now(),
+                status_changed_at: crate::utils::clock::Instant::now(),
                 protocol_info: ProtocolConnectionInfo::empty(),
             },
         )

@@ -994,7 +994,7 @@ impl EapolServer {
         use crate::state::server::{
             ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
         };
-        let now = std::time::Instant::now();
+        let now = crate::utils::clock::Instant::now();
         cx.state
             .add_connection_to_server(
                 cx.server_id,

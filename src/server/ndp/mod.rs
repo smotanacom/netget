@@ -629,7 +629,7 @@ impl NdpServer {
             use crate::state::server::{
                 ConnectionState as ServerConnectionState, ConnectionStatus, ProtocolConnectionInfo,
             };
-            let now = std::time::Instant::now();
+            let now = crate::utils::clock::Instant::now();
             let nowhere: SocketAddr = "[::]:0".parse().expect("[::]:0 is a valid socket address");
             let conn = ServerConnectionState {
                 id: connection_id,
