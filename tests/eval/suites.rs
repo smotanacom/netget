@@ -163,12 +163,27 @@ fn dns() -> Vec<EvalCase> {
 }
 
 // ---------------------------------------------------------------------------
-// WHOIS — the system `whois` binary.
+// WHOIS — `nc`, not the system `whois`, and the reason is worth recording
+// because `whois` is counted among the "67 of 100 real clients already
+// installed" in PROTOCOL_QUALITY.md.
+//
+// **macOS `whois` segfaults when `-p` follows `-h`.** Measured against a bare
+// listener: `whois -h 127.0.0.1 -p N netget.example` exits 139 (SIGSEGV) having
+// sent zero bytes, while `whois -p N -h 127.0.0.1 …` exits 71 and also sends
+// nothing, and `-p` without `-h` goes looking for the real registry. There is no
+// argument order that reaches a loopback port, so this client cannot evaluate
+// this protocol on this machine at all — the three whois cases in the first
+// smoke run all reported `event_never_reached_model` because the client died
+// 1.2ms after connecting.
+//
+// WHOIS is one line of text in and free text out, so `nc` loses little here
+// beyond the label, which is why these rows say `generic-transport`.
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "whois")]
 fn whois_probe(query: &str) -> Probe {
-    Probe::client("whois", &["-h", "127.0.0.1", "-p", "{PORT}", query])
+    let line = format!("{}\r\n", query);
+    Probe::generic("nc", &["-w", "235", "127.0.0.1", "{PORT}"]).stdin(line.as_str())
 }
 
 #[cfg(feature = "whois")]
@@ -181,7 +196,8 @@ fn whois() -> Vec<EvalCase> {
              NETGET-EVAL-REGISTRAR.",
             whois_probe("netget.example"),
             Expect::contains(&["NETGET-EVAL-REGISTRAR"]),
-        ),
+        )
+        .note("macOS whois segfaults with -p; driven with nc."),
         EvalCase::new(
             "whois/registrant-and-status",
             "whois",
