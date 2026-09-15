@@ -296,20 +296,42 @@ jobs:
       # names a binary rests on, and this is the only job with those binaries, so it
       # is the only place they can run. Each one fails (never skips) when its client
       # is missing, so a green run here means the client really was driven.
+      # Still advisory, but it now reports an honest verdict. It previously swallowed
+      # failures TWICE - `continue-on-error` on the job and `|| echo ::warning::` on each
+      # filter - so the step went green even when a real client had failed outright. That
+      # defeats the point of converting these gates from skip-to-fail: the whole reason a
+      # missing client is now an error is so somebody learns about it.
+      #
+      # The loop still runs every filter rather than stopping at the first failure, because
+      # one run should tell you everything that is broken. It just remembers, and exits
+      # non-zero at the end.
+      #
+      # TO MAKE THIS BLOCKING: delete the `continue-on-error` line below. That is the whole
+      # change. Do it once this step has been green three runs in a row on `master` - these
+      # tests drive real network clients on a shared runner, and they have never been
+      # observed under that load.
       - name: cargo test --all-features (real-client evidence)
         continue-on-error: true
         run: |
-          echo "::notice::Advisory only. These are the real-client tests behind the Beta ratings."
+          echo "::notice::These are the real-client tests behind the Beta ratings."
+          failed=""
           for filter in \
             dns::dig_test gopher::e2e_test hls::curl_test kubernetes::e2e_test \
             maven::e2e_test memcached::real_client_test npm::e2e_test \
             oci_registry::e2e_test openvpn:: pypi::e2e_test \
             radius::real_client_test rtsp::ffprobe_test websocket::e2e_test ; do
             echo "::group::$filter"
-            cargo test --locked --all-features --test server -- \
-              --test-threads=100 --nocapture "$filter" || echo "::warning::$filter failed"
+            if ! cargo test --locked --all-features --test server -- \
+                 --test-threads=100 --nocapture "$filter" ; then
+              echo "::error::$filter failed - a Beta rating rests on this test"
+              failed="$failed $filter"
+            fi
             echo "::endgroup::"
           done
+          if [ -n "$failed" ]; then
+            echo "::error::real-client evidence failed for:$failed"
+            exit 1
+          fi
 
   test:
     name: Test
