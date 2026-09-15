@@ -120,3 +120,34 @@ Reads initial server greeting:
 1. Reads single line from stream
 2. Expects `* OK [CAPABILITY ...] Server Ready`
 3. Returns greeting string for validation
+
+## `literal_framing_test.rs` — the `{N}` count must match the octets that follow
+
+Ten tests, **zero LLM calls**: `ImapProtocol::execute_action` is driven directly, because the
+question is what the executor will let onto the wire, not what a model would ask for.
+
+The suite's own FETCH fixture declared `{50}` for a 46-octet body and passed for as long as it
+existed — every assertion in `test.rs` is `line.contains("FETCH")` on a **trimmed** string, and
+trimming discards exactly the framing RFC 3501 §4.3 cares about. The pcap oracle found it;
+`validate_imap_literals` is the same check on our side of the socket, so a model that miscounts
+is refused rather than obeyed.
+
+Refused (each fails if the guard is removed):
+
+- `{50}` over 46 octets — the original defect. Long enough to exist, so a length check alone
+  would pass it; octet 50 lands inside `A004`.
+- `{40}` over 46 octets — lands mid-`Hello`.
+- `{9000}` with six octets after it — the client would block forever.
+- a literal whose payload consumes the response to its last octet, leaving the line
+  unterminated.
+
+Accepted (each passes with or without the guard, which is what makes them controls — a guard
+that refused every literal would satisfy the four above and take IMAP's literal vocabulary
+with it):
+
+- the corrected 46-octet fixture, asserted **byte for byte** including the terminating CRLF;
+- a literal followed by a space and another attribute, which is what `send_imap_fetch` emits
+  when `BODY[]` is not the last item;
+- `{46}` in free text with no CRLF after it, and malformed braces — not literal markers;
+- a `{999}\r\n` sequence *inside* a body, which the walk must skip over rather than read.
+

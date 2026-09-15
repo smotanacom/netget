@@ -20,6 +20,42 @@ called it and it could not have worked - it passed a concatenated PEM string to
 `native_tls::Identity::from_pkcs12`, which only accepts DER PKCS#12 - so it was deleted rather
 than left looking implemented.
 
+## Every response's `{N}` literals are checked before they reach the wire
+
+`send_imap_response`'s `response` field relays a **pre-framed, model-authored** response
+verbatim, and for a long time nothing checked its framing. RFC 3501 §4.3 makes a client read
+*exactly* the declared number of octets, so a count that is wrong by even one desynchronises the
+connection **permanently**: the client swallows the start of the next line as message body, then
+reads the remainder as a response it cannot parse, and every tag after that is off by the
+difference. There is no recovery, and no error the server can send afterwards that the client
+will understand.
+
+`validate_imap_literals` (`actions.rs`) walks the bytes once and refuses the action when they
+disagree. It is wired at the single choke point in `execute_action`, so it covers every
+`ActionResult::Output` this protocol produces rather than only the one action that needed it.
+The actions that build their own literals are correct by construction and pass unchanged —
+`send_imap_fetch` computes its counts from `body.len()`.
+
+What it accepts and rejects:
+
+- `{N}` is a literal marker **only** when CRLF immediately follows it. `A001 OK fetched {46}
+  bytes` is ordinary text and is left alone.
+- At least `N` octets must follow, or the client blocks on octets never sent.
+- Octet `N` must be followed by a space, a `)` or the CR of a CRLF — the three things RFC 3501's
+  response grammar puts after a literal (last element of a line, or one element of a
+  space-separated parenthesised list). This is what catches an over-count that is still long
+  enough to exist.
+- The walk skips *over* each literal's payload, so a `{5}` inside a message body is data rather
+  than a second marker.
+
+**Why a guard rather than a lint.** This defect is invisible to the assertions a test naturally
+writes. A fixture in `tests/server/imap/test.rs` declared `{50}` for a 46-octet body and passed
+for as long as it existed, because every assertion there is `line.contains("FETCH")` on a
+**trimmed** string — and trimming discards precisely the framing the RFC cares about. It was the
+pcap oracle, handing the raw bytes to Wireshark's dissector, that saw it. A short count could
+still land on a legal follower and pass, so this is a guard against the counting mistake models
+actually make, not a parser. `tests/server/imap/literal_framing_test.rs` pins both directions.
+
 ## Architecture Decisions
 
 ### Session State Machine
