@@ -204,3 +204,98 @@ fn promiscuous_mode_reads_capture_access_not_raw_sockets() {
         "capture access must NOT satisfy RawSocketAccess"
     );
 }
+
+/// The gRPC **client** shells out to the same `protoc` and must declare it too.
+///
+/// The server has declared this since the mechanism was adopted and the client did not, which
+/// is the shape worth remembering: a dependency was found, declared once, and the other half of
+/// the pair running the identical `Command::new("protoc")` was never looked at. A host with no
+/// protoc was warned about one direction and discovered the other from a failure part-way
+/// through a call.
+///
+/// `src/client/grpc/mod.rs` runs `protoc --descriptor_set_out=/dev/stdout` to compile the
+/// inline `.proto` text form of `proto_schema`.
+#[test]
+#[cfg(feature = "grpc")]
+fn the_grpc_client_declares_protoc_as_well_as_the_server() {
+    use netget::protocol::client_registry::CLIENT_REGISTRY;
+
+    let client = CLIENT_REGISTRY
+        .get_all()
+        .into_iter()
+        .find(|c| c.protocol_name().to_lowercase().contains("grpc"))
+        .expect("the grpc client is compiled in under this feature set");
+
+    assert!(
+        client
+            .get_dependencies()
+            .contains(&ProtocolDependency::ToolInPath("protoc")),
+        "the gRPC client runs protoc to compile an inline .proto schema, so it must declare \
+         ToolInPath(\"protoc\") exactly as the server does. Declared: {:?}",
+        client.get_dependencies()
+    );
+}
+
+/// WireGuard needs an external `wireguard-go` on macOS, and that is a second missing piece.
+///
+/// NetGet implements none of the WireGuard protocol: it orchestrates `defguard_wireguard_rs`,
+/// whose macOS backend is a *driver* for a userspace implementation rather than the
+/// implementation — `wgapi_userspace.rs` runs `Command::new("wireguard-go")` and talks to it
+/// over a unix socket. Linux, FreeBSD and Windows have it in the kernel, so there is nothing
+/// external to want and nothing is declared there.
+///
+/// It sits behind the `Root` requirement the metadata already declares, and that is the point:
+/// they are different missing pieces, and an operator who gains root still cannot start this
+/// without the binary.
+#[test]
+#[cfg(all(feature = "wireguard", target_os = "macos"))]
+fn wireguard_declares_the_external_binary_its_macos_backend_runs() {
+    let server = registry()
+        .get("WireGuard")
+        .expect("wireguard is compiled in under this feature set");
+
+    assert!(
+        server
+            .get_dependencies()
+            .contains(&ProtocolDependency::ToolInPath("wireguard-go")),
+        "on macOS defguard shells out to wireguard-go, so the server must declare it. \
+         Declared: {:?}",
+        server.get_dependencies()
+    );
+
+    // Root is still declared alongside it — adding the binary must not have replaced the
+    // derived list, which `default_dependencies_from_privilege(self)` exists to prevent.
+    assert!(
+        server
+            .get_dependencies()
+            .contains(&ProtocolDependency::RootAccess),
+        "the privilege-derived RootAccess was dropped when the tool dependency was added; \
+         override get_dependencies() by extending default_dependencies_from_privilege(self), \
+         never by replacing it. Declared: {:?}",
+        server.get_dependencies()
+    );
+}
+
+/// A dependency that cannot be probed honestly must stay undeclared.
+///
+/// The obvious move for the seventeen device protocols is to declare "needs a Bluetooth
+/// adapter". There is no `ProtocolDependency` variant for it and no probe that answers
+/// reliably, so such a declaration would exclude protocols that work on the operator's machine
+/// — and an exclusion is informational, so the operator would simply be told a lie.
+/// `Protocol::get_dependencies`'s own docs say this; asserting it means a future pass that adds
+/// a device variant has to come past the reasoning rather than around it.
+#[test]
+#[cfg(feature = "bluetooth-ble")]
+fn a_device_protocol_declares_nothing_it_cannot_probe() {
+    let ble = registry()
+        .get("BLUETOOTH_BLE")
+        .expect("bluetooth-ble is compiled in under this feature set");
+
+    let deps = ble.get_dependencies();
+    assert!(
+        deps.is_empty(),
+        "bluetooth_ble declares {deps:?}. It sits at PrivilegeRequirement::None because every \
+         other option would be a lie, and DeviceAccess deliberately derives nothing. If a \
+         device dependency is being added, it needs a probe that can answer first."
+    );
+}

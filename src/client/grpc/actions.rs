@@ -269,6 +269,22 @@ impl Protocol for GrpcClientProtocol {
     fn keywords(&self) -> Vec<&'static str> {
         vec!["grpc", "grpc client", "connect to grpc", "rpc"]
     }
+    /// The gRPC client shells out to `protoc`, exactly as the server does.
+    ///
+    /// `src/client/grpc/mod.rs` runs `protoc --descriptor_set_out=/dev/stdout` to compile the
+    /// inline `.proto` text a caller supplies, so without the binary on PATH that schema form
+    /// cannot load at all. The *server* has declared this since the dependency mechanism was
+    /// adopted; the client shells out to the same binary and did not, so a host without
+    /// `protoc` was told about one half of the pair and discovered the other from a failure.
+    ///
+    /// Note this is a genuine **runtime** dependency, unlike `etcd`/`kubernetes`/`zookeeper`,
+    /// whose `protoc` use is in a build script and is finished before the binary exists.
+    fn get_dependencies(&self) -> Vec<crate::protocol::dependencies::ProtocolDependency> {
+        let mut deps =
+            crate::llm::actions::protocol_trait::default_dependencies_from_privilege(self);
+        deps.push(crate::protocol::dependencies::ProtocolDependency::ToolInPath("protoc"));
+        deps
+    }
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
