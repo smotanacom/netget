@@ -93,6 +93,37 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn};
 
+/// How long to wait for a peer's first request after it has connected.
+///
+/// Kafka is client-speaks-first with no broker greeting, and every real client opens with
+/// `ApiVersions` before it does anything else — `librdkafka`, the Java client and `kcat` all
+/// send it inside the connect path. A peer that has connected and sent nothing has made no
+/// request at all, so it gets the short bound.
+const FIRST_REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* request once one has been answered.
+///
+/// Ten minutes, which is not a guess: it is `connections.max.idle.ms`, the broker setting real
+/// Kafka ships with exactly this job, at exactly this default. A producer between batches or a
+/// consumer between long polls is legitimately silent for minutes, and copying the broker's own
+/// number is the one choice no real client can be surprised by.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Concurrent connections this server admits.
+///
+/// Each connection may buffer a request of up to [`MAX_REQUEST_BYTES`], so the cap is what
+/// turns that per-connection bound into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a plain close, which is what a real broker does.
+///
+/// Every Kafka response is `(size)(correlation_id)(body)` and the correlation id belongs to the
+/// *request* — this peer has sent none, so no well-formed response exists to write. Real
+/// brokers hitting `max.connections` close the socket without a word for the same reason, and
+/// `librdkafka` reports it as a broker transport failure and backs off. The reason is in the
+/// log, tagged `decision=fail_closed_connection_cap`.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// Smallest useful Kafka request: api_key (i16) + api_version (i16) + correlation_id (i32).
 const MIN_REQUEST_BYTES: i32 = 8;
 
@@ -252,10 +283,19 @@ impl KafkaServer {
         let protocol = Arc::new(KafkaProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Kafka",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, peer_addr, permit)) => {
                         Log::new(Some(&status_tx))
                             .debug(format!("Kafka client connected from {}", peer_addr));
 
@@ -291,6 +331,9 @@ impl KafkaServer {
                         let _ = status_clone.send("__UPDATE_UI__".to_string());
 
                         tokio::spawn(async move {
+                            // Held for the life of the connection, so the cap counts live
+                            // clients rather than accepts.
+                            let _permit = permit;
                             let result = Self::handle_connection(
                                 stream,
                                 peer_addr,
@@ -355,13 +398,40 @@ impl KafkaServer {
         protocol: Arc<KafkaProtocol>,
     ) -> Result<()> {
         let mut buffer = vec![0u8; 8192];
+        let mut answered_one = false;
 
         loop {
+            // Both reads below are bounded by this deadline and nothing else is. The LLM
+            // round-trip that answers the request, and a `manual` rule parking it for a human
+            // (`src/state/intercepts.rs`, 300s by default), happen further down the loop body
+            // once the whole request has arrived — so neither sits inside a read deadline and
+            // neither can be cut short by one. What is bounded is a peer holding the connection
+            // while sending nothing, and a peer that announces a request size and then stalls
+            // part-way through delivering it.
+            let read_timeout = if answered_one {
+                IDLE_BETWEEN_REQUESTS_TIMEOUT
+            } else {
+                FIRST_REQUEST_READ_TIMEOUT
+            };
+
             // Read the size prefix with read_exact. A plain read() may return 1-3
             // bytes, and the old code parsed all four regardless, mixing in stale
             // bytes from the previous message.
             let mut size_prefix = [0u8; 4];
-            match stream.read_exact(&mut size_prefix).await {
+            let prefix_read =
+                match tokio::time::timeout(read_timeout, stream.read_exact(&mut size_prefix)).await
+                {
+                    Ok(read) => read,
+                    Err(_) => {
+                        Log::new(Some(&status_tx)).debug(format!(
+                            "Kafka client {} sent nothing for {}s; closing idle connection",
+                            peer_addr,
+                            read_timeout.as_secs()
+                        ));
+                        break;
+                    }
+                };
+            match prefix_read {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     Log::new(Some(&status_tx))
@@ -391,7 +461,24 @@ impl KafkaServer {
             if buffer.len() < message_size {
                 buffer.resize(message_size, 0);
             }
-            stream.read_exact(&mut buffer[..message_size]).await?;
+            match tokio::time::timeout(read_timeout, stream.read_exact(&mut buffer[..message_size]))
+                .await
+            {
+                Ok(read) => read?,
+                Err(_) => {
+                    Log::new(Some(&status_tx)).warn(format!(
+                        "Kafka client {} announced a {}-byte request and stalled for {}s \
+                         without delivering it; closing",
+                        peer_addr,
+                        message_size,
+                        read_timeout.as_secs()
+                    ));
+                    break;
+                }
+            };
+            // A whole request has arrived: from here on this peer is an established client and
+            // the longer idle bound applies.
+            answered_one = true;
 
             app_state
                 .update_connection_stats(
