@@ -571,3 +571,28 @@ Start an SMB file server on port 445. Accept file writes, log the content.
 - Invalid packet structure
 
 All logs use dual logging pattern (tracing macros + status_tx).
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/smb/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_MESSAGE_READ_TIMEOUT` | 30s | SMB2 is client-speaks-first: NEGOTIATE is the first message, and `smbclient`, the Windows redirector and `mount -t cifs` all send it inside the connect path. |
+| `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 900s | Not a number invented here: it is Windows' `autodisconnect` default — the interval after which a server disconnects an idle SMB session. A mounted share with no I/O is genuinely idle for long stretches and must not be torn down for it. |
+| `BODY_READ_TIMEOUT` | 30s | A different claim, and much shorter: the peer has said "this many bytes are coming" and the server has already allocated for them. Every announced-body read now goes through `read_body_exact` / `read_body`; each was an unbounded `read_exact` before. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **a plain close**, as a real SMB server does. Every SMB2 response echoes the request's MessageId, TreeId and SessionId, and a refused peer has sent no request to echo. Samba past `max smbd processes` and Windows past its connection limit both close without a message. |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

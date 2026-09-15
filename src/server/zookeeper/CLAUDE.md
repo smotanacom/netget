@@ -179,3 +179,27 @@ The accept-loop `JoinHandle` is registered via `AppState::register_server_task()
 
 `tests/server/zookeeper/e2e_test.rs` drives the real `zookeeper-async` client plus one
 byte-level handshake test. See `tests/server/zookeeper/CLAUDE.md`.
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/zookeeper/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `CONNECT_REQUEST_READ_TIMEOUT` | 30s | ZooKeeper is client-speaks-first: the ConnectRequest is the first frame and the server says nothing before it. A peer that has opened the socket and said nothing has not started a session — and this is the bound an unauthenticated flood lives under, since it never reaches the one below. |
+| `idle_timeout_for(session)` | the negotiated session timeout × 2, floored at 30s (so at most 80s) | The protocol answers this itself. A real ZooKeeper expires a session when it has heard nothing for the *negotiated* timeout, and the client pings at a third of that interval precisely so an idle-but-live session keeps proving it is alive — so the bound is not a number picked here at all, it is the value this very connection negotiated. Doubled so a client that misses a ping is not punished for it; floored at `MIN_IDLE_AFTER_CONNECT` because `MIN_SESSION_TIMEOUT_MS` is four seconds and eight would be close enough to a scheduling hiccup to matter. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **a plain close**, which is exactly what a real ZooKeeper does. There is no pre-session error frame: the first thing the server may write is a ConnectResponse, and writing one would *admit* the peer rather than refuse it — the fail-open shape this codebase treats as its most dangerous pattern. Real ZooKeeper hitting `maxClientCnxns` closes the socket and logs "Too many connections from …". |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

@@ -221,3 +221,27 @@ visibly on either side.
 
 - [Model Context Protocol](https://modelcontextprotocol.io/)
 - [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/mcp/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_REQUEST_READ_TIMEOUT` | 30s | MCP rides on HTTP POST and is client-speaks-first: the request line is the first thing on the wire. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 300s | A client holds its connection open between calls — an editor with an MCP server attached may go minutes between tool calls while a human thinks. A reaped connection loses nothing: MCP session state lives in this server's own map, keyed by session id rather than by socket. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **HTTP `503` carrying a JSON-RPC error with `MCP_SERVER_BUSY_CODE` (-32000)** — both layers of this protocol's vocabulary at once, and the same code this server already returns when the backend is overloaded. |
+
+**The deadline covers the read and nothing else.** `axum::serve` owns its accept loop and takes a concrete `TcpListener`, so there is no seam inside it — the same wall `src/server/nfs/guard.rs` hit with `NFSTcpListener`, and the same answer: NetGet keeps the public listener and runs axum behind it on a loopback-only ephemeral port. The relay's deadline re-arms instead of closing while `awaiting_response` is set, which for a strict request/response protocol is exactly "the peer is waiting on us". Two costs are worth stating: `handle_jsonrpc` sees the relay as its peer rather than the real client address, and the loopback backend is reachable by other local processes (again as with NFS). The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

@@ -211,3 +211,27 @@ otherwise costs one model round-trip.
 - [RESP2 specification](https://redis.io/docs/reference/protocol-spec/)
 - [redis-protocol crate](https://docs.rs/redis-protocol/)
 - [redis-rs](https://docs.rs/redis/) — used by the E2E tests
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/redis/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_COMMAND_READ_TIMEOUT` | 30s | Every real RESP client speaks immediately — `redis-cli` sends `COMMAND DOCS`, `redis-rs` sends `PING` or its configured `HELLO`/`AUTH`. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 300s | Deliberately much longer: real Redis ships `timeout 0` — it never closes an idle client — and every pooling client in the ecosystem depends on holding an established connection unused between bursts. Closing those at 30s would break correct clients to fix a problem they are not causing. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **`-ERR max number of clients reached`**, byte for byte what real Redis sends in the same situation. `redis-rs` surfaces it as `ResponseError` and `redis-cli` prints it; a simple error can never be mistaken for data, which is what makes it safe unprompted. |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

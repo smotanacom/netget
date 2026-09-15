@@ -71,8 +71,10 @@ hand back a directory the client did not ask for. `mount_handlers` turns the `Er
 - **The backend listener is reachable by any local process.** It binds `127.0.0.1:0`, so
   nothing off-box can skip the screen, but a process on the same machine can. That is the
   standard cost of a proxy and there is no way around it without patching the crate.
-- **No per-connection idle timeout.** A peer may hold an open connection indefinitely without
-  sending a record; only the concurrency cap bounds that.
+- ~~**No per-connection idle timeout.**~~ **Fixed, September 2026** — see "Connection bounds"
+  below. `FIRST_RECORD_READ_TIMEOUT` and `IDLE_BETWEEN_RECORDS_TIMEOUT` bound a peer that holds
+  an open connection without sending a record, which previously only the concurrency cap
+  limited.
 - Because `nfsserve` spawns a task per RPC message, several `consult_llm` calls can still run
   concurrently for one peer — NetGet's per-connection Idle→Processing→Accumulating state
   machine is absent here — and this server calls `update_connection_stats` nowhere, so the rail
@@ -296,3 +298,27 @@ times out waiting for a reply that never comes, the second records 200 LLM calls
 - [RFC 1813: NFS Version 3](https://tools.ietf.org/html/rfc1813)
 - [RFC 1831: RPC v2](https://tools.ietf.org/html/rfc1831) / [RFC 1832: XDR](https://tools.ietf.org/html/rfc1832)
 - [nfsserve](https://docs.rs/nfsserve)
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/nfs/guard.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_RECORD_READ_TIMEOUT` | 30s | ONC RPC over TCP is client-speaks-first and a real client sends NULL or MOUNT immediately. `src/server/nfs/CLAUDE.md` said in as many words that no per-connection idle timeout existed; this is it. |
+| `IDLE_BETWEEN_RECORDS_TIMEOUT` | 900s | Long on purpose: a mounted filesystem with no I/O is genuinely silent for long stretches, and that is the normal state of a mount rather than a symptom. The Linux client reconnects its TCP transport transparently, so a reaped idle connection costs a mount nothing observable. |
+| `MAX_CONCURRENT_CONNECTIONS` | 256 | Unchanged in value — this is where `accept_bounded::DEFAULT_MAX_CONNECTIONS` came from, and the constant now *is* that one so the two cannot drift. The hand-rolled `Semaphore` is replaced by the shared helper. Refusal: **a plain close.** Every refusal this screen can express is an accepted RPC reply carrying the *call's own* xid; a peer turned away at accept has sent no call and therefore no xid. |
+
+**The deadline covers the read and nothing else.** One `lookup` here is one LLM round-trip and may be parked for a human, so the deadline must not count the wait: `awaiting_reply` is set when a record reaches the backend and cleared when the backend answers, and while it is set the deadline re-arms instead of closing. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.
