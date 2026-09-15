@@ -1996,14 +1996,16 @@ mod sanitizer_props {
     proptest! {
         #![proptest_config(codec_config!(crate::CASES))]
 
-        /// Property 4, for the three sanitisers that are fixed points.
+        /// Property 4, for every sanitiser — all four are fixed points.
         ///
-        /// `token` is deliberately not here — see the FINDING at the end of this module.
+        /// `token` is here because it now is one: it used to trim *before* truncating, so a
+        /// cut landing after a space left a trailing space a second call removed.
         #[test]
-        fn sanitisers_are_idempotent(s in ".{0,64}") {
+        fn sanitisers_are_idempotent(s in ".{0,64}", max in 0usize..48) {
             prop_assert_eq!(line_field(&line_field(&s)), line_field(&s));
             prop_assert_eq!(strip_controls(&strip_controls(&s)), strip_controls(&s));
             prop_assert_eq!(multiline(&multiline(&s)), multiline(&s));
+            prop_assert_eq!(token(&token(&s, max), max), token(&s, max));
         }
 
         /// A sanitised value carries no control character at all — which is the property the
@@ -2045,22 +2047,23 @@ mod sanitizer_props {
     // FINDINGS
     // -------------------------------------------------------------------------------------
 
-    /// FINDING: `sanitize::token` is **not idempotent**. It trims and *then* truncates, so a
-    /// cut that lands after a space leaves a trailing space that a second call removes.
+    /// `sanitize::token` used to be **not idempotent**. It trimmed and *then* truncated, so a
+    /// cut that lands after a space left a trailing space that a second call removed.
     ///
     /// Minimal counterexample, hand-reduced from what proptest shrank to:
-    /// `token("a b", 2)` is `"a "`, and `token("a ", 2)` is `"a"`.
+    /// `token("a b", 2)` was `"a "`, and `token("a ", 2)` is `"a"`.
     ///
-    /// Real, and minor. `token` is what produces an identifier — the one caller today is a
+    /// Minor but real. `token` is what produces an identifier — the one caller today is a
     /// BLE device name — and a normaliser that is not a fixed point means "already
     /// sanitised" is not a stable predicate: a value sanitised at ingest and sanitised again
-    /// at render compares unequal to itself. The fix is to trim *after* truncating, one line.
-    /// Not applied here: this pass is not allowed to change behaviour, and the finding is
-    /// worth more than the fix is urgent.
+    /// at render compared unequal to itself. It now trims *after* truncating.
     #[test]
-    #[ignore = "FINDING: sanitize::token trims before truncating, so it is not idempotent"]
-    fn token_should_be_idempotent() {
+    fn token_is_idempotent() {
+        assert_eq!(token("a b", 2), "a");
         assert_eq!(token(&token("a b", 2), 2), token("a b", 2));
+        // Leading whitespace is still dropped before the cut, so a padded value does not
+        // spend its whole budget on spaces.
+        assert_eq!(token("   ab", 2), "ab");
     }
 }
 
