@@ -167,7 +167,7 @@ mod openapi_client_tests {
             });
 
         let server = start_netget_server(server_config).await?;
-        client.wait_for_mocks(30).await;
+        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
         // Inject actual port into spec
         let openapi_spec = spec_template.replace("{port}", &server.port.to_string());
