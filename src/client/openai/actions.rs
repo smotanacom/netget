@@ -175,7 +175,7 @@ impl Protocol for OpenAiClientProtocol {
                 parameters: vec![
                     Parameter {
                         name: "input".to_string(),
-                        type_hint: "string or array".to_string(),
+                        type_hint: "string | array".to_string(),
                         description: "Text or array of texts to embed".to_string(),
                         required: true,
                     },

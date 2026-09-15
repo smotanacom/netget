@@ -88,7 +88,7 @@ pub static DATALINK_CLIENT_CONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(
         },
         Parameter {
             name: "promiscuous".to_string(),
-            type_hint: "bool".to_string(),
+            type_hint: "boolean".to_string(),
             description: "Whether the interface was opened in promiscuous mode".to_string(),
             required: true,
         },

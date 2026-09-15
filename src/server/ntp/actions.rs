@@ -502,7 +502,7 @@ fn send_ntp_time_response_action() -> ActionDefinition {
             },
             Parameter {
                 name: "reference_timestamp".to_string(),
-                type_hint: "string or number".to_string(),
+                type_hint: "string | number".to_string(),
                 description: "When clock was last set: 'current_time', Unix timestamp (seconds), or null. Default: current_time".to_string(),
                 required: false,
             },
@@ -514,13 +514,13 @@ fn send_ntp_time_response_action() -> ActionDefinition {
             },
             Parameter {
                 name: "receive_timestamp".to_string(),
-                type_hint: "string or number".to_string(),
+                type_hint: "string | number".to_string(),
                 description: "When server received request: 'current_time', Unix timestamp, or null. Default: current_time".to_string(),
                 required: false,
             },
             Parameter {
                 name: "transmit_timestamp".to_string(),
-                type_hint: "string or number".to_string(),
+                type_hint: "string | number".to_string(),
                 description: "When server sends response: 'current_time', Unix timestamp, or null. Default: current_time".to_string(),
                 required: false,
             },

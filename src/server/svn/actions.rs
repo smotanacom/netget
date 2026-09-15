@@ -431,7 +431,7 @@ fn send_success_action() -> ActionDefinition {
             },
             Parameter {
                 name: "data".to_string(),
-                type_hint: "string or array".to_string(),
+                type_hint: "string | array".to_string(),
                 description: "Value(s) to return inside the success tuple. A value made only of digits is sent as an svn number (use this for revisions); any other value is sent as an svn counted string, so \"hello\" goes on the wire as 5:hello. Use send_svn_response if you need to write the tuple yourself".to_string(),
                 required: false,
             },

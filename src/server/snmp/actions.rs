@@ -334,7 +334,7 @@ fn send_snmp_error_action() -> ActionDefinition {
             },
             Parameter {
                 name: "error_status".to_string(),
-                type_hint: "string or number".to_string(),
+                type_hint: "string | number".to_string(),
                 description: "Which error the client is told about: \"noSuchName\" (2) for an OID this agent does not serve, \"badValue\" (3) for a SET with an unusable value, \"readOnly\" (4) for a SET of a read-only OID, \"tooBig\" (1) if the answer would not fit, \"genErr\" (5) for anything else. Accepts the name or the number. Default: genErr".to_string(),
                 required: false,
             },

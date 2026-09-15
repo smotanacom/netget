@@ -116,6 +116,24 @@ impl Protocol for WireguardProtocol {
         vec!["wireguard", "wg"]
     }
 
+    /// On macOS `defguard_wireguard_rs` brings the interface up by running `wireguard-go`.
+    ///
+    /// The kernel implements WireGuard on Linux, FreeBSD and Windows, so there is no external
+    /// binary to want there and this declares nothing extra. macOS has no kernel module:
+    /// defguard shells out to a userspace `wireguard-go` that must be installed separately,
+    /// and without it the interface cannot come up however much privilege the process has.
+    ///
+    /// This sits behind the `Root` requirement the metadata already declares, and that is the
+    /// point — they are two different missing pieces, and a user who fixes one still needs to
+    /// be told about the other.
+    #[cfg(target_os = "macos")]
+    fn get_dependencies(&self) -> Vec<crate::protocol::dependencies::ProtocolDependency> {
+        let mut deps =
+            crate::llm::actions::protocol_trait::default_dependencies_from_privilege(self);
+        deps.push(crate::protocol::dependencies::ProtocolDependency::ToolInPath("wireguard-go"));
+        deps
+    }
+
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::{
             DevelopmentState, PrivilegeRequirement, ProtocolMetadataV2,

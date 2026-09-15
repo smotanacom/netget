@@ -658,10 +658,15 @@ pub static STUN_BINDING_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "stun_binding_request",
         "STUN binding request received from client",
+        // Concrete values, not "{{event.…}}" placeholders. This is the template for the
+        // *model's own reply*, and nothing substitutes into that — the braces only mean
+        // something in a static event handler. A model copying the placeholder puts the
+        // literal string on the wire and the executor refuses it. Both values must come from
+        // the event; the transaction ID is 12 bytes, hex-encoded.
         json!({
             "type": "send_stun_binding_response",
-            "mapped_address": "{{event.peer_addr}}",
-            "transaction_id": "{{event.transaction_id}}"
+            "mapped_address": "198.51.100.20:54321",
+            "transaction_id": "0123456789abcdef01234567"
         }),
     )
     .with_parameters(vec![

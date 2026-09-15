@@ -944,11 +944,16 @@ pub static TURN_ALLOCATE_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "turn_allocate_request",
         "TURN allocate request received from client",
+        // Concrete values, not "{{event.…}}" placeholders: that substitution only happens
+        // for a static event handler, so a model that copies the template literally puts
+        // the braces on the wire and the executor refuses them. The action examples in
+        // this file were already corrected for exactly this reason; these event templates
+        // were the other half of the same fix and were missed.
         json!({
             "type": "send_turn_allocate_response",
-            "relay_address": "{{event.relay_address}}",
-            "client_address": "{{event.peer_addr}}",
-            "transaction_id": "{{event.transaction_id}}",
+            "relay_address": "192.0.2.10:49160",
+            "client_address": "198.51.100.20:54321",
+            "transaction_id": "0123456789abcdef01234567",
             "lifetime_seconds": 600
         }),
     )
@@ -992,9 +997,14 @@ pub static TURN_REFRESH_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(|| {
     EventType::new(
         "turn_refresh_request",
         "TURN refresh request received from client",
+        // Concrete values, not "{{event.…}}" placeholders: that substitution only happens
+        // for a static event handler, so a model that copies the template literally puts
+        // the braces on the wire and the executor refuses them. The action examples in
+        // this file were already corrected for exactly this reason; these event templates
+        // were the other half of the same fix and were missed.
         json!({
             "type": "send_turn_refresh_response",
-            "transaction_id": "{{event.transaction_id}}",
+            "transaction_id": "0123456789abcdef01234567",
             "lifetime_seconds": 600
         }),
     )
@@ -1024,9 +1034,14 @@ pub static TURN_CREATE_PERMISSION_REQUEST_EVENT: LazyLock<EventType> = LazyLock:
     EventType::new(
         "turn_create_permission_request",
         "TURN create permission request received from client",
+        // Concrete values, not "{{event.…}}" placeholders: that substitution only happens
+        // for a static event handler, so a model that copies the template literally puts
+        // the braces on the wire and the executor refuses them. The action examples in
+        // this file were already corrected for exactly this reason; these event templates
+        // were the other half of the same fix and were missed.
         json!({
             "type": "send_turn_create_permission_response",
-            "transaction_id": "{{event.transaction_id}}"
+            "transaction_id": "0123456789abcdef01234567"
         }),
     )
     .with_parameters(with_extra(
@@ -1056,9 +1071,14 @@ pub static TURN_CHANNEL_BIND_REQUEST_EVENT: LazyLock<EventType> = LazyLock::new(
     EventType::new(
         "turn_channel_bind_request",
         "TURN channel bind request received from client",
+        // Concrete values, not "{{event.…}}" placeholders: that substitution only happens
+        // for a static event handler, so a model that copies the template literally puts
+        // the braces on the wire and the executor refuses them. The action examples in
+        // this file were already corrected for exactly this reason; these event templates
+        // were the other half of the same fix and were missed.
         json!({
             "type": "send_turn_channel_bind_response",
-            "transaction_id": "{{event.transaction_id}}"
+            "transaction_id": "0123456789abcdef01234567"
         }),
     )
     .with_parameters(with_extra(

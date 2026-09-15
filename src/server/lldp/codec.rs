@@ -1020,10 +1020,7 @@ fn text_of(value: &[u8]) -> String {
 /// three is ever legitimately multi-line, so nothing real is lost. A neighbour cannot be asked
 /// to resend, which is why this strips where [`reject_control_characters`] refuses.
 fn identifier_text_of(value: &[u8]) -> String {
-    text_of(value)
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect()
+    crate::utils::sanitize::line_field(&text_of(value))
 }
 
 fn required_str(action: &Value, key: &str) -> Result<String> {

@@ -54,7 +54,7 @@ pub const MAX_FOLLOWUP_DEPTH: usize = 4;
 /// would forge a second query, inbound it would forge a record — and ESC would put terminal
 /// escapes on the operator's dashboard.
 pub fn strip_controls(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+    crate::utils::sanitize::strip_controls(s)
 }
 
 /// Same, but keeping newlines and tabs: for the response text, which is inherently multi-line.
@@ -62,11 +62,7 @@ pub fn strip_controls(s: &str) -> String {
 /// Line endings are normalised to LF first so a lone CR does not survive as a control
 /// character, and every other control — ESC included — is dropped.
 pub fn sanitize_response(s: &str) -> String {
-    s.replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .chars()
-        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
-        .collect()
+    crate::utils::sanitize::multiline(&s.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
 /// One `{Q1}`/`{Q2}` query this client will put on the wire.

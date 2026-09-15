@@ -224,7 +224,11 @@ impl Protocol for KubernetesClientProtocol {
             },
             ActionDefinition {
                 name: "k8s_delete_pod".to_string(),
-                description: "Delete a pod".to_string(),
+                description: "Delete a pod by name in a namespace. The apiserver accepts the \
+                              request immediately; a Deployment or ReplicaSet controlling the \
+                              pod will create a replacement, so this restarts a pod rather \
+                              than removing it for good."
+                    .to_string(),
                 parameters: vec![
                     Parameter {
                         name: "name".to_string(),

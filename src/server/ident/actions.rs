@@ -67,16 +67,8 @@ impl Default for IdentProtocol {
 /// Control characters go too — this text is printed by whatever the client is (historically,
 /// an IRC daemon's log).
 fn sanitize_token(raw: &str, max_len: usize) -> String {
-    let cleaned: String = raw
-        .chars()
-        .filter(|c| !c.is_control() && *c != ':' && *c != '\r' && *c != '\n')
-        .collect();
-    let trimmed = cleaned.trim();
-    if trimmed.chars().count() > max_len {
-        trimmed.chars().take(max_len).collect()
-    } else {
-        trimmed.to_string()
-    }
+    let without_separator: String = raw.chars().filter(|c| *c != ':').collect();
+    crate::utils::sanitize::token(&without_separator, max_len)
 }
 
 /// A port the RFC will accept: `1..=65535`. Zero and out-of-range are `INVALID-PORT`

@@ -198,7 +198,10 @@ impl Protocol for ZookeeperClientProtocol {
             },
             ActionDefinition {
                 name: "delete_znode".to_string(),
-                description: "Delete a ZNode".to_string(),
+                description: "Delete a ZNode at the given path. ZooKeeper refuses to delete a \
+                              node that still has children, so remove those first; watches \
+                              registered on the node fire as a result."
+                    .to_string(),
                 parameters: vec![Parameter {
                     name: "path".to_string(),
                     type_hint: "string".to_string(),

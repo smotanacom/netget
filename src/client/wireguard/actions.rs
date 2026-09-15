@@ -124,6 +124,19 @@ impl Protocol for WireguardClientProtocol {
         vec!["wireguard", "wg", "vpn client", "wireguard client"]
     }
 
+    /// On macOS `defguard_wireguard_rs` brings the interface up by running `wireguard-go`.
+    ///
+    /// Same reasoning as the server half (`src/server/wireguard/actions.rs`): the kernel
+    /// implements WireGuard on Linux, FreeBSD and Windows, macOS does not, and there defguard
+    /// shells out to a userspace binary that must be installed separately.
+    #[cfg(target_os = "macos")]
+    fn get_dependencies(&self) -> Vec<crate::protocol::dependencies::ProtocolDependency> {
+        let mut deps =
+            crate::llm::actions::protocol_trait::default_dependencies_from_privilege(self);
+        deps.push(crate::protocol::dependencies::ProtocolDependency::ToolInPath("wireguard-go"));
+        deps
+    }
+
     fn metadata(&self) -> crate::protocol::metadata::ProtocolMetadataV2 {
         use crate::protocol::metadata::{
             DevelopmentState, PrivilegeRequirement, ProtocolMetadataV2,

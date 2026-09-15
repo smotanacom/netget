@@ -360,17 +360,21 @@ impl RedisProtocol {
 /// model-facing verbs had no such guard.
 ///
 /// Mapping to a space rather than rejecting the reply is what Redis itself does —
-/// `addReplyErrorFormat` runs `sdsmapchars(s, "\r\n", "  ", 2)` before framing.
+/// `addReplyErrorFormat` runs `sdsmapchars(s, "\r\n", "  ", 2)` before framing. This goes one
+/// step further than Redis and maps *every* control character, ESC included: a simple string
+/// or error is printed verbatim by `redis-cli`, where an escape sequence forges a screen.
 fn sanitize_simple_payload(s: &str, action: &str) -> String {
-    if !s.contains(['\r', '\n']) {
-        return s.to_string();
+    let cleaned = crate::utils::sanitize::line_field(s);
+    if cleaned == s {
+        return cleaned;
     }
     warn!(
-        "Redis: {} payload contained CR/LF, which would have ended the RESP frame early and \
-         desynchronised the connection; mapping each to a space (as Redis does)",
+        "Redis: {} payload contained a control character, which for CR/LF would have ended the \
+         RESP frame early and desynchronised the connection; mapping each to a space (as Redis \
+         does)",
         action
     );
-    s.replace(['\r', '\n'], " ")
+    cleaned
 }
 
 /// Encode a simple string response ("+OK\r\n")

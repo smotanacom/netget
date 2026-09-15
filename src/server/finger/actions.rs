@@ -67,21 +67,23 @@ pub struct FingerQuery {
     pub list_all: bool,
 }
 
-/// Drop ASCII control characters.
+/// Drop control characters.
 ///
 /// Applied to everything parsed off the wire before it reaches the event, and to every
 /// single-line field the model fills in before it reaches the wire. In a line-oriented free
 /// text protocol a stray CR or LF forges a line, and the peer cannot tell a forged line from
 /// a real one.
 fn strip_controls(s: &str) -> String {
-    s.chars().filter(|c| !c.is_ascii_control()).collect()
+    crate::utils::sanitize::strip_controls(s)
 }
 
-/// Same, but keeping newlines: for the genuinely multi-line fields (`plan`, `project`).
+/// Same, but keeping newlines and tabs: for the genuinely multi-line fields (`plan`, `project`).
+///
+/// Line endings are normalised first so a lone CR becomes the line break the model meant —
+/// `to_crlf` below would have done that afterwards, and `utils::sanitize::multiline` drops a
+/// bare CR rather than letting it overwrite a line a reader has already seen.
 fn strip_controls_multiline(s: &str) -> String {
-    s.chars()
-        .filter(|c| *c == '\n' || *c == '\r' || !c.is_ascii_control())
-        .collect()
+    crate::utils::sanitize::multiline(&s.replace("\r\n", "\n").replace('\r', "\n"))
 }
 
 /// Normalise arbitrary line endings to CRLF and guarantee a trailing one.

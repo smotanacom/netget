@@ -467,10 +467,7 @@ fn check_text_field(field: &str, text: &str) -> Result<()> {
 /// multi-line, it is the single most useful thing a recon operator reads off a CDP frame, and
 /// it appears in no log template — only in the JSON-escaped trace line and in the event.
 fn identifier_text(value: &[u8]) -> String {
-    String::from_utf8_lossy(value)
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect()
+    crate::utils::sanitize::line_field(&String::from_utf8_lossy(value))
 }
 
 fn push_tlv(out: &mut Vec<u8>, type_code: u16, value: &[u8]) -> Result<()> {
