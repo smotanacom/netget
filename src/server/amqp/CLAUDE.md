@@ -232,6 +232,19 @@ none.
 - Short strings are truncated at a UTF-8 char boundary when encoding, never sliced by byte
   index.
 
+  **That truncation is an open finding, not a feature.** `Encoder::short_string` shortens a
+  value past 255 bytes instead of refusing it, and shortstr is what carries a queue name, an
+  exchange name, a routing key, a consumer tag and every field-table key. The result is a
+  perfectly well-formed shortstr naming a *different* queue, which nothing at either end
+  reports: the publisher publishes into one and the consumer waits on the other. Two
+  field-table keys that differ only past octet 255 collapse into one entry and the first value
+  written is lost — measured, not theorised. It is the one place in this codec that shortens
+  rather than refuses, and it is the `gtp::encode_apn` shape the codec property tests exist to
+  find. Not reachable from the wire, since `Decoder::short_string` cannot produce more than 255
+  bytes; the source is the model or NetGet itself. `tests/codec_property_test.rs`'s
+  `amqp_props` holds both counterexamples as `#[ignore = "FINDING: …"]`; the fix is to return
+  `Result` and name the value and the bound, as the other nine findings in that file did.
+
 ### Timeouts
 
 There is always a read deadline. `Session::heartbeat` is zero until the client's `Tune-Ok`, and

@@ -3298,3 +3298,755 @@ mod can_props {
         assert_eq!(legal.to_wire_bytes().unwrap().len(), CAN_MTU);
     }
 }
+
+// ===========================================================================================
+// NDP — `src/server/ndp/codec.rs`
+// ===========================================================================================
+//
+// The interesting shape here is the **checksum over a pseudo-header**, the same one VRRP has.
+// A checksum computed only over the message is correct for the payload and wrong for every
+// packet, and it is self-consistent — `verify(encode(x))` passes either way — so a round-trip
+// property alone cannot see the defect. Two properties below can:
+//
+//  * flipping one octet of either address must change the checksum, which is what proves the
+//    pseudo-header is actually summed rather than merely documented;
+//  * the one's-complement sum over pseudo-header + message **including** the checksum field
+//    must fold to 0xFFFF, which is RFC 1071's own statement of what a checksum is, and is
+//    computed here by a summer written against the RFC rather than by calling the codec.
+//
+// No findings: every refusal this codec owes, it makes. The assertions below pin them so a
+// future edit cannot quietly drop one.
+
+#[cfg(feature = "ndp")]
+mod ndp_props {
+    use netget::server::ndp::codec::{
+        decode_addressed, decode_options, encode_addressed, format_mac, icmpv6_checksum, parse_mac,
+        solicited_node_multicast, verify_checksum, write_checksum, NdpMessage, NdpOption,
+        PrefixInformation, RouterAdvertisement, ADDRESSED_PREFIX_LEN, NEXT_HEADER_ICMPV6,
+    };
+    use proptest::prelude::*;
+    use std::net::Ipv6Addr;
+
+    fn arb_v6() -> impl Strategy<Value = Ipv6Addr> {
+        any::<[u8; 16]>().prop_map(Ipv6Addr::from)
+    }
+
+    /// An option the encoder accepts. Every constraint below is one `encode` enforces, and each
+    /// gets its own refusal assertion later — a generator that ignored them would spend its
+    /// cases proving the refusals rather than exercising the round trip.
+    fn arb_option() -> impl Strategy<Value = NdpOption> {
+        prop_oneof![
+            any::<[u8; 6]>().prop_map(NdpOption::SourceLinkLayerAddress),
+            any::<[u8; 6]>().prop_map(NdpOption::TargetLinkLayerAddress),
+            any::<u32>().prop_map(NdpOption::Mtu),
+            // Autonomous forces a /64 (SLAAC appends a 64-bit interface identifier), and the
+            // preferred lifetime may never exceed the valid one.
+            (
+                arb_v6(),
+                any::<bool>(),
+                any::<bool>(),
+                any::<u32>(),
+                any::<u32>()
+            )
+                .prop_map(|(prefix, on_link, autonomous, a, b)| {
+                    NdpOption::PrefixInformation(PrefixInformation {
+                        prefix,
+                        prefix_length: 64,
+                        on_link,
+                        autonomous,
+                        valid_lifetime: a.max(b),
+                        preferred_lifetime: a.min(b),
+                    })
+                }),
+            // One header unit plus two per address, so at least one address is required.
+            (any::<u32>(), proptest::collection::vec(arb_v6(), 1..4))
+                .prop_map(|(lifetime, servers)| NdpOption::Rdnss { lifetime, servers }),
+        ]
+    }
+
+    fn arb_options() -> impl Strategy<Value = Vec<NdpOption>> {
+        proptest::collection::vec(arb_option(), 0..4)
+    }
+
+    fn arb_message() -> impl Strategy<Value = NdpMessage> {
+        prop_oneof![
+            arb_options().prop_map(|options| NdpMessage::RouterSolicitation { options }),
+            (
+                any::<u8>(),
+                any::<bool>(),
+                any::<bool>(),
+                any::<u16>(),
+                any::<u32>(),
+                any::<u32>(),
+                arb_options(),
+            )
+                .prop_map(
+                    |(
+                        cur_hop_limit,
+                        managed,
+                        other,
+                        router_lifetime,
+                        reachable_time,
+                        retrans_timer,
+                        options,
+                    )| {
+                        NdpMessage::RouterAdvertisement(RouterAdvertisement {
+                            cur_hop_limit,
+                            managed,
+                            other,
+                            router_lifetime,
+                            reachable_time,
+                            retrans_timer,
+                            options,
+                        })
+                    }
+                ),
+            (arb_v6(), arb_options())
+                .prop_map(|(target, options)| NdpMessage::NeighborSolicitation { target, options }),
+            (
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+                arb_v6(),
+                arb_options()
+            )
+                .prop_map(|(router, solicited, override_flag, target, options)| {
+                    NdpMessage::NeighborAdvertisement {
+                        router,
+                        solicited,
+                        override_flag,
+                        target,
+                        options,
+                    }
+                }),
+            (arb_v6(), arb_v6(), arb_options()).prop_map(|(target, destination, options)| {
+                NdpMessage::Redirect {
+                    target,
+                    destination,
+                    options,
+                }
+            }),
+        ]
+    }
+
+    /// RFC 1071's checksum, written here from the RFC rather than by calling the codec, over
+    /// the 40-octet IPv6 pseudo-header and the message. Returns the folded sum, *not* its
+    /// complement — so the caller can assert the property the complement exists to create.
+    fn folded_sum(source: Ipv6Addr, destination: Ipv6Addr, message: &[u8]) -> u32 {
+        let mut words: Vec<u16> = Vec::new();
+        for octets in [source.octets(), destination.octets()] {
+            for pair in octets.chunks(2) {
+                words.push(u16::from_be_bytes([pair[0], pair[1]]));
+            }
+        }
+        let length = message.len() as u32;
+        words.push((length >> 16) as u16);
+        words.push(length as u16);
+        words.push(0);
+        words.push(NEXT_HEADER_ICMPV6 as u16);
+        let mut chunks = message.chunks_exact(2);
+        for pair in chunks.by_ref() {
+            words.push(u16::from_be_bytes([pair[0], pair[1]]));
+        }
+        if let [last] = chunks.remainder() {
+            words.push(u16::from_be_bytes([*last, 0]));
+        }
+
+        let mut sum: u32 = words.iter().map(|w| *w as u32).sum();
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        sum
+    }
+
+    proptest! {
+        #![proptest_config(codec_config!(crate::CASES))]
+
+        /// Property 1.
+        #[test]
+        fn message_round_trips(message in arb_message()) {
+            let bytes = message.encode_without_checksum().unwrap();
+            let decoded = NdpMessage::decode(&bytes);
+            prop_assert!(decoded.is_ok(), "{:?} from {:02x?}", decoded, bytes);
+            prop_assert_eq!(decoded.unwrap(), message);
+        }
+
+        /// Property 1 for the option layer on its own, so a failure names the option rather
+        /// than the message that carried it.
+        #[test]
+        fn options_round_trip(options in proptest::collection::vec(arb_option(), 1..6)) {
+            let mut body = Vec::new();
+            for option in &options {
+                let encoded = option.encode().unwrap();
+                // The length octet is in units of 8 (RFC 4861 §4.6), so an option that is not
+                // a whole number of units cannot be expressed at all, and shipping one would
+                // desynchronise every receiver's walk to the end of the packet.
+                prop_assert_eq!(encoded.len() % 8, 0);
+                prop_assert_eq!(encoded[1] as usize * 8, encoded.len());
+                body.extend_from_slice(&encoded);
+            }
+            prop_assert_eq!(&decode_options(&body).unwrap(), &options);
+        }
+
+        /// Property 2, stated as the checksum's own definition (RFC 1071 §1): summed with the
+        /// checksum field in place, the whole thing folds to 0xFFFF. Computed by this test's
+        /// own summer, so it is a statement about the bytes rather than about the function.
+        #[test]
+        fn the_checksum_is_the_complement_of_the_pseudo_header_sum(
+            message in arb_message(),
+            source in arb_v6(),
+            destination in arb_v6(),
+        ) {
+            let bytes = message.encode(source, destination).unwrap();
+            prop_assert_eq!(folded_sum(source, destination, &bytes), 0xffff);
+            prop_assert!(verify_checksum(&bytes, source, destination).is_ok());
+        }
+
+        /// **The pseudo-header is actually summed.** This is the property a round trip cannot
+        /// see: a checksum computed over the message alone verifies against itself perfectly
+        /// and is wrong for every real packet. Flipping one octet of either address changes
+        /// exactly one 16-bit word by a non-zero amount, so the checksum has to move.
+        #[test]
+        fn the_checksum_depends_on_both_addresses(
+            message in arb_message(),
+            source in arb_v6(),
+            destination in arb_v6(),
+            index in 0usize..16,
+            delta in 1u8..=255,
+        ) {
+            let bytes = message.encode(source, destination).unwrap();
+            let base = icmpv6_checksum(source, destination, &bytes);
+
+            let mut other = source.octets();
+            other[index] ^= delta;
+            let other_source = Ipv6Addr::from(other);
+            prop_assert_ne!(
+                icmpv6_checksum(other_source, destination, &bytes), base,
+                "changing the source address left the checksum alone, so the pseudo-header is \
+                 not being summed"
+            );
+            prop_assert!(verify_checksum(&bytes, other_source, destination).is_err());
+
+            let mut other = destination.octets();
+            other[index] ^= delta;
+            let other_destination = Ipv6Addr::from(other);
+            prop_assert_ne!(
+                icmpv6_checksum(source, other_destination, &bytes), base,
+                "changing the destination address left the checksum alone"
+            );
+            prop_assert!(verify_checksum(&bytes, source, other_destination).is_err());
+        }
+
+        /// Property 4: `write_checksum` zeroes the field before summing, so it is a fixed
+        /// point. Without that, signing an already-signed message gives a different answer
+        /// each time and nothing downstream can tell which one is right.
+        #[test]
+        fn write_checksum_is_idempotent(
+            message in arb_message(),
+            source in arb_v6(),
+            destination in arb_v6(),
+        ) {
+            let mut bytes = message.encode(source, destination).unwrap();
+            let once = bytes.clone();
+            let again = write_checksum(&mut bytes, source, destination).unwrap();
+            prop_assert_eq!(&bytes, &once);
+            prop_assert_eq!(again, u16::from_be_bytes([once[2], once[3]]));
+        }
+
+        /// Property 1 and property 4 for the link-layer address rendering.
+        #[test]
+        fn mac_round_trips_and_formats_canonically(mac in any::<[u8; 6]>()) {
+            let text = format_mac(&mac);
+            prop_assert_eq!(parse_mac(&text).unwrap(), mac);
+            prop_assert_eq!(format_mac(&parse_mac(&text).unwrap()), text.clone());
+            // Every separator a human or a model might use is accepted, and all mean the same
+            // six octets.
+            prop_assert_eq!(parse_mac(&text.replace(':', "-")).unwrap(), mac);
+            prop_assert_eq!(parse_mac(&text.replace(':', "")).unwrap(), mac);
+            prop_assert_eq!(parse_mac(&text.to_uppercase()).unwrap(), mac);
+        }
+
+        /// RFC 4291 §2.7.1: `ff02::1:ff00:0/104` with the target's low 24 bits appended. This
+        /// is where a solicitation for an unknown address is sent, so getting it wrong means
+        /// the node that owns the address never hears the question.
+        #[test]
+        fn solicited_node_multicast_keeps_the_low_24_bits(target in arb_v6()) {
+            let solicited = solicited_node_multicast(target).octets();
+            let t = target.octets();
+            prop_assert_eq!(
+                &solicited[..13],
+                &[0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0xff][..]
+            );
+            prop_assert_eq!(&solicited[13..], &t[13..]);
+        }
+
+        /// Property 1 for the UDP test transport's addressing prefix.
+        #[test]
+        fn addressed_framing_round_trips(
+            source in arb_v6(),
+            destination in arb_v6(),
+            message in proptest::collection::vec(any::<u8>(), 4..64),
+        ) {
+            let datagram = encode_addressed(source, destination, &message);
+            prop_assert_eq!(datagram.len(), ADDRESSED_PREFIX_LEN + message.len());
+            let (s, d, m) = decode_addressed(&datagram).unwrap();
+            prop_assert_eq!(s, source);
+            prop_assert_eq!(d, destination);
+            prop_assert_eq!(m, &message[..]);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(codec_config!(crate::PANIC_CASES))]
+
+        /// Property 3.
+        #[test]
+        fn arbitrary_bytes_never_panic(data in proptest::collection::vec(any::<u8>(), 0..256)) {
+            if let Ok(message) = NdpMessage::decode(&data) {
+                let _ = message.to_event_data();
+                let _ = message.source_link_layer();
+                let _ = message.target_link_layer();
+            }
+            let _ = decode_options(&data);
+            let _ = decode_addressed(&data);
+            let _ = verify_checksum(&data, Ipv6Addr::LOCALHOST, Ipv6Addr::LOCALHOST);
+        }
+
+        /// Property 3, biased: a valid ICMPv6 header of each NDP type in front of arbitrary
+        /// option bytes, so the type and code checks pass and the option walker is reached
+        /// with lengths the peer chose.
+        #[test]
+        fn valid_headers_with_arbitrary_options_never_panic(
+            message_type in 133u8..=137,
+            body in proptest::collection::vec(any::<u8>(), 0..96),
+        ) {
+            let mut data = vec![message_type, 0, 0, 0];
+            data.extend_from_slice(&body);
+            let _ = NdpMessage::decode(&data);
+        }
+
+        /// Property 3 for the text input the model supplies.
+        #[test]
+        fn arbitrary_text_is_never_a_panic_in_parse_mac(s in ".{0,40}") {
+            let _ = parse_mac(&s);
+        }
+    }
+
+    /// Every refusal this codec owes, asserted together so a future edit cannot drop one
+    /// silently. Each is a value the wire format cannot carry, and each is refused rather than
+    /// shortened or clamped into something that looks legal.
+    #[test]
+    fn unrepresentable_options_are_refused() {
+        let prefix = |prefix_length, autonomous, valid_lifetime, preferred_lifetime| {
+            NdpOption::PrefixInformation(PrefixInformation {
+                prefix: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0),
+                prefix_length,
+                on_link: true,
+                autonomous,
+                valid_lifetime,
+                preferred_lifetime,
+            })
+        };
+
+        // An IPv6 prefix is 0-128 bits.
+        assert!(prefix(129, false, 100, 50).encode().is_err());
+        // SLAAC appends a 64-bit interface identifier, so an autonomous prefix must be a /64:
+        // every host ignores anything else, which is worse than a refusal because it looks
+        // like it worked.
+        assert!(prefix(48, true, 100, 50).encode().is_err());
+        assert!(prefix(48, false, 100, 50).encode().is_ok());
+        // RFC 4861 §4.6.2: a host ignores the whole option when preferred exceeds valid.
+        assert!(prefix(64, true, 50, 100).encode().is_err());
+
+        // One header unit plus two per address: with no address the option says nothing, and
+        // past 127 addresses the unit count does not fit the one-octet length field. Both are
+        // refusals rather than a truncated resolver list, which would silently point a whole
+        // link at a different DNS server.
+        assert!(NdpOption::Rdnss {
+            lifetime: 300,
+            servers: Vec::new()
+        }
+        .encode()
+        .is_err());
+        assert!(NdpOption::Rdnss {
+            lifetime: 300,
+            servers: vec![Ipv6Addr::LOCALHOST; 128]
+        }
+        .encode()
+        .is_err());
+        // The boundary is where the arithmetic says it is: 127 servers is 255 units.
+        let at_limit = NdpOption::Rdnss {
+            lifetime: 300,
+            servers: vec![Ipv6Addr::LOCALHOST; 127],
+        };
+        assert_eq!(at_limit.encode().unwrap()[1], 255);
+
+        // An option decoded but not modelled kept only its type and length, so re-encoding it
+        // would have to invent contents. It refuses instead.
+        assert!(NdpOption::Other {
+            option_type: 99,
+            length_units: 2
+        }
+        .encode()
+        .is_err());
+    }
+}
+
+// ===========================================================================================
+// AMQP — `src/server/amqp/codec.rs`
+// ===========================================================================================
+//
+// The field table is the recursive decoder this tree has already been bitten by: one byte (`A`
+// or `F`) opens a level, it is reachable pre-authentication in two writes, and a Rust stack
+// overflow is a `SIGSEGV` against the guard page rather than a panic, so `tokio::spawn` cannot
+// contain it. `MAX_FIELD_TABLE_DEPTH` bounds the decode side; the properties below pin that the
+// bound holds, that the table stays in sync with the payload around it, and that a table which
+// survives the bound round-trips.
+//
+// FINDING (see the `#[ignore]`d tests at the end of this module):
+//
+//  * `Encoder::short_string` **truncates** at 255 bytes instead of refusing. It is the one
+//    place in this codec that shortens rather than refuses, and shortstr is what carries a
+//    queue name, an exchange name, a routing key, a consumer tag and every field-table key.
+
+#[cfg(feature = "amqp")]
+mod amqp_props {
+    use netget::server::amqp::codec::{
+        body_frames, method_frame, BasicProperties, Decoder, Encoder, FRAME_END, FRAME_METHOD,
+        FRAME_OVERHEAD,
+    };
+    use proptest::prelude::*;
+    use serde_json::{json, Map, Value};
+
+    /// A JSON value the field-table encoder can express exactly. Deliberately no floats: a
+    /// non-integer number is written as `d` (an f64 bit pattern), which round-trips as a float
+    /// but not as the same `serde_json::Number`, so including them would test `serde_json`
+    /// rather than this codec.
+    fn arb_field_value(depth: u32) -> impl Strategy<Value = Value> {
+        let leaf = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<i64>().prop_map(Value::from),
+            "[ -~]{0,24}".prop_map(Value::String),
+        ];
+        leaf.prop_recursive(depth, 24, 4, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..4).prop_map(Value::Array),
+                proptest::collection::hash_map("[a-z]{1,8}", inner, 0..4)
+                    .prop_map(|m| { Value::Object(m.into_iter().collect::<Map<String, Value>>()) }),
+            ]
+        })
+    }
+
+    fn arb_table() -> impl Strategy<Value = Value> {
+        proptest::collection::hash_map("[a-z][a-z0-9_]{0,12}", arb_field_value(3), 0..6)
+            .prop_map(|m| Value::Object(m.into_iter().collect::<Map<String, Value>>()))
+    }
+
+    proptest! {
+        #![proptest_config(codec_config!(crate::CASES))]
+
+        /// Property 1 for the field table, nesting included.
+        #[test]
+        fn field_tables_round_trip(table in arb_table()) {
+            let mut encoder = Encoder::new();
+            encoder.field_table(&table);
+            let bytes = encoder.into_vec();
+            let decoded = Decoder::new(&bytes).field_table();
+            prop_assert!(decoded.is_ok(), "{:?}", decoded);
+            prop_assert_eq!(decoded.unwrap(), table);
+        }
+
+        /// The table is length-prefixed, so the decoder must leave the outer payload exactly
+        /// where the table ended. A table that over- or under-consumes desynchronises every
+        /// argument after it in the same method frame, and that reads as a protocol error
+        /// several fields later.
+        #[test]
+        fn a_table_consumes_exactly_its_declared_length(
+            table in arb_table(),
+            trailer in proptest::collection::vec(any::<u8>(), 0..16),
+        ) {
+            let mut encoder = Encoder::new();
+            encoder.field_table(&table);
+            let mut bytes = encoder.into_vec();
+            bytes.extend_from_slice(&trailer);
+            let mut decoder = Decoder::new(&bytes);
+            prop_assert_eq!(decoder.field_table().unwrap(), table);
+            prop_assert_eq!(decoder.remaining(), trailer.len());
+        }
+
+        /// Property 1 for `bit` fields, which are packed least-significant-bit first, 8 to an
+        /// octet — the encoding every AMQP implementation gets backwards at least once.
+        #[test]
+        fn bits_round_trip(bits in proptest::collection::vec(any::<bool>(), 0..24)) {
+            let mut encoder = Encoder::new();
+            encoder.bits(&bits);
+            let bytes = encoder.into_vec();
+            prop_assert_eq!(bytes.len(), bits.len().div_ceil(8));
+            prop_assert_eq!(Decoder::new(&bytes).bits(bits.len()).unwrap(), bits);
+        }
+
+        /// Property 1 for the two string forms, inside the lengths their length fields can
+        /// describe. See the FINDING for what `short_string` does above 255.
+        #[test]
+        fn strings_round_trip(
+            short in "[ -~]{0,255}",
+            long in "[ -~]{0,600}",
+        ) {
+            let mut encoder = Encoder::new();
+            encoder.short_string(&short);
+            encoder.long_string(long.as_bytes());
+            let bytes = encoder.into_vec();
+            let mut decoder = Decoder::new(&bytes);
+            prop_assert_eq!(decoder.short_string().unwrap(), short);
+            prop_assert_eq!(decoder.long_string().unwrap(), long);
+            prop_assert_eq!(decoder.remaining(), 0);
+        }
+
+        /// Property 1 for the Basic property list, whose presence flags are a 16-bit word
+        /// written most-significant-bit first.
+        #[test]
+        fn basic_properties_round_trip(
+            content_type in proptest::option::of("[ -~]{0,20}"),
+            delivery_mode in proptest::option::of(any::<u8>()),
+            priority in proptest::option::of(any::<u8>()),
+            timestamp in proptest::option::of(any::<u64>()),
+            message_id in proptest::option::of("[ -~]{0,20}"),
+            headers in proptest::option::of(arb_table()),
+        ) {
+            let props = BasicProperties {
+                content_type: content_type.clone(),
+                delivery_mode,
+                priority,
+                timestamp,
+                message_id: message_id.clone(),
+                headers: headers.clone(),
+                ..Default::default()
+            };
+            let bytes = props.encode();
+            let decoded = BasicProperties::decode(&mut Decoder::new(&bytes)).unwrap();
+            prop_assert_eq!(decoded.content_type, content_type);
+            prop_assert_eq!(decoded.delivery_mode, delivery_mode);
+            prop_assert_eq!(decoded.priority, priority);
+            prop_assert_eq!(decoded.timestamp, timestamp);
+            prop_assert_eq!(decoded.message_id, message_id);
+            prop_assert_eq!(decoded.headers, headers);
+        }
+
+        /// Property 2: every body frame fits the negotiated maximum, and the frames together
+        /// carry the body exactly once. A chunker that loses or repeats a byte produces a
+        /// message whose content header's `body-size` no longer matches what arrives.
+        #[test]
+        fn body_frames_tile_the_body_within_the_frame_maximum(
+            body in proptest::collection::vec(any::<u8>(), 0..2048),
+            max_frame_size in (FRAME_OVERHEAD + 1)..600usize,
+        ) {
+            let frames = body_frames(7, &body, max_frame_size);
+            let mut reassembled = Vec::new();
+            for frame in &frames {
+                prop_assert!(
+                    frame.len() <= max_frame_size,
+                    "frame of {} octets exceeds the negotiated {}",
+                    frame.len(),
+                    max_frame_size
+                );
+                prop_assert_eq!(*frame.last().unwrap(), FRAME_END);
+                let declared = u32::from_be_bytes([frame[3], frame[4], frame[5], frame[6]]);
+                prop_assert_eq!(declared as usize, frame.len() - FRAME_OVERHEAD);
+                reassembled.extend_from_slice(&frame[7..frame.len() - 1]);
+            }
+            prop_assert_eq!(reassembled, body.clone());
+            // A zero-length body produces no frames at all, which is what a content header
+            // declaring body-size 0 expects.
+            prop_assert_eq!(frames.is_empty(), body.is_empty());
+        }
+
+        /// A method frame's header describes its own payload.
+        #[test]
+        fn method_frames_declare_their_own_length(
+            channel in any::<u16>(),
+            class_id in any::<u16>(),
+            method_id in any::<u16>(),
+            args in proptest::collection::vec(any::<u8>(), 0..64),
+        ) {
+            let frame = method_frame(channel, class_id, method_id, &args);
+            prop_assert_eq!(frame[0], FRAME_METHOD);
+            prop_assert_eq!(u16::from_be_bytes([frame[1], frame[2]]), channel);
+            let declared = u32::from_be_bytes([frame[3], frame[4], frame[5], frame[6]]) as usize;
+            prop_assert_eq!(declared, 4 + args.len());
+            prop_assert_eq!(frame.len(), FRAME_OVERHEAD + declared);
+            prop_assert_eq!(u16::from_be_bytes([frame[7], frame[8]]), class_id);
+            prop_assert_eq!(u16::from_be_bytes([frame[9], frame[10]]), method_id);
+            prop_assert_eq!(*frame.last().unwrap(), FRAME_END);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(codec_config!(crate::PANIC_CASES))]
+
+        /// Property 3, on the decoder a peer reaches before authenticating.
+        #[test]
+        fn arbitrary_bytes_never_panic(data in proptest::collection::vec(any::<u8>(), 0..256)) {
+            let _ = Decoder::new(&data).field_table();
+            let _ = BasicProperties::decode(&mut Decoder::new(&data));
+            let mut decoder = Decoder::new(&data);
+            let _ = decoder.short_string();
+            let _ = decoder.long_string();
+            let _ = decoder.bits(64);
+        }
+
+        /// Property 3, biased: a well-formed table length in front of arbitrary entry bytes,
+        /// so the walker is reached with type ids and lengths the peer chose.
+        #[test]
+        fn a_declared_table_length_over_arbitrary_entries_never_panics(
+            entries in proptest::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let mut data = (entries.len() as u32).to_be_bytes().to_vec();
+            data.extend_from_slice(&entries);
+            let _ = Decoder::new(&data).field_table();
+        }
+    }
+
+    /// The bound that keeps a nested field table from taking the whole process down.
+    ///
+    /// One byte on the wire opens a level (`A` plus its four-byte length is five), so at the
+    /// default 128 KiB `frame_max` an unauthenticated peer buys ~26 000 levels — far past what
+    /// a 2 MiB tokio worker stack survives, and a stack overflow is a `SIGSEGV` against the
+    /// guard page, so there is nothing to catch. This asserts the decoder *terminates* and
+    /// returns, which is the whole contract: the table it hands back is truncated at the bound
+    /// and the outer payload stays in sync, because the length prefix was consumed first.
+    #[test]
+    fn a_deeply_nested_table_is_bounded_rather_than_recursed() {
+        // 4096 levels of `A` (array) nested inside one table entry, built from the wire format
+        // rather than through the encoder — which is how a peer would send it.
+        const LEVELS: usize = 4096;
+        let mut innermost = vec![b't', 1];
+        for _ in 0..LEVELS {
+            let mut level = vec![b'A'];
+            level.extend_from_slice(&(innermost.len() as u32).to_be_bytes());
+            level.extend_from_slice(&innermost);
+            innermost = level;
+        }
+        let mut entries = vec![1u8, b'k'];
+        entries.extend_from_slice(&innermost);
+        let mut data = (entries.len() as u32).to_be_bytes().to_vec();
+        data.extend_from_slice(&entries);
+
+        let mut decoder = Decoder::new(&data);
+        let table = decoder
+            .field_table()
+            .expect("the guard returns, it does not unwind");
+        assert_eq!(
+            decoder.remaining(),
+            0,
+            "the table consumed its declared length"
+        );
+        // Whatever came back, it is nowhere near 4096 deep.
+        let mut depth = 0usize;
+        let mut cursor = table.get("k");
+        while let Some(Value::Array(items)) = cursor {
+            depth += 1;
+            cursor = items.first();
+        }
+        assert!(depth < 64, "decoded {depth} levels; the bound is 32");
+    }
+
+    /// The encoder's own recursion is **not** bounded, and this pins why that is not a second
+    /// stack-overflow defect: every table it re-encodes came off the wire through the bounded
+    /// decoder, and every table a model supplies came through `serde_json`, whose parser caps
+    /// nesting at 128. Neither is near a stack overflow. If either of those two facts stops
+    /// being true, `Encoder::field_value` needs a counter of its own.
+    ///
+    /// Re-encoding what the decoder returned is an operation the server really performs — it
+    /// echoes a peer's `client-properties` — so it has to be a fixed point for anything inside
+    /// the bound. **At** the bound it is not, and that is worth knowing rather than asserting
+    /// away: the guard truncates (`Err(_) => break`) rather than failing the table, so a
+    /// 32-deep value comes back one level shallower and re-encodes two octets shorter. That is
+    /// the right trade against a hostile peer — the walk stays in sync with the payload — but
+    /// it means an echoed table is not always the table that arrived.
+    #[test]
+    fn a_table_that_survived_the_decoder_re_encodes() {
+        let nested = |levels: usize| {
+            let mut value = json!(true);
+            for _ in 0..levels {
+                value = json!([value]);
+            }
+            json!({ "k": value })
+        };
+        let encode = |table: &Value| {
+            let mut encoder = Encoder::new();
+            encoder.field_table(table);
+            encoder.into_vec()
+        };
+
+        // Comfortably inside the bound: a round trip is exact and re-encoding is a fixed point.
+        let table = nested(8);
+        let bytes = encode(&table);
+        let decoded = Decoder::new(&bytes).field_table().unwrap();
+        assert_eq!(decoded, table);
+        assert_eq!(encode(&decoded), bytes);
+
+        // At the bound the innermost value is dropped, so the echo is shorter than what
+        // arrived. Asserted rather than avoided, because it is the guard's visible cost.
+        let deep = nested(31);
+        let deep_bytes = encode(&deep);
+        let deep_decoded = Decoder::new(&deep_bytes).field_table().unwrap();
+        assert_ne!(deep_decoded, deep);
+        assert!(encode(&deep_decoded).len() < deep_bytes.len());
+    }
+
+    // -------------------------------------------------------------------------------------
+    // FINDINGS
+    // -------------------------------------------------------------------------------------
+
+    /// FINDING: `Encoder::short_string` truncates at 255 bytes rather than refusing.
+    ///
+    /// Minimal counterexample: a 256-byte string, which reaches the wire as its first 255
+    /// bytes. `Decoder::short_string` reads a one-octet length, so the result is a perfectly
+    /// well-formed shortstr — carrying a **different name**. This is the `encode_apn` shape:
+    /// truncation turns an obvious error into a believable value.
+    ///
+    /// It matters more here than the length suggests, because shortstr is what carries a queue
+    /// name, an exchange name, a routing key, a consumer tag and every field-table key. A
+    /// declared queue and a bound queue whose names differ past octet 255 are two queues, and
+    /// nothing at either end reports a problem — the publisher publishes into one and the
+    /// consumer waits on the other.
+    ///
+    /// Not reachable from the wire (`Decoder::short_string` cannot produce more than 255
+    /// bytes), so the source is the model or NetGet itself. The fix is the one the other nine
+    /// findings in this file took: return `Result` and name the value and the bound.
+    #[test]
+    #[ignore = "FINDING: Encoder::short_string truncates at 255 bytes instead of refusing"]
+    fn short_string_should_refuse_a_name_it_cannot_carry() {
+        let name = "q".repeat(256);
+        let mut encoder = Encoder::new();
+        encoder.short_string(&name);
+        let bytes = encoder.into_vec();
+        assert_eq!(
+            Decoder::new(&bytes).short_string().unwrap(),
+            name,
+            "the name was silently truncated, so this is a different queue"
+        );
+    }
+
+    /// FINDING, the same defect reached through a field-table key, which is where it costs a
+    /// value rather than a name: two keys differing only past octet 255 become one entry, and
+    /// whichever was written first is gone.
+    #[test]
+    #[ignore = "FINDING: Encoder::short_string truncates at 255 bytes instead of refusing"]
+    fn two_long_table_keys_should_not_collide() {
+        let mut table = Map::new();
+        table.insert(format!("{}a", "k".repeat(255)), json!(1));
+        table.insert(format!("{}b", "k".repeat(255)), json!(2));
+        let table = Value::Object(table);
+
+        let mut encoder = Encoder::new();
+        encoder.field_table(&table);
+        let decoded = Decoder::new(&encoder.into_vec()).field_table().unwrap();
+        assert_eq!(
+            decoded.as_object().unwrap().len(),
+            2,
+            "two distinct keys collapsed into one entry, losing a value"
+        );
+    }
+}
