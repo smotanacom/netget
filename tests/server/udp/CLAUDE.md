@@ -16,7 +16,9 @@ responses.
 
 - `test_udp_echo_server()`: 1 LLM call (datagram received event)
 - `test_send_to_address_reaches_the_named_address_only()`: 1 LLM call (datagram received event)
-- **Total: 2 LLM calls** (minimal test coverage)
+- `llm_failure_test.rs`: 1 LLM call (startup only; the event is deliberately unmatched)
+- `decision_tag_test.rs`: 2 tests x 2 LLM calls (startup + one datagram each)
+- **Total: 7 LLM calls**
 
 **Note**: This is the bare minimum for UDP testing. Most UDP protocol testing happens in dedicated protocol tests:
 
@@ -58,6 +60,22 @@ responses.
 protocol-specific tests (DNS, DHCP, NTP, SNMP).
 
 ## Test Cases
+
+### 0. The `decision=` pair (`decision_tag_test.rs`, and `llm_failure_test.rs` beside it)
+
+UDP writes **nothing** on every unhappy path, so the log is the only place those paths differ.
+Each of these tests asserts **both** halves, and neither half means anything alone: silence
+with no log is indistinguishable from the "reset to Idle and write nothing" defect, and a log
+line with a datagram beside it would mean the tag was lying.
+
+| Test | Model answered | Asserted |
+|---|---|---|
+| `test_udp_ignore_datagram_is_silent_and_logged_as_a_refusal` | `ignore_datagram` | nothing on the socket; `decision=model_reject`; **no** `decision=fail_closed` |
+| `test_udp_empty_answer_is_silent_and_logged_as_model_silence` | `[]` | nothing on the socket; `decision=model_silent`; **no** `decision=fail_closed` |
+| `test_udp_stays_silent_but_logs_when_llm_fails` (`llm_failure_test.rs`) | nothing — the mock 500s | nothing on the socket; the "bare UDP has no error form" sentence; `decision=fail_closed_llm_*` |
+
+Do **not** "fix" the silence — see `src/server/udp/CLAUDE.md`. Any bytes invented here could be
+parsed as a real reply by whatever protocol the peer is actually speaking.
 
 ### 1. UDP Echo (`test_udp_echo_server`)
 

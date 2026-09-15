@@ -98,6 +98,30 @@ async fn test_telnet_writes_a_notice_when_llm_fails() -> E2EResult<()> {
         );
     }
 
+    // The notice tells the human; the log has to tell the operator *which* failure it was.
+    // A `[netget] …` line on the wire is a category — it reads the same whether the backend
+    // was overloaded, unreachable, or the model refused — so the grep-able token is the only
+    // thing separating this from the model's own silence (see `decision_tag_test.rs`).
+    server
+        .wait_for_any(
+            &[
+                "decision=fail_closed_llm_error",
+                "decision=fail_closed_llm_overloaded",
+            ],
+            30,
+        )
+        .await;
+    let lines = server.get_output().await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("decision=fail_closed_llm_error")
+                || l.contains("decision=fail_closed_llm_overloaded")),
+        "the backend failure must be tagged decision=fail_closed_llm_* so `grep \
+         decision=fail_closed` finds it. Output was:\n{}",
+        lines.join("\n")
+    );
+
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after
     // the sleep expires, and the test reports it as never having happened.

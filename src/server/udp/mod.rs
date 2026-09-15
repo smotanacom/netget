@@ -163,6 +163,33 @@ impl UdpServer {
                                         execution_result.protocol_results.len()
                                     ));
 
+                                    // Classify *before* `protocol_results` is consumed below.
+                                    //
+                                    // UDP puts nothing on the wire in three of the five
+                                    // outcomes, so the log is the only place they can be told
+                                    // apart: a model that answered `ignore_datagram`, a model
+                                    // that answered nothing at all, and an action the executor
+                                    // refused are all the same silence on the socket - and the
+                                    // same silence a dead backend produces. Without a
+                                    // `decision=` token an operator has no way to tell which
+                                    // of the four they are looking at.
+                                    let action_types: Vec<&str> = execution_result
+                                        .raw_actions
+                                        .iter()
+                                        .filter_map(|a| a.get("type").and_then(|v| v.as_str()))
+                                        .collect();
+                                    let explicit_ignore = action_types.contains(&"ignore_datagram");
+                                    let dispatched_elsewhere =
+                                        action_types.contains(&"send_to_address");
+                                    let failure_summary = execution_result
+                                        .failures
+                                        .iter()
+                                        .map(|f| format!("{}: {}", f.action, f.error))
+                                        .collect::<Vec<_>>()
+                                        .join("; ");
+                                    let mut sent = 0usize;
+                                    let mut send_failed = false;
+
                                     for protocol_result in execution_result.protocol_results {
                                         if let Some(output_data) =
                                             protocol_result.get_all_output().first()
@@ -170,11 +197,13 @@ impl UdpServer {
                                             if let Err(e) =
                                                 socket_clone.send_to(output_data, peer_addr).await
                                             {
+                                                send_failed = true;
                                                 log.error(format!(
                                                     "Failed to send UDP response: {}",
                                                     e
                                                 ));
                                             } else {
+                                                sent += 1;
                                                 // Sent summary + payload are FileOnly; the
                                                 // access line below carries the TUI.
                                                 if output_data.iter().all(|&b| {
@@ -238,6 +267,51 @@ impl UdpServer {
                                             log.debug("UDP protocol result has no output data");
                                         }
                                     }
+
+                                    // One decision line per datagram, whatever happened.
+                                    let subject = format!(
+                                        "UDP datagram from {} ({})",
+                                        peer_addr, connection_id
+                                    );
+                                    if sent > 0 {
+                                        log.info(format!(
+                                            "{} decision=model_answer ({} reply datagram(s))",
+                                            subject, sent
+                                        ));
+                                    } else if send_failed {
+                                        log.error(format!(
+                                            "{} decision=protocol_error: the model answered but \
+                                             the reply could not be put on the socket",
+                                            subject
+                                        ));
+                                    } else if !failure_summary.is_empty() {
+                                        log.error(format!(
+                                            "{} decision=fail_closed_bad_action: nothing was sent \
+                                             because the model's action(s) could not be executed \
+                                             ({})",
+                                            subject, failure_summary
+                                        ));
+                                    } else if explicit_ignore {
+                                        log.info(format!(
+                                            "{} decision=model_reject (ignore_datagram: the model \
+                                             chose to send nothing)",
+                                            subject
+                                        ));
+                                    } else if dispatched_elsewhere {
+                                        log.info(format!(
+                                            "{} decision=model_answer (send_to_address: the \
+                                             datagram went to another address, nothing back to \
+                                             this peer)",
+                                            subject
+                                        ));
+                                    } else {
+                                        log.warn(format!(
+                                            "{} decision=model_silent: the model was asked and \
+                                             returned no usable action, so nothing was sent - \
+                                             bare UDP has no error form",
+                                            subject
+                                        ));
+                                    }
                                 }
                                 Err(e) => {
                                     // Deliberately silent, and the one protocol in this group
@@ -263,9 +337,22 @@ impl UdpServer {
                                     // tests/server/udp/llm_failure_test.rs asserts the phrase
                                     // "no reply possible: bare UDP has no error form" reaches
                                     // the status stream, so keep it here verbatim.
+                                    //
+                                    // The `decision=` token is what separates this silence from
+                                    // the model's own `ignore_datagram` silence and from a
+                                    // model that simply said nothing. On the wire all three are
+                                    // identical, so the distinction can only live in the log.
+                                    let decision = match crate::utils::wire_failure::WireFailure::classify(&e) {
+                                        crate::utils::wire_failure::WireFailure::Overloaded => {
+                                            "fail_closed_llm_overloaded"
+                                        }
+                                        crate::utils::wire_failure::WireFailure::Unavailable => {
+                                            "fail_closed_llm_error"
+                                        }
+                                    };
                                     log.error(format!(
-                                        "UDP LLM call failed for datagram from {} ({}): {} - no reply possible: bare UDP has no error form",
-                                        peer_addr, connection_id, e
+                                        "UDP LLM call failed for datagram from {} ({}) decision={}: {} - no reply possible: bare UDP has no error form",
+                                        peer_addr, connection_id, decision, e
                                     ));
                                     if crate::llm::is_overload_error(&e) {
                                         log.warn(format!(

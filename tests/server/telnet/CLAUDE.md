@@ -19,7 +19,9 @@ concurrent connections. Validates LLM's ability to handle terminal-like text pro
 - `test_telnet_prompt()`: 1 LLM call (help command)
 - `test_telnet_multiple_lines()`: 3 LLM calls (3 lines sent)
 - `test_telnet_concurrent_connections()`: 6 LLM calls (3 clients × 2 operations each, but 3 concurrent)
-- **Total: 11 LLM calls** (slightly exceeds 10 limit)
+- `llm_failure_test.rs`: 1 LLM call (startup only; the event is deliberately unmatched)
+- `decision_tag_test.rs`: 2 tests × 2 LLM calls (startup + one line each)
+- **Total: 16 LLM calls** (exceeds the 10 guideline; see the consolidation note below)
 
 **Optimization Opportunity**: Could consolidate into 2 comprehensive servers:
 
@@ -73,6 +75,21 @@ scripting).
 - Rare failures: LLM closes connection unexpectedly
 
 ## Test Cases
+
+### 0. The `decision=` tags (`decision_tag_test.rs`, and `llm_failure_test.rs` beside it)
+
+Three of Telnet's four endings write **nothing** to the socket, so from the peer's seat they
+are the same thing. These pin the log lines that separate them.
+
+| Test | Model answered | Asserted |
+|---|---|---|
+| `test_telnet_close_connection_is_logged_as_a_refusal` | `close_connection` | `read` returns 0 with **nothing** written first; `decision=model_reject`; **no** `decision=fail_closed` |
+| `test_telnet_empty_answer_is_logged_as_model_silence` | `[]` | nothing written **and** the session left open; `decision=model_silent`; **no** `decision=model_answer` |
+| `test_telnet_writes_a_notice_when_llm_fails` (`llm_failure_test.rs`) | nothing — the mock 500s | a `[netget] …` notice carrying no internal detail; `decision=fail_closed_llm_*` |
+
+The second one asserts current behaviour rather than desirable behaviour: an empty answer
+leaves a human at a terminal that looks hung, with no notice at all. It is pinned so that
+changing it is deliberate.
 
 ### 1. Telnet Echo (`test_telnet_echo`)
 
