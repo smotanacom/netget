@@ -200,3 +200,33 @@ in CI. It also asserts the multi-readable-characteristic rule below.
 **Neither test is evidence for a rating above `Experimental`.** Meaningful coverage of the
 profile needs a real adapter and a real BLE central (nRF Connect, `btleplug`) completing a read
 or a subscription against a service this profile actually built — no test in the tree does that.
+
+## Failure behaviour
+
+**This profile is not deliberately silent, and the root `CLAUDE.md` lists it as such by family
+membership rather than by decision.** GATT has an error frame and the base stack uses it: a read
+it cannot satisfy is answered with ATT Unlikely Error (0x0E), which the central surfaces as a
+failed read. Nothing is fabricated, which is what makes that correct — the silence rule is about
+protocols whose only available reply would be a positive assertion, and this is not one.
+
+The profile itself decides exactly two outcomes. Everything after the radio is up belongs to
+`src/server/bluetooth_ble/mod.rs`, which emits its own tags against `BluetoothBleProtocol`,
+because `BluetoothBle::spawn_with_llm_actions` hardcodes that protocol when it calls the model.
+
+| Outcome | Decided in | On the wire | Log |
+|---|---|---|---|
+| `initial_level` outside 0-100 | this profile, `actions.rs::spawn` | nothing — no server starts | `ServerStatus::Error`, `decision=refused_invalid_startup_param` |
+| Shared BLE radio would not come up | this profile, `mod.rs` | nothing — no service published, nothing advertising | ERROR `decision=refused_adapter_unavailable` |
+| Startup configuration call failed | base | adapter powered, no services, not advertising | ERROR, **untagged** — see below |
+| Model named a value for a read | base | that value, ATT Success | DEBUG `decision=model_value` |
+| Model named nothing, a value is stored | base | the stored value, ATT Success | DEBUG `decision=model_silent` |
+| Model named nothing, nothing stored | base | ATT Unlikely Error (0x0E) | ERROR `decision=fail_closed_model_silent_no_value` |
+| `respond_to_read` value will not decode | base | ATT Unlikely Error (0x0E) | ERROR `decision=fail_closed_bad_value` |
+| Backend failed | base | ATT Unlikely Error (0x0E) | ERROR `decision=fail_closed_llm_error` |
+| Model refused a write (`status: "error"`) | base | ATT Unlikely Error (0x0E) | INFO `decision=model_reject` |
+
+**One BLE outcome `grep decision=` still cannot find, and it is outside this directory:** the
+base's startup-configuration call (`src/server/bluetooth_ble/mod.rs`, the `Err` arm of the
+`bluetooth_ble_started` `call_llm`) logs at ERROR on both channels and carries no token. It
+leaves a powered adapter with no services and no advertisement while the server reports
+`Running`, so it is precisely the outcome someone greps for.

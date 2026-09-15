@@ -251,10 +251,13 @@ impl Server for BluetoothBleBatteryProtocol {
                 // Range-checked before the conversion, and the conversion is checked too, so
                 // no value can reach the wire by being truncated into one.
                 Some(level) if level <= 100 => u8::try_from(level).unwrap_or(100),
+                // Tagged: this is a terminal outcome the *protocol* decided, before any model
+                // was consulted, so it must not read as either an LLM failure or a radio one.
                 Some(level) => anyhow::bail!(
                     "initial_level is a Battery Level (0x2A19) percentage and must be 0-100; \
-                     got {level}. The Bluetooth SIG reserves every value above 100, so there \
-                     is no battery level this server could honestly advertise."
+                     got {level} (decision=refused_invalid_startup_param). The Bluetooth SIG \
+                     reserves every value above 100, so there is no battery level this server \
+                     could honestly advertise."
                 ),
             };
 

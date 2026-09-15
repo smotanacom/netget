@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::info;
 
+use crate::console_error;
 use crate::llm::ollama_client::OllamaClient;
 use crate::server::bluetooth_ble::BluetoothBle;
 use crate::state::app_state::AppState;
@@ -42,8 +43,15 @@ impl BluetoothBleKeyboard {
             "Add HID Report Map, HID Report Input, HID Information, and HID Control Point characteristics."
         );
 
-        // Use the base bluetooth-ble server
-        BluetoothBle::spawn_with_llm_actions(
+        // Use the base bluetooth-ble server.
+        //
+        // This profile decides nothing once the radio is up: the base stack owns the event
+        // loop, and every `decision=` a read, write or subscribe produces is emitted there
+        // against `BluetoothBleProtocol`. The one terminal outcome the profile does own is
+        // this — the shared radio would not come up, so no HID service was ever published.
+        let log_tx = status_tx.clone();
+        let log_name = device_name.clone();
+        match BluetoothBle::spawn_with_llm_actions(
             device_name,
             llm_client,
             app_state,
@@ -52,7 +60,29 @@ impl BluetoothBleKeyboard {
             keyboard_instruction,
         )
         .await
+        {
+            Ok(addr) => Ok(addr),
+            Err(e) => {
+                console_error!(log_tx, "{}", radio_start_failure(&log_name, &e));
+                Err(e)
+            }
+        }
     }
+}
+
+/// The single source of the text used when the shared BLE radio could not be brought up.
+///
+/// `pub` so a test can assert the `decision=` tag without claiming a Bluetooth adapter: this is
+/// the profile's only terminal outcome of its own, and the project forbids `#[cfg(test)]`
+/// modules in `src/`. No model is consulted on this path — the radio fails before any event
+/// exists — so the token is deliberately not one of the `fail_closed_llm_*` pair, which would
+/// send someone to restart Ollama over an adapter that is switched off.
+pub fn radio_start_failure(device_name: &str, err: &anyhow::Error) -> String {
+    format!(
+        "BLE HID keyboard '{device_name}' could not start \
+         (decision=refused_adapter_unavailable): {err}. No HID service was published and \
+         nothing is advertising."
+    )
 }
 
 #[cfg(not(feature = "bluetooth-ble-keyboard"))]

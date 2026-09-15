@@ -192,3 +192,38 @@ Linux). Derive it rather than trusting it; this line said 22 and was never right
 
 Treat the first run on Linux as bring-up. `tests/server/bluetooth_ble_beacon/e2e_test.rs` has an
 `#[ignore]`d Linux test to start from.
+
+## Failure behaviour
+
+**This protocol is genuinely silent, and it is the one BLE profile for which that is a
+decision rather than an inheritance.** A legacy beacon advertisement is one-way: there is no
+peer, no connection, no request and therefore no error frame — unlike the GATT profiles, which
+answer a read they cannot satisfy with ATT Unlikely Error (0x0E). Every frame a beacon could
+put on the air is a positive assertion ("this beacon, this UUID, at this power"), so inventing
+one on a failure would broadcast something nobody asked for and no scanner could attribute.
+The log is therefore the *only* place the outcomes below can be told apart, which is why every
+one of them carries a token.
+
+| Outcome | On the wire | Server state | Log |
+|---|---|---|---|
+| Platform cannot set an advertising payload, no adapter, or `bluetoothd` unreachable | nothing | `Error` | ERROR `decision=refused_adapter_unavailable` |
+| Backend failed (unreachable, retries exhausted, malformed) | nothing; the adapter is released | `Error` | ERROR `decision=fail_closed_llm_error` |
+| Backend saturated (`RateLimitError`) | nothing; the adapter is released | `Error` | ERROR `decision=fail_closed_llm_overloaded` |
+| Handler answered, a frame is on air | that frame | `Running` | INFO `decision=model_answer` |
+| Handler answered `stop_beacon` and nothing else | nothing | `Running`, idle | INFO `decision=model_reject` |
+| Handler answered, every action it produced was refused | nothing | `Running`, idle | ERROR `decision=fail_closed_bad_action` |
+| Handler named no frame | nothing | `Running`, idle | WARN `decision=model_silent` |
+
+`refused_adapter_unavailable` is protocol-invented: no model is consulted on that path, so
+reusing a `fail_closed_llm_*` token would send an operator to restart Ollama over a macOS
+CoreBluetooth limit. `beacon_configuration_failure` in `mod.rs` is the single source of the two
+backend-failure lines and carries the token itself, so the returned `anyhow::Error` — which is
+what `server_startup` records — is tagged as well as the status stream.
+
+**The last three rows are worth reading together.** All three leave the server `Running` with
+nothing on air, which is the shape `llm_failure_test.rs` argues against for the backend case
+(`spawn` returns `Err` there precisely so `list_servers` cannot show a beacon that is silent).
+The difference is that a handler which named no frame has not failed — it answered — so
+refusing to start would override a decision rather than report one. That asymmetry is
+deliberate, but it means `Running` alone does not imply advertising, and the `decision=` line
+is the only thing that says which.
