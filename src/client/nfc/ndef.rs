@@ -60,6 +60,13 @@ pub const MAX_RECORDS: usize = 64;
 /// length is bounded before it is encoded.
 const MAX_URI_LEN: usize = 4096;
 
+/// Longest TYPE field a record may carry (NDEF 1.0 §3.2.2: TYPE LENGTH is one octet).
+///
+/// A format limit, not a policy. Every type this encoder produces is a one-byte RTD, a media
+/// type or a `domain:type`, all far shorter — but `mime_type` and `domain_type` come from the
+/// model, so "far shorter" is an assumption and this is the check.
+pub const MAX_TYPE_LEN: usize = u8::MAX as usize;
+
 // Type Name Format values (NDEF 1.0 §3.2.6).
 const TNF_EMPTY: u8 = 0x00;
 const TNF_WELL_KNOWN: u8 = 0x01;
@@ -205,7 +212,8 @@ pub fn encode_message(records: &[Value]) -> Result<Vec<u8>> {
             &payload,
             i == 0,
             i + 1 == records.len(),
-        );
+        )
+        .map_err(|e| anyhow!("NDEF record {} ({}): {e}", i + 1, describe(record)))?;
         if out.len() > MAX_MESSAGE_LEN {
             bail!(
                 "NDEF message exceeds the {} bytes a Type 4 tag's two-byte NLEN can describe",
@@ -368,6 +376,12 @@ fn check_uri(uri: &str) -> Result<()> {
 }
 
 /// Append one encoded record, choosing the short or long payload-length form.
+///
+/// Refuses a TYPE field past [`MAX_TYPE_LEN`] rather than narrowing the TYPE LENGTH octet to
+/// fit. The narrowing form wrote the whole field under a length of 255, so the message did not
+/// describe itself: a decoder reads 255 type octets and then misattributes every remaining
+/// byte of the record — and of every record after it — to the payload. The rest of this codec
+/// refuses rather than truncating, and this is the one place that did not.
 fn push_record(
     out: &mut Vec<u8>,
     tnf: u8,
@@ -375,7 +389,15 @@ fn push_record(
     payload: &[u8],
     first: bool,
     last: bool,
-) {
+) -> Result<()> {
+    if type_field.len() > MAX_TYPE_LEN {
+        bail!(
+            "the record's TYPE field is {} bytes; NDEF's TYPE LENGTH is one octet, so {} is \
+             the most it can describe",
+            type_field.len(),
+            MAX_TYPE_LEN
+        );
+    }
     let short = payload.len() <= u8::MAX as usize;
     let mut header = tnf & MASK_TNF;
     if first {
@@ -388,10 +410,8 @@ fn push_record(
         header |= FLAG_SR;
     }
     out.push(header);
-    // A TYPE field is at most 255 bytes by the format; every type this encoder produces is a
-    // one-byte RTD, a media type or a domain:type, all far shorter, and `encode_one` is the
-    // only caller.
-    out.push(type_field.len().min(u8::MAX as usize) as u8);
+    // Range-checked above, so the cast cannot lose a bit.
+    out.push(type_field.len() as u8);
     if short {
         out.push(payload.len() as u8);
     } else {
@@ -399,6 +419,7 @@ fn push_record(
     }
     out.extend_from_slice(type_field);
     out.extend_from_slice(payload);
+    Ok(())
 }
 
 /// Walk an NDEF message into typed JSON records.

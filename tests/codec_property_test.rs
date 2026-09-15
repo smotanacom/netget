@@ -2746,10 +2746,10 @@ mod cdp_props {
 // NDEF — `src/client/nfc/ndef.rs`
 // ===========================================================================================
 //
-// FINDING: `push_record` writes `type_field.len().min(255) as u8` as the TYPE LENGTH while
+// `push_record` used to write `type_field.len().min(255) as u8` as the TYPE LENGTH while
 // writing the *whole* type field, so a `mime_type` or `domain_type` of 256 bytes or more
-// produces a message whose own decoder reads the wrong number of type octets and then
-// misattributes the remainder. Nothing bounds those two fields on the way in.
+// produced a message whose own decoder reads the wrong number of type octets and then
+// misattributes the remainder. It now refuses, like the rest of this codec.
 
 #[cfg(feature = "nfc-client")]
 mod ndef_props {
@@ -2956,31 +2956,39 @@ mod ndef_props {
     // FINDINGS
     // -------------------------------------------------------------------------------------
 
-    /// FINDING: a TYPE field of 256 octets or more is written in full under a TYPE LENGTH of
-    /// 255, so the message does not describe itself. Minimal counterexample: a `mime` record
+    /// A TYPE field of 256 octets or more used to be written in full under a TYPE LENGTH of
+    /// 255, so the message did not describe itself. Minimal counterexample: a `mime` record
     /// whose `mime_type` is 256 characters — one octet over — after which the decoder reads
     /// 255 type octets and misreads everything following.
     ///
     /// `encode_one` checks that a `mime_type` is non-empty ASCII and that a `domain_type`
-    /// contains a colon; neither bounds the length. The module's own comment says "every type
-    /// this encoder produces is a one-byte RTD, a media type or a domain:type, all far
+    /// contains a colon; neither bounded the length. The module's own comment said "every
+    /// type this encoder produces is a one-byte RTD, a media type or a domain:type, all far
     /// shorter" — true of what a sensible model sends, and an assumption rather than a check.
-    /// The rest of this codec refuses rather than truncating; this one place does not.
     #[test]
-    #[ignore = "FINDING: push_record narrows the TYPE LENGTH with `.min(255) as u8`"]
-    fn an_over_long_type_field_should_be_refused() {
-        let mime_type = "a".repeat(256);
-        let record = json!({ "type": "mime", "mime_type": mime_type, "payload_hex": "00" });
-        match encode_message(std::slice::from_ref(&record)) {
-            Err(_) => {}
-            Ok(bytes) => {
-                let decoded = decode_message(&bytes).unwrap();
-                assert_eq!(
-                    decoded[0]["mime_type"], record["mime_type"],
-                    "the encoded message does not describe itself"
-                );
-            }
+    fn an_over_long_type_field_is_refused() {
+        for over in ["a".repeat(256), "a".repeat(4096)] {
+            let record = json!({ "type": "mime", "mime_type": over, "payload_hex": "00" });
+            assert!(
+                encode_message(std::slice::from_ref(&record)).is_err(),
+                "a {}-octet TYPE field must be refused, not written under a TYPE LENGTH of 255",
+                over.len()
+            );
         }
+
+        // An `external` record's `domain_type` is the other unbounded field, and the same
+        // bound has to apply to it.
+        let domain = format!("{}:t", "a".repeat(255));
+        let record = json!({ "type": "external", "domain_type": domain, "payload_hex": "00" });
+        assert!(encode_message(std::slice::from_ref(&record)).is_err());
+
+        // The boundary: 255 octets is the most the TYPE LENGTH can describe, and it still
+        // encodes and still describes itself.
+        let legal = "a".repeat(255);
+        let record = json!({ "type": "mime", "mime_type": legal, "payload_hex": "00" });
+        let bytes = encode_message(std::slice::from_ref(&record)).unwrap();
+        let decoded = decode_message(&bytes).unwrap();
+        assert_eq!(decoded[0]["mime_type"], record["mime_type"]);
     }
 }
 
@@ -2988,10 +2996,10 @@ mod ndef_props {
 // CAN — `src/server/can/frame.rs`
 // ===========================================================================================
 //
-// FINDING: `CanFrame::validate` returns `Ok` immediately for an error frame, so the payload
-// length check is skipped — and `to_wire_bytes` then indexes `out[8..8 + data.len()]` into a
+// `CanFrame::validate` used to return `Ok` immediately for an error frame, so the payload
+// length check was skipped — and `to_wire_bytes` then indexes `out[8..8 + data.len()]` into a
 // fixed 16- or 72-octet buffer. An error frame carrying more than 8 (classic) or 64 (FD)
-// octets panics rather than returning `Err`.
+// octets panicked rather than returning `Err`. The length check now runs for error frames too.
 
 #[cfg(feature = "can")]
 mod can_props {
