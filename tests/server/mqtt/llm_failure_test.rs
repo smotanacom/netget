@@ -115,6 +115,18 @@ async fn test_mqtt_refuses_connect_when_llm_fails() -> E2EResult<()> {
     let connack = read_exact_or_fail(&mut stream, 4, "CONNACK").await?;
     println!("MQTT CONNACK: {connack:02x?}");
 
+    // The pcap oracle. The assertions below index into four bytes this test already
+    // knows the shape of; Wireshark's `mqtt` dissector decodes the fixed header's
+    // variable-length remaining-length field and the CONNECT that provoked it —
+    // protocol name, level, flags and the length-prefixed client id — and objects if
+    // any length disagrees with what follows it. A refusal path that wrote a
+    // remaining-length of 2 while sending three body bytes would pass every
+    // assertion in this file.
+    crate::helpers::pcap_oracle::PcapOracle::tcp("mqtt")
+        .to_server(&build_connect("failtest"))
+        .from_server(&connack)
+        .assert_clean();
+
     assert_eq!(
         connack[0] >> 4,
         2,
@@ -248,6 +260,19 @@ async fn test_mqtt_refuses_subscribe_when_llm_fails() -> E2EResult<()> {
         "expected 0x80 (failure) rather than a granted QoS - granting a subscription is an \
          access decision, and nothing decided it: {body:02x?}"
     );
+
+    // The pcap oracle over the whole session: CONNECT, CONNACK, SUBSCRIBE, SUBACK in
+    // the order they crossed the wire. Wireshark tracks MQTT as a stream, so this
+    // also checks that nothing extra was written between packets — a stray byte is
+    // invisible to `read_exact` and fatal to a real client.
+    let mut suback = header.clone();
+    suback.extend_from_slice(&body);
+    crate::helpers::pcap_oracle::PcapOracle::tcp("mqtt")
+        .to_server(&build_connect("subtest"))
+        .from_server(&connack)
+        .to_server(&build_subscribe(0x1234, "sensors/#", 1))
+        .from_server(&suback)
+        .assert_clean();
 
     // Both halves of this connection in one log: the CONNECT the model answered, and the
     // SUBSCRIBE it could not be asked about. Same server, two different decisions.

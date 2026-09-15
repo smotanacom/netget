@@ -298,6 +298,32 @@ async fn exchange(socket: &UdpSocket, server: SocketAddr, out: &[u8]) -> Vec<u8>
         .expect("timed out waiting for a GTP reply")
         .expect("failed to receive a GTP reply");
     buf.truncate(n);
+
+    // The pcap oracle. Wireshark's `gtp` dissector reads the flags byte — version,
+    // protocol type, and the three optional-field bits that decide whether a sequence
+    // number, N-PDU number and extension header type follow — and then checks the
+    // 16-bit Length against what actually follows the fixed header. Those bits are
+    // exactly the kind of thing this suite's hand-written helpers index past rather
+    // than verify.
+    //
+    // The capture is framed on GTP-C's own port. `wire_for("gtp")` warns that the two
+    // planes are different protocols on different ports; both are named `gtp` in the
+    // decode-as table and the dissector reads the version out of the header, so one
+    // port serves for the oracle even though it would not for a live capture.
+    //
+    // `peer_input_is_context` is required here and the reason is worth keeping: GTP-U
+    // tunnels arbitrary user traffic, and tshark recurses into it. This suite's G-PDU
+    // fixture carries an inner IPv4/UDP packet addressed to port 53 with a one-byte
+    // body, so the DNS dissector is handed one byte and reports a malformed packet —
+    // a true statement about the test's own fixture and nothing at all about the
+    // server. The reply, which is what the oracle is here for, is judged in full.
+    crate::helpers::pcap_oracle::PcapOracle::udp("gtp")
+        .port(2123)
+        .peer_input_is_context()
+        .to_server(out)
+        .from_server(&buf)
+        .assert_clean();
+
     buf
 }
 
@@ -570,6 +596,11 @@ async fn test_gtpv1_session_lifecycle_over_real_udp() -> E2EResult<()> {
     // Every decision must be recorded, and none of them as a fail-closed one.
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
+    // Same race as the `model_reject` case further down: `wait_for_mocks` proves the
+    // model was called, and `decision=` is written after its answer is handled. Waiting
+    // for the positive line does not weaken the negative one below — giving
+    // model_accept time to appear gives fail_closed the same time.
+    server.wait_for_any(&["decision=model_accept"], 30).await;
     assert!(
         server.output_contains("decision=model_accept").await,
         "an accepted session must be logged with a decision token"
@@ -950,11 +981,22 @@ async fn test_a_sequence_wider_than_the_header_field_fails_closed() -> E2EResult
 
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
-    assert!(
-        server.output_contains("decision=fail_closed").await,
-        "the fail-closed path must be recorded with its own decision token, because the \
-         wire cannot distinguish it from a refusal the model chose deliberately"
-    );
+
+    // Wait for the line rather than checking once. The refusal reaches the socket
+    // before the harness's reader task has necessarily drained the server's stdout into
+    // `output_lines`, so a bare `output_contains` here is a race — green on a quiet
+    // machine, intermittently red at `--test-threads=100`, and reproduced at unmodified
+    // HEAD as often as anywhere else. This still asserts the line must appear; it only
+    // stops asserting *when*.
+    server
+        .wait_for_log("decision=fail_closed", 20)
+        .await
+        .map_err(|e| {
+            format!(
+                "the fail-closed path must be recorded with its own decision token, because \
+                 the wire cannot distinguish it from a refusal the model chose deliberately: {e}"
+            )
+        })?;
     server.stop().await?;
     Ok(())
 }

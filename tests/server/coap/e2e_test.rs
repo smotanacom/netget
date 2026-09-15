@@ -17,6 +17,7 @@
 
 #![cfg(feature = "coap")]
 
+use crate::helpers::pcap_oracle::PcapOracle;
 use crate::helpers::{start_netget_server, E2EResult, NetGetConfig};
 use coap_lite::{
     CoapOption, ContentFormat, MessageClass, MessageType, Packet, RequestType, ResponseType,
@@ -37,6 +38,17 @@ async fn exchange(socket: &UdpSocket, server: SocketAddr, out: &[u8]) -> Vec<u8>
         .expect("timed out waiting for a CoAP reply")
         .expect("failed to receive a CoAP reply");
     buf.truncate(n);
+
+    // The pcap oracle: a third independent reading of RFC 7252, after coap-lite and
+    // the `coap` client. It is worth having here specifically because CoAP's option
+    // encoding is delta-and-length nibbles with extension bytes, and an option that
+    // runs past the end of the datagram is a silent off-by-one in every codec that
+    // trusts its own writer - Wireshark says "option longer than the package".
+    PcapOracle::udp("coap")
+        .to_server(out)
+        .from_server(&buf)
+        .assert_clean();
+
     buf
 }
 

@@ -111,6 +111,15 @@ async fn test_stun_basic_binding_request() -> E2EResult<()> {
             // Parse STUN response
             let response = &buf[..len];
 
+            // The pcap oracle: Wireshark's `stun` dissector reads the whole message —
+            // the Message Length against the attributes that follow, and each
+            // attribute's own length and 4-byte padding — where the assertions below
+            // index into fixed offsets and can only see the header.
+            crate::helpers::pcap_oracle::PcapOracle::udp("stun")
+                .to_server(&binding_request)
+                .from_server(response)
+                .assert_clean();
+
             // Verify it's a valid STUN message
             assert!(len >= 20, "Response too short to be STUN message");
 

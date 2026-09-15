@@ -117,6 +117,17 @@ async fn query(socket: &UdpSocket, address: &str, request: &[u8]) -> E2EResult<N
         .await
         .map_err(|_| "no NTP reply within 15s")??;
 
+    // The pcap oracle. `NtpPacket::parse` below is this test file's own reading of
+    // RFC 5905, and rsntp is a client that checks a handful of fields it cares
+    // about; Wireshark's `ntp` dissector decodes the whole packet — leap indicator,
+    // mode, stratum, poll and precision as signed exponents, reference id, and every
+    // 64-bit timestamp — and objects to a packet that is not 48 bytes or whose
+    // fields are outside the ranges the RFC allows.
+    crate::helpers::pcap_oracle::PcapOracle::udp("ntp")
+        .to_server(request)
+        .from_server(&buffer[..n])
+        .assert_clean();
+
     Ok(NtpPacket::parse(&buffer[..n]))
 }
 

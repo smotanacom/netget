@@ -273,6 +273,19 @@ async fn exchange(port: u16, request: &[u8]) -> E2EResult<Vec<u8>> {
         .await
         .map_err(|_| "timed out waiting for a RADIUS reply")??;
     buf.truncate(n);
+
+    // The pcap oracle. Every other decode in this file goes through
+    // `netget::server::radius::packet`, which is the same code that wrote the reply —
+    // agreement there is a tautology. Wireshark's `radius` dissector walks the
+    // attribute list independently and objects to a Length that disagrees with the
+    // packet, or an attribute whose own length runs past the end. The fail-closed
+    // Access-Reject is written on a path the model never sees, so it is the one most
+    // likely to carry a hand-computed length that nobody has checked.
+    crate::helpers::pcap_oracle::PcapOracle::udp("radius")
+        .to_server(request)
+        .from_server(&buf)
+        .assert_clean();
+
     Ok(buf)
 }
 
