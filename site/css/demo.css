@@ -389,3 +389,10 @@
 @media (max-width: 900px) {
     .demo-notes { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---- the protocol table: the ones compiled into the demo ------------------------------ */
+
+.proto-list .in-web {
+    font-weight: 600;
+    color: var(--green);
+}
