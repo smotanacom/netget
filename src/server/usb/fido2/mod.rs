@@ -728,25 +728,29 @@ impl UsbFido2Server {
                         let protocol = protocol.clone();
                         let handle = handle.clone();
 
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                connection_id,
-                                remote_addr,
-                                llm_client,
-                                app_state,
-                                status_tx,
-                                protocol,
-                                handle,
-                                server_id,
-                                support_u2f,
-                                support_fido2,
-                            )
-                            .await
-                            {
-                                error!("USB FIDO2 connection {} error: {}", connection_id, e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    connection_id,
+                                    remote_addr,
+                                    llm_client,
+                                    app_state,
+                                    status_tx,
+                                    protocol,
+                                    handle,
+                                    server_id,
+                                    support_u2f,
+                                    support_fido2,
+                                )
+                                .await
+                                {
+                                    error!("USB FIDO2 connection {} error: {}", connection_id, e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         // A persistent accept error recurs immediately, so continuing spins a

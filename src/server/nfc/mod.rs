@@ -264,29 +264,33 @@ impl NfcServer {
                 let status_tx = status_tx.clone();
                 let tag_state = tag_state.clone();
                 let protocol = protocol.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = Self::handle_reader(
-                        stream,
-                        connection_id,
-                        server_id,
-                        tag_state,
-                        llm_client,
-                        conn_state.clone(),
-                        status_tx.clone(),
-                        protocol,
-                    )
-                    .await
-                    {
+                // Tracked, not detached: stop_server must abort this task too.
+                let task_owner = app_state.clone();
+                task_owner
+                    .spawn_server_task(server_id, async move {
+                        if let Err(e) = Self::handle_reader(
+                            stream,
+                            connection_id,
+                            server_id,
+                            tag_state,
+                            llm_client,
+                            conn_state.clone(),
+                            status_tx.clone(),
+                            protocol,
+                        )
+                        .await
+                        {
+                            Log::new(Some(&status_tx))
+                                .error(format!("NFC reader {} error: {}", connection_id, e));
+                        }
+                        conn_state
+                            .close_connection_on_server(server_id, connection_id)
+                            .await;
                         Log::new(Some(&status_tx))
-                            .error(format!("NFC reader {} error: {}", connection_id, e));
-                    }
-                    conn_state
-                        .close_connection_on_server(server_id, connection_id)
-                        .await;
-                    Log::new(Some(&status_tx))
-                        .info(format!("NFC reader {connection_id} disconnected"));
-                    let _ = status_tx.send("__UPDATE_UI__".to_string());
-                });
+                            .info(format!("NFC reader {connection_id} disconnected"));
+                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                    })
+                    .await;
             }
         });
 

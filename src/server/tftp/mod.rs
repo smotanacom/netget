@@ -159,22 +159,26 @@ impl TftpServer {
                             let protocol_clone = protocol.clone();
                             let transfers_clone = transfers.clone();
 
-                            tokio::spawn(async move {
-                                if let Err(e) = Self::handle_read_request(
-                                    data,
-                                    peer_addr,
-                                    llm_clone,
-                                    state_clone,
-                                    status_clone,
-                                    server_id,
-                                    protocol_clone,
-                                    transfers_clone,
-                                )
-                                .await
-                                {
-                                    error!("TFTP RRQ handling error: {}", e);
-                                }
-                            });
+                            // Tracked, not detached: stop_server must abort this task too.
+                            let task_owner = app_state.clone();
+                            task_owner
+                                .spawn_server_task(server_id, async move {
+                                    if let Err(e) = Self::handle_read_request(
+                                        data,
+                                        peer_addr,
+                                        llm_clone,
+                                        state_clone,
+                                        status_clone,
+                                        server_id,
+                                        protocol_clone,
+                                        transfers_clone,
+                                    )
+                                    .await
+                                    {
+                                        error!("TFTP RRQ handling error: {}", e);
+                                    }
+                                })
+                                .await;
                         }
                         2 => {
                             // WRQ (Write Request)
@@ -184,22 +188,26 @@ impl TftpServer {
                             let protocol_clone = protocol.clone();
                             let transfers_clone = transfers.clone();
 
-                            tokio::spawn(async move {
-                                if let Err(e) = Self::handle_write_request(
-                                    data,
-                                    peer_addr,
-                                    llm_clone,
-                                    state_clone,
-                                    status_clone,
-                                    server_id,
-                                    protocol_clone,
-                                    transfers_clone,
-                                )
-                                .await
-                                {
-                                    error!("TFTP WRQ handling error: {}", e);
-                                }
-                            });
+                            // Tracked, not detached: stop_server must abort this task too.
+                            let task_owner = app_state.clone();
+                            task_owner
+                                .spawn_server_task(server_id, async move {
+                                    if let Err(e) = Self::handle_write_request(
+                                        data,
+                                        peer_addr,
+                                        llm_clone,
+                                        state_clone,
+                                        status_clone,
+                                        server_id,
+                                        protocol_clone,
+                                        transfers_clone,
+                                    )
+                                    .await
+                                    {
+                                        error!("TFTP WRQ handling error: {}", e);
+                                    }
+                                })
+                                .await;
                         }
                         _ => {
                             log.debug(format!(
@@ -404,20 +412,24 @@ impl TftpServer {
                                         let state_clone = app_state.clone();
                                         let transfers_clone = transfers.clone();
 
-                                        tokio::spawn(async move {
-                                            Self::wait_for_final_ack(
-                                                socket_clone,
-                                                peer_addr,
-                                                transfer_id,
-                                                block_num,
-                                                server_id,
-                                                connection_id,
-                                                state_clone,
-                                                status_clone,
-                                                transfers_clone,
-                                            )
+                                        // Tracked, not detached: stop_server must abort this task too.
+                                        let task_owner = app_state.clone();
+                                        task_owner
+                                            .spawn_server_task(server_id, async move {
+                                                Self::wait_for_final_ack(
+                                                    socket_clone,
+                                                    peer_addr,
+                                                    transfer_id,
+                                                    block_num,
+                                                    server_id,
+                                                    connection_id,
+                                                    state_clone,
+                                                    status_clone,
+                                                    transfers_clone,
+                                                )
+                                                .await;
+                                            })
                                             .await;
-                                        });
                                     } else {
                                         // Spawn listener for ACK and continue transfer
                                         let socket_clone = transfer_socket.clone();
@@ -427,22 +439,26 @@ impl TftpServer {
                                         let protocol_clone = protocol.clone();
                                         let transfers_clone = transfers.clone();
 
-                                        tokio::spawn(async move {
-                                            Self::continue_read_transfer(
-                                                socket_clone,
-                                                peer_addr,
-                                                transfer_id,
-                                                block_num,
-                                                llm_clone,
-                                                state_clone,
-                                                status_clone,
-                                                server_id,
-                                                connection_id,
-                                                protocol_clone,
-                                                transfers_clone,
-                                            )
+                                        // Tracked, not detached: stop_server must abort this task too.
+                                        let task_owner = app_state.clone();
+                                        task_owner
+                                            .spawn_server_task(server_id, async move {
+                                                Self::continue_read_transfer(
+                                                    socket_clone,
+                                                    peer_addr,
+                                                    transfer_id,
+                                                    block_num,
+                                                    llm_clone,
+                                                    state_clone,
+                                                    status_clone,
+                                                    server_id,
+                                                    connection_id,
+                                                    protocol_clone,
+                                                    transfers_clone,
+                                                )
+                                                .await;
+                                            })
                                             .await;
-                                        });
                                     }
                                 } else if opcode == 5 {
                                     // ERROR - transfer terminated
@@ -597,7 +613,9 @@ impl TftpServer {
 
                                                     if data_len < 512 {
                                                         log.debug("TFTP final block sent");
-                                                        tokio::spawn(async move {
+                                                        // Tracked, not detached: stop_server must abort this task too.
+                                                        let task_owner = app_state.clone();
+                                                        task_owner.spawn_server_task(server_id, async move {
                                                             Self::wait_for_final_ack(
                                                                 socket_clone,
                                                                 peer_addr,
@@ -610,11 +628,13 @@ impl TftpServer {
                                                                 transfers_clone,
                                                             )
                                                             .await;
-                                                        });
+                                                        }).await;
                                                     } else {
                                                         let llm_clone = llm_client.clone();
                                                         let protocol_clone = protocol.clone();
-                                                        tokio::spawn(async move {
+                                                        // Tracked, not detached: stop_server must abort this task too.
+                                                        let task_owner = app_state.clone();
+                                                        task_owner.spawn_server_task(server_id, async move {
                                                             Self::continue_read_transfer(
                                                                 socket_clone,
                                                                 peer_addr,
@@ -629,7 +649,7 @@ impl TftpServer {
                                                                 transfers_clone,
                                                             )
                                                             .await;
-                                                        });
+                                                        }).await;
                                                     }
                                                 }
                                                 Some(OP_ERROR) => {
@@ -898,21 +918,25 @@ impl TftpServer {
                                     let protocol_clone = protocol.clone();
                                     let transfers_clone = transfers.clone();
 
-                                    tokio::spawn(async move {
-                                        Self::receive_write_data(
-                                            socket_clone,
-                                            peer_addr,
-                                            transfer_id,
-                                            llm_clone,
-                                            state_clone,
-                                            status_clone,
-                                            server_id,
-                                            connection_id,
-                                            protocol_clone,
-                                            transfers_clone,
-                                        )
+                                    // Tracked, not detached: stop_server must abort this task too.
+                                    let task_owner = app_state.clone();
+                                    task_owner
+                                        .spawn_server_task(server_id, async move {
+                                            Self::receive_write_data(
+                                                socket_clone,
+                                                peer_addr,
+                                                transfer_id,
+                                                llm_clone,
+                                                state_clone,
+                                                status_clone,
+                                                server_id,
+                                                connection_id,
+                                                protocol_clone,
+                                                transfers_clone,
+                                            )
+                                            .await;
+                                        })
                                         .await;
-                                    });
                                 } else if opcode == 5 {
                                     log.debug("TFTP sent ERROR, transfer denied");
                                     transfers.lock().await.remove(&transfer_id);

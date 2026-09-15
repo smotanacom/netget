@@ -270,25 +270,29 @@ impl OspfServer {
                         let protocol_clone = protocol.clone();
                         let ospf_state_clone = ospf_state.clone();
 
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_ospf_packet(
-                                packet_type,
-                                &ospf_data_owned,
-                                src_ip,
-                                sender_router_id,
-                                sender_area_id,
-                                llm_clone,
-                                state_clone,
-                                status_clone,
-                                protocol_clone,
-                                ospf_state_clone,
-                                server_id,
-                            )
-                            .await
-                            {
-                                error!("OSPF packet error: {}", e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_ospf_packet(
+                                    packet_type,
+                                    &ospf_data_owned,
+                                    src_ip,
+                                    sender_router_id,
+                                    sender_area_id,
+                                    llm_clone,
+                                    state_clone,
+                                    status_clone,
+                                    protocol_clone,
+                                    ospf_state_clone,
+                                    server_id,
+                                )
+                                .await
+                                {
+                                    error!("OSPF packet error: {}", e);
+                                }
+                            })
+                            .await;
                     }
                     Ok(Err(e)) => {
                         error!("OSPF recv error: {}", e);

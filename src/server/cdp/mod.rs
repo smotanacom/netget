@@ -258,6 +258,7 @@ impl CdpServer {
         });
 
         let recv_socket = socket.clone();
+        let loop_state = app_state.clone();
         let handle = tokio::spawn(async move {
             let mut buffer = vec![0u8; 65535];
             loop {
@@ -266,11 +267,15 @@ impl CdpServer {
                         let frame = buffer[..n].to_vec();
                         let sink = CdpSink::Udp(recv_socket.clone(), peer);
                         let cdp_ctx = cdp_ctx.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_frame(&frame, sink, cdp_ctx).await {
-                                debug!("CDP frame from {} ignored: {:#}", peer, e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = loop_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_frame(&frame, sink, cdp_ctx).await {
+                                    debug!("CDP frame from {} ignored: {:#}", peer, e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("CDP (udp transport) receive error: {}", e);

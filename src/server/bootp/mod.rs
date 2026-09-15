@@ -116,128 +116,164 @@ impl BootpServer {
                         let status_clone = status_tx.clone();
                         let socket_clone = socket.clone();
 
-                        tokio::spawn(async move {
-                            // One protocol instance per request. The instance carries the
-                            // request context (xid, chaddr, giaddr) used to build the reply,
-                            // so two clients whose LLM calls overlap can never read each
-                            // other's transaction ID.
-                            let protocol = BootpProtocol::new();
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // One protocol instance per request. The instance carries the
+                                // request context (xid, chaddr, giaddr) used to build the reply,
+                                // so two clients whose LLM calls overlap can never read each
+                                // other's transaction ID.
+                                let protocol = BootpProtocol::new();
 
-                            #[cfg(feature = "bootp")]
-                            if let Some((_, Some(ctx))) = parsed_info.as_ref() {
-                                protocol.set_request_context(ctx.clone());
-                            }
+                                #[cfg(feature = "bootp")]
+                                if let Some((_, Some(ctx))) = parsed_info.as_ref() {
+                                    protocol.set_request_context(ctx.clone());
+                                }
 
-                            // Extract event data
-                            #[cfg(feature = "bootp")]
-                            let (op_code, client_mac, client_ip, xid, gateway_ip) =
-                                if let Some((_, Some(ctx))) = &parsed_info {
-                                    (
-                                        format!("{:?}", ctx.op),
-                                        crate::server::bootp::format_mac(&ctx.chaddr),
-                                        ctx.ciaddr.to_string(),
-                                        Some(ctx.xid),
-                                        ctx.giaddr.to_string(),
-                                    )
-                                } else {
-                                    (
-                                        "unknown".to_string(),
-                                        "unknown".to_string(),
-                                        "0.0.0.0".to_string(),
-                                        None,
-                                        "0.0.0.0".to_string(),
-                                    )
-                                };
+                                // Extract event data
+                                #[cfg(feature = "bootp")]
+                                let (op_code, client_mac, client_ip, xid, gateway_ip) =
+                                    if let Some((_, Some(ctx))) = &parsed_info {
+                                        (
+                                            format!("{:?}", ctx.op),
+                                            crate::server::bootp::format_mac(&ctx.chaddr),
+                                            ctx.ciaddr.to_string(),
+                                            Some(ctx.xid),
+                                            ctx.giaddr.to_string(),
+                                        )
+                                    } else {
+                                        (
+                                            "unknown".to_string(),
+                                            "unknown".to_string(),
+                                            "0.0.0.0".to_string(),
+                                            None,
+                                            "0.0.0.0".to_string(),
+                                        )
+                                    };
 
-                            #[cfg(not(feature = "bootp"))]
-                            let (op_code, client_mac, client_ip, xid, gateway_ip) = (
-                                "unknown".to_string(),
-                                "unknown".to_string(),
-                                "0.0.0.0".to_string(),
-                                None::<u32>,
-                                "0.0.0.0".to_string(),
-                            );
+                                #[cfg(not(feature = "bootp"))]
+                                let (op_code, client_mac, client_ip, xid, gateway_ip) = (
+                                    "unknown".to_string(),
+                                    "unknown".to_string(),
+                                    "0.0.0.0".to_string(),
+                                    None::<u32>,
+                                    "0.0.0.0".to_string(),
+                                );
 
-                            let client_mac_for_log = client_mac.clone();
+                                let client_mac_for_log = client_mac.clone();
 
-                            let event_data = serde_json::json!({
-                                "op_code": op_code,
-                                "client_mac": client_mac,
-                                "client_ip": client_ip,
-                                "xid": xid,
-                                "gateway_ip": gateway_ip
-                            });
+                                let event_data = serde_json::json!({
+                                    "op_code": op_code,
+                                    "client_mac": client_mac,
+                                    "client_ip": client_ip,
+                                    "xid": xid,
+                                    "gateway_ip": gateway_ip
+                                });
 
-                            let event = Event::new(&BOOTP_REQUEST_EVENT, event_data);
+                                let event = Event::new(&BOOTP_REQUEST_EVENT, event_data);
 
-                            Log::new(Some(&status_clone))
-                                .debug(format!("BOOTP calling LLM for request from {}", peer_addr));
+                                Log::new(Some(&status_clone)).debug(format!(
+                                    "BOOTP calling LLM for request from {}",
+                                    peer_addr
+                                ));
 
-                            match call_llm(
-                                &llm_clone,
-                                &state_clone,
-                                server_id,
-                                None,
-                                &event,
-                                &protocol,
-                            )
-                            .await
-                            {
-                                Ok(execution_result) => {
-                                    let log = Log::new(Some(&status_clone));
-                                    for message in &execution_result.messages {
-                                        log.info(format!("{}", message));
-                                    }
+                                match call_llm(
+                                    &llm_clone,
+                                    &state_clone,
+                                    server_id,
+                                    None,
+                                    &event,
+                                    &protocol,
+                                )
+                                .await
+                                {
+                                    Ok(execution_result) => {
+                                        let log = Log::new(Some(&status_clone));
+                                        for message in &execution_result.messages {
+                                            log.info(format!("{}", message));
+                                        }
 
-                                    log.debug(format!(
-                                        "BOOTP got {} protocol results",
-                                        execution_result.protocol_results.len()
-                                    ));
+                                        log.debug(format!(
+                                            "BOOTP got {} protocol results",
+                                            execution_result.protocol_results.len()
+                                        ));
 
-                                    let mut declined = false;
-                                    let mut replied = false;
+                                        let mut declined = false;
+                                        let mut replied = false;
 
-                                    for protocol_result in execution_result.protocol_results {
-                                        if let Some(output_data) =
-                                            protocol_result.get_all_output().first()
-                                        {
-                                            replied = true;
-                                            let _ =
-                                                socket_clone.send_to(output_data, peer_addr).await;
+                                        for protocol_result in execution_result.protocol_results {
+                                            if let Some(output_data) =
+                                                protocol_result.get_all_output().first()
+                                            {
+                                                replied = true;
+                                                let _ = socket_clone
+                                                    .send_to(output_data, peer_addr)
+                                                    .await;
 
-                                            // DEBUG: Log summary
-                                            log.debug(format!(
-                                                "BOOTP sent {} bytes to {}",
-                                                output_data.len(),
-                                                peer_addr
-                                            ));
+                                                // DEBUG: Log summary
+                                                log.debug(format!(
+                                                    "BOOTP sent {} bytes to {}",
+                                                    output_data.len(),
+                                                    peer_addr
+                                                ));
 
-                                            // TRACE: Log full payload
-                                            let hex_str = hex::encode(output_data);
-                                            log.trace(format!("BOOTP sent (hex): {}", hex_str));
+                                                // TRACE: Log full payload
+                                                let hex_str = hex::encode(output_data);
+                                                log.trace(format!("BOOTP sent (hex): {}", hex_str));
 
-                                            let _ = status_clone.send(format!(
-                                                "→ BOOTP response to {} ({} bytes)",
+                                                let _ = status_clone.send(format!(
+                                                    "→ BOOTP response to {} ({} bytes)",
+                                                    peer_addr,
+                                                    output_data.len()
+                                                ));
+                                            } else {
+                                                // `ignore_request` yields NoAction: the model
+                                                // looked at the request and chose not to serve
+                                                // this client. That is a real decision, not a
+                                                // failure, and must not be confused with either
+                                                // of the two below.
+                                                declined = true;
+                                                log.debug(
+                                                    "BOOTP protocol result has no output data",
+                                                );
+                                            }
+                                        }
+
+                                        if !replied {
+                                            let decision = if declined {
+                                                "model_decline"
+                                            } else {
+                                                "no_answer"
+                                            };
+                                            Self::log_silence(
+                                                &status_clone,
                                                 peer_addr,
-                                                output_data.len()
-                                            ));
-                                        } else {
-                                            // `ignore_request` yields NoAction: the model
-                                            // looked at the request and chose not to serve
-                                            // this client. That is a real decision, not a
-                                            // failure, and must not be confused with either
-                                            // of the two below.
-                                            declined = true;
-                                            log.debug("BOOTP protocol result has no output data");
+                                                &client_mac_for_log,
+                                                decision,
+                                            );
                                         }
                                     }
-
-                                    if !replied {
-                                        let decision = if declined {
-                                            "model_decline"
-                                        } else {
-                                            "no_answer"
+                                    Err(e) => {
+                                        // The backend failed. BOOTP has no way to say so on the
+                                        // wire (see `log_silence`), so the peer gets nothing and
+                                        // the error goes to the log and the operator's status
+                                        // stream only - never into a datagram.
+                                        let decision = match crate::utils::WireFailure::classify(&e)
+                                        {
+                                            crate::utils::WireFailure::Overloaded => {
+                                                "fail_closed_overloaded"
+                                            }
+                                            crate::utils::WireFailure::Unavailable => {
+                                                "fail_closed_unavailable"
+                                            }
                                         };
+                                        error!(
+                                            "BOOTP LLM call failed for {} (mac={}) decision={}: {}",
+                                            peer_addr, client_mac_for_log, decision, e
+                                        );
+                                        let _ =
+                                            status_clone.send(format!("✗ BOOTP LLM error: {}", e));
                                         Self::log_silence(
                                             &status_clone,
                                             peer_addr,
@@ -246,33 +282,8 @@ impl BootpServer {
                                         );
                                     }
                                 }
-                                Err(e) => {
-                                    // The backend failed. BOOTP has no way to say so on the
-                                    // wire (see `log_silence`), so the peer gets nothing and
-                                    // the error goes to the log and the operator's status
-                                    // stream only - never into a datagram.
-                                    let decision = match crate::utils::WireFailure::classify(&e) {
-                                        crate::utils::WireFailure::Overloaded => {
-                                            "fail_closed_overloaded"
-                                        }
-                                        crate::utils::WireFailure::Unavailable => {
-                                            "fail_closed_unavailable"
-                                        }
-                                    };
-                                    error!(
-                                        "BOOTP LLM call failed for {} (mac={}) decision={}: {}",
-                                        peer_addr, client_mac_for_log, decision, e
-                                    );
-                                    let _ = status_clone.send(format!("✗ BOOTP LLM error: {}", e));
-                                    Self::log_silence(
-                                        &status_clone,
-                                        peer_addr,
-                                        &client_mac_for_log,
-                                        decision,
-                                    );
-                                }
-                            }
-                        });
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("BOOTP receive error: {}", e);

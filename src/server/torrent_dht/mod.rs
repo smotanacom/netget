@@ -103,7 +103,9 @@ impl TorrentDhtServer {
                         let socket_clone = socket.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             // Parse bencode KRPC message
                             match Self::parse_krpc_message(&data) {
                                 Ok((query_type, params)) => {
@@ -296,7 +298,7 @@ impl TorrentDhtServer {
                                     ));
                                 }
                             }
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         error!("BitTorrent DHT receive error: {}", e);

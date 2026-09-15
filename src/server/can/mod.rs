@@ -231,6 +231,7 @@ impl CanServer {
 
         let receive_ctx = ctx.clone();
         let receive_sink = sink.clone();
+        let loop_state = app_state.clone();
         let receive_handle = tokio::spawn(async move {
             // 72 octets is the largest SocketCAN frame struct; the buffer is generous so an
             // oversized datagram is *seen* and rejected by the codec rather than silently cut to
@@ -253,9 +254,13 @@ impl CanServer {
                         };
                         let ctx = receive_ctx.clone();
                         let sink = receive_sink.clone();
-                        tokio::spawn(async move {
-                            Self::handle_frame(frame, Some(peer), local_addr, ctx, sink).await;
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = loop_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                Self::handle_frame(frame, Some(peer), local_addr, ctx, sink).await;
+                            })
+                            .await;
                     }
                     Err(e) => {
                         console_error!(receive_ctx.status_tx, "CAN UDP receive error: {}", e);

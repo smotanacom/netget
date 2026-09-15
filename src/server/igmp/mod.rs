@@ -400,7 +400,9 @@ impl IgmpServer {
                         let protocol_clone = protocol.clone();
                         let server_state_clone = server_state.clone();
 
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             let log = Log::new(Some(&status_clone));
                             // Determine event type and build event data
                             let (event, _event_type_ref) = match igmp_msg.msg_type {
@@ -678,7 +680,7 @@ impl IgmpServer {
                                     ));
                                 }
                             }
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         // A raw socket that keeps erroring would otherwise spin this loop at

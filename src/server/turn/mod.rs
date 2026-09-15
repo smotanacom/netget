@@ -353,7 +353,7 @@ impl TurnServer {
         }
 
         let server = Arc::new(Self::new());
-        Self::spawn_cleanup_task(&server, status_tx.clone());
+        Self::spawn_cleanup_task(&server, status_tx.clone(), app_state.clone(), server_id).await;
 
         match peer_scope {
             PeerScope::Any => Log::new(Some(&status_tx)).warn(
@@ -406,9 +406,13 @@ impl TurnServer {
                         trace!("TURN data (hex): {}", hex::encode(&data));
 
                         let ctx = ctx.clone();
-                        tokio::spawn(async move {
-                            handle_datagram(ctx, data, peer_addr).await;
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                handle_datagram(ctx, data, peer_addr).await;
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("TURN receive error: {}", e));
@@ -453,49 +457,58 @@ impl TurnServer {
 
     /// Spawn task to periodically clean up expired allocations.
     ///
-    /// Holds only a weak reference: `register_server_task` stores a single handle
-    /// per server (the accept loop's), so this task cannot be registered for
-    /// abort and must notice on its own when the server has been stopped.
-    fn spawn_cleanup_task(server: &Arc<Self>, status_tx: mpsc::UnboundedSender<String>) {
+    /// Registered with the server, so `stop_server` aborts it. The weak reference is kept
+    /// as well: it is what ends the task if the server is dropped without a stop, and the
+    /// two are complementary rather than alternatives.
+    async fn spawn_cleanup_task(
+        server: &Arc<Self>,
+        status_tx: mpsc::UnboundedSender<String>,
+        app_state: Arc<AppState>,
+        server_id: crate::state::ServerId,
+    ) {
         let server = Arc::downgrade(server);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
-            loop {
-                interval.tick().await;
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = app_state.clone();
+        task_owner
+            .spawn_server_task(server_id, async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
 
-                let Some(server) = server.upgrade() else {
-                    debug!("TURN server stopped, ending allocation cleanup task");
-                    break;
-                };
+                    let Some(server) = server.upgrade() else {
+                        debug!("TURN server stopped, ending allocation cleanup task");
+                        break;
+                    };
 
-                let mut allocations = server.allocations.lock().await;
+                    let mut allocations = server.allocations.lock().await;
 
-                let mut expired = Vec::new();
-                for (id, alloc) in allocations.iter() {
-                    if !alloc.state.lock().await.is_live() {
-                        expired.push((id.clone(), alloc.client_addr, alloc.relay_addr));
+                    let mut expired = Vec::new();
+                    for (id, alloc) in allocations.iter() {
+                        if !alloc.state.lock().await.is_live() {
+                            expired.push((id.clone(), alloc.client_addr, alloc.relay_addr));
+                        }
+                    }
+
+                    let removed = expired.len();
+                    for (id, client_addr, relay_addr) in expired {
+                        // Dropping the allocation aborts its relay task and closes
+                        // the relay socket (see `impl Drop for TurnAllocation`).
+                        allocations.remove(&id);
+                        Log::new(Some(&status_tx)).debug(format!(
+                            "TURN expired allocation {} for {} (relay {})",
+                            id, client_addr, relay_addr
+                        ));
+                    }
+
+                    if removed > 0 {
+                        Log::new(Some(&status_tx)).debug(format!(
+                            "TURN cleanup removed {} expired allocations",
+                            removed
+                        ));
                     }
                 }
-
-                let removed = expired.len();
-                for (id, client_addr, relay_addr) in expired {
-                    // Dropping the allocation aborts its relay task and closes
-                    // the relay socket (see `impl Drop for TurnAllocation`).
-                    allocations.remove(&id);
-                    Log::new(Some(&status_tx)).debug(format!(
-                        "TURN expired allocation {} for {} (relay {})",
-                        id, client_addr, relay_addr
-                    ));
-                }
-
-                if removed > 0 {
-                    Log::new(Some(&status_tx)).debug(format!(
-                        "TURN cleanup removed {} expired allocations",
-                        removed
-                    ));
-                }
-            }
-        });
+            })
+            .await;
     }
 
     /// Allocation belonging to `client_addr`, if any is still live.

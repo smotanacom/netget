@@ -286,7 +286,9 @@ impl SnmpServer {
                         let requested_oids = parsed.requested_oids.clone();
 
                         // Spawn task to handle request with LLM
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             // Clone for BER encoding later
                             let requested_oids_clone = requested_oids.clone();
                             let community_clone = community.clone();
@@ -523,7 +525,7 @@ impl SnmpServer {
                                     }
                                 }
                             }
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         error!("SNMP receive error: {}", e);

@@ -106,7 +106,9 @@ impl DhcpServer {
                         let status_clone = status_tx.clone();
                         let socket_clone = socket.clone();
 
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             // One protocol instance per request. The instance carries the
                             // request context (xid, chaddr, giaddr, broadcast flag) used to
                             // build the reply, so two clients whose LLM calls overlap can
@@ -270,7 +272,7 @@ impl DhcpServer {
                                     peer_addr
                                 ));
                             }
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("DHCP receive error: {}", e));

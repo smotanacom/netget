@@ -100,21 +100,25 @@ impl CoapServer {
                         let proto = protocol.clone();
                         let mid = next_message_id.clone();
 
-                        tokio::spawn(async move {
-                            Self::handle_datagram(
-                                data,
-                                peer_addr,
-                                connection_id,
-                                server_id,
-                                llm,
-                                st,
-                                stx,
-                                sock,
-                                proto,
-                                mid,
-                            )
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                Self::handle_datagram(
+                                    data,
+                                    peer_addr,
+                                    connection_id,
+                                    server_id,
+                                    llm,
+                                    st,
+                                    stx,
+                                    sock,
+                                    proto,
+                                    mid,
+                                )
+                                .await;
+                            })
                             .await;
-                        });
                     }
                     Err(e) => {
                         error!("CoAP receive error: {}", e);
