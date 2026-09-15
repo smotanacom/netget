@@ -691,7 +691,7 @@ impl Protocol for WebSocketProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "Hand-written RFC 6455 HTTP Upgrade handshake (Sec-WebSocket-Accept via \
@@ -705,15 +705,21 @@ impl Protocol for WebSocketProtocol {
                  reason, plus unprompted pushes to any named open connection or a broadcast",
             )
             .e2e_testing(
-                "A raw RFC 6455 client hand-written in tests/server/websocket/e2e_test.rs is the \
-                 primary peer — it recomputes Sec-WebSocket-Accept from §4.2.2, masks its own \
-                 frames per §5.3 and parses ours byte by byte. tokio-tungstenite is deliberately \
-                 NOT used as the peer: this server frames with tokio-tungstenite, so the same \
-                 crate on both ends would only prove it agrees with itself. websocat 1.14.1 \
-                 drives the same server end to end, but that test returns Ok(()) when websocat \
-                 is absent — a skip-as-pass, which is why this is still Experimental rather than \
-                 Beta. Making the websocat test hard-fail when the binary is missing (as \
-                 tests/server/npm does) is what would clear the bar.",
+                "Two peers, neither of them this repository. (1) websocat 1.14.1, in \
+                 tests/server/websocket/e2e_test.rs::test_websocket_with_websocat, completes a \
+                 handshake, receives an unprompted server greeting and gets its own message \
+                 echoed back. websocat links websocket-0.27.1 / websocket-base-0.26.5 \
+                 (rust-websocket), NOT tungstenite — read out of the installed binary's \
+                 embedded crate paths — so it is a genuinely independent RFC 6455 \
+                 implementation and not the circular case of the peer being the same crate \
+                 this server frames with. That test is not #[ignore]d and FAILS rather than \
+                 skips when websocat is absent; until September 2026 it printed \
+                 \"skipping: websocat is not installed\" and returned Ok(()), a silent pass, \
+                 which is what held this at Experimental. (2) A raw RFC 6455 client \
+                 hand-written in the same file recomputes Sec-WebSocket-Accept from §4.2.2, \
+                 masks its own frames per §5.3 and parses ours byte by byte, asserting that \
+                 the server never masks (§5.1) and that close frames carry a big-endian \
+                 status code (§5.5). Untested: wss://, permessage-deflate, and any browser.",
             )
             .notes(
                 "Validated against websocat 1.14.1 and curl 8.20.0 as real independent \

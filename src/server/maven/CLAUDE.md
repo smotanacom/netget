@@ -6,7 +6,7 @@ Maven repository server implementing the Maven repository HTTP API. The LLM cont
 generation (POM files, JAR files, checksums), and version metadata, while hyper handles the HTTP protocol and the server
 parses Maven-specific URL paths.
 
-**Status**: Experimental
+**Status**: Beta
 **Base Protocol**: HTTP/1.1 (RFC 7230-7235)
 **Specification**: [Maven Repository Layout](https://maven.apache.org/repository/layout.html)
 
@@ -486,9 +486,17 @@ This validates:
 - HTTP compatibility with a real Maven client
 - Artifact content integrity (Maven checks the `.sha1` against what it received)
 
-**Maven stays Experimental.** The JAR served is a text placeholder, not a real archive,
-so no client has yet *used* an artifact from this repository — only fetched and
-checksum-verified one.
+**A real client uses an artifact from this repository, and that is what Beta rests on.**
+The JAR the test serves is a genuine zip, built by Python's `zipfile` — an archiver NetGet
+does not own — and delivered through `send_maven_artifact`'s `body_base64` field. After
+`dependency:get`, the test runs `mvn dependency:unpack`, so Maven opens the archive with its
+own unarchiver and writes its entries out, and the test asserts the resource inside. A
+placeholder body downloads and checksums perfectly and fails here, which is the point: until
+September 2026 the fixture was the string `netget-maven-test-jar-payload`, so nothing had ever
+opened what this repository served, and this file said so as the reason for Experimental.
+
+Still unproven: `deploy`/PUT (not implemented), SNAPSHOT resolution, GPG signatures, and any
+client other than `mvn` — Gradle and sbt have never been pointed at it.
 
 ### Test Efficiency Target
 

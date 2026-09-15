@@ -523,7 +523,7 @@ impl Protocol for OciRegistryProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
                 "hyper HTTP/1.1 server implementing the OCI Distribution Spec v1.1 pull path: \

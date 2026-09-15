@@ -1,6 +1,17 @@
 # WebSocket (RFC 6455) Server
 
-**Status**: Experimental (see [Validation](#validation) for exactly what was checked)
+**Status**: Beta (see [Validation](#validation) for exactly what was checked)
+
+Beta rests on **websocat 1.14.1**, which links `websocket-0.27.1` / `websocket-base-0.26.5`
+(rust-websocket) and **not** `tungstenite` — read out of the installed binary's embedded crate
+paths. That matters: this server frames with `tokio-tungstenite`, so a tungstenite-based peer
+would be the circular-evidence case, and rust-websocket is a separate RFC 6455 implementation.
+`test_websocket_with_websocat` is not `#[ignore]`d and **fails** rather than skips when the
+binary is absent; it printed `skipping: websocat is not installed` and returned `Ok(())` until
+September 2026, which is a silent pass and is what held this at Experimental.
+
+Still unproven, and what a human should check before this goes further: `wss://`,
+permessage-deflate, and any browser.
 **Spec**: RFC 6455. RFC 7692 (permessage-deflate) is **not** implemented.
 **Feature**: `websocket` · **Privilege**: `None` · **System libraries**: none
 
@@ -176,7 +187,11 @@ Checked against **three peers, two of them not this repository's code**:
    `00 ff fe 01 80 7f c3 28 0d 0a` (not valid UTF-8, not printable), that a ping is answered by a
    pong with the same payload, that two continuation frames are reassembled into one message
    before the handler runs, and that a close frame is echoed with the same big-endian status code.
-2. **`websocat` 1.14.1**, a separately built binary, driving the same server end to end.
+2. **`websocat` 1.14.1**, a separately built binary, driving the same server end to end — it
+   completes the handshake, receives the server's unprompted greeting and gets its own message
+   echoed back. Its RFC 6455 implementation is `websocket`/`websocket-base` (rust-websocket),
+   which shares no code with the `tokio-tungstenite` this server frames with. **Fails, never
+   skips, when websocat is missing.**
 3. **RFC 6455 §1.3's published worked example** — key `dGhlIHNhbXBsZSBub25jZQ==` must produce
    `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`.
 
