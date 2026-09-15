@@ -7,6 +7,11 @@ repository = "https://github.com/smotanacom/netget"
 
 [workspace]
 members = ["crates/*"]
+# `fuzz/` is a cargo-fuzz package and its own workspace root. It needs a nightly
+# toolchain and links libFuzzer's sanitizer runtime, so it must stay invisible to
+# `cargo build`/`cargo test`/`cargo check` here. It already excludes itself via its
+# own `[workspace]` table; this makes that intentional rather than incidental.
+exclude = ["fuzz"]
 resolver = "2"
 
 [features]
