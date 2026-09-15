@@ -1,18 +1,18 @@
 {
   "schema": "netget.eval.v1",
-  "generated_at": "1789513191",
+  "generated_at": "1789513713",
   "model": "llama3.1:8b",
   "runs_per_case": 3,
   "determinism": "pass-rate over N independent runs; netget passes no temperature or seed to its backend, so runs cannot be pinned",
   "totals": {
-    "cases_total": 10,
-    "cases_attempted": 10,
+    "cases_total": 18,
+    "cases_attempted": 18,
     "cases_skipped": 0,
-    "runs_total": 30,
-    "runs_passed": 1,
-    "pass_rate": 0.03333333333333333,
-    "runs_recoverable": 29,
-    "pass_rate_with_lenient_parse": 1.0
+    "runs_total": 54,
+    "runs_passed": 7,
+    "pass_rate": 0.12962962962962962,
+    "runs_recoverable": 43,
+    "pass_rate_with_lenient_parse": 0.9259259259259259
   },
   "protocols": [
     {
@@ -31,6 +31,38 @@
       "runs_recoverable": 12
     },
     {
+      "protocol": "finger",
+      "client": "nc",
+      "independence": "generic-transport",
+      "instructions": 3,
+      "instructions_fully_passed": 0,
+      "runs": 9,
+      "runs_passed": 1,
+      "pass_rate": 0.1111111111111111,
+      "dominant_failures": [
+        "valid_actions_rejected_as_unparseable"
+      ],
+      "skipped_reason": null,
+      "runs_recoverable": 7
+    },
+    {
+      "protocol": "gopher",
+      "client": "curl",
+      "independence": "protocol-client",
+      "instructions": 3,
+      "instructions_fully_passed": 0,
+      "runs": 9,
+      "runs_passed": 4,
+      "pass_rate": 0.4444444444444444,
+      "dominant_failures": [
+        "no_wire_response",
+        "valid_actions_rejected_as_unparseable",
+        "wrong_content"
+      ],
+      "skipped_reason": null,
+      "runs_recoverable": 2
+    },
+    {
       "protocol": "http",
       "client": "curl",
       "independence": "protocol-client",
@@ -46,25 +78,40 @@
       "runs_recoverable": 12
     },
     {
-      "protocol": "whois",
-      "client": "nc",
-      "independence": "generic-transport",
-      "instructions": 2,
+      "protocol": "redis",
+      "client": "redis-cli",
+      "independence": "protocol-client",
+      "instructions": 1,
       "instructions_fully_passed": 0,
-      "runs": 6,
-      "runs_passed": 1,
-      "pass_rate": 0.16666666666666666,
+      "runs": 3,
+      "runs_passed": 0,
+      "pass_rate": 0.0,
       "dominant_failures": [
         "valid_actions_rejected_as_unparseable"
       ],
       "skipped_reason": null,
-      "runs_recoverable": 5
+      "runs_recoverable": 3
+    },
+    {
+      "protocol": "whois",
+      "client": "nc",
+      "independence": "generic-transport",
+      "instructions": 3,
+      "instructions_fully_passed": 0,
+      "runs": 9,
+      "runs_passed": 2,
+      "pass_rate": 0.2222222222222222,
+      "dominant_failures": [
+        "valid_actions_rejected_as_unparseable"
+      ],
+      "skipped_reason": null,
+      "runs_recoverable": 7
     }
   ],
   "failure_modes": [
     {
       "mode": "valid_actions_rejected_as_unparseable",
-      "runs": 29,
+      "runs": 43,
       "cases": [
         "http/hello-page",
         "http/admin-404",
@@ -75,9 +122,34 @@
         "dns/txt-record",
         "dns/nxdomain",
         "whois/registrar-line",
-        "whois/registrant-and-status"
+        "whois/registrant-and-status",
+        "whois/no-match",
+        "gopher/welcome-menu",
+        "gopher/text-selector",
+        "finger/user-record",
+        "finger/unknown-user",
+        "finger/user-list",
+        "redis/get-string"
       ],
       "explanation": "The model named the right action with the right parameters and the reply was thrown away anyway, because prose or a stray code fence sits around the JSON. **Not a description defect and not a model defect** — `ActionResponse::from_str` (`src/llm/actions/mod.rs`) strips a leading ``` fence and nothing trailing, then hands the remainder to `serde_json::from_str`, which rejects any trailing byte. Small models append an explanation after the JSON constantly, so this one behaviour costs more eval passes than every description problem combined."
+    },
+    {
+      "mode": "no_wire_response",
+      "runs": 3,
+      "cases": [
+        "gopher/welcome-menu",
+        "gopher/unknown-selector",
+        "finger/user-record"
+      ],
+      "explanation": "The model acted but the client got nothing back within the timeout."
+    },
+    {
+      "mode": "wrong_content",
+      "runs": 1,
+      "cases": [
+        "gopher/welcome-menu"
+      ],
+      "explanation": "The model produced a valid, executable action whose content does not satisfy the instruction. This is the honest 'the model did not understand the task' bucket."
     }
   ],
   "cases": [
@@ -1020,6 +1092,666 @@
           "client_exit": 0,
           "client_timed_out": false,
           "elapsed_secs": 13.356214166
+        }
+      ]
+    },
+    {
+      "id": "whois/no-match",
+      "protocol": "whois",
+      "instruction": "Report that no match was found for any domain ending in .invalid. Answer anything else with an ordinary record.",
+      "client": "nc -w 235 127.0.0.1 {PORT}",
+      "independence": "generic-transport",
+      "expectation": "matches /(?i)no match|not found|no entries|no data found/",
+      "note": null,
+      "attempts": 3,
+      "passes": 1,
+      "pass_rate": 0.3333333333333333,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": "valid_actions_rejected_as_unparseable",
+      "recoverable_runs": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_whois_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"tools\": [{\"type\": \"send_whois_response\", \"response\": \"No match found for domain ending in .invalid.\"}]}```In this response, the `send_whois_response` action is used to send a custom WHOIS response indicating that no match was found for the domain ending in .invalid. The `tools` array is empty, as no additional tools are needed to gather information for this response.\n2026-09-15T23:00:03.171856Z  WARN Malformed response (raw): Here is the response that NetGet should generate based on the event and the instruction to report that no match was found for any domain ending in .invalid:\n\n```json\n{\n  \"tools\": [\n    {\"type\": \"send_whois_response\", \"response\": \"No match found for domain ending in .invalid.\"}\n  ]",
+            "2026-09-15T23:00:03.171856Z  WARN Malformed response (raw): Here is the response that NetGet should generate based on the event and the instruction to report that no match was found for any domain ending in .invalid:\n\n```json\n{\n  \"tools\": [\n    {\"type\": \"send_whois_response\", \"response\": \"No match found for domain ending in .invalid.\"}\n  ]\n}\n```",
+            "❌ Actual response:\n{\"tools\": [{\"type\": \"send_whois_response\", \"response\": \"No match found for do...\n2026-09-15T23:00:03.171909Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:00:03.171922Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:00:03.171927Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:00:03.171963Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:00:03.171977Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:00:03.171995Z DEBUG LLM request: model=llama3.1:8b, prompt_len=17413 chars, format=text\n2026-09-15T23:00:06.609301Z DEBUG LLM response: response_len=455 chars, tokens=4225i/104o/4329t",
+            "2026-09-15T23:00:03.171772Z DEBUG Response (normalized): Here is the response that NetGet should generate based on the event and the instruction to report that no match was found for any domain ending in .invalid:```json{\"tools\": [{\"type\": \"send_whois_respo...",
+            "{\"tools\": [{\"type\": \"send_whois_response\", \"response\": \"No match found for domain ending in .invalid.\"}]}```In this response, the `send_whois_response` action is used to send a custom WHOIS response indicating that no match was found for the domain ending in .invalid. The `tools` array is empty, as no additional tools are needed to gather information for this response.",
+            "    {\"type\": \"send_whois_response\", \"response\": \"No match found for domain ending in .invalid.\"}",
+            "{\"tools\": [{\"type\": \"send_whois_response\", \"response\": \"No match found for do...",
+            "2026-09-15T23:00:06.609420Z DEBUG Response (normalized): Here is the corrected response:```json{\"actions\": [{\"type\": \"send_whois_response\", \"response\": \"No match found for domain ending in .invalid.\"}]}```This response meets the required format by being pur..."
+          ],
+          "recovered_actions": [
+            "send_whois_response"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 54274",
+          "client_output": "",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 15.889200875
+        },
+        {
+          "run": 2,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_whois_response`, `read_documentation` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"type\": \"send_whois_response\",\"response\": \"No match found for the domain \"}```In this response, we use the `send_whois_response` action to send a custom WHOIS response with the message \"No match found for the domain\" as per the instruction to report that no match was found for any domain ending in .invalid. The response text is written exactly as given, with a CRLF appended at the end.\n2026-09-15T23:00:11.461010Z  WARN Malformed response (raw): Here is the response to the WHOIS query event:\n\n```json\n{\n  \"type\": \"send_whois_response\",\n  \"response\": \"No match found for the domain \"\n}",
+            "2026-09-15T23:00:11.461010Z  WARN Malformed response (raw): Here is the response to the WHOIS query event:\n\n```json\n{\n  \"type\": \"send_whois_response\",\n  \"response\": \"No match found for the domain \"\n}\n```\n",
+            "❌ Actual response:\n{\"type\": \"send_whois_response\",\"response\": \"No match found for the domain \"}`...\n2026-09-15T23:00:11.461057Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:00:11.461070Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:00:11.461076Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:00:11.461111Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:00:11.461123Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:00:11.461140Z DEBUG LLM request: model=llama3.1:8b, prompt_len=17339 chars, format=text\nWHOIS \"nothing.invalid\" from 127.0.0.1:54697 decision=fail_closed_llm_error category=unavailable",
+            "2026-09-15T23:00:11.460955Z DEBUG Response (normalized): Here is the response to the WHOIS query event:```json{\"type\": \"send_whois_response\",\"response\": \"No match found for the domain \"}```In this response, we use the `send_whois_response` action to send a ...",
+            "{\"type\": \"send_whois_response\",\"response\": \"No match found for the domain \"}```In this response, we use the `send_whois_response` action to send a custom WHOIS response with the message \"No match found for the domain\" as per the instruction to report that no match was found for any domain ending in .invalid. The response text is written exactly as given, with a CRLF appended at the end.",
+            "  \"type\": \"send_whois_response\",",
+            "{\"type\": \"send_whois_response\",\"response\": \"No match found for the domain \"}`...",
+            "2026-09-15T23:00:15.644022Z DEBUG Response (normalized): Here is the corrected response:```{\"tools\": [{\"type\": \"read_documentation\", \"protocols\": [\"whois\"]}],\"actions\": [{\"type\": \"send_whois_response\", \"response\": \"No match found for the domain \"}]}```This ..."
+          ],
+          "recovered_actions": [
+            "send_whois_response",
+            "read_documentation"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 54549",
+          "client_output": "% netget: the query could not be answered\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 9.034272458
+        },
+        {
+          "run": 3,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-09-15T23:00:22.674496Z  WARN ✗ Parse error on attempt 1: Failed to parse action response: Invalid JSON",
+            "❌ Actual response:",
+            "{\"tools\": [{\"type\": \"generate_random\", \"data_type\": \"choice\", \"choices\": [\"No match found\", \"Record found\"], \"count\": 1}],\"actions\": [{\"type\": \"send_whois_response\", \"response\": \"No match found for any domain ending in .invalid.\"}]}```**Reasoning:**We need to determine whether the WHOIS query is for a domain ending in `.invalid` or not. Since the instruction is to report no match for such domains, we will use the `generate_random` tool to select the correct response message from a list of possible messages. This message will be sent as a custom WHOIS response using the `send_whois_response` action.",
+            "2026-09-15T23:00:22.674546Z  WARN Malformed response (raw): ## Response",
+            "**Parse error:** Failed to parse action response: Invalid JSON",
+            "❌ Actual response:",
+            "{\"tools\": [{\"type\": \"generate_random\", \"data_type\": \"choice\", \"choices\": [\"No...",
+            "2026-09-15T23:00:26.248152Z DEBUG Executing action 0: Object {\"type\": String(\"send_whois_response\"), \"response\": String(\"No match found for any domain ending in .invalid.\")}"
+          ],
+          "recovered_actions": [],
+          "client_command": "nc -w 235 127.0.0.1 54874",
+          "client_output": "No match found for any domain ending in .invalid.\r\n",
+          "client_exit": null,
+          "client_timed_out": false,
+          "elapsed_secs": 13.10462025
+        }
+      ]
+    },
+    {
+      "id": "gopher/welcome-menu",
+      "protocol": "gopher",
+      "instruction": "Serve a menu whose first item is labelled Welcome to NetGet.",
+      "client": "curl -sS --max-time 230 gopher://127.0.0.1:{PORT}/",
+      "independence": "protocol-client",
+      "expectation": "contains [\"Welcome to NetGet\"]",
+      "note": null,
+      "attempts": 3,
+      "passes": 0,
+      "pass_rate": 0.0,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": "wrong_content",
+      "recoverable_runs": 1,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_gopher_menu` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"send_gopher_menu\",\"items\": [{\"type\": \"i\",\"display\": \"Welcome to NetGet\"},{\"type\": \"0\",\"display\": \"About this server\",\"selector\": \"/about.txt\",\"host\": \"127.0.0.1\",\"port\": 70}]}]}```This response includes a single action, `send_gopher_menu`, which serves a menu with the first item labeled \"Welcome to NetGet\".\n2026-09-15T23:00:42.152715Z  WARN Malformed response (raw): Here is the response to the network event:\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\n      \"type\": \"send_gopher_menu\",",
+            "2026-09-15T23:00:42.152715Z  WARN Malformed response (raw): Here is the response to the network event:\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\n      \"type\": \"send_gopher_menu\",\n      \"items\": [\n        {",
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"send_gopher_menu\",\"items\": [{\"type\": \"i\",\"...\n2026-09-15T23:00:42.152775Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:00:42.152789Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:00:42.152795Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:00:42.152832Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:00:42.152846Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:00:42.152862Z DEBUG LLM request: model=llama3.1:8b, prompt_len=18974 chars, format=text\n2026-09-15T23:00:45.381747Z DEBUG LLM response: response_len=403 chars, tokens=4718i/113o/4831t",
+            "2026-09-15T23:00:42.152601Z DEBUG Response (normalized): Here is the response to the network event:```json{\"tools\": [],\"actions\": [{\"type\": \"send_gopher_menu\",\"items\": [{\"type\": \"i\",\"display\": \"Welcome to NetGet\"},{\"type\": \"0\",\"display\": \"About this server\"...",
+            "{\"tools\": [],\"actions\": [{\"type\": \"send_gopher_menu\",\"items\": [{\"type\": \"i\",\"display\": \"Welcome to NetGet\"},{\"type\": \"0\",\"display\": \"About this server\",\"selector\": \"/about.txt\",\"host\": \"127.0.0.1\",\"port\": 70}]}]}```This response includes a single action, `send_gopher_menu`, which serves a menu with the first item labeled \"Welcome to NetGet\".",
+            "  \"actions\": [",
+            "      \"type\": \"send_gopher_menu\",",
+            "          \"type\": \"i\",",
+            "          \"type\": \"0\",",
+            "{\"tools\": [],\"actions\": [{\"type\": \"send_gopher_menu\",\"items\": [{\"type\": \"i\",\"...",
+            "2026-09-15T23:00:45.381839Z DEBUG Response (normalized): Here is the response to the network event:```json{\"tools\": [],\"actions\": [{\"type\": \"send_gopher_menu\",\"items\": [{\"type\": \"i\",\"display\": \"Welcome to NetGet\"},{\"type\": \"0\",\"display\": \"About this server\"..."
+          ],
+          "recovered_actions": [
+            "send_gopher_menu"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:55040/",
+          "client_output": "3netget: request could not be processed\t\terror.host\t1\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 16.627603
+        },
+        {
+          "run": 2,
+          "verdict": "fail",
+          "failure_mode": "wrong_content",
+          "detail": "valid actions executed, but client output does not contain \"Welcome to NetGet\"",
+          "model_output": [
+            "2026-09-15T23:00:53.859980Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "recovered_actions": [],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:55359/",
+          "client_output": "iWelcome to the gopher hole\tfake\t(NULL)\t0\r\n0About this server\t/about.txt\t127.0.0.1\t70\r\n1Files\t/files\t127.0.0.1\t70\r\n7Search the archive\t/search\t127.0.0.1\t70\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 8.477369708
+        },
+        {
+          "run": 3,
+          "verdict": "fail",
+          "failure_mode": "no_wire_response",
+          "detail": "the model executed 1 action(s) but the client saw nothing back (client exited silently)",
+          "model_output": [
+            "2026-09-15T23:01:02.445272Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_menu\"), \"items\": Array [Object {\"type\": String(\"i\"), \"display\": String(\"Welcome to the gopher hole\")}, Object {\"type\": String(\"0\"), \"display\": String(\"About this server\"), \"selector\": String(\"/about.txt\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"1\"), \"display\": String(\"Files\"), \"selector\": String(\"/files\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}, Object {\"type\": String(\"7\"), \"display\": String(\"Search the archive\"), \"selector\": String(\"/search\"), \"host\": String(\"127.0.0.1\"), \"port\": Number(70)}]}"
+          ],
+          "recovered_actions": [],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:55417/",
+          "client_output": "",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 8.583791083
+        }
+      ]
+    },
+    {
+      "id": "gopher/text-selector",
+      "protocol": "gopher",
+      "instruction": "When the selector /about is asked for, return the text NetGet eval gopher server.",
+      "client": "curl -sS --max-time 230 gopher://127.0.0.1:{PORT}/0/about",
+      "independence": "protocol-client",
+      "expectation": "contains [\"NetGet eval gopher server\"]",
+      "note": null,
+      "attempts": 3,
+      "passes": 2,
+      "pass_rate": 0.6666666666666666,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": "valid_actions_rejected_as_unparseable",
+      "recoverable_runs": 1,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_gopher_text` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"type\": \"send_gopher_text\",\"text\": \"NetGet eval gopher server\"}```This response meets all the requirements for the Gopher protocol and the given event context.\n2026-09-15T23:01:13.585567Z  WARN Malformed response (raw): Here's a response to the network event:\n\n```json\n{\n  \"type\": \"send_gopher_text\",\n  \"text\": \"NetGet eval gopher server\"\n}",
+            "2026-09-15T23:01:13.585567Z  WARN Malformed response (raw): Here's a response to the network event:\n\n```json\n{\n  \"type\": \"send_gopher_text\",\n  \"text\": \"NetGet eval gopher server\"\n}\n```\n",
+            "❌ Actual response:\n{\"type\": \"send_gopher_text\",\"text\": \"NetGet eval gopher server\"}```This respo...\n2026-09-15T23:01:13.585604Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:01:13.585614Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:01:13.585619Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:01:13.585644Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:01:13.585654Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:01:13.585664Z DEBUG LLM request: model=llama3.1:8b, prompt_len=18653 chars, format=text\n2026-09-15T23:01:15.977194Z DEBUG LLM response: response_len=342 chars, tokens=4612i/79o/4691t",
+            "2026-09-15T23:01:13.585529Z DEBUG Response (normalized): Here's a response to the network event:```json{\"type\": \"send_gopher_text\",\"text\": \"NetGet eval gopher server\"}```This response meets all the requirements for the Gopher protocol and the given event co...",
+            "{\"type\": \"send_gopher_text\",\"text\": \"NetGet eval gopher server\"}```This response meets all the requirements for the Gopher protocol and the given event context.",
+            "  \"type\": \"send_gopher_text\",",
+            "{\"type\": \"send_gopher_text\",\"text\": \"NetGet eval gopher server\"}```This respo...",
+            "2026-09-15T23:01:15.977283Z DEBUG Response (normalized): Here is a valid JSON response to the network event:```json{\"type\": \"send_gopher_text\",\"text\": \"NetGet eval gopher server\"}```This response meets all the requirements for the Gopher protocol and the gi..."
+          ],
+          "recovered_actions": [
+            "send_gopher_text"
+          ],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:55494/0/about",
+          "client_output": "3netget: request could not be processed\t\terror.host\t1\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 13.528776791
+        },
+        {
+          "run": 2,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-09-15T23:01:20.961493Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\")}"
+          ],
+          "recovered_actions": [],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:55576/0/about",
+          "client_output": "NetGet eval gopher server\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 4.98491275
+        },
+        {
+          "run": 3,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-09-15T23:01:26.464347Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_text\"), \"text\": String(\"NetGet eval gopher server\\n-----------------\\n\\nA simple text document about NetGet server\\n\")}"
+          ],
+          "recovered_actions": [],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:55617/0/about",
+          "client_output": "NetGet eval gopher server\r\n-----------------\r\n\r\nA simple text document about NetGet server\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 5.50147925
+        }
+      ]
+    },
+    {
+      "id": "gopher/unknown-selector",
+      "protocol": "gopher",
+      "instruction": "Serve a menu at the root. For any other selector, say it was not found.",
+      "client": "curl -sS --max-time 230 gopher://127.0.0.1:{PORT}/1/nowhere",
+      "independence": "protocol-client",
+      "expectation": "matches /(?i)not found|no such|does not exist|error/",
+      "note": null,
+      "attempts": 3,
+      "passes": 2,
+      "pass_rate": 0.6666666666666666,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": "no_wire_response",
+      "recoverable_runs": 0,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-09-15T23:01:43.763840Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "recovered_actions": [],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:55669/1/nowhere",
+          "client_output": "3No such selector: /nowhere\t\terror.host\t1\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 17.318205625
+        },
+        {
+          "run": 2,
+          "verdict": "fail",
+          "failure_mode": "no_wire_response",
+          "detail": "the model executed 1 action(s) but the client saw nothing back (client exited silently)",
+          "model_output": [
+            "2026-09-15T23:03:22.754821Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "recovered_actions": [],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:59369/1/nowhere",
+          "client_output": "",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 98.968117
+        },
+        {
+          "run": 3,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-09-15T23:03:26.683807Z DEBUG Executing action 0: Object {\"type\": String(\"send_gopher_error\"), \"message\": String(\"No such selector: /nowhere\")}"
+          ],
+          "recovered_actions": [],
+          "client_command": "curl -sS --max-time 230 gopher://127.0.0.1:59518/1/nowhere",
+          "client_output": "3No such selector: /nowhere\t\terror.host\t1\r\n.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 3.92796075
+        }
+      ]
+    },
+    {
+      "id": "finger/user-record",
+      "protocol": "finger",
+      "instruction": "When someone asks about the user alice, report her real name as Alice Liddell and that she is logged in.",
+      "client": "nc -w 235 127.0.0.1 {PORT}",
+      "independence": "generic-transport",
+      "expectation": "contains [\"Alice Liddell\"]",
+      "note": "BSD finger cannot target a non-default port; driven with nc.",
+      "attempts": 3,
+      "passes": 1,
+      "pass_rate": 0.3333333333333333,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": "valid_actions_rejected_as_unparseable",
+      "recoverable_runs": 1,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "pass",
+          "failure_mode": null,
+          "detail": null,
+          "model_output": [
+            "2026-09-15T23:04:15.180448Z  WARN ✗ Parse error on attempt 1: Failed to parse action response: Invalid JSON",
+            "❌ Actual response:",
+            "{\"tools\": [{\"type\": \"generate_random\", \"data_type\": \"name\", \"length\": 10, \"min\": 0, \"max\": 100, \"charset\": \"letters\"}],\"actions\": [{\"type\": \"send_finger_user\", \"login\": \"alice\", \"name\": \"Alice Liddell\", \"tty\": \"ttys002\", \"idle\": \"5 minutes\", \"login_time\": \"Mon Sep  1 09:12\", \"office\": \"Room 101\", \"office_phone\": \"x1234\", \"shell\": \"/bin/sh\", \"project\": \"Networking\", \"plan\": \"Ship the finger server.\"}]}```This response will generate a random name for the user, then use the 'send_finger_user' action to provide information about the user Alice Liddell. The response will include a login name, real name, terminal the user is logged in on, idle time, login time, office location, office phone number, login shell, and project name. The response will also include a plan for the user.The 'generate_random' tool is used to generate a random name for the user, as the user's real name is not provided. … (truncated)",
+            "2026-09-15T23:04:15.180557Z  WARN Malformed response (raw): Here is the response in the required format:",
+            "**Parse error:** Failed to parse action response: Invalid JSON",
+            "❌ Actual response:",
+            "{\"tools\": [{\"type\": \"generate_random\", \"data_type\": \"name\", \"length\": 10, \"mi...",
+            "2026-09-15T23:04:22.312430Z DEBUG Executing action 0: Object {\"type\": String(\"send_finger_user\"), \"login\": String(\"alice\"), \"name\": String(\"Alice Liddell\"), \"tty\": String(\"ttys002\"), \"idle\": String(\"5 minutes\"), \"login_time\": String(\"Mon Sep  1 09:12\"), \"office\": String(\"Room 101\"), \"office_phone\": String(\"x1234\"), \"shell\": String(\"/bin/sh\"), \"project\": String(\"Networking\"), \"plan\": String(\"Ship the finger server.\")}",
+            "2026-09-15T23:04:22.312716Z DEBUG Executing action 1: Object {\"type\": String(\"send_finger_user\"), \"login\": String(\"alice\"), \"name\": String(\"Alice Liddell\"), \"tty\": String(\"ttys002\"), \"idle\": String(\"5 minutes\"), \"login_time\": String(\"Mon Sep  1 09:12\"), \"office\": String(\"Room 101\"), \"office_phone\": String(\"x1234\"), \"shell\": String(\"/bin/sh\"), \"project\": String(\"Networking\"), \"plan\": String(\"Ship the finger server.\")}"
+          ],
+          "recovered_actions": [],
+          "client_command": "nc -w 235 127.0.0.1 59706",
+          "client_output": "Login: alice                            Name: Alice Liddell\r\nShell: /bin/sh\r\nOffice: Room 101, x1234\r\nOn since Mon Sep  1 09:12 on ttys002, idle 5 minutes\r\nProject:\r\nNetworking\r\nPlan:\r\nShip the finger server.\r\nLogin: alice                            Name: Alice Liddell\r\nShell: /bin/sh\r\nOffice: Room 101, x1234\r\nOn since Mon Sep  1 09:12 on ttys002, idle 5 minutes\r\nProject:\r\nNetworking\r\nPlan:\r\nShip the finger server.\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 55.623375291
+        },
+        {
+          "run": 2,
+          "verdict": "fail",
+          "failure_mode": "no_wire_response",
+          "detail": "the model executed 1 action(s) but the client saw nothing back (client exited silently)",
+          "model_output": [
+            "2026-09-15T23:04:28.480349Z DEBUG Executing action 0: Object {\"type\": String(\"send_finger_user\"), \"login\": String(\"alice\"), \"name\": String(\"Alice Liddell\"), \"tty\": String(\"*\"), \"idle\": String(\"0 minutes\"), \"login_time\": String(\"Mon Sep  1 09:12\"), \"shell\": String(\"/bin/sh\")}"
+          ],
+          "recovered_actions": [],
+          "client_command": "nc -w 235 127.0.0.1 59979",
+          "client_output": "",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 6.166614125
+        },
+        {
+          "run": 3,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_finger_user` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"type\": \"send_finger_user\",\"login\": \"alice\",\"name\": \"Alice Liddell\",\"tty\": \"ttys002\",\"idle\": \"5 minutes\",\"login_time\": \"Mon Sep  1 09:12\",\"office\": \"Room 101\",\"office_phone\": \"x1234\",\"shell\": \"/bin/sh\",\"project\": \"Networking\",\"plan\": \"Ship the finger server.\"}```This response includes the user's real name, Alice Liddell, and indicates that she is logged in. The other fields are filled with placeholder values, but could be updated if the server needs to store actual user data.\n2026-09-15T23:04:39.666213Z  WARN Malformed response (raw): Here is the response to the finger_query event:\n\n```json\n{\n  \"type\": \"send_finger_user\",\n  \"login\": \"alice\",\n  \"name\": \"Alice Liddell\",",
+            "2026-09-15T23:04:39.666213Z  WARN Malformed response (raw): Here is the response to the finger_query event:\n\n```json\n{\n  \"type\": \"send_finger_user\",\n  \"login\": \"alice\",\n  \"name\": \"Alice Liddell\",\n  \"tty\": \"ttys002\",\n  \"idle\": \"5 minutes\",",
+            "❌ Actual response:\n{\"type\": \"send_finger_user\",\"login\": \"alice\",\"name\": \"Alice Liddell\",\"tty\": \"...\n2026-09-15T23:04:39.666343Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:04:39.666369Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:04:39.666379Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:04:39.666462Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:04:39.666486Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:04:39.666521Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19741 chars, format=text\n2026-09-15T23:04:43.723447Z DEBUG LLM response: response_len=307 chars, tokens=4916i/111o/5027t",
+            "2026-09-15T23:04:39.665921Z DEBUG Response (normalized): Here is the response to the finger_query event:```json{\"type\": \"send_finger_user\",\"login\": \"alice\",\"name\": \"Alice Liddell\",\"tty\": \"ttys002\",\"idle\": \"5 minutes\",\"login_time\": \"Mon Sep  1 09:12\",\"office...",
+            "{\"type\": \"send_finger_user\",\"login\": \"alice\",\"name\": \"Alice Liddell\",\"tty\": \"ttys002\",\"idle\": \"5 minutes\",\"login_time\": \"Mon Sep  1 09:12\",\"office\": \"Room 101\",\"office_phone\": \"x1234\",\"shell\": \"/bin/sh\",\"project\": \"Networking\",\"plan\": \"Ship the finger server.\"}```This response includes the user's real name, Alice Liddell, and indicates that she is logged in. The other fields are filled with placeholder values, but could be updated if the server needs to store actual user data.",
+            "  \"type\": \"send_finger_user\",",
+            "{\"type\": \"send_finger_user\",\"login\": \"alice\",\"name\": \"Alice Liddell\",\"tty\": \"...",
+            "2026-09-15T23:04:43.723549Z DEBUG Response (normalized): ```json{\"type\": \"send_finger_user\",\"login\": \"alice\",\"name\": \"Alice Liddell\",\"tty\": \"ttys002\",\"idle\": \"5 minutes\",\"login_time\": \"Mon Sep  1 09:12\",\"office\": \"Room 101\",\"office_phone\": \"x1234\",\"shell\": ...",
+            "2026-09-15T23:04:43.725710Z DEBUG Executing action 0: Object {\"type\": String(\"send_finger_user\"), \"login\": String(\"alice\"), \"name\": String(\"Alice Liddell\"), \"tty\": String(\"ttys002\"), \"idle\": String(\"5 minutes\"), \"login_time\": String(\"Mon Sep  1 09:12\"), \"office\": String(\"Room 101\"), \"office_phone\": String(\"x1234\"), \"shell\": String(\"/bin/sh\"), \"project\": String(\"Networking\"), \"plan\": String(\"Ship the finger server.\")}"
+          ],
+          "recovered_actions": [
+            "send_finger_user"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60024",
+          "client_output": "",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 15.254155834
+        }
+      ]
+    },
+    {
+      "id": "finger/unknown-user",
+      "protocol": "finger",
+      "instruction": "Only the user alice exists. Say so for anyone else.",
+      "client": "nc -w 235 127.0.0.1 {PORT}",
+      "independence": "generic-transport",
+      "expectation": "matches /(?i)no such user|not found|does not exist|no one|unknown/",
+      "note": null,
+      "attempts": 3,
+      "passes": 0,
+      "pass_rate": 0.0,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": "valid_actions_rejected_as_unparseable",
+      "recoverable_runs": 3,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_finger_error` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"tools\": [{\"type\": \"send_finger_error\", \"message\": \"no such user\"}]}```In this response, I used the `send_finger_error` tool to send a response that says \"no such user\", as per the instructions. Since the requested user \"bob\" does not exist, this is an appropriate response.\n2026-09-15T23:04:54.836751Z  WARN Malformed response (raw): Here's a response in the correct format:\n\n```json\n{\n  \"tools\": [\n    {\"type\": \"send_finger_error\", \"message\": \"no such user\"}\n  ]",
+            "2026-09-15T23:04:54.836751Z  WARN Malformed response (raw): Here's a response in the correct format:\n\n```json\n{\n  \"tools\": [\n    {\"type\": \"send_finger_error\", \"message\": \"no such user\"}\n  ]\n}\n```",
+            "❌ Actual response:\n{\"tools\": [{\"type\": \"send_finger_error\", \"message\": \"no such user\"}]}```In th...\n2026-09-15T23:04:54.836796Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:04:54.836808Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:04:54.836814Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:04:54.836849Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:04:54.836862Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:04:54.836877Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19214 chars, format=text\nFINGER LLM call failed for 127.0.0.1:60436: ✗  LLM failed to generate valid response after retries.",
+            "2026-09-15T23:04:54.836694Z DEBUG Response (normalized): Here's a response in the correct format:```json{\"tools\": [{\"type\": \"send_finger_error\", \"message\": \"no such user\"}]}```In this response, I used the `send_finger_error` tool to send a response that say...",
+            "{\"tools\": [{\"type\": \"send_finger_error\", \"message\": \"no such user\"}]}```In this response, I used the `send_finger_error` tool to send a response that says \"no such user\", as per the instructions. Since the requested user \"bob\" does not exist, this is an appropriate response.",
+            "    {\"type\": \"send_finger_error\", \"message\": \"no such user\"}",
+            "{\"tools\": [{\"type\": \"send_finger_error\", \"message\": \"no such user\"}]}```In th...",
+            "2026-09-15T23:05:02.422845Z DEBUG Response (normalized): **Event Response:**```json{\"tools\": [],\"actions\": [{\"type\": \"send_finger_error\", \"message\": \"no such user\"}]}```**<reasoning>**Since the requested user \"bob\" does not exist, I chose to send a response..."
+          ],
+          "recovered_actions": [
+            "send_finger_error"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 60424",
+          "client_output": "finger: request could not be processed\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 18.686326458
+        },
+        {
+          "run": 2,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_finger_error` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"type\": \"send_finger_error\",\"message\": \"no such user\"}```The reasoning behind this decision is that the instruction specifically states to say \"no such user\" for anyone other than `alice`, and the username `bob` does not match `alice`.\n2026-09-15T23:05:53.817896Z  WARN Malformed response (raw): Based on the event `finger_query` with the input data `username: null, verbose: true, forward_host: null, list_all: true`, I will respond with the appropriate action to fulfill the event.\n\nSince the instruction is \"Only the user alice exists. Say so for anyone else.\", and the username is `bob`, I will respond with the `send_finger_error` action.\n\nHere is the response:\n\n```json",
+            "2026-09-15T23:05:53.817896Z  WARN Malformed response (raw): Based on the event `finger_query` with the input data `username: null, verbose: true, forward_host: null, list_all: true`, I will respond with the appropriate action to fulfill the event.\n\nSince the instruction is \"Only the user alice exists. Say so for anyone else.\", and the username is `bob`, I will respond with the `send_finger_error` action.\n\nHere is the response:\n\n```json\n{\n  \"type\": \"send_finger_error\",",
+            "❌ Actual response:\n{\"type\": \"send_finger_error\",\"message\": \"no such user\"}```The reasoning behin...\n2026-09-15T23:05:53.817935Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:05:53.817946Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:05:53.817950Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:05:53.817977Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:05:53.817987Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:05:53.817999Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19462 chars, format=text\n2026-09-15T23:06:11.060647Z DEBUG LLM response: response_len=1024 chars, tokens=4815i/276o/5091t",
+            "{\"type\": \"send_finger_error\",\"message\": \"no such user\"}```The reasoning behind this decision is that the instruction specifically states to say \"no such user\" for anyone other than `alice`, and the username `bob` does not match `alice`.",
+            "  \"type\": \"send_finger_error\",",
+            "{\"type\": \"send_finger_error\",\"message\": \"no such user\"}```The reasoning behin...",
+            "2026-09-15T23:06:11.060881Z DEBUG Response (normalized): ## Response FormatThe response must be a valid JSON object with the following structure:```json{\"tools\": [...],\"actions\": [...]}```## ToolsIf you need to gather information, you can use the `read_file..."
+          ],
+          "recovered_actions": [
+            "send_finger_error"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 61707",
+          "client_output": "",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 68.636205333
+        },
+        {
+          "run": 3,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_finger_error` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"type\": \"send_finger_error\",\"message\": \"no such user\"}```Reasoning: The user \"bob\" is not the only user existing in the system, as per the instruction \"Only the user alice exists. Say so for anyone else.\" Therefore, the correct response is to refuse the query with a one-line 'finger: <message>' notice.\n2026-09-15T23:06:26.982215Z  WARN Malformed response (raw): Here is a potential response to the network event:\n\n```json\n{\n  \"type\": \"send_finger_error\",\n  \"message\": \"no such user\"\n}",
+            "2026-09-15T23:06:26.982215Z  WARN Malformed response (raw): Here is a potential response to the network event:\n\n```json\n{\n  \"type\": \"send_finger_error\",\n  \"message\": \"no such user\"\n}\n```\n",
+            "❌ Actual response:\n{\"type\": \"send_finger_error\",\"message\": \"no such user\"}```Reasoning: The user...\n2026-09-15T23:06:26.982331Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:06:26.982353Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:06:26.982363Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:06:26.982448Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:06:26.982471Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:06:26.982501Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19282 chars, format=text\n2026-09-15T23:06:29.758513Z DEBUG LLM response: response_len=200 chars, tokens=4782i/56o/4838t",
+            "2026-09-15T23:06:26.982101Z DEBUG Response (normalized): Here is a potential response to the network event:```json{\"type\": \"send_finger_error\",\"message\": \"no such user\"}```Reasoning: The user \"bob\" is not the only user existing in the system, as per the ins...",
+            "{\"type\": \"send_finger_error\",\"message\": \"no such user\"}```Reasoning: The user \"bob\" is not the only user existing in the system, as per the instruction \"Only the user alice exists. Say so for anyone else.\" Therefore, the correct response is to refuse the query with a one-line 'finger: <message>' notice.",
+            "  \"type\": \"send_finger_error\",",
+            "{\"type\": \"send_finger_error\",\"message\": \"no such user\"}```Reasoning: The user...",
+            "2026-09-15T23:06:29.758582Z DEBUG Response (normalized): Since only the user \"alice\" exists, the correct response is to refuse the query with a one-line 'finger: <message>' notice.```json{\"type\": \"send_finger_error\",\"message\": \"no such user\"}```"
+          ],
+          "recovered_actions": [
+            "send_finger_error"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 61978",
+          "client_output": "finger: request could not be processed\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 18.692175667
+        }
+      ]
+    },
+    {
+      "id": "finger/user-list",
+      "protocol": "finger",
+      "instruction": "When no user is named, list the two users alice and bob.",
+      "client": "nc -w 235 127.0.0.1 {PORT}",
+      "independence": "generic-transport",
+      "expectation": "contains [\"alice\", \"bob\"]",
+      "note": null,
+      "attempts": 3,
+      "passes": 0,
+      "pass_rate": 0.0,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": "valid_actions_rejected_as_unparseable",
+      "recoverable_runs": 3,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_finger_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}]}```\n2026-09-15T23:06:43.514404Z  WARN Malformed response (raw): Here is the response to the finger_query event:\n\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}",
+            "2026-09-15T23:06:43.514404Z  WARN Malformed response (raw): Here is the response to the finger_query event:\n\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}\n  ]\n}",
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     ...\n2026-09-15T23:06:43.514454Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:06:43.514468Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:06:43.514474Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:06:43.514509Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:06:43.514523Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:06:43.514541Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19101 chars, format=text\n2026-09-15T23:06:57.608637Z DEBUG LLM response: response_len=714 chars, tokens=4769i/207o/4976t",
+            "2026-09-15T23:06:43.514341Z DEBUG Response (normalized): Here is the response to the finger_query event:```json{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2  ...",
+            "{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}]}```",
+            "  \"actions\": [",
+            "    {\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}",
+            "{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     ...",
+            "2026-09-15T23:06:57.608839Z DEBUG Response (normalized): ```json{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\",\"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -    ..."
+          ],
+          "recovered_actions": [
+            "send_finger_response"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 62143",
+          "client_output": "finger: request could not be processed\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 27.844192041
+        },
+        {
+          "run": 2,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_finger_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}]}```**<reasoning>**Since the client asked for a list of all users, I will respond with a finger block listing the two users 'alice' and 'bob'. This is in line with the server's instruction to list the two users when no user is named.\n2026-09-15T23:07:12.094798Z  WARN Malformed response (raw): **Response:**\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}\n  ]",
+            "2026-09-15T23:07:12.094798Z  WARN Malformed response (raw): **Response:**\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}\n  ]\n}\n```",
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     ...\n2026-09-15T23:07:12.094835Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:07:12.094867Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:07:12.094879Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:07:12.094908Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:07:12.094918Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:07:12.094934Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19525 chars, format=text\nFINGER LLM call failed for 127.0.0.1:63028: ✗  LLM failed to generate valid response after retries.",
+            "2026-09-15T23:07:23.709332Z DEBUG Response (normalized): **❌ Error: Invalid Response Format****Parse error:** Failed to parse action response: Invalid JSON❌ Actual response:{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     Nam...\n2026-09-15T23:07:23.709374Z ERROR ✗ Failed to get valid response after 2 attempts\n2026-09-15T23:07:23.709443Z  WARN FINGER LLM call failed for 127.0.0.1:63028: ✗  LLM failed to generate valid response after retries.\n2026-09-15T23:07:23.709580Z DEBUG peer command task for server #1 connection #2 ended",
+            "2026-09-15T23:07:12.094745Z DEBUG Response (normalized): **Response:**```json{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones ...",
+            "{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}]}```**<reasoning>**Since the client asked for a list of all users, I will respond with a finger block listing the two users 'alice' and 'bob'. This is in line with the server's instruction to list the two users when no user is named.",
+            "  \"actions\": [",
+            "    {\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}",
+            "{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     ...",
+            "2026-09-15T23:07:23.709332Z DEBUG Response (normalized): **❌ Error: Invalid Response Format****Parse error:** Failed to parse action response: Invalid JSON❌ Actual response:{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     Nam..."
+          ],
+          "recovered_actions": [
+            "send_finger_response"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 62996",
+          "client_output": "finger: request could not be processed\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 26.100124458
+        },
+        {
+          "run": 3,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `send_finger_response`, `generate_random`, `send_finger_response` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\",\"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}]}```This response will list the two users \"alice\" and \"bob\" as per the instruction.\n2026-09-15T23:07:33.715715Z  WARN Malformed response (raw): To respond to the network event, I will follow the instructions and use the protocol-specific actions from the \"Available Actions\" list. Since the instruction field is to list the two users \"alice\" and \"bob\" when no user is named, I will execute the following actions:\n\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {",
+            "2026-09-15T23:07:33.715715Z  WARN Malformed response (raw): To respond to the network event, I will follow the instructions and use the protocol-specific actions from the \"Available Actions\" list. Since the instruction field is to list the two users \"alice\" and \"bob\" when no user is named, I will execute the following actions:\n\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\n      \"type\": \"send_finger_response\",\n      \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon...",
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\",\"text\": \"Login     N...\n2026-09-15T23:07:33.715758Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:07:33.715769Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:07:33.715774Z DEBUG Conversation state: 7 messages, 2 new since last call\n2026-09-15T23:07:33.715801Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:07:33.715810Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:07:33.715822Z DEBUG LLM request: model=llama3.1:8b, prompt_len=19970 chars, format=text\n2026-09-15T23:07:53.590296Z DEBUG LLM response: response_len=880 chars, tokens=4995i/214o/5209t",
+            "2026-09-15T23:07:29.154883Z DEBUG Response (normalized): ```json{\"tools\": [{\"type\": \"generate_random\", \"data_type\": \"string\", \"length\": 16}],\"actions\": [{\"type\": \"send_finger_response\", \"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice...",
+            "{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\",\"text\": \"Login     Name          Tty  Idle  Login Time\\nalice     Alice Smith   *    2     Mon 09:12\\nbob       Bob Jones     con  -     Mon 08:40\"}]}```This response will list the two users \"alice\" and \"bob\" as per the instruction.",
+            "  \"actions\": [",
+            "      \"type\": \"send_finger_response\",",
+            "{\"tools\": [],\"actions\": [{\"type\": \"send_finger_response\",\"text\": \"Login     N..."
+          ],
+          "recovered_actions": [
+            "send_finger_response",
+            "generate_random",
+            "send_finger_response"
+          ],
+          "client_command": "nc -w 235 127.0.0.1 63142",
+          "client_output": "finger: request could not be processed\r\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 29.87969675
+        }
+      ]
+    },
+    {
+      "id": "redis/get-string",
+      "protocol": "redis",
+      "instruction": "Answer a read of the key greeting with the text hello-netget.",
+      "client": "redis-cli -h 127.0.0.1 -p {PORT} -t 230 GET greeting",
+      "independence": "protocol-client",
+      "expectation": "contains [\"hello-netget\"]",
+      "note": null,
+      "attempts": 3,
+      "passes": 0,
+      "pass_rate": 0.0,
+      "status": "attempted",
+      "status_reason": null,
+      "dominant_failure": "valid_actions_rejected_as_unparseable",
+      "recoverable_runs": 3,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `redis_simple_string` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\",\"value\": \"hello-netget\"}]}```This response includes the `redis_simple_string` action to send the response \"hello-netget\" to the client.\n2026-09-15T23:08:13.708698Z  WARN Malformed response (raw): Here is the response that meets the requirements:\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\n      \"type\": \"redis_simple_string\",",
+            "2026-09-15T23:08:13.708698Z  WARN Malformed response (raw): Here is the response that meets the requirements:\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\n      \"type\": \"redis_simple_string\",\n      \"value\": \"hello-netget\"\n    }",
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\",\"value\": \"hello-netge...\n2026-09-15T23:08:13.708736Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:08:13.708749Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:08:13.708754Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:08:13.708784Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:08:13.708795Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:08:13.708809Z DEBUG LLM request: model=llama3.1:8b, prompt_len=16786 chars, format=text\n2026-09-15T23:08:15.558790Z DEBUG LLM response: response_len=180 chars, tokens=4135i/50o/4185t",
+            "2026-09-15T23:08:13.708648Z DEBUG Response (normalized): Here is the response that meets the requirements:```json{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\",\"value\": \"hello-netget\"}]}```This response includes the `redis_simple_string` action to ...",
+            "{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\",\"value\": \"hello-netget\"}]}```This response includes the `redis_simple_string` action to send the response \"hello-netget\" to the client.",
+            "  \"actions\": [",
+            "      \"type\": \"redis_simple_string\",",
+            "{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\",\"value\": \"hello-netge...",
+            "2026-09-15T23:08:15.558874Z DEBUG Response (normalized): Here is the response that meets the requirements:```json{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\",\"value\": \"hello-netget\"}]}```"
+          ],
+          "recovered_actions": [
+            "redis_simple_string"
+          ],
+          "client_command": "redis-cli -h 127.0.0.1 -p 63502 -t 230 GET greeting",
+          "client_output": "ERR netget: request could not be processed\n\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 21.960298125
+        },
+        {
+          "run": 2,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `redis_simple_string` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\", \"value\": \"hello-netget\"}]}```## ReasoningThe user has requested to answer a read of the key greeting with the text `hello-netget`. This is a standard Redis command. I will execute the Redis `redis_simple_string` action to send the response `hello-netget`.\n2026-09-15T23:08:21.591939Z  WARN Malformed response (raw): ## Response\n\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\"type\": \"redis_simple_string\", \"value\": \"hello-netget\"}",
+            "2026-09-15T23:08:21.591939Z  WARN Malformed response (raw): ## Response\n\n```json\n{\n  \"tools\": [],\n  \"actions\": [\n    {\"type\": \"redis_simple_string\", \"value\": \"hello-netget\"}\n  ]\n}",
+            "❌ Actual response:\n{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\", \"value\": \"hello-netg...\n2026-09-15T23:08:21.591976Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:08:21.591987Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:08:21.591991Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:08:21.592018Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:08:21.592029Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:08:21.592046Z DEBUG LLM request: model=llama3.1:8b, prompt_len=16990 chars, format=text\n2026-09-15T23:08:24.310937Z DEBUG LLM response: response_len=353 chars, tokens=4184i/91o/4275t",
+            "2026-09-15T23:08:21.591891Z DEBUG Response (normalized): ## Response```json{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\", \"value\": \"hello-netget\"}]}```## ReasoningThe user has requested to answer a read of the key greeting with the text `hello-net...",
+            "{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\", \"value\": \"hello-netget\"}]}```## ReasoningThe user has requested to answer a read of the key greeting with the text `hello-netget`. This is a standard Redis command. I will execute the Redis `redis_simple_string` action to send the response `hello-netget`.",
+            "  \"actions\": [",
+            "    {\"type\": \"redis_simple_string\", \"value\": \"hello-netget\"}",
+            "{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\", \"value\": \"hello-netg...",
+            "2026-09-15T23:08:24.311024Z DEBUG Response (normalized): ## Response```json{\"tools\": [],\"actions\": [{\"type\": \"redis_simple_string\", \"value\": \"hello-netget\"}]}```## ReasoningThe user has requested to answer a read of the key greeting with the text `hello-net..."
+          ],
+          "recovered_actions": [
+            "redis_simple_string"
+          ],
+          "client_command": "redis-cli -h 127.0.0.1 -p 63641 -t 230 GET greeting",
+          "client_output": "ERR netget: request could not be processed\n\n",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 8.74920725
+        },
+        {
+          "run": 3,
+          "verdict": "fail",
+          "failure_mode": "valid_actions_rejected_as_unparseable",
+          "detail": "the model produced `append_memory`, `redis_simple_string`, `append_memory` and the reply was discarded anyway, because text or a stray fence surrounds the JSON",
+          "model_output": [
+            "❌ Actual response:\n{\"type\":\"append_memory\",\"value\":\"greeting: hello-netget\"}**Actions**None**Reasoning**: The client has sent a Redis command `GET greeting`, so we will respond with the greeting \"hello-netget\".**Response**```json{\"tools\": [{\"type\": \"append_memory\", \"value\": \"greeting: hello-netget\"}],\"actions\": []}```\n2026-09-15T23:08:30.199523Z  WARN Malformed response (raw): **Tools**\n\n1. {\"type\":\"append_memory\",\"value\":\"greeting: hello-netget\"}\n\n**Actions**\n\nNone",
+            "2026-09-15T23:08:30.199523Z  WARN Malformed response (raw): **Tools**\n\n1. {\"type\":\"append_memory\",\"value\":\"greeting: hello-netget\"}\n\n**Actions**\n\nNone\n\n**Reasoning**: The client has sent a Redis command `GET greeting`, so we will respond with the greeting \"hello-netget\".",
+            "❌ Actual response:\n{\"type\":\"append_memory\",\"value\":\"greeting: hello-netget\"}**Actions**None**Rea...\n2026-09-15T23:08:30.199558Z  INFO → Sending correction and retrying (attempt 2)...\n2026-09-15T23:08:30.199569Z  INFO LLM request (attempt 2/2)\n2026-09-15T23:08:30.199573Z DEBUG Conversation state: 4 messages, 2 new since last call\n2026-09-15T23:08:30.199600Z DEBUG Acquiring rate limiter permit for Network request\n2026-09-15T23:08:30.199611Z DEBUG Rate limiter permit acquired for Network request\n2026-09-15T23:08:30.199625Z DEBUG LLM request: model=llama3.1:8b, prompt_len=16960 chars, format=text\n2026-09-15T23:08:33.088652Z DEBUG LLM response: response_len=373 chars, tokens=4191i/96o/4287t",
+            "2026-09-15T23:08:30.199481Z DEBUG Response (normalized): **Tools**1. {\"type\":\"append_memory\",\"value\":\"greeting: hello-netget\"}**Actions**None**Reasoning**: The client has sent a Redis command `GET greeting`, so we will respond with the greeting \"hello-netge...",
+            "{\"type\":\"append_memory\",\"value\":\"greeting: hello-netget\"}**Actions**None**Reasoning**: The client has sent a Redis command `GET greeting`, so we will respond with the greeting \"hello-netget\".**Response**```json{\"tools\": [{\"type\": \"append_memory\", \"value\": \"greeting: hello-netget\"}],\"actions\": []}```",
+            "1. {\"type\":\"append_memory\",\"value\":\"greeting: hello-netget\"}",
+            "  \"tools\": [{\"type\": \"append_memory\", \"value\": \"greeting: hello-netget\"}],",
+            "  \"actions\": []",
+            "{\"type\":\"append_memory\",\"value\":\"greeting: hello-netget\"}**Actions**None**Rea...",
+            "2026-09-15T23:08:33.088731Z DEBUG Response (normalized): **✓ Correct Response:**```json{\"tools\": [{\"type\": \"append_memory\", \"value\": \"greeting: hello-netget\"}], \"actions\": [{\"type\": \"redis_simple_string\", \"value\": \"hello-netget\"}]}```In this response, we ..."
+          ],
+          "recovered_actions": [
+            "append_memory",
+            "redis_simple_string",
+            "append_memory"
+          ],
+          "client_command": "redis-cli -h 127.0.0.1 -p 63715 -t 230 GET greeting",
+          "client_output": "",
+          "client_exit": 0,
+          "client_timed_out": false,
+          "elapsed_secs": 8.77884125
         }
       ]
     }
