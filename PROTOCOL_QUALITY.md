@@ -26,7 +26,7 @@ and drift.
 
 | Measure | Value | How derived |
 |---|---|---|
-| Server maturity | 39 Beta · 118 Experimental · 0 Stable | `.state(` scan over `src/server/**/actions.rs` |
+| Server maturity | 39 Beta · 118 Experimental · 0 Stable — **45 Beta · 112 Experimental as of 15 Sep 2026** | `python3 scripts/beta_evidence_table.py --all` |
 | Client maturity | 1 Beta · 97 Experimental | same, `src/client` |
 | Servers with an LLM path | 140 | `call_llm`/`llm_client` in `mod.rs` |
 | … of which log `decision=` | 113 (**27 missing**) | `decision=` literal in `mod.rs`/`actions.rs` |
@@ -38,7 +38,7 @@ and drift.
 | Hand-rolled control-character filters still in the tree | 25 | `is_ascii_control`/`is_control()` outside `utils::sanitize` |
 | `#[ignore]` in `tests/**/*.rs` | 248, **105 with no reason** | grep |
 | Fixed `sleep(Duration::from_secs(N))` in e2e tests | 279 | grep |
-| Files that print `SKIP` and pass | 19 | grep |
+| Files that print `SKIP` and pass | 19 — **wrong: that grep counted prose *about* gates. Six real ones, all now hard failures** | `scripts/beta_evidence_table.py` |
 | Fuzz targets | **0** (no `fuzz/`, no `proptest`) | — |
 | Panic hook | TUI terminal-restore only — **a panic inside `tokio::spawn` is logged nowhere in `--mcp` mode** | `src/tui/event_loop.rs:73` |
 | `[profile.release] overflow-checks` | **off** (wraps silently where it ships; panics where you test) | `Cargo.toml` |
@@ -140,12 +140,23 @@ once these exist.
   *Why:* `m3ua` had `MAX_MESSAGE_LEN` on decode and nothing on encode; the property would have
   said so. *Effort:* M.
 
-- [ ] **Hard-fail the 19 skip-when-missing gates.** Each prints `SKIP` and returns `Ok(())`, so
-  a runner without the binary is a silent pass. `npm` is the shape to copy. The binaries are on
-  this machine for `oci_registry` (crane), `maven` (mvn), `websocket` (websocat), `radius`
-  (radclient) and most of the rest — see the 67-of-100 table. *Why:* a real client behind a
-  skip gate is not evidence, and four Beta ratings were one line away from being defensible.
-  *Effort:* S each. Add the binaries to `ci.yml`'s `registry-audit` job as you go.
+- [x] **Hard-fail the skip-when-missing gates.** *(15 September 2026.)* The "19 files" figure
+  counted every file containing the string `SKIP`, most of which were prose *about* gates.
+  Re-derived, the real skip-and-pass gates guarding a third-party client were six, and all six
+  are now hard failures naming the binary, the install command and why a skip is unacceptable:
+  `websocket` (websocat), `memcached` (memcat/memstat/memping), `pypi` (pip), the `grpc` client
+  (protoc), plus two `#[ignore]`d-for-"run manually" tests, which are the same gate with better
+  manners — `rtsp` (ffprobe) and `hls` (curl). `oci_registry`, `maven`, `kubernetes`, `radius`,
+  `dns`, `gopher`, `npm`, `openvpn` and the `nats` client had already been converted.
+  `registry-audit` now installs crane, websocat, ffmpeg, libmemcached-tools, maven, npm,
+  freeradius-utils, dig, curl, pip, openvpn and tor, and runs the real-client suites.
+
+  **Left as skips, with the reason** — none is a binary-availability gate:
+  privilege (`arp`, `icmp`, `ospf`, `datalink` need root or `CAP_NET_RAW`), device presence
+  (`bluetooth`, `nfc`, `smb` injection halves), platform (`can` skips where the host *has*
+  `AF_CAN`, which is correct), Cargo feature (`oauth2` client), opt-in (`USE_OLLAMA`), and
+  `tests/scripting_*` (python3/node — outside the protocol tree, but they are real gates and
+  both interpreters are installed here).
 
 - [ ] **A second independent client for every Beta rating that rests on one.** One client can
   agree with one bug: HTTP with `curl` *and* Python `http.client`; DNS with `dig` *and* the
@@ -198,14 +209,36 @@ declare, whether or not anyone has looked at it.
   `#[ignore]` in its suite. Candidates with the cheapest path: `whois`, `gopher`, `finger`,
   `dns`, `http`, `tcp`, `ntp`, `redis`. *Effort:* M each.
 
-- [ ] **Beta for every Experimental server whose real client is already installed.** The
-  67-of-100 table names them. For each: is the existing test driven by that client (not
-  `reqwest`, not a hand-rolled decoder)? If yes and not skip-gated, it is Beta now and
-  under-rated. If no, the client is one test away. `radius` (radclient), `snmp` variants,
-  `ldap` (ldapsearch), `ipp` (ipptool), `sftp`, `rsync`, `smb` (smbclient), `nfs`
-  (`mount_nfs` needs root — record that), `syslog` (logger), `arp` (arping), `icmp` (ping).
-  *Why:* the August 29 lesson — five protocols sat at Experimental with the evidence already
-  in the tree because nobody re-read it. *Effort:* S–M each.
+- [x] **Beta for the Experimental servers whose evidence already executed.** *(15 September
+  2026 — partial: the six whose evidence was already in the tree. The ones that need a test
+  written are still open, below.)* 39 Beta → 45.
+
+  - `websocket` — websocat 1.14.1, which links `websocket`/`websocket-base` (rust-websocket)
+    and **not** tungstenite, read out of the installed binary. So it is not the circular case;
+    the server frames with tokio-tungstenite and shares none of it.
+  - `memcached` — libmemcached's C tools. CLAUDE.md listed it under "no independent peer at
+    all"; it had one, behind a skip gate. Two different failures, conflated.
+  - `rtsp` — ffprobe completes OPTIONS/DESCRIBE/SETUP/PLAY and reads RTP.
+  - `oci_registry` — crane re-hashes every manifest and blob and errors on a mismatch.
+  - `maven` — real `mvn` resolves, checksum-verifies and now **unpacks** the artifact; the
+    fixture became a real zip served over `body_base64`, which was the one gap its own
+    `metadata()` named.
+  - `ssh` — libssh2 (the `ssh2` crate binds the C library; russh is the *server's*) completes
+    auth and a full SFTP exchange. Held at Experimental by a stale comment in its own test
+    file describing a bug fixed long before.
+
+  **Considered and deliberately not promoted**, which is the more useful half of the list:
+  `hls` (curl is generic HTTP — needs ffprobe, which reads HLS natively), `pypi` (pip reaches
+  and parses the PEP 503 page, but `pip index versions` is experimental and the wheel served
+  is a stub), `openvpn` (the server implements only the front of the protocol — CLAUDE.md's
+  standing ruling), `xmpp` (xmpp-parsers is a parser and XMPP has a session, unlike `rss`),
+  `grpc`/`bgp`/`torrent_dht`/`xmlrpc` (codecs), `tls` (rustls both sides).
+
+  Still one test away, client installed, nothing written: `ipp` (ipptool), `syslog` (logger),
+  `finger`/`ident` (finger, nc), `ftp` (ftp), `telnet` (telnet), `smb` (smbclient),
+  `netbios_ns` (nmblookup), `irc` (irssi), `nfs` (showmount/rpcinfo unprivileged; `mount_nfs`
+  needs root — record that), `socks5`/`http2`/`proxy` (curl, but see the generic-HTTP rule),
+  `mdns` (dns-sd), `tor_relay` (tor, currently `#[ignore]`d), `rsync`/`sftp` as clients.
 
 - [ ] **Install the missing clients and do the same.** `brew install` covers most of the
   33: `mosquitto`, `nats-server`+`nats`, `kcat`, `mongosh`, `etcd`, `zookeeper`, `subversion`,
@@ -220,10 +253,21 @@ declare, whether or not anyone has looked at it.
   most: `redis-server`, `postgres`, `mysqld`, `mosquitto`, `nats-server`, `nginx`, `bind`,
   `sshd`, `vsftpd`. *Effort:* L overall.
 
-- [ ] **Re-derive the "not promoted" list in `CLAUDE.md`.** It has been wrong in both
-  directions three times. A script that, for each Beta server, prints the third-party crate or
-  binary its evidence uses, whether the test is `#[ignore]`d, and whether the dependency is
-  `optional = true` — so the list is generated, not maintained. *Effort:* S.
+- [x] **Re-derive the "not promoted" list in `CLAUDE.md`.** *(15 September 2026.)*
+  `scripts/beta_evidence_table.py` generates it: per protocol, the binaries and crates its
+  tests drive, which of those the server also imports, which are `optional = true`, the
+  `#[ignore]` count and any skip-and-pass gate. `--check` fails only on what a script can be
+  sure of; a shared peer and an optional dependency are review flags, because `quic`/quinn and
+  `webrtc`/webrtc-rs are accepted uses of the server's own crate in the opposite role and no
+  static rule separates those from `ssh`/russh. `registry-audit` runs it advisory, with
+  `--experimental-with-evidence` for candidates. CLAUDE.md's Beta section now points at it.
+
+  **What it found on its first run, for someone to act on:** `doh` and `dot` are Beta on
+  `hickory_proto`, which their servers also use — the circular case, and `dig +https` /
+  `dig +tls` are on this machine. `tcp` and `udp` are Beta with no third-party peer at all
+  (their tests hand-write the socket work, which CLAUDE.md classes as an independent reading
+  of the spec, not an independent implementation). Neither was touched here: demoting a
+  protocol needs the test read, not a scan.
 
 ## Tier 4 — usability for the model
 
@@ -362,3 +406,13 @@ only number in this repository that says whether the model can drive the thing a
 ## Done
 
 Move items here with the date and the commit or PR that verified them.
+
+- **15 Sep 2026 — Tier 1, "hard-fail the skip-when-missing gates".** Six real gates converted
+  (`websocket`/websocat, `memcached`/libmemcached, `pypi`/pip, `grpc` client/protoc, plus the
+  two `#[ignore]`d-for-"run manually" tests, `rtsp`/ffprobe and `hls`/curl). `registry-audit`
+  installs the clients and runs the real-client suites. The ones left are privilege, device,
+  platform and feature gates, not binary-availability gates.
+- **15 Sep 2026 — Tier 3, "Beta for what already had the evidence".** `websocket`, `memcached`,
+  `rtsp`, `oci_registry`, `maven`, `ssh`. Every `e2e_testing` field now names its client, says
+  the test is neither ignored nor skip-gated, and says what is still unproven.
+- **15 Sep 2026 — Tier 3, "re-derive the not-promoted list".** `scripts/beta_evidence_table.py`.
