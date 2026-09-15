@@ -221,3 +221,43 @@ For RETR 1, send email message with headers and body.
 - RFC 1939 - Post Office Protocol - Version 3
 - RFC 2449 - POP3 Extension Mechanism
 - tokio documentation: https://docs.rs/tokio
+
+## Failure behaviour
+
+POP3 guards a mailbox, so the question this section answers is the OAuth2 one: **can a backend
+failure produce `+OK`?** It cannot, and the reason is structural rather than careful.
+
+`process_command` calls `call_llm(..).await?`. The `?` hands every backend failure to
+`run_session`, whose only reply on that path is `pop3_failure_reply`, and **every branch of
+`pop3_failure_reply` is `-ERR`** — `[SYS/TEMP]` for capacity, `[SYS/PERM]` otherwise. The only
+`+OK` this protocol can emit comes from an action the model named (`send_pop3_ok`,
+`send_pop3_greeting`, `send_pop3_stat`, …), all of which live in `actions.rs` and are reachable
+only from a model answer. There is no default reply, and nothing synthesises one.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Model answered with a `+OK`-shaped action | that reply | INFO `decision=model_answer` |
+| Model answered `send_pop3_err` | `-ERR <the model's message>` | INFO `decision=model_reject` |
+| Model answered `close_connection` with no reply | nothing, session ends | INFO `decision=model_reject` |
+| Model answered with no usable action | **nothing** (see below) | WARN `decision=model_silent` |
+| Model answered but every action failed | **nothing** | ERROR `decision=fail_closed_bad_action` |
+| Backend failed on the greeting | `-ERR [SYS/PERM] netget: request could not be processed`, then close | ERROR `decision=fail_closed_llm_error` |
+| Backend failed on a command | the same `-ERR`, then close | ERROR `decision=fail_closed_llm_error` |
+| Backend saturated | `-ERR [SYS/TEMP] netget: backend at capacity, retry later`, then close | ERROR `decision=fail_closed_llm_overloaded` |
+
+`model_answer` vs `model_reject` is decided from the first bytes the model actually put on the
+wire (`-ERR` or not), because POP3 says yes and no through the same action mechanism and the
+leading token is the only honest discriminator. The distinction matters here more than
+anywhere: an operator looking at a stream of `-ERR` on `PASS` needs to know whether the model
+denied those logins or whether nobody was home.
+
+**The one gap, and it is silence rather than admission.** A model that answers with zero usable
+actions leaves `process_command` returning `Continue` having written nothing, so a client
+blocked on the reply to `USER`/`PASS` waits out its own timeout. No mailbox is opened and no
+`+OK` is produced — this is not a fail-open — but the peer is owed an answer it does not get.
+Closing that gap means writing `-ERR` on the `model_silent` path, which is a wire change this
+tagging pass deliberately did not make; `decision=model_silent` is there so it can be found.
+
+Tested by `tests/server/pop3/decision_tag_test.rs`, which pins both halves: a backend outage on
+`USER` is `-ERR` and `decision=fail_closed_llm_*` with no `model_reject` anywhere, and a model
+denial of the same command is `-ERR` and `decision=model_reject` with no `fail_closed` anywhere.

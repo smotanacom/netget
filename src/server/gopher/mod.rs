@@ -298,8 +298,11 @@ async fn run_gopher_session<R, W>(
                     break pos;
                 }
                 if request.len() > MAX_REQUEST_BYTES {
+                    // Refused by the protocol, before any model call: a distinct outcome from
+                    // anything the model did or failed to do, so it carries its own token.
                     log.warn(format!(
-                        "Gopher request from {} exceeded {} bytes with no line ending; closing",
+                        "Gopher request from {} exceeded {} bytes with no line ending; closing \
+                         decision=refused_body_too_large",
                         peer_addr, MAX_REQUEST_BYTES
                     ));
                     let _ = write_counted(
@@ -392,7 +395,7 @@ async fn run_gopher_session<R, W>(
                             String::from_utf8_lossy(&output_data)
                         ));
                         log.info(format!(
-                            "Gopher response to {} ({} bytes)",
+                            "Gopher response to {} ({} bytes) decision=model_answer",
                             peer_addr,
                             output_data.len()
                         ));
@@ -405,16 +408,40 @@ async fn run_gopher_session<R, W>(
                 }
             }
 
+            // A `close_connection` and nothing else is the model choosing to hang up without
+            // saying anything — a real answer, and one the peer reads as an empty document. It
+            // is deliberately *not* a failure, so it never carries a `fail_closed_` token.
+            if asked_to_close && !wrote_output {
+                log.info(format!(
+                    "Gopher closing on {} without a reply decision=model_reject",
+                    peer_addr
+                ));
+            }
+
             // Nothing reached the wire and nobody asked to hang up: every action failed, or
             // the answer was empty. A client that reads to EOF would take that as an empty
             // document, so say what happened in the one way Gopher has to say it.
             if !wrote_output && !asked_to_close {
-                log.warn(format!(
+                // The model answering with nothing and the model answering with something the
+                // executor refused are different faults with the same wire result, so the log
+                // is the only place they can be told apart.
+                let failures = execution_result.failures.len();
+                let msg = format!(
                     "Gopher produced no response for {} ({} failed action(s)); \
-                     answering with a type-3 error item",
+                     answering with a type-3 error item decision={}",
                     peer_addr,
-                    execution_result.failures.len()
-                ));
+                    failures,
+                    if failures == 0 {
+                        "model_silent"
+                    } else {
+                        "fail_closed_bad_action"
+                    }
+                );
+                if failures == 0 {
+                    log.warn(msg);
+                } else {
+                    log.error(msg);
+                }
                 let _ = write_counted(
                     write_half,
                     &wire_failure_item(crate::utils::WireFailure::Unavailable.prefixed_text()),
@@ -427,8 +454,17 @@ async fn run_gopher_session<R, W>(
         }
         Err(e) => {
             // The category, never the error. `prefixed_wire_failure_text` returns `&'static str`
-            // precisely so nothing derived from `e` can reach the peer.
-            log.warn(format!("Gopher LLM call failed: {}", e));
+            // precisely so nothing derived from `e` can reach the peer. Saturation and a dead
+            // backend produce the same type-3 item, so the decision token carries the
+            // distinction instead, and the error itself goes only to the log.
+            let token = match crate::utils::WireFailure::classify(&e) {
+                crate::utils::WireFailure::Overloaded => "fail_closed_llm_overloaded",
+                crate::utils::WireFailure::Unavailable => "fail_closed_llm_error",
+            };
+            log.error(format!(
+                "Gopher LLM call failed for {} decision={}: {}",
+                peer_addr, token, e
+            ));
             let _ = write_counted(
                 write_half,
                 &wire_failure_item(crate::utils::prefixed_wire_failure_text(&e)),

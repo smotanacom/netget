@@ -223,3 +223,44 @@ LLM responds with realistic NPM registry JSON structures and tarball data.
 - Large tarballs require base64 encoding/decoding overhead
 - No caching - every request processed fresh
 - Connection pooling handled by HTTP/1.1 keep-alive
+
+## Failure behaviour
+
+Every terminal outcome of an NPM request is logged with a stable `decision=` token. The stakes
+here are higher than in a protocol whose peer is a human: **the npm CLI acts on a 200**, taking
+the body as a packument or a tarball and unpacking it. So the invariant this section exists to
+record is that no failure path can produce one.
+
+All of these are decided in `src/server/npm/mod.rs`. Nothing is delegated to
+`src/server/http_common/handler.rs`, so the status code and the token are set in the same
+place.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Model answered `npm_package_metadata` / `_tarball` / `_list` / `_search` | 200 with that body | INFO `decision=model_answer` |
+| Model answered `npm_error` | the status code the model chose (4xx/5xx) with its message | INFO `decision=model_reject` |
+| Model answered with no usable action | 500 `{"error":"No NPM action returned"}` | WARN `decision=model_silent` |
+| Model answered but every action failed | the same 500 | ERROR `decision=fail_closed_bad_action` |
+| Response action missing its field, or `tarball_data` that does not decode | 500 with the `WireFailure` category | ERROR `decision=fail_closed_bad_action` |
+| Backend failed / retries exhausted | 500 with the `WireFailure` category | ERROR `decision=fail_closed_llm_error` |
+| Backend saturated | 500 with `backend at capacity, retry later` | ERROR `decision=fail_closed_llm_overloaded` |
+| Request was not a GET | 405 | WARN `decision=protocol_error` |
+| The server row is gone from `AppState` | 500 | ERROR `decision=fail_closed_server_missing` |
+
+`fail_closed_server_missing` is npm-specific and is named here because it is not a model
+outcome at all: nothing was asked, because there was nothing to ask.
+
+**No fail-open was found.** The dangerous shape — a backend outage or a silent model answering
+200 with an empty or synthesised packument — cannot occur: both paths are 500, and the
+zero-byte-tarball case was already closed (an `unwrap_or_default()` that served 200 with an
+empty body). Two observations from the same read, neither a fail-open:
+
+- **Overload and outage share the 500.** `http` distinguishes them (503 + `Retry-After` vs
+  500) and npm does not; only the token separates them. Changing the status is a wire change
+  and was left alone.
+- **`"metadata": null` is served as a 200 whose body is `null`.** `data.get("metadata")`
+  accepts a JSON null, so the model can produce a 200 npm cannot use. That is the model's own
+  answer rather than a failure default, so it is tagged `model_answer` honestly, but the field
+  is worth a presence check.
+
+Tested by `tests/server/npm/decision_tag_test.rs`.
