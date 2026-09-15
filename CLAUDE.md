@@ -101,10 +101,35 @@ netget --mcp   # then call list_protocols / get_protocol_docs
 
 Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/protocol/metadata.rs`):
 
-- **Stable** — real spec compliance, good LLM prompting, scripting support, validated against a
-  real client. **Currently none.** Three protocols have held this rating and all three lost it on
-  inspection for the same reason — never actually validated against a real client. `tor_relay`
-  and `openvpn` went first. `wireguard` was the last, demoted August 2026: NetGet implements none
+- **Stable** — **currently none, and the bar is now written down rather than assumed.** Three
+  protocols have held this rating and all three lost it, each for the same reason: nobody had
+  said what it required, so "Stable" meant whoever set it felt good about the code.
+
+  A protocol is Stable when **all six** hold. Each one exists because its absence produced a
+  false Stable rating here:
+
+  1. **Two independent third-party clients** complete a real session, in tests that *fail*
+     rather than skip when the client is absent. Two, not one, because one client can agree
+     with one bug — and independent of the server's own library, which is the circular case
+     that made `ssh`/russh look like evidence.
+  2. **The pcap oracle is green** over its wire traffic (`tests/helpers/pcap_oracle.rs`). An
+     independent dissector reading the bytes catches what agreement between our encoder and
+     our decoder cannot.
+  3. **A fuzz target exists and has run clean** (`fuzz/`), with a corpus that includes a depth
+     bomb — without one, a coverage-guided fuzzer never explores nesting and runs green
+     forever against the class it exists for.
+  4. **Every declared bound has a test**: max message size, idle timeout, connection cap,
+     recursion depth. A bound nobody tested is a comment.
+  5. **Its two `CLAUDE.md` files were verified against source in the current pass**, not
+     inherited. `ssh`'s said "there is no E2E test" while eleven existed.
+  6. **No `#[ignore]` and no skip-when-missing gate in its suite.**
+
+  Cheapest candidates, all of which already hold most of this: `whois`, `gopher`, `finger`,
+  `dns`, `http`, `tcp`, `ntp`, `redis`.
+
+  The three demotions are worth reading before setting this on anything, because each one is a
+  different way the bar above can be failed while the rating looks earned. `tor_relay` and
+  `openvpn` went first. `wireguard` was the last, demoted August 2026: NetGet implements none
   of the WireGuard protocol itself (it orchestrates `defguard_wireguard_rs`, which needs root and,
   on macOS, an external `wireguard-go` binary), so it cannot be started or handshaked in this
   environment at all, and its Stable rating rested on a test that mocked a `wireguard_packet_received`
@@ -930,11 +955,13 @@ no fallible call to wrap and `catch_unwind` cannot see it. It surfaced only beca
 `tests/terminal_snapshot` is the one suite that *runs the TUI*, and only once those tests were
 pointed at the rolling TUI — before that they exercised the dashboard and never touched the path.
 
-**There is no logging panic hook.** The only `set_hook` in the tree (`src/tui/event_loop.rs`)
-restores the terminal and chains to the default hook, and it is installed by the TUI alone — so
-in `--mcp` mode a panic inside `tokio::spawn` is swallowed by the task and written nowhere.
-`PROTOCOL_QUALITY.md` Tier 0 has the fix; until it lands, "the server stays Running and the
-peer hangs" has no log line to find.
+**Every panic is logged, as of September 2026** (`src/panic_log.rs`), installed from
+`init_logging` so it covers `--mcp`, `--mcp-http`, `--simple` and the non-interactive runner as
+well as the TUI, and chaining to whatever hook it replaced so the dashboard's terminal-restore
+still runs. Before it, a panic inside `tokio::spawn` was written **nowhere** — nothing awaits a
+connection task's `JoinHandle`, so the `JoinError` carrying the panic was dropped, which is why
+all three historical instances were found by reading code rather than by grepping. If you see
+"the server stays Running and the peer hangs", `grep PANIC netget.log` now answers it.
 
 The TUI installs a native-crash terminal restorer (`src/cli/crash_restore.rs`): a
 SIGSEGV/SIGABRT/SIGTRAP from a C/ObjC library bypasses Rust's `Drop`/panic machinery, so without it

@@ -154,6 +154,50 @@ jobs:
   # builds the whole tree to do it (~10 min cold). Kept advisory until it has been green
   # for a while: a wide build that has never run in CI should not be the thing that
   # blocks an unrelated PR on day one. Promote it to blocking once it has proven stable.
+  # Every ratchet in this job reads the SOURCE TREE rather than walking a registry, so each
+  # one covers all ~137 server and ~98 client protocols at *any* feature set. That is what
+  # makes them blocking: `registry-audit` below has to compile `--all-features` and install
+  # five system libraries to see the whole tree, so it is advisory and, being
+  # continue-on-error, reports green regardless of outcome. These need one protocol feature
+  # and nothing else, and they fail the build.
+  #
+  # The distinction matters because the six-protocol `test` job covers 6 of 116 — a green PR
+  # says nothing about the other 110 — and every defect class these encode was found in
+  # several unrelated protocols at once.
+  ratchets:
+    name: Whole-tree ratchets
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ratchets-tcp
+
+      - name: cargo test (source-reading ratchets)
+        run: |
+          cargo test --locked --no-default-features --features tcp \
+            --test affirmative_default_drift_test \
+            --test client_event_wiring_test \
+            --test decision_tag_ratchet_test \
+            --test doc_paths_exist_test \
+            --test doc_test_counts_test \
+            --test event_emit_sites_test \
+            --test example_hex_drift_test \
+            --test executable_examples_test \
+            --test failure_mode_declaration_test \
+            --test handler_result_decides_the_bound_test \
+            --test narrowing_cast_drift_test \
+            --test no_protocol_is_hidden_from_the_model_test \
+            --test recursive_decoder_depth_test \
+            --test startup_param_drift_test \
+            --test tcp_server_bounds_ratchet_test \
+            --test test_suite_hygiene_test \
+            -- --test-threads=50
+
   registry-audit:
     name: Registry-wide audits (--all-features, advisory)
     runs-on: ubuntu-22.04

@@ -496,6 +496,9 @@ impl Protocol for OspfClientProtocol {
             e2e_testing: "Weak, and weaker than it looks. tests/client/ospf/e2e_test.rs skips itself with a pass whenever the process is not root - which is every CI run - and even when it runs it asserts only that the word 'OSPF' appears in the client's own output, which the prompt already contains. The real coverage is tests/client/ospf/command_channel_test.rs, which hard-fails either way: unprivileged it asserts connect() returns Err, leaves no command handle behind and makes a later send_to_client fail fast; privileged it asserts the live wiring. The test that actually multicasts a Hello is #[ignore]d because it needs CAP_NET_RAW and a multicast-capable interface.",
             notes: Some("Query mode only - topology discovery, not a full OSPF router. No LSDB, no SPF, no periodic Hello timer, no adjacency state machine: it reacts to what arrives. Packet construction is shared with the OSPF server (crate::server::ospf::actions::OspfProtocol), so both directions agree on the wire format by construction."),
             connectionless: false,
+            // The one metadata built as a literal rather than through the builder, so a new
+            // field lands here by hand; the builder's default is the right one for a client.
+            failure_mode: FailureMode::Answers,
         }
     }
     fn description(&self) -> &'static str {
