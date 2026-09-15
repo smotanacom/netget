@@ -1,0 +1,117 @@
+# Real-model eval — nightly, never a gate.
+#
+# Every other job in this repository drives a mock model. This one drives a real
+# one and measures whether it can serve a plain-English operator instruction
+# through each protocol's own action descriptions. That number is the only
+# measurement in the tree of "the model can actually use this".
+#
+# It is deliberately NOT part of `ci.yml`:
+#
+#   * it needs a model and several minutes of inference per instruction;
+#   * it is not deterministic, so a threshold on it would flap;
+#   * a low score is a finding about an action description, not a broken build.
+#
+# `continue-on-error` is therefore on the eval step itself. The job still fails
+# if the *harness* could not run — no Ollama, no model, no cases — because a
+# nightly that silently measures nothing is the exact failure mode this
+# repository keeps finding in its own suite.
+
+name: nightly-eval
+
+on:
+  schedule:
+    # 04:30 UTC daily, well clear of the working day.
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      protocols:
+        description: "Space-separated protocols (blank = the whole default set)"
+        required: false
+        default: ""
+      runs:
+        description: "Runs per instruction (the score is a rate over these)"
+        required: false
+        default: "5"
+      model:
+        description: "Ollama model tag"
+        required: false
+        default: "llama3.1:8b"
+
+concurrency:
+  group: nightly-eval
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    # Self-hosted, because the eval needs a local model and the third-party
+    # client binaries. On a GitHub-hosted runner every case would be recorded as
+    # `client-missing` and the run would measure nothing — which the harness
+    # would say, but there is no point paying for it.
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 600
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Third-party clients
+        # Reported, not enforced. A missing client makes its cases
+        # `client-missing` in the results, which is visible and honest; the run
+        # is still worth doing for the protocols whose clients are present.
+        run: |
+          for bin in curl dig whois redis-cli psql mysql ldapsearch ipptool nc ftp; do
+            if command -v "$bin" >/dev/null 2>&1; then
+              echo "present: $bin"
+            else
+              echo "MISSING: $bin — its cases will be recorded as client-missing"
+            fi
+          done
+
+      - name: Ollama
+        run: |
+          curl -sS -m 10 http://127.0.0.1:11434/api/tags >/dev/null \
+            || { echo "::error::Ollama is not reachable; the eval cannot run"; exit 1; }
+
+      - name: Run the eval
+        id: eval
+        continue-on-error: true
+        env:
+          # A literal IP, not `localhost`: reqwest resolves the host
+          # unconditionally and on macOS that serialises through mDNSResponder.
+          OLLAMA_BASE_URL: http://127.0.0.1:11434
+          CARGO_TARGET_DIR: /tmp/netget-eval-target
+        run: |
+          ./run-eval.sh \
+            --runs "${{ github.event.inputs.runs || '5' }}" \
+            --model "${{ github.event.inputs.model || 'llama3.1:8b' }}" \
+            ${{ github.event.inputs.protocols }}
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ ! -f eval-results/latest.json ]; then
+            echo "::error::No results file — the harness did not complete."
+            exit 1
+          fi
+          {
+            echo "## Real-model eval"
+            echo
+            jq -r '"Model **\(.model)**, \(.runs_per_case) run(s) per instruction — **\(.totals.runs_passed)/\(.totals.runs_total)** runs passed."' eval-results/latest.json
+            echo
+            echo "| Protocol | Runs | Passed | Dominant failure |"
+            echo "|---|---:|---:|---|"
+            jq -r '.protocols[] | "| \(.protocol) | \(.runs) | \(.runs_passed) | \(.dominant_failures | join(", ")) |"' eval-results/latest.json
+            echo
+            echo "### Failure modes"
+            jq -r '.failure_modes[] | "- `\(.mode)` — \(.runs) run(s): \(.cases | join(", "))"' eval-results/latest.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the results as an artefact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: |
+            eval-results/latest.json
+            EVAL_RESULTS.md
+          if-no-files-found: error
+          retention-days: 90
