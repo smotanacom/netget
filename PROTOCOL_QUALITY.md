@@ -123,17 +123,38 @@ once these exist.
   the end of an existing e2e test). Start with the 39 Beta servers — a Beta whose frames tshark
   rejects is misrated.
 
-- [ ] **Fuzz targets for every pre-authentication decoder.** `cargo-fuzz` with `libfuzzer`,
-  one target per hand-written parser, run in a nightly CI job for a fixed budget. Candidates,
-  in order of exposure: bencode (`utils/bencode.rs`), AMQP field tables, NATS/STOMP framing,
-  SNMP BER, RADIUS attributes, DNS wire format, LLDP/CDP/HSRP TLV walkers, Modbus/CoAP/GTP/M3UA
-  headers, NDEF records, USB/IP + CTAPHID assembly, HID report maps, SIP/RTSP line parsing, the
-  NFS RPC guard, SMB2 headers, TDS/MySQL/PostgreSQL startup packets. *Why:* all six stack
-  overflows and every "bound the declared size" defect were found by *reasoning*, one at a
-  time. A fuzzer finds the seventh while you sleep, and a crash is `SIGSEGV`, which nothing
-  else in this suite can observe. *Verify:* each target runs 60s clean locally before merging;
-  the CI job uploads any crash artefact. *Effort:* L overall, S per target once the harness
-  exists. **This is the single largest robustness gap in the tree.**
+- [x] **Fuzz targets for every pre-authentication decoder.** *(harness + 17 targets landed
+  15 September 2026; `fuzz/`, `.github/workflows/fuzz.yml`, `fuzz/README.md`.)* `cargo-fuzz`
+  with `libfuzzer`, its own workspace root so `cargo test` at the repository root never sees
+  it, nightly job at 300s per target, one matrix job each, crash artefact and grown corpus
+  uploaded. Every target ran 60s clean locally before merging; none crashed. The harness was
+  itself verified by removing `utils::bencode`'s depth guard and confirming the fuzzer finds
+  the overflow — the same discipline the AMQP field-table bound was checked with, and the
+  only thing that distinguishes "found nothing" from "not looking".
+
+  **Landed:** bencode, SNMP BER, AMQP field tables, NATS framing, STOMP framing, RADIUS
+  attributes, DNS wire format, LLDP, CDP, HSRP, Modbus, CoAP, M3UA, BGP, NDEF, ISO 7816
+  APDUs, the NFS RPC record guard. Four of those are *guard pairs* — they drive NetGet's
+  screen and then hand whatever it accepted to the decoder it guards, which is the contract
+  that matters; a target asserting only that the guard does not panic tests the easy half.
+
+  **Still open, and neither is a NetGet decoder defect:**
+  - **No USB protocol can be fuzzed at all.** `usb-fido2` → `usb-common` → `usbip` → `nusb`,
+    and nusb 0.2.7 (newest published) has a `#[cfg(fuzzing)]` helper that does not typecheck
+    (E0271). cargo-fuzz sets `--cfg fuzzing` graph-wide, so the build dies before reaching
+    NetGet. Costs CTAPHID reassembly and — the one worth returning for — CTAP2's
+    `serde_cbor::from_slice` behind a one-byte command check, which is the unguarded-recursion
+    class with no guard in front of it.
+  - **SIP, SMB, MSSQL and torrent-tracker parsers are private** on private return types.
+    Reaching them costs more visibility surface than a fuzz target should buy unilaterally;
+    `SmbServer::parse_smb2_path`/`parse_smb2_username` are hand-rolled offset arithmetic on
+    pre-auth CREATE and SESSION_SETUP bodies and are the best of them.
+
+  Also recorded in `fuzz/README.md`: **ASan deadlocks before `main` on macOS 26/27**, so
+  local runs need `-s none`. It presents as a slow fuzzer rather than a broken one — no
+  banner, no corpus growth, ~25% CPU, sailing past `-max_total_time` — and cost a full
+  debugging pass. Stack-overflow detection is unaffected, since libFuzzer's signal handler
+  catches the guard-page `SIGSEGV` with or without ASan.
 
 - [ ] **Property tests for every codec that has both directions.** `proptest` round-trips:
   `decode(encode(x)) == x` for arbitrary `x`, and `encode` output length ≤ the declared bound.

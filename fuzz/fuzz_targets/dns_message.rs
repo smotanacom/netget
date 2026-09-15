@@ -1,0 +1,44 @@
+//! DNS wire format — `hickory_proto::op::Message::from_vec`.
+//!
+//! **NetGet has no DNS parser of its own.** `src/server/dns/mod.rs`, `dot/mod.rs` and
+//! `doh/mod.rs` each call `DnsMessage::from_vec(&data)` inline in their receive loop and
+//! hand the result to the model; there is no hand-written framing or name decompression
+//! anywhere around it. That makes this the one target here that fuzzes a third-party crate
+//! rather than NetGet code — and it earns its place anyway, because the exposure is NetGet's:
+//! three registered protocols reach this decoder from an unauthenticated datagram on the
+//! first packet, and a crash inside it kills the whole process exactly as one inside our own
+//! code would.
+//!
+//! Name compression is the reason to fuzz it: a compression pointer may point backwards into
+//! the message, and a decoder that follows pointers without bounding the chain either loops
+//! or recurses. That is the same class as the six overflows this harness exists for, sitting
+//! in a dependency rather than in `src/`.
+//!
+//! If this target crashes, the finding belongs upstream — and the NetGet-side fix is a
+//! structural screen in front of `from_vec`, the shape `utils::bencode` already establishes.
+
+#![no_main]
+
+use hickory_proto::op::Message as DnsMessage;
+use libfuzzer_sys::fuzz_target;
+
+fuzz_target!(|data: &[u8]| {
+    let Ok(msg) = DnsMessage::from_vec(data) else {
+        return;
+    };
+
+    // The accessors the servers read before building an event for the model. Each re-walks
+    // the decoded records.
+    for q in msg.queries() {
+        let _ = q.name().to_string();
+        let _ = q.query_type();
+    }
+    for r in msg.answers() {
+        let _ = r.name().to_string();
+        let _ = r.data();
+    }
+
+    // A message that decodes must re-encode; `to_vec` is what the servers call on the reply
+    // path, and a record that survives decode but not encode is a desync.
+    let _ = msg.to_vec();
+});
