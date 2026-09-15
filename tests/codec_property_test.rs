@@ -24,10 +24,12 @@
 //!
 //! # A failing property is a finding, not a property to weaken
 //!
-//! Properties that do not hold today are kept here, stating what *should* hold, behind
-//! `#[ignore = "FINDING: …"]`. Running `cargo test -- --ignored` shows every one. They are
-//! listed in the module header of the section they belong to, with the minimal counterexample
-//! proptest shrank to.
+//! Properties that did not hold when this file was written were kept here stating what
+//! *should* hold, behind `#[ignore = "FINDING: …"]`, rather than softened into something the
+//! code already satisfied. All ten have since been fixed in the codecs and un-ignored; each
+//! keeps its counterexample in a doc comment, plus an assertion that the bound is at the
+//! boundary and not one octet early — a refusal that refuses everything would pass the first
+//! half of every one of them.
 
 #![allow(clippy::uninlined_format_args)]
 
@@ -1002,7 +1004,7 @@ mod m3ua_props {
         /// Property 1.
         #[test]
         fn message_round_trips(message in arb_message()) {
-            let bytes = message.encode();
+            let bytes = message.encode().unwrap();
             let parsed = Message::parse(&bytes);
             prop_assert!(parsed.is_ok(), "{:?}", parsed);
             prop_assert_eq!(parsed.unwrap(), message);
@@ -1012,7 +1014,7 @@ mod m3ua_props {
         /// reader in `mod.rs` slices on.
         #[test]
         fn declared_length_is_the_encoded_length(message in arb_message()) {
-            let bytes = message.encode();
+            let bytes = message.encode().unwrap();
             let header = parse_header(&bytes).unwrap();
             prop_assert_eq!(header.length as usize, bytes.len());
             prop_assert_eq!(peek_class_type(&bytes), Some((message.class, message.msg_type)));
@@ -1027,7 +1029,7 @@ mod m3ua_props {
         ) {
             let mut body = Vec::new();
             for parameter in &parameters {
-                parameter.write_into(&mut body);
+                parameter.write_into(&mut body).unwrap();
                 prop_assert_eq!(body.len() % 4, 0);
             }
             prop_assert_eq!(&parse_parameters(&body).unwrap(), &parameters);
@@ -1040,9 +1042,8 @@ mod m3ua_props {
             }
         }
 
-        /// Property 2, stated for the range the encoder actually handles correctly.
-        ///
-        /// See the FINDING below for what happens above it.
+        /// Property 2 in full: the encoder either refuses, or produces a message inside the
+        /// ceiling its own parser enforces. Never a third thing.
         #[test]
         fn a_bounded_message_encodes_within_the_ceiling(
             parameters in proptest::collection::vec(
@@ -1052,9 +1053,10 @@ mod m3ua_props {
             ),
         ) {
             let message = Message { class: 1, msg_type: 1, parameters };
-            let bytes = message.encode();
-            prop_assume!(bytes.len() <= MAX_MESSAGE_LEN);
-            prop_assert!(Message::parse(&bytes).is_ok());
+            if let Ok(bytes) = message.encode() {
+                prop_assert!(bytes.len() <= MAX_MESSAGE_LEN);
+                prop_assert!(Message::parse(&bytes).is_ok());
+            }
         }
     }
 
@@ -1090,13 +1092,12 @@ mod m3ua_props {
     // FINDINGS
     // -------------------------------------------------------------------------------------
 
-    /// FINDING (the motivating case). `Message::encode` applies no bound, so a message whose
-    /// parameters exceed `MAX_MESSAGE_LEN` encodes happily and is then rejected by the
+    /// The motivating case. `Message::encode` used to apply no bound, so a message whose
+    /// parameters exceed `MAX_MESSAGE_LEN` encoded happily and was then rejected by the
     /// codec's own `parse_header`. Minimal counterexample: 1024 parameters of 64 value bytes
     /// each (70 KiB), which is a routine `send_m3ua_data` answer with a large payload list.
     #[test]
-    #[ignore = "FINDING: Message::encode enforces no MAX_MESSAGE_LEN; parse_header does"]
-    fn encode_should_refuse_a_message_its_own_parser_would_reject() {
+    fn encode_refuses_a_message_its_own_parser_would_reject() {
         let parameters = (0..1024)
             .map(|i| Parameter {
                 tag: i as u16,
@@ -1108,34 +1109,69 @@ mod m3ua_props {
             msg_type: 1,
             parameters,
         };
-        let bytes = message.encode();
-        assert!(bytes.len() > MAX_MESSAGE_LEN);
         assert!(
-            Message::parse(&bytes).is_ok(),
-            "encode produced {} octets, past the {MAX_MESSAGE_LEN} its own parser enforces",
-            bytes.len()
+            message.encode().is_err(),
+            "encode produced a message past the {MAX_MESSAGE_LEN} its own parser enforces"
         );
+
+        // A message just inside the ceiling still encodes and still parses, so the refusal is
+        // a bound rather than a blanket no. The largest reachable total is 65532, not 65535:
+        // every parameter is padded to a 4-octet boundary, so `body_len` is always a multiple
+        // of four and 8 + 65524 is the last one that fits.
+        let inside = Message {
+            class: 1,
+            msg_type: 1,
+            parameters: vec![Parameter {
+                tag: 0x0210,
+                value: vec![0u8; 65_520],
+            }],
+        };
+        let bytes = inside.encode().expect("a message at the ceiling encodes");
+        assert_eq!(bytes.len(), 65_532);
+        assert!(bytes.len() <= MAX_MESSAGE_LEN);
+        assert!(Message::parse(&bytes).is_ok());
     }
 
-    /// FINDING, and the worse half. `Parameter::write_into` writes `(declared as u16)`. A
-    /// value of 65532 bytes makes `declared` 65536, which narrows to 0 — below the 4-octet
-    /// TLV header — so the parameter is not merely oversized, it is unparseable, and every
-    /// parameter after it is lost. Silent in release, silent in debug (the cast does not
-    /// overflow-check), and the only symptom is a peer that stops making sense.
+    /// The worse half. `Parameter::write_into` used to write `(declared as u16)`. A value of
+    /// 65532 bytes makes `declared` 65536, which narrows to 0 — below the 4-octet TLV header —
+    /// so the parameter was not merely oversized, it was unparseable, and every parameter
+    /// after it was lost. Silent in release, silent in debug (the cast does not
+    /// overflow-check), and the only symptom was a peer that stops making sense.
     #[test]
-    #[ignore = "FINDING: Parameter::write_into narrows its declared length with `as u16`"]
-    fn parameter_length_should_not_narrow() {
+    fn parameter_length_never_narrows() {
         let parameter = Parameter {
             tag: 0x0210,
             value: vec![0u8; 65_532],
         };
+        let mut body = vec![0xAAu8; 3];
+        match parameter.write_into(&mut body) {
+            Err(_) => assert_eq!(
+                body,
+                vec![0xAAu8; 3],
+                "a refused parameter must leave the buffer untouched: a half-written TLV \
+                 corrupts every parameter after it just as surely as a wrong length did"
+            ),
+            Ok(()) => {
+                let declared = u16::from_be_bytes([body[5], body[6]]);
+                assert_eq!(
+                    declared as usize,
+                    parameter.declared_len(),
+                    "declared length wrapped to {declared}"
+                );
+            }
+        }
+
+        // The largest value the 16-bit Parameter Length can describe still writes, and
+        // describes itself.
+        let largest = Parameter {
+            tag: 0x0210,
+            value: vec![0u8; u16::MAX as usize - 4],
+        };
         let mut body = Vec::new();
-        parameter.write_into(&mut body);
-        let declared = u16::from_be_bytes([body[2], body[3]]);
+        largest.write_into(&mut body).expect("65531 octets fit");
         assert_eq!(
-            declared as usize,
-            parameter.declared_len(),
-            "declared length wrapped to {declared}"
+            u16::from_be_bytes([body[2], body[3]]) as usize,
+            largest.declared_len()
         );
     }
 }
@@ -1144,9 +1180,9 @@ mod m3ua_props {
 // GTP — `src/server/gtp/codec.rs`
 // ===========================================================================================
 //
-// FINDING: `encode_apn` truncates a label longer than 63 octets (`bytes.len().min(63)`)
+// `encode_apn` used to truncate a label longer than 63 octets (`bytes.len().min(63)`)
 // instead of refusing it, so `decode_apn(encode_apn(x)) != x`. `netbios_ns`'s
-// `encode_name_field` is the same situation and bails; this one does not.
+// `encode_name_field` is the same situation and bails; this one now does too.
 
 #[cfg(feature = "gtp")]
 mod gtp_props {

@@ -268,7 +268,7 @@ impl M3uaProtocol {
 
     fn execute_send_asp_up_ack(&self, action: serde_json::Value) -> Result<ActionResult> {
         let info = optional_string(&action, "info_string")?;
-        Ok(ActionResult::Output(codec::aspup_ack(info.as_deref())))
+        Ok(ActionResult::Output(codec::aspup_ack(info.as_deref())?))
     }
 
     fn execute_send_asp_active_ack(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -279,7 +279,7 @@ impl M3uaProtocol {
             traffic_mode,
             routing_context,
             info.as_deref(),
-        )))
+        )?))
     }
 
     fn execute_send_data(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -309,7 +309,7 @@ impl M3uaProtocol {
             optional_u32(&action, "network_appearance")?,
             optional_u32(&action, "routing_context")?,
             optional_u32(&action, "correlation_id")?,
-        )))
+        )?))
     }
 
     fn execute_send_error(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -318,7 +318,7 @@ impl M3uaProtocol {
         Ok(ActionResult::Output(codec::error(
             code,
             optional_u32(&action, "routing_context")?,
-        )))
+        )?))
     }
 
     fn execute_send_notify(&self, action: serde_json::Value) -> Result<ActionResult> {
@@ -348,7 +348,7 @@ impl M3uaProtocol {
             optional_u32(&action, "asp_identifier")?,
             optional_u32(&action, "routing_context")?,
             info.as_deref(),
-        )))
+        )?))
     }
 }
 
