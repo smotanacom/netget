@@ -24,6 +24,22 @@ async fn real_model_eval() -> E2EResult<()> {
     }
 
     let model = live_model();
+
+    // Wait for Ollama before the helper's 5-second check runs against it.
+    //
+    // A sweep is hours long, and `ensure_model_available` builds a fresh
+    // `reqwest::Client` — loading the macOS keychain synchronously — and then
+    // allows the request 5 seconds. Ollama is routinely slower than that to
+    // answer `/api/tags` while it is loading or unloading a model, and a whole
+    // run has already been lost to that one call failing at step 1 against an
+    // Ollama that came back moments later.
+    if !eval::runner::wait_for_ollama_ready(std::time::Duration::from_secs(300)).await {
+        return Err(
+            "Ollama did not answer /api/tags within 300s — it is down or wedged, \
+                    so this run would measure nothing"
+                .into(),
+        );
+    }
     ensure_model_available(&model).await?;
 
     let cases = eval::suites::all_cases();

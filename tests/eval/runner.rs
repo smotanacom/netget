@@ -88,7 +88,7 @@ pub fn probe_timeout() -> Duration {
 /// So: one client, built once, with a real budget, polled until Ollama is
 /// actually responsive. By the time the helpers run their 2-second check, it
 /// answers instantly.
-async fn wait_for_ollama_ready(budget: Duration) -> bool {
+pub async fn wait_for_ollama_ready(budget: Duration) -> bool {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     let client = CLIENT.get_or_init(|| {
         reqwest::Client::builder()
