@@ -30,19 +30,13 @@ use std::sync::LazyLock;
 /// Bar"` still says `Registrant Name: Bar` — it just says it inside the `Registrar:` field,
 /// where a line-oriented reader attributes it correctly.
 ///
-/// CR, LF and tab become a space rather than vanishing, which is `gopher`'s choice next door
-/// and the better one: deleting them concatenates the two sides into a single word
-/// (`Good RegistrarRegistrant`), which reads as one value and is its own small lie. Every
-/// other control is dropped — ESC included, because this text lands in a terminal and on the
-/// operator's own dashboard.
+/// Every control character becomes a space rather than vanishing, which is `gopher`'s choice
+/// next door and the better one: deleting them concatenates the two sides into a single word
+/// (`Good RegistrarRegistrant`), which reads as one value and is its own small lie. ESC goes
+/// with CR, LF and tab, because this text lands in a terminal and on the operator's own
+/// dashboard, where an escape sequence forges a screen rather than merely a line.
 fn sanitize_line_field(s: &str) -> String {
-    s.chars()
-        .filter_map(|c| match c {
-            '\r' | '\n' | '\t' => Some(' '),
-            other if other.is_control() => None,
-            other => Some(other),
-        })
-        .collect()
+    crate::utils::sanitize::line_field(s)
 }
 
 pub struct WhoisProtocol;

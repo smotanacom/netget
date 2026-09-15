@@ -47,15 +47,15 @@ impl Default for GopherProtocol {
 /// Make one menu field safe to place between tabs.
 ///
 /// A tab or a CR/LF inside a display string, selector or host would forge an extra field or
-/// an extra menu line — the model would be writing menu structure by accident. Both become a
-/// space, which is visible and harmless.
+/// an extra menu line — the model would be writing menu structure by accident. Every control
+/// character becomes a space, which is visible and harmless; substituting rather than deleting
+/// is deliberate, because deleting joins the two sides into one word that reads as a single
+/// legitimate value.
+///
+/// Reaching for `utils::sanitize::line_field` rather than matching `\t\r\n` alone also closes
+/// ESC, which a Gopher client prints straight to a terminal.
 fn sanitize_field(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            '\t' | '\r' | '\n' => ' ',
-            other => other,
-        })
-        .collect()
+    crate::utils::sanitize::line_field(s)
 }
 
 impl Protocol for GopherProtocol {

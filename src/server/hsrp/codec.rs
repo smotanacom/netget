@@ -313,12 +313,9 @@ fn decode_auth_field(field: &[u8]) -> Option<String> {
     // quotes nothing - so a neighbour putting a newline in these eight octets would otherwise
     // forge a log line. Lossy on purpose: the field is a plaintext group password, never a
     // control character, and a neighbour cannot be asked to resend.
-    Some(
-        String::from_utf8_lossy(&trimmed)
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect(),
-    )
+    Some(crate::utils::sanitize::line_field(
+        &String::from_utf8_lossy(&trimmed),
+    ))
 }
 
 fn u16_at(buf: &[u8], offset: usize) -> u16 {

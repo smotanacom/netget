@@ -170,13 +170,12 @@ enum ParsedQuery {
 ///
 /// The reply is a single CRLF-terminated line with `:`-separated fields, so a field echoed
 /// verbatim could otherwise forge a second reply or shift the ones after it.
+///
+/// The 16-character bound is applied after trimming, not before, so a value the client padded
+/// with spaces still echoes 16 characters of content rather than 16 characters of padding.
 fn echo_field(raw: &str) -> String {
-    raw.chars()
-        .filter(|c| !c.is_control() && *c != ':' && *c != ',')
-        .take(16)
-        .collect::<String>()
-        .trim()
-        .to_string()
+    let without_separators: String = raw.chars().filter(|c| *c != ':' && *c != ',').collect();
+    crate::utils::sanitize::token(&without_separators, 16)
 }
 
 /// Parse `<server-port> , <client-port>`.

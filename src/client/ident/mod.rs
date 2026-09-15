@@ -240,7 +240,7 @@ pub fn parse_ident_reply(line: &str) -> IdentReply {
 /// unbounded length. It has already been rejected by the time this is called; this only makes
 /// it readable.
 fn sanitize_line(line: &str) -> String {
-    let cleaned: String = line.chars().filter(|c| !c.is_control()).collect();
+    let cleaned = crate::utils::sanitize::strip_controls(line);
     crate::utils::truncate_for_log(cleaned.trim(), 256)
 }
 

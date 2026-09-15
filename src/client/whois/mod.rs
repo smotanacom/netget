@@ -47,7 +47,7 @@ const RESPONSE_READ_TIMEOUT: Duration = Duration::from_secs(60);
 ///
 /// ESC goes with them: a query is echoed into the log and onto the operator's dashboard.
 fn sanitize_query(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+    crate::utils::sanitize::strip_controls(s)
 }
 
 /// A WHOIS reply as it came off the socket.

@@ -399,9 +399,13 @@ fn build_commit(tree_id: &[u8; 20], meta: &CommitMeta) -> Vec<u8> {
 }
 
 fn sanitize_identity(value: &str, fallback: &str) -> String {
-    let cleaned: String = value
+    // `<` and `>` delimit the email in `author Name <email> <when>`, so they are removed rather
+    // than substituted: a space where one stood would still shift the header's fields. Every
+    // control character becomes a space, which is `utils::sanitize`'s line-field rule — the
+    // header is one line, and deleting a newline would join two names into one.
+    let cleaned: String = crate::utils::sanitize::line_field(value)
         .chars()
-        .filter(|c| !matches!(c, '<' | '>' | '\n' | '\r' | '\0'))
+        .filter(|c| !matches!(c, '<' | '>'))
         .collect();
     let cleaned = cleaned.trim().to_string();
     if cleaned.is_empty() {

@@ -524,14 +524,7 @@ fn execute_send_err(action: &serde_json::Value) -> Result<ActionResult> {
 /// `-ERR '<text>'` is a single-quoted, single-line field. A quote or a line break inside it
 /// forges a frame boundary, so both are replaced rather than passed through.
 pub fn sanitize_err_text(message: &str) -> String {
-    let cleaned: String = message
-        .chars()
-        .map(|c| match c {
-            '\'' => '"',
-            c if c.is_control() => ' ',
-            c => c,
-        })
-        .collect();
+    let cleaned = crate::utils::sanitize::line_field(&message.replace('\'', "\""));
     crate::utils::truncate_for_log(cleaned.trim(), 200)
 }
 
