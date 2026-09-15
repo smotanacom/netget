@@ -1,0 +1,5 @@
+@HPUB foo 22 27
+NATS/1.0
+X-A: b
+
+hello

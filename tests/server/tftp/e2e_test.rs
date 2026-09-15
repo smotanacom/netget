@@ -144,6 +144,16 @@ async fn test_tftp_read_request_with_mocks() -> E2EResult<()> {
     let mut buffer = vec![0u8; 516];
     let (n, peer_addr) = timeout(Duration::from_secs(5), client.recv_from(&mut buffer)).await??;
 
+    // The pcap oracle. `parse_data_packet` is this file's own two-field reader;
+    // Wireshark's `tftp` dissector reads the opcode space, the block number and the
+    // RRQ's NUL-terminated filename/mode strings, and it is the only thing in this
+    // test that would notice a mode string that was not NUL-terminated or an opcode
+    // outside 1..=6.
+    crate::helpers::pcap_oracle::PcapOracle::udp("tftp")
+        .to_server(&rrq_packet)
+        .from_server(&buffer[..n])
+        .assert_clean();
+
     let (block_number, data) =
         parse_data_packet(&buffer[..n]).expect("Failed to parse DATA packet");
 

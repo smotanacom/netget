@@ -91,14 +91,14 @@ once these exist.
   *Effort:* M — the registration is one line per protocol, but there are ~140 of them; do the
   shared accept-loop helpers first so most inherit it.
 
-- [ ] **`decision=` tagging on the 27 servers that have an LLM path and no tag.** The list is
+- [x] **`decision=` tagging on the 27 servers that have an LLM path and no tag.** The list is
   in the measurement script; `ftp`, `http`, `telnet`, `udp`, `mqtt`, `ntp` and `tftp` are the
   ones that matter most because they are Beta. *Why:* without the tag, a backend outage and a
   model refusal are the same log line, and `grep decision=fail_closed` — the one diagnostic this
   repo teaches — finds nothing. *Verify:* make it a ratchet: any `mod.rs` containing `call_llm`
   must contain `decision=`. *Effort:* M.
 
-- [ ] **Silent-on-failure becomes metadata, not prose.** `ProtocolMetadataV2::failure_mode`
+- [x] **Silent-on-failure becomes metadata, not prose.** `ProtocolMetadataV2::failure_mode`
   (`Answers(WireFailure category)` / `DeliberatelySilent { reason }`), declared by every server.
   *Why:* `CLAUDE.md` carries a list of 20 deliberately-silent protocols that was found wrong
   in both directions (NDP logged its own transmit failure as `model_silent`; several BLE
@@ -109,7 +109,7 @@ once these exist.
 
 ## Tier 1 — independent oracles
 
-- [ ] **The pcap oracle: every frame NetGet emits is dissected by tshark without error.** A test
+- [x] **The pcap oracle: every frame NetGet emits is dissected by tshark without error.** A test
   helper that captures what a server writes (from the test's own socket — no capture privilege
   needed), wraps it in a synthetic pcap with the right link type and port, runs
   `tshark -r x.pcap -V -d <decode-as>` using the *already-verified* names in
@@ -123,19 +123,40 @@ once these exist.
   the end of an existing e2e test). Start with the 39 Beta servers — a Beta whose frames tshark
   rejects is misrated.
 
-- [ ] **Fuzz targets for every pre-authentication decoder.** `cargo-fuzz` with `libfuzzer`,
-  one target per hand-written parser, run in a nightly CI job for a fixed budget. Candidates,
-  in order of exposure: bencode (`utils/bencode.rs`), AMQP field tables, NATS/STOMP framing,
-  SNMP BER, RADIUS attributes, DNS wire format, LLDP/CDP/HSRP TLV walkers, Modbus/CoAP/GTP/M3UA
-  headers, NDEF records, USB/IP + CTAPHID assembly, HID report maps, SIP/RTSP line parsing, the
-  NFS RPC guard, SMB2 headers, TDS/MySQL/PostgreSQL startup packets. *Why:* all six stack
-  overflows and every "bound the declared size" defect were found by *reasoning*, one at a
-  time. A fuzzer finds the seventh while you sleep, and a crash is `SIGSEGV`, which nothing
-  else in this suite can observe. *Verify:* each target runs 60s clean locally before merging;
-  the CI job uploads any crash artefact. *Effort:* L overall, S per target once the harness
-  exists. **This is the single largest robustness gap in the tree.**
+- [x] **Fuzz targets for every pre-authentication decoder.** *(harness + 17 targets landed
+  15 September 2026; `fuzz/`, `.github/workflows/fuzz.yml`, `fuzz/README.md`.)* `cargo-fuzz`
+  with `libfuzzer`, its own workspace root so `cargo test` at the repository root never sees
+  it, nightly job at 300s per target, one matrix job each, crash artefact and grown corpus
+  uploaded. Every target ran 60s clean locally before merging; none crashed. The harness was
+  itself verified by removing `utils::bencode`'s depth guard and confirming the fuzzer finds
+  the overflow — the same discipline the AMQP field-table bound was checked with, and the
+  only thing that distinguishes "found nothing" from "not looking".
 
-- [ ] **Property tests for every codec that has both directions.** `proptest` round-trips:
+  **Landed:** bencode, SNMP BER, AMQP field tables, NATS framing, STOMP framing, RADIUS
+  attributes, DNS wire format, LLDP, CDP, HSRP, Modbus, CoAP, M3UA, BGP, NDEF, ISO 7816
+  APDUs, the NFS RPC record guard. Four of those are *guard pairs* — they drive NetGet's
+  screen and then hand whatever it accepted to the decoder it guards, which is the contract
+  that matters; a target asserting only that the guard does not panic tests the easy half.
+
+  **Still open, and neither is a NetGet decoder defect:**
+  - **No USB protocol can be fuzzed at all.** `usb-fido2` → `usb-common` → `usbip` → `nusb`,
+    and nusb 0.2.7 (newest published) has a `#[cfg(fuzzing)]` helper that does not typecheck
+    (E0271). cargo-fuzz sets `--cfg fuzzing` graph-wide, so the build dies before reaching
+    NetGet. Costs CTAPHID reassembly and — the one worth returning for — CTAP2's
+    `serde_cbor::from_slice` behind a one-byte command check, which is the unguarded-recursion
+    class with no guard in front of it.
+  - **SIP, SMB, MSSQL and torrent-tracker parsers are private** on private return types.
+    Reaching them costs more visibility surface than a fuzz target should buy unilaterally;
+    `SmbServer::parse_smb2_path`/`parse_smb2_username` are hand-rolled offset arithmetic on
+    pre-auth CREATE and SESSION_SETUP bodies and are the best of them.
+
+  Also recorded in `fuzz/README.md`: **ASan deadlocks before `main` on macOS 26/27**, so
+  local runs need `-s none`. It presents as a slow fuzzer rather than a broken one — no
+  banner, no corpus growth, ~25% CPU, sailing past `-max_total_time` — and cost a full
+  debugging pass. Stack-overflow detection is unaffected, since libFuzzer's signal handler
+  catches the guard-page `SIGSEGV` with or without ASan.
+
+- [x] **Property tests for every codec that has both directions.** `proptest` round-trips:
   `decode(encode(x)) == x` for arbitrary `x`, and `encode` output length ≤ the declared bound.
   *Why:* `m3ua` had `MAX_MESSAGE_LEN` on decode and nothing on encode; the property would have
   said so. *Effort:* M.
@@ -169,7 +190,7 @@ once these exist.
 Programme 2 bounded what it found. These are the bounds every connection-oriented server should
 declare, whether or not anyone has looked at it.
 
-- [ ] **Idle and first-read timeouts on the 18 TCP servers without any.** `cassandra`, `db2`,
+- [x] **Idle and first-read timeouts on the 18 TCP servers without any.** `cassandra`, `db2`,
   `etcd`, `kafka`, `m3ua`, `mcp`, `memcached`, `mssql`, `mysql`, `nfs`, `postgresql`, `redis`,
   `smb`, `svn`, `tls`, `tor_relay`, `torrent_peer`, `zookeeper`. `whois`'s
   `FIRST_QUERY_READ_TIMEOUT`/`IDLE_AFTER_REPLY_TIMEOUT` pair is the shape. *Why:* a peer that
@@ -177,7 +198,7 @@ declare, whether or not anyone has looked at it.
   them is a free denial of service on a server with no connection cap. *Verify:* ratchet — any
   `mod.rs` with `TcpListener` must reference a timeout constant. *Effort:* M.
 
-- [ ] **A connection cap on every accept loop.** Two servers have one. A shared
+- [x] **A connection cap on every accept loop.** Two servers have one. A shared
   `accept_bounded(listener, max)` helper in `server/` that every accept loop calls, refusing
   past the cap with the protocol's own "busy" vocabulary where one exists (SMTP 421, HTTP 503,
   RESP `LOADING`) and a close where none does. *Why:* the NFS guard chose 256 for a reason;
@@ -310,17 +331,17 @@ the protocol at all — and the mock never tells you, because the mock is script
 
 The suite is the evidence. Where it lies, the ratings lie.
 
-- [ ] **A reason on every `#[ignore]`.** 105 of 248 have none. Each becomes
+- [x] **A reason on every `#[ignore]`.** 105 of 248 have none. Each becomes
   `#[ignore = "claims the BLE adapter"]` or is un-ignored. *Verify:* ratchet — bare
   `#[ignore]` fails. *Effort:* S, mechanical.
 
-- [ ] **Replace the 279 fixed `sleep(from_secs(N))` in e2e tests with a condition.**
+- [x] **Replace the 279 fixed `sleep(from_secs(N))` in e2e tests with a condition.**
   `wait_for_mocks`, `wait_for_any`, `wait_for_stat`, `wait_for_log`. *Why:* this is where every
   load-flake came from, and `m3ua`'s suite went 6s → 0.46s when its three sleeps became waits.
   *Verify:* ratchet — no `sleep(Duration::from_secs(` in `tests/server` or `tests/client`
   outside a helper. *Effort:* M, mechanical but wide.
 
-- [ ] **`verify_mocks` after every `with_mock`.** A test that configures a mock and never
+- [x] **`verify_mocks` after every `with_mock`.** A test that configures a mock and never
   verifies it asserts nothing about the model. *Verify:* source ratchet. *Effort:* S.
 
 - [ ] **The blocking CI test job covers every protocol that needs no system library.** It runs
@@ -338,13 +359,13 @@ The suite is the evidence. Where it lies, the ratings lie.
 
 ## Tier 6 — documentation truth
 
-- [ ] **Every backtick path in a `CLAUDE.md` must exist.** A ratchet over
+- [x] **Every backtick path in a `CLAUDE.md` must exist.** A ratchet over
   `src/**/CLAUDE.md` and `tests/**/CLAUDE.md`: any `` `path/to/file.rs` `` or
   `` `fn_name` `` that names a file must resolve. *Why:* the `remote` test doc described three
   btleplug tests that did not exist; the `openai` server doc said "no LLM prompting" beside a
   table of LLM call budgets. A path check catches the first class outright. *Effort:* S.
 
-- [ ] **Test counts in docs are generated or absent.** "22 tests" was wrong in three files.
+- [x] **Test counts in docs are generated or absent.** "22 tests" was wrong in three files.
   Either a script updates them or the docs stop stating them. *Effort:* S.
 
 - [ ] **Per-protocol CLAUDE.md claim audit as a recurring pass, not a one-off.** Programme 2
@@ -358,23 +379,23 @@ The suite is the evidence. Where it lies, the ratings lie.
 
 Each of these was found by hand in several protocols. Each can be a shrink-only source scan.
 
-- [ ] **Affirmative default on a status field.** `unwrap_or("90")`, `unwrap_or(200)`,
+- [x] **Affirmative default on a status field.** `unwrap_or("90")`, `unwrap_or(200)`,
   `unwrap_or(true)`, `unwrap_or(0)` on a field named `status`/`code`/`result`/`sw1`/`sw2`/
   `ok`/`success`/`allowed`. *Why:* NFC and usb-smartcard each had it in two layers. *Effort:* S.
 
-- [ ] **Configuration-decides-the-bound.** Any budget or escalation gate that inspects
+- [x] **Configuration-decides-the-bound.** Any budget or escalation gate that inspects
   `event_handlers` rather than the handler's *result*. *Why:* tuntap. Hard to scan generically;
   scan for the idiom (`handlers.iter().any(` inside a budget path). *Effort:* S.
 
-- [ ] **Vendor-default fallback in clients.** Any client wrapping an SDK whose `remote_addr` can
+- [x] **Vendor-default fallback in clients.** Any client wrapping an SDK whose `remote_addr` can
   be empty without an `Err`. *Why:* DynamoDB, then openai, then openapi. *Effort:* S.
 
-- [ ] **Recursive decoder without a depth counter.** The crude scan found 973 self-referencing
+- [x] **Recursive decoder without a depth counter.** The crude scan found 973 self-referencing
   functions; refine to functions that both recurse and take `&[u8]`/`&mut Reader`, and require
   a `depth` parameter or a `MAX_*_DEPTH` in scope. *Why:* six stack overflows, and `catch_unwind`
   cannot see a seventh. *Effort:* M.
 
-- [ ] **Example drifts from const.** Any `get_startup_examples()` containing a hex literal longer
+- [x] **Example drifts from const.** Any `get_startup_examples()` containing a hex literal longer
   than 16 bytes that is not produced by `hex::encode(CONST)`. *Why:* four of five HID profiles.
   *Effort:* S.
 
@@ -444,3 +465,39 @@ Move items here with the date and the commit or PR that verified them.
   `rtsp`, `oci_registry`, `maven`, `ssh`. Every `e2e_testing` field now names its client, says
   the test is neither ignored nor skip-gated, and says what is still unproven.
 - **15 Sep 2026 — Tier 3, "re-derive the not-promoted list".** `scripts/beta_evidence_table.py`.
+
+**15 September 2026 — Tier 1, the two oracles.**
+
+- **The pcap oracle** (`tests/helpers/pcap_oracle.rs`, `tests/pcap_oracle_test.rs`), adopted in
+  22 protocols across 25 files, twelve of them Beta. Two failure mechanisms, because they catch
+  different things: Expert Info at Warn or above, and the requested dissector being **absent
+  from `frame.protocols`** for a direction that carried bytes — the second has no expert info
+  behind it at all, which is why an 802.3 frame carrying an EtherType where the length belongs
+  dissects as `eth:ethertype:data` in silence. That is the CDP defect, and silence is why a
+  human had to find it.
+
+  It found a malformed IMAP literal no existing assertion could see: `{50}` declared for a
+  46-octet body, which desynchronises a conforming client permanently. Every assertion in that
+  file is a `contains()` on a trimmed line, so all of them passed.
+
+  **Every other protocol's frames were accepted** — the first independent confirmation that
+  Programme 2's link-layer fixes hold.
+
+- **17 fuzz targets** (`fuzz/`), all 60s clean at ~1.9M executions, `src/` byte-identical.
+
+  **The finding worth carrying: a naive fuzzing setup would have run green forever.**
+  Coverage-guided fuzzing gives *no gradient toward nesting* — a value nested 10,000 deep runs
+  the same basic blocks as one nested 3 deep, so libFuzzer discards it. Measured with the
+  bencode guard removed: seeds alone found nothing in 300s and 15.5M executions; adding one
+  32 KiB depth bomb found the SIGSEGV in **2.8 seconds**. The corpus is the difference between
+  a harness that finds the stack-overflow class and one that only looks like it does.
+
+  Also: ASan deadlocks before `main` on macOS 27 and presents as a *slow* fuzzer, not a broken
+  one — no banner, no corpus growth, sailing past `-max_total_time`. Use `-s none` locally.
+
+**15 September 2026 — the ratchets caught three fail-opens on merged code.** `sqs` was the
+DynamoDB defect verbatim in the next AWS client (a client pointed at localhost issuing real
+operations against real AWS, signed with ambient credentials); `spark` defaulted an absent
+status to 200 *and* narrowed it unchecked; `zookeeper` defaulted `error_code` to 0, which is
+`Ok`. All fixed rather than baselined. Each appeared as "new" at one line and "gone" at another
+because merges had shifted the file — the shrink-only halves firing in both directions at once.

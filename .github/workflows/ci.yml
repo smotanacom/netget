@@ -286,6 +286,23 @@ jobs:
       - name: install dig (required by the dns real-client test)
         run: sudo apt-get update && sudo apt-get install -y bind9-dnsutils
 
+      # The pcap oracle (tests/helpers/pcap_oracle.rs) runs tshark over the bytes each
+      # server emitted, as an independent decoder. It deliberately FAILS rather than
+      # skips when tshark is absent, for the same reason dig does above: a
+      # skip-when-missing gate is a silent pass. dns, http, redis and tcp are all in
+      # CI_FEATURES and all adopt it, so the binary must be here.
+      #
+      # DEBIAN_FRONTEND and the preseed are not optional: the tshark package asks,
+      # interactively, whether non-superusers may capture packets, and an unanswered
+      # debconf prompt hangs the job until the 30-minute timeout. The oracle reads
+      # files it wrote itself and never captures, so the answer is "no".
+      - name: install tshark (required by the pcap oracle)
+        run: |
+          echo "wireshark-common wireshark-common/install-setuid boolean false" \
+            | sudo debconf-set-selections
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tshark
+          tshark --version | head -1
+
       - name: cargo test
         run: |
           cargo test --locked --no-default-features --features "$CI_FEATURES" \

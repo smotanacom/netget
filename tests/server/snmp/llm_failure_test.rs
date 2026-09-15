@@ -138,6 +138,16 @@ async fn test_snmp_answers_gen_err_when_llm_fails() -> E2EResult<()> {
     buf.truncate(n);
     println!("SNMP response ({n} bytes): {:02x?}", &buf);
 
+    // The pcap oracle. `decode_response` below is this file's own BER walker and it
+    // reads exactly the two fields it wants; Wireshark's `snmp` dissector decodes the
+    // whole message and fails on a length byte that does not match its contents,
+    // which is the characteristic defect of a hand-written BER encoder answering on
+    // an error path nobody exercises.
+    crate::helpers::pcap_oracle::PcapOracle::udp("snmp")
+        .to_server(&build_get_request(REQUEST_ID))
+        .from_server(&buf)
+        .assert_clean();
+
     let (request_id, error_status) =
         decode_response(&buf).ok_or("the reply was not a decodable SNMP Response message")?;
 

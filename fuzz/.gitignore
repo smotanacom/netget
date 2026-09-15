@@ -1,0 +1,18 @@
+# cargo-fuzz build output.
+target/
+# Its own lockfile: this crate exists to be rebuilt against whatever the main crate
+# resolves, and a pinned one here only ever goes stale.
+Cargo.lock
+
+# Crash inputs libFuzzer writes when a target dies. Deliberately NOT committed as
+# artefacts: a crash is a defect, so the input belongs in a regression test under
+# `tests/` and in `corpus/<target>/`, not in a directory nothing reads.
+artifacts/
+
+# What is committed under `corpus/` is the hand-written seed set — valid messages for
+# each protocol, so the fuzzer starts from the shapes the decoders accept instead of
+# spending its budget rediscovering headers. libFuzzer also *writes* every
+# coverage-expanding input it finds back into these directories, and those are not
+# committed: they are thousands of files, they are reproducible from the seeds, and CI
+# uploads the grown corpus as a build artefact instead. Re-seed with
+# `git clean -fd corpus/ && git checkout corpus/` after a local run.

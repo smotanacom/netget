@@ -14,6 +14,7 @@ pub mod mock_matcher;
 pub mod mock_ollama;
 pub mod netget;
 pub mod ollama_test_builder;
+pub mod pcap_oracle;
 pub mod server;
 pub mod usbip_client;
 

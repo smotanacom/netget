@@ -248,6 +248,31 @@ mod e2e_bgp {
         .concat();
         assert_eq!(update, expected_update, "advertised route is malformed");
 
+        // The pcap oracle, over the whole session at once, and deliberately *after* the
+        // exchange rather than inside `read_bgp_message`.
+        //
+        // The assertions above compare against byte strings this file wrote out of
+        // RFC 4271 by hand; Wireshark's `bgp` dissector walks the same messages by
+        // their own length fields — an OPEN's optional-parameter list, an UPDATE's
+        // withdrawn-routes / path-attribute / NLRI lengths, three nested fields that
+        // must sum to the message length exactly.
+        //
+        // Placing it here rather than in the read helper is not tidiness. The oracle
+        // runs tshark, which is tens of milliseconds, and
+        // `test_bgp_keepalive_cadence_and_hold_timer_expiry` reads in a loop with a
+        // three-second negotiated hold timer: in the read path the oracle pushed the
+        // client's KEEPALIVE past the server's hold timer and the session was torn
+        // down before it reached Established. An oracle that changes what the test
+        // observes is worse than no oracle.
+        crate::helpers::pcap_oracle::PcapOracle::tcp("bgp")
+            .peer_input_is_context()
+            .to_server(&build_bgp_open(65000, 180, [192, 168, 1, 100], Some(65000)))
+            .from_server(&open)
+            .from_server(&keepalive)
+            .to_server(&build_bgp_keepalive())
+            .from_server(&update)
+            .assert_clean();
+
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last event routinely lands after
         // the sleep expires, and the test reports it as never having happened.

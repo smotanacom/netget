@@ -354,6 +354,18 @@ async fn exchange(port: u16, request: &[u8], terminator: &[u8]) -> E2EResult<Vec
             break;
         }
     }
+
+    // The pcap oracle. Wireshark's `memcache` dissector reads the text protocol's
+    // framing independently: the command line, the `VALUE <key> <flags> <bytes>`
+    // header and the data block whose length that header declares. This suite's
+    // central hazard is a byte count that disagrees with the block it introduces —
+    // `set_with_an_embedded_crlf_is_counted_not_scanned` is exactly that — and a
+    // second reader of the same rule is worth having.
+    crate::helpers::pcap_oracle::PcapOracle::tcp("memcached")
+        .to_server(request)
+        .from_server(&buffer)
+        .assert_clean();
+
     Ok(buffer)
 }
 

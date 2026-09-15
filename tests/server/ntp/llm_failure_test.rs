@@ -66,6 +66,14 @@ async fn test_ntp_answers_static_time_when_llm_fails() -> E2EResult<()> {
 
     assert_eq!(n, 48, "an NTP packet is 48 bytes");
 
+    // The pcap oracle: Wireshark's own RFC 5905 decoder reads the packet this
+    // server synthesised without asking the model. The fail-closed path is exactly
+    // where a hand-built packet is least likely to have been looked at.
+    crate::helpers::pcap_oracle::PcapOracle::udp("ntp")
+        .to_server(&request)
+        .from_server(&buf[..n])
+        .assert_clean();
+
     let leap_indicator = (buf[0] >> 6) & 0x03;
     let version = (buf[0] >> 3) & 0x07;
     let mode = buf[0] & 0x07;

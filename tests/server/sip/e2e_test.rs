@@ -31,6 +31,17 @@ async fn sip_exchange(
         .await
         .map_err(|_| "Timed out waiting for SIP response")??;
 
+    // The pcap oracle. Every assertion in this file is `response.contains("...")` on a
+    // lossily-decoded string, which cannot see framing at all. Wireshark's `sip`
+    // dissector parses the status line, requires the mandatory Via / From / To /
+    // Call-ID / CSeq headers, and checks Content-Length against the body that follows
+    // it — and a SIP server that answers INVITE with SDP is exactly where a
+    // Content-Length is computed by hand and gets it wrong.
+    crate::helpers::pcap_oracle::PcapOracle::udp("sip")
+        .to_server(request.as_bytes())
+        .from_server(&buf[..len])
+        .assert_clean();
+
     Ok(String::from_utf8_lossy(&buf[..len]).to_string())
 }
 

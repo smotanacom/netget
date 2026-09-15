@@ -23,7 +23,7 @@ application scenarios.
 - `test_http_methods()`: 4 LLM calls (GET, POST, PUT, DELETE)
 - `test_http_error_responses()`: 3 LLM calls (403, 500, 301 redirects)
 - `test_http_simple_get_with_logging()`: 1 LLM call (GET with file logging)
-- `failure_semantics_test.rs` (3 tests): 1 LLM call each — only the startup instruction is
+- `failure_semantics_test.rs` (4 tests): 1 LLM call each — only the startup instruction is
   mocked, and every `http_request` is deliberately left unmatched so the mock answers HTTP
   500 and netget reports a backend failure
 - `decision_tag_test.rs` (2 tests): 1 LLM call for the backend-failure test (startup only,

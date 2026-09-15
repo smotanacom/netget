@@ -1,0 +1,198 @@
+[package]
+name = "netget-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-or-later"
+
+# This is its own workspace root. It is deliberately NOT a member of the netget
+# workspace: `cargo build`, `cargo test` and `cargo check` at the repository root
+# must never see this package, because it needs a nightly toolchain and links
+# libFuzzer's sanitizer runtime. The root `Cargo.toml` names it under
+# `[workspace] exclude` for the same reason.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Decoders that a NetGet guard stands in front of. A target that only checks "the guard
+# does not panic" proves the easy half; the half that killed the process is whether the
+# guard's *accept* verdict is one the decoder behind it survives. So where a guard exists
+# to protect a third-party decoder, the target hands accepted input to that decoder.
+serde_bencode = "0.2"
+
+# NetGet has no DNS parser of its own — `dns`, `dot` and `doh` all call
+# `Message::from_vec` inline. See fuzz_targets/dns_message.rs.
+hickory-proto = "0.24"
+
+[dependencies.netget]
+path = ".."
+default-features = false
+# One feature per decoder reached below, and nothing else. `default-features = false`
+# matters: netget's default is `all-protocols`, which would compile 136 protocols in
+# order to fuzz seventeen decoders.
+features = [
+    "amqp",
+    "bgp",
+    "cdp",
+    "coap",
+    "dns",
+    "hsrp",
+    "lldp",
+    "m3ua",
+    "modbus",
+    "nats",
+    "nfc",
+    "nfc-client",
+    "nfs",
+    "radius",
+    "snmp",
+    "stomp",
+]
+
+# NOT here, and it is not an oversight: `usb-fido2` (and every other USB feature).
+#
+# `usb-fido2` -> `usb-common` -> `usbip` -> `nusb`. nusb 0.2.7 — the newest published
+# version — carries a `#[cfg(fuzzing)]` helper whose signature does not typecheck:
+#
+#   pub fn fuzz_parse_concatenated_config_descriptors(buf: &[u8]) -> impl Iterator<Item = &[u8]>
+#
+# returning `parse_concatenated_config_descriptors(buf)`, which yields
+# `ConfigurationDescriptor<'_>`, not `&[u8]` (E0271). cargo-fuzz sets `--cfg fuzzing` for
+# the whole graph, so that dead-on-arrival function is compiled and the build fails before
+# any NetGet code is reached.
+#
+# The effect is worth stating plainly: **no NetGet USB protocol can be fuzzed at all** until
+# nusb fixes this upstream or NetGet stops resolving it through usbip. The CTAPHID
+# reassembler and CTAP2's unguarded `serde_cbor::from_slice` are the two targets this costs,
+# and the second is the one worth coming back for — it is the unbounded-recursion class that
+# `utils::bencode` and `snmp`'s BER guard both exist for, in a protocol that has no guard.
+
+# ---------------------------------------------------------------------------
+# Targets. Each one names the decoder it drives; see the module doc in each file
+# for why that decoder is worth the CPU.
+# ---------------------------------------------------------------------------
+
+[[bin]]
+name = "bencode_structure"
+path = "fuzz_targets/bencode_structure.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snmp_ber"
+path = "fuzz_targets/snmp_ber.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "amqp_field_table"
+path = "fuzz_targets/amqp_field_table.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nats_frame"
+path = "fuzz_targets/nats_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stomp_frame"
+path = "fuzz_targets/stomp_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "radius_packet"
+path = "fuzz_targets/radius_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dns_message"
+path = "fuzz_targets/dns_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lldp_frame"
+path = "fuzz_targets/lldp_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cdp_frame"
+path = "fuzz_targets/cdp_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "modbus_adu"
+path = "fuzz_targets/modbus_adu.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "coap_message"
+path = "fuzz_targets/coap_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hsrp_message"
+path = "fuzz_targets/hsrp_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "m3ua_message"
+path = "fuzz_targets/m3ua_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bgp_message"
+path = "fuzz_targets/bgp_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ndef_message"
+path = "fuzz_targets/ndef_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nfc_apdu"
+path = "fuzz_targets/nfc_apdu.rs"
+test = false
+doc = false
+bench = false
+
+
+
+[[bin]]
+name = "nfs_record_guard"
+path = "fuzz_targets/nfs_record_guard.rs"
+test = false
+doc = false
+bench = false

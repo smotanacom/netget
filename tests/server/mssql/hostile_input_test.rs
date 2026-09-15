@@ -83,6 +83,20 @@ async fn read_tds_message(stream: &mut TcpStream) -> E2EResult<Option<Vec<u8>>> 
             tokio::time::timeout(Duration::from_secs(20), stream.read_exact(&mut payload))
                 .await
                 .map_err(|_| "MSSQL declared a packet length it never finished sending")??;
+
+            // The pcap oracle. This function already checks the one field it needs —
+            // that the declared length covers its own header — and the tests then
+            // scan the payload for token bytes. Wireshark's `tds` dissector reads the
+            // whole 8-byte TDS header (type, status, length, SPID, packet id, window)
+            // and then the token stream inside it, so a token whose own length field
+            // disagrees with the bytes that follow is caught here and nowhere else in
+            // this suite.
+            let mut whole = header.to_vec();
+            whole.extend_from_slice(&payload);
+            crate::helpers::pcap_oracle::PcapOracle::tcp("mssql")
+                .from_server(&whole)
+                .assert_clean();
+
             Ok(Some(payload))
         }
     }
