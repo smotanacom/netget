@@ -58,8 +58,14 @@ The list below is exhaustive in both directions.
   request's; get that wrong and every real client silently discards the reply, which looks
   exactly like the server being down.
 - **User-Password unhiding** — RFC 2865 §5.2. `packet::decode_user_password`. Trailing NUL
-  pad stripped. Ciphertext must be 16..=128 bytes and a multiple of 16, else the packet's
-  password is reported absent rather than guessed at.
+  pad stripped. Ciphertext must be 16..=`MAX_USER_PASSWORD_LEN` bytes and a multiple of 16,
+  else the packet's password is reported absent rather than guessed at. The inverse,
+  `encode_user_password` — used by tests and by anything building an Access-Request; the
+  server never encrypts a password — had **no** bound until September 2026 and returned
+  `Vec<u8>`, so a 129-octet plaintext produced 144 octets of ciphertext this module's own
+  decoder rejects. It now shares the constant and returns `Result`. Latent rather than
+  reachable from the wire, but it is the same encode/decode asymmetry the codec property tests
+  were written to find.
 - **Accounting-Request Authenticator** — `MD5(Code | ID | Length | 16 zero octets |
   Attributes | Secret)`, RFC 2866 §3. Unlike an Access-Request's authenticator (a random
   nonce, unverifiable), this one is keyed, so the server **verifies** it and drops the packet

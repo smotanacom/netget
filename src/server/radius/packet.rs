@@ -41,6 +41,15 @@ pub const HEADER_LEN: usize = 20;
 pub const MIN_PACKET_LEN: usize = 20;
 pub const MAX_PACKET_LEN: usize = 4096;
 
+/// Longest User-Password this format can carry, in octets (RFC 2865 §5.2: "The password is
+/// hidden … If the password is longer than 128 characters, it is an error").
+///
+/// One constant for both directions on purpose. [`decode_user_password`] enforces it against
+/// a hostile peer and [`encode_user_password`] against the caller building an Access-Request,
+/// and the two used to disagree — the encoder had no bound at all, so it produced ciphertext
+/// its own decoder rejects.
+pub const MAX_USER_PASSWORD_LEN: usize = 128;
+
 /// Attribute type numbers this server names. Anything else is reported to the model by
 /// number, never dropped.
 pub const ATTR_USER_NAME: u8 = 1;
@@ -466,7 +475,10 @@ pub fn decode_user_password(
     request_authenticator: &[u8; 16],
     secret: &[u8],
 ) -> Result<Vec<u8>, RadiusError> {
-    if ciphertext.is_empty() || ciphertext.len() > 128 || !ciphertext.len().is_multiple_of(16) {
+    if ciphertext.is_empty()
+        || ciphertext.len() > MAX_USER_PASSWORD_LEN
+        || !ciphertext.len().is_multiple_of(16)
+    {
         return Err(RadiusError::BadPasswordLength(ciphertext.len()));
     }
 
@@ -494,11 +506,20 @@ pub fn decode_user_password(
 
 /// Apply the §5.2 hiding. Used only by tests and by anything that needs to *build* an
 /// Access-Request; the server itself never encrypts a password.
+///
+/// Refuses a plaintext past [`MAX_USER_PASSWORD_LEN`], which is the same ceiling
+/// [`decode_user_password`] enforces against the wire. Without the check the two directions
+/// disagreed: a 129-octet plaintext encrypted happily into 144 octets of ciphertext that this
+/// module's own decoder — and every RFC 2865 implementation — rejects.
 pub fn encode_user_password(
     plaintext: &[u8],
     request_authenticator: &[u8; 16],
     secret: &[u8],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, RadiusError> {
+    if plaintext.len() > MAX_USER_PASSWORD_LEN {
+        return Err(RadiusError::BadPasswordLength(plaintext.len()));
+    }
+
     let mut padded = plaintext.to_vec();
     if padded.is_empty() {
         padded.resize(16, 0);
@@ -523,7 +544,7 @@ pub fn encode_user_password(
         out.extend_from_slice(&cipher);
         previous = cipher;
     }
-    out
+    Ok(out)
 }
 
 /// Render one attribute's value the way the model should see it: never raw bytes,

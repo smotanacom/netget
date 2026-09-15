@@ -167,7 +167,7 @@ fn unhides_a_multi_block_password_matching_an_independent_implementation() {
     let password = b"a-very-long-password-over-32-bytes!!";
 
     assert_eq!(
-        encode_user_password(password, &ra, SECRET),
+        encode_user_password(password, &ra, SECRET).unwrap(),
         expected_cipher,
         "hiding must match the independently computed ciphertext"
     );
@@ -632,7 +632,7 @@ async fn access_challenge_state_round_trips() -> E2EResult<()> {
         Attribute::text(packet::ATTR_USER_NAME, "nemo"),
         Attribute::new(
             packet::ATTR_USER_PASSWORD,
-            encode_user_password(b"123456", &authenticator, SECRET),
+            encode_user_password(b"123456", &authenticator, SECRET).unwrap(),
         ),
         Attribute::new(packet::ATTR_STATE, b"otp-round-1".to_vec()),
     ];

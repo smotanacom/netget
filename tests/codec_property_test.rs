@@ -1796,8 +1796,8 @@ mod radius_props {
         /// Property 1 for the User-Password cipher, which is its own inverse under the same
         /// secret and Request Authenticator.
         ///
-        /// The plaintext stops at 128 octets because that is the ceiling `decode_user_password`
-        /// enforces; see the FINDING below for what `encode_user_password` does above it.
+        /// The plaintext stops at 128 octets because that is the ceiling both directions now
+        /// enforce; the test below pins the refusal above it.
         /// Trailing NULs are the NAS's own padding and are stripped on decode, so a plaintext
         /// that ends in one is not a value the format can carry.
         #[test]
@@ -1806,7 +1806,7 @@ mod radius_props {
             authenticator in any::<[u8; 16]>(),
             secret in proptest::collection::vec(any::<u8>(), 1..24),
         ) {
-            let cipher = encode_user_password(&password, &authenticator, &secret);
+            let cipher = encode_user_password(&password, &authenticator, &secret).unwrap();
             prop_assert_eq!(cipher.len() % 16, 0);
             prop_assert!(cipher.len() <= 128);
             let plain = decode_user_password(&cipher, &authenticator, &secret).unwrap();
@@ -1847,22 +1847,24 @@ mod radius_props {
     // FINDINGS
     // -------------------------------------------------------------------------------------
 
-    /// FINDING: `encode_user_password` applies no length bound, while `decode_user_password`
+    /// `encode_user_password` used to apply no length bound, while `decode_user_password`
     /// refuses any ciphertext past 128 octets (RFC 2865 §5.2). Minimal counterexample: a
     /// 129-octet plaintext, whose 144-octet ciphertext the codec's own decoder rejects.
     ///
     /// The smallest of the asymmetries here — the doc comment says the function exists for
     /// tests and for anything building an Access-Request, and the server never encrypts a
-    /// password — but it is the same shape and it is one `if` away.
+    /// password — but it was the same shape and it was one `if` away.
     #[test]
-    #[ignore = "FINDING: encode_user_password enforces no length bound; decode refuses >128"]
-    fn encode_user_password_should_refuse_a_plaintext_its_own_decoder_would_reject() {
-        let plaintext = vec![b'x'; 129];
-        let cipher = encode_user_password(&plaintext, &[0u8; 16], b"secret");
-        assert!(
-            decode_user_password(&cipher, &[0u8; 16], b"secret").is_ok(),
-            "encode produced {} octets, past the 128 its own decoder enforces",
-            cipher.len()
+    fn encode_user_password_refuses_a_plaintext_its_own_decoder_would_reject() {
+        assert!(encode_user_password(&vec![b'x'; 129], &[0u8; 16], b"secret").is_err());
+
+        // The boundary: 128 octets is legal and decodes back to itself.
+        let plaintext = vec![b'x'; 128];
+        let cipher = encode_user_password(&plaintext, &[0u8; 16], b"secret").unwrap();
+        assert_eq!(cipher.len(), 128);
+        assert_eq!(
+            decode_user_password(&cipher, &[0u8; 16], b"secret").unwrap(),
+            plaintext
         );
     }
 }
