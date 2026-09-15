@@ -391,13 +391,24 @@ impl VncServer {
             Log::new(Some(status_tx)).debug("VNC client authenticated");
             Ok(())
         } else {
-            // RFB 3.8 requires a reason string after a failed SecurityResult.
+            // RFB 3.8 requires a reason string after a failed SecurityResult, and that string
+            // is rendered verbatim by the peer's viewer. It is a byte literal for exactly that
+            // reason: nothing from NetGet's own diagnostics may reach it.
             let reason = b"only security type 1 (None) is supported";
-            let mut writer = write_half.lock().await;
-            writer.write_u32(1).await?; // 1 = Failed
-            writer.write_u32(reason.len() as u32).await?;
-            writer.write_all(reason).await?;
-            writer.flush().await?;
+            {
+                let mut writer = write_half.lock().await;
+                writer.write_u32(1).await?; // 1 = Failed
+                writer.write_u32(reason.len() as u32).await?;
+                writer.write_all(reason).await?;
+                writer.flush().await?;
+            }
+            // The protocol refused this peer, not the model — no model was consulted. Tagged
+            // so it is never read as a fail-closed answer to an event.
+            Log::new(Some(status_tx)).warn(format!(
+                "VNC handshake refused decision=protocol_error: client requested unsupported \
+                 security type {}",
+                chosen_security
+            ));
             Err(anyhow!(
                 "client requested unsupported security type {chosen_security}"
             ))
@@ -737,6 +748,7 @@ impl VncConnection {
     /// can put a placeholder on screen. The reason is carried in `Decision::no_answer`.
     async fn consult(&self, event: &Event) -> Decision {
         let mut decision = Decision::default();
+        let log = Log::new(Some(&self.status_tx));
 
         let execution = match call_llm(
             &self.llm_client,
@@ -750,9 +762,22 @@ impl VncConnection {
         {
             Ok(execution) => execution,
             Err(e) => {
-                // Non-fatal: a placeholder screen (wire fallback) is drawn, so WARN.
-                Log::new(Some(&self.status_tx))
-                    .warn(format!("VNC {} not answered: {}", event.event_type.id, e));
+                // The backend failed. The peer gets the placeholder screen with a fixed
+                // caption; the error text stays here. `fail_closed_llm_overloaded` and
+                // `fail_closed_llm_error` are kept apart so a saturated backend and a dead
+                // one are not the same line, and neither can be mistaken for the model
+                // having chosen to leave the screen alone (`decision=model_answer` with a
+                // `vnc_no_change`).
+                let tag = match crate::utils::wire_failure::WireFailure::classify(&e) {
+                    crate::utils::wire_failure::WireFailure::Overloaded => {
+                        "fail_closed_llm_overloaded"
+                    }
+                    crate::utils::wire_failure::WireFailure::Unavailable => "fail_closed_llm_error",
+                };
+                log.error(format!(
+                    "VNC {} on {} not answered decision={}: {}",
+                    event.event_type.id, self.connection_id, tag, e
+                ));
                 decision.no_answer = Some(e.to_string());
                 return decision;
             }
@@ -805,7 +830,18 @@ impl VncConnection {
             }
         }
 
-        if !saw_result && decision.no_answer.is_none() {
+        // Exactly one `decision=` line per event, whatever happened. Without it a model that
+        // refused, a model that said nothing, and an executor that rejected the model's own
+        // action are one indistinguishable "the screen did not change".
+        if decision.no_answer.is_some() {
+            // Only the render-decode branch above reaches here: the executor accepted the
+            // action and this module could not read its result, which is a bug in the pair.
+            log.error(format!(
+                "VNC {} on {} decision=fail_closed_bad_action: the render result could not be \
+                 decoded",
+                event.event_type.id, self.connection_id
+            ));
+        } else if !saw_result {
             let detail = if execution.failures.is_empty() {
                 "no protocol action was returned".to_string()
             } else {
@@ -816,12 +852,30 @@ impl VncConnection {
                     .collect::<Vec<_>>()
                     .join("; ")
             };
-            // Non-fatal: a placeholder screen (wire fallback) is drawn, so WARN.
-            Log::new(Some(&self.status_tx)).warn(format!(
-                "VNC {} produced no usable action ({})",
-                event.event_type.id, detail
-            ));
+            // An empty answer is the model's own silence (WARN); an answer whose actions the
+            // executor refused is a malformed answer (ERROR). Both draw the placeholder.
+            if execution.failures.is_empty() {
+                log.warn(format!(
+                    "VNC {} on {} produced no usable action decision=model_silent ({})",
+                    event.event_type.id, self.connection_id, detail
+                ));
+            } else {
+                log.error(format!(
+                    "VNC {} on {} produced no usable action decision=fail_closed_bad_action ({})",
+                    event.event_type.id, self.connection_id, detail
+                ));
+            }
             decision.no_answer = Some(detail);
+        } else if decision.close {
+            log.info(format!(
+                "VNC {} on {} decision=model_reject (the model closed the connection)",
+                event.event_type.id, self.connection_id
+            ));
+        } else {
+            log.info(format!(
+                "VNC {} on {} decision=model_answer",
+                event.event_type.id, self.connection_id
+            ));
         }
 
         decision

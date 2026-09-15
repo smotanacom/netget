@@ -36,6 +36,7 @@ suite is not tied to the machine.
 | `test_non_upgrade_request_is_refused_without_a_model_call` | 400 and 426 are answered directly, and `verify_mocks` proves the model was never consulted | 0 extra |
 | `test_websocket_subprotocol_and_rejection` | the model picks one offered subprotocol and it is echoed; a declined upgrade returns the handler's own status | 4 |
 | `test_websocket_with_websocat` | a real external client gets the unprompted greeting and its echo | 1 |
+| `test_websocket_handshake_backend_failure_is_tagged_fail_closed` | an unanswerable `websocket_handshake` is refused with 503, logged `decision=fail_closed_llm_error`, and never as `decision=model_reject` | 1 + one deliberately failing event |
 
 ### `test_websocket_wire_protocol_against_raw_client`
 
@@ -53,7 +54,7 @@ Six protocol-level assertions on one connection:
    reassembled `fragment`
 6. a close with code 1000 is echoed with the same big-endian status code
 
-## LLM call budget: 6 total
+## LLM call budget: 7 total, plus repair retries on one deliberate failure
 
 The echo server used by three of the tests is configured entirely with **static handlers** in
 the `open_server` action, so the handshake, the greeting, every echo, the ping and the close all

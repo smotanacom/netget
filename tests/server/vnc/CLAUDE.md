@@ -82,6 +82,17 @@ compared against the decoded pixel) and the server must report `produced no usab
 This is the fail-closed path: RFB has no "no answer" reply, so silence would hang the viewer,
 and a screen that looked like content would hide the failure.
 
+It also asserts `decision=model_silent` **and** that no `decision=fail_closed_llm_error`
+appears, because the backend answered here — it was the model that had nothing to say.
+
+### 4. `test_vnc_backend_failure_is_tagged_fail_closed`
+
+The mirror of test 3, and it exists because the *screen* cannot tell the two apart: both draw
+the same placeholder. The mock answers `vnc_framebuffer_update_request` with raw text that is
+not an action, so the repair loop exhausts and `call_llm` returns `Err`. The assertions are the
+pair: the client still gets a full frame (silence would hang it), and the log carries
+`decision=fail_closed_llm_error` with no `decision=model_*` on that event.
+
 ## Expected runtime
 
 ~1.5 s for the whole suite against the mock harness.
