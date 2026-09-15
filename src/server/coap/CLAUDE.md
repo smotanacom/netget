@@ -147,6 +147,26 @@ path answers 5.03 if it does not.
 `tests/server/coap/e2e_test.rs::test_oversize_payload_is_refused_rather_than_silently_dropped`
 pins the limit, the message, and that exactly 1024 bytes is still accepted.
 
+### 7. `encode` refuses what `decode` would refuse, instead of truncating
+
+`CoapMessage::encode` returns `Result<Vec<u8>, EncodeError>`. It used to return `Vec<u8>` and
+write `self.token.len().min(8)` as the TKL while copying only those eight octets, so a token
+longer than the format allows reached the wire *shortened* — a perfectly parseable message
+carrying a token that is not the one that was asked for. `decode` refuses `tkl > 8`, so the two
+directions disagreed about what is legal, silently.
+
+Truncation is the worst available outcome on this protocol specifically. **CoAP's whole
+request/response matching is token equality** (RFC 7252 §5.3.2): a client that sent a 9-octet
+token and receives an 8-octet one discards the reply as unsolicited, so the server logs a
+successful send, the client logs nothing at all, and the request times out. The same change
+bounds an option value at [`MAX_OPTION_LEN`], which was narrowed by an `as u16`.
+
+Nothing in NetGet could reach either today — a response's token is echoed from the request and
+`decode` has already bounded that at 8, and the model never sees the token — so both were
+latent in a `pub fn` rather than reachable from the wire. `mod.rs::send` answers the refusal
+with `decision=fail_closed_encode` and sends nothing, which is the same fail-closed vocabulary
+the rest of the protocol uses.
+
 ## LLM integration
 
 ### Events

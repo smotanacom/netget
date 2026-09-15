@@ -129,6 +129,18 @@ open. So:
   was there. So those characters are replaced with U+FFFD, the record is flagged
   `unsafe_characters_removed`, and `payload_hex` stays as the authoritative form.
 
+**One place encoded rather than refusing, and it is fixed.** `push_record` wrote
+`type_field.len().min(255) as u8` as the TYPE LENGTH while writing the *whole* TYPE field, so a
+`mime_type` or `domain_type` of 256 octets or more produced a message that does not describe
+itself: a decoder reads 255 type octets and then misattributes every remaining byte of the
+record — and of every record after it — to the payload. `encode_one` checks that a `mime_type`
+is non-empty ASCII and that a `domain_type` contains a colon; neither bounded the length, and
+the module's own comment ("every type this encoder produces is a one-byte RTD, a media type or
+a `domain:type`, all far shorter") was an assumption about what a sensible model sends rather
+than a check. Both fields come from the model, so it is reachable by a model that miscopies a
+field — not from the wire, since decoding never round-trips back through `push_record`. It now
+refuses at `MAX_TYPE_LEN`, and `encode_message` already returned `Result`, so no caller changed.
+
 ### The Type 4 read/write sequence
 
 SELECT the NDEF application by AID `D2760000850101`, SELECT the NDEF file by `file_id`, then

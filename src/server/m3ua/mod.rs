@@ -614,7 +614,22 @@ impl M3uaSession {
                     .param(codec::TAG_HEARTBEAT_DATA)
                     .map(|p| p.value.clone());
                 trace!("M3UA BEAT from {} -> BEAT ACK", self.remote_addr);
-                self.send(codec::beat_ack(heartbeat.as_deref())).await;
+                // "Verbatim" has a ceiling: the peer chooses this data, and a BEAT carrying a
+                // maximal Heartbeat Data parameter cannot be echoed inside the 65535-octet
+                // message the header can describe. That is the one wire-reachable encode
+                // refusal in this protocol, so it gets ERR rather than silence — the ASP is
+                // told its keepalive was rejected instead of watching it disappear.
+                match codec::beat_ack(heartbeat.as_deref()) {
+                    Ok(bytes) => self.send(bytes).await,
+                    Err(e) => {
+                        error!(
+                            "M3UA decision=fail_closed_encode: BEAT from {} carries Heartbeat \
+                             Data that cannot be echoed within the message ceiling: {}",
+                            self.remote_addr, e
+                        );
+                        self.send_error(codec::ERR_PROTOCOL_ERROR).await;
+                    }
+                }
                 Ok(true)
             }
             (codec::CLASS_ASPTM, codec::ASPTM_ASPAC) => self.on_asp_active(&message).await,
@@ -628,9 +643,10 @@ impl M3uaSession {
                     self.remote_addr,
                     self.state.as_str()
                 ));
-                self.send(codec::aspia_ack(
-                    message.param_u32(codec::TAG_ROUTING_CONTEXT),
-                ))
+                self.send_encoded(
+                    "ASPIA ACK",
+                    codec::aspia_ack(message.param_u32(codec::TAG_ROUTING_CONTEXT)),
+                )
                 .await;
                 Ok(true)
             }
@@ -713,7 +729,7 @@ impl M3uaSession {
                 self.remote_addr,
                 self.state.as_str()
             );
-            self.send(codec::aspup_ack(None)).await;
+            self.send_encoded("ASPUP ACK", codec::aspup_ack(None)).await;
             return Ok(true);
         }
 
@@ -778,11 +794,14 @@ impl M3uaSession {
                 "M3UA duplicate ASPAC from {} while ASP-ACTIVE; re-acknowledging",
                 self.remote_addr
             );
-            self.send(codec::aspac_ack(
-                message.param_u32(codec::TAG_TRAFFIC_MODE_TYPE),
-                routing_context,
-                None,
-            ))
+            self.send_encoded(
+                "ASPAC ACK",
+                codec::aspac_ack(
+                    message.param_u32(codec::TAG_TRAFFIC_MODE_TYPE),
+                    routing_context,
+                    None,
+                ),
+            )
             .await;
             return Ok(true);
         }
@@ -909,7 +928,7 @@ impl M3uaSession {
         // Acknowledged first and unconditionally. Taking a peer *out* of service is the safe
         // direction, so it needs no policy — and an ASP that cannot leave cleanly is a worse
         // failure than one that cannot join.
-        self.send(codec::aspdn_ack()).await;
+        self.send_encoded("ASPDN ACK", codec::aspdn_ack()).await;
         self.state = AspState::Down;
         self.set_connection_state().await;
         Log::new(Some(&self.status_tx)).info(format!(
@@ -1200,6 +1219,29 @@ impl M3uaSession {
             .await;
     }
 
+    /// Send a message the codec has just built, or log why it would not build one.
+    ///
+    /// The encoders refuse anything `parse_header` would reject at the far end, so a refusal
+    /// here means the message could not have been understood — sending a truncated or
+    /// wrong-length version of it would be strictly worse than sending nothing. Tagged
+    /// `decision=fail_closed_encode` so it is distinguishable from the model's own silence,
+    /// which is the rule the rest of this protocol follows.
+    async fn send_encoded(&self, what: &str, encoded: Result<Vec<u8>, codec::WireError>) {
+        match encoded {
+            Ok(bytes) => self.send(bytes).await,
+            Err(e) => {
+                error!(
+                    "M3UA decision=fail_closed_encode: refusing to send {} to {}: {}",
+                    what, self.remote_addr, e
+                );
+                Log::new(Some(&self.status_tx)).warn(format!(
+                    "M3UA could not encode {what} for {}",
+                    self.remote_addr
+                ));
+            }
+        }
+    }
+
     async fn send_error(&self, error_code: u32) {
         Log::new(Some(&self.status_tx)).warn(format!(
             "M3UA ERR 0x{:02x} ({}) to {}",
@@ -1207,7 +1249,7 @@ impl M3uaSession {
             codec::error_code_name(error_code),
             self.remote_addr
         ));
-        self.send(codec::error(error_code, self.config.routing_context))
+        self.send_encoded("ERR", codec::error(error_code, self.config.routing_context))
             .await;
     }
 

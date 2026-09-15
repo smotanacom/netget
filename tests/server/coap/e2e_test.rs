@@ -390,7 +390,7 @@ fn test_codec_option_extension_encoding_round_trips() {
         payload: b"hello".to_vec(),
     };
 
-    let bytes = message.encode();
+    let bytes = message.encode().expect("a legal message encodes");
     let decoded = ng::CoapMessage::decode(&bytes).expect("our own encoding must decode");
     assert_eq!(decoded, message);
 
@@ -421,7 +421,7 @@ fn test_codec_header_bits_match_the_rfc() {
         options: Vec::new(),
         payload: Vec::new(),
     };
-    assert_eq!(message.encode(), vec![0x40, 0x01, 0x00, 0x01]);
+    assert_eq!(message.encode().unwrap(), vec![0x40, 0x01, 0x00, 0x01]);
 
     // 2.05 Content is 0b010_00101 = 0x45; 4.04 Not Found is 0b100_00100 = 0x84.
     assert_eq!(ng::CODE_CONTENT, 0x45);

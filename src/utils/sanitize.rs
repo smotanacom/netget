@@ -48,11 +48,17 @@ pub fn multiline(s: &str) -> String {
         .collect()
 }
 
-/// [`strip_controls`], then trim, then truncate to `max_chars` **characters** — never bytes, so
-/// this cannot split a multi-byte character the way `&s[..n]` does (see `crate::utils::truncate`
-/// for the bug that taught us that).
+/// [`strip_controls`], then truncate to `max_chars` **characters** — never bytes, so this
+/// cannot split a multi-byte character the way `&s[..n]` does (see `crate::utils::truncate`
+/// for the bug that taught us that) — then trim.
+///
+/// The trim comes **after** the cut, and that order is the whole point: cutting first can land
+/// the boundary just after a space, and a value ending in a space is one a second call would
+/// shorten again. `token(token(x, n), n) == token(x, n)` for every `x` and `n`, so "already
+/// sanitised" is a stable predicate — which matters because a value normalised at ingest and
+/// normalised again at render has to compare equal to itself.
 pub fn token(raw: &str, max_chars: usize) -> String {
     let cleaned = strip_controls(raw);
-    let trimmed = cleaned.trim();
-    trimmed.chars().take(max_chars).collect()
+    let cut: String = cleaned.trim_start().chars().take(max_chars).collect();
+    cut.trim_end().to_string()
 }

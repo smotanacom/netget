@@ -225,6 +225,16 @@ So:
 - **Nothing in the action vocabulary can emit an error frame.** There is no `error` parameter, and
   `transport::linux::to_socketcan` cannot construct a `CanAnyFrame::Error`.
   `e2e_test.rs::no_action_can_emit_an_error_frame` asserts both.
+- **`validate` still checks an error frame's payload length**, and until September 2026 it did
+  not. It returned `Ok` as soon as it saw `error: true` — reasonable for the identifier rules,
+  since an error frame's "identifier" is a class bitmask and the 11/29-bit limits do not apply
+  — but that early return sat *above* the `dlc_for_len` check, so the length was never checked
+  at all. `to_wire_bytes` then copies into `out[8..8 + data.len()]` of a fixed 16- or 72-octet
+  buffer, and `CanFrame { error: true, data: vec![0; 9], .. }` **panicked** instead of
+  returning `Err`. Latent: `from_action` cannot set `error: true` and `from_wire_bytes` clamps
+  the length to 8 or 64 first, so no input reaches it — but it was a panic in a `pub fn` on a
+  struct with `pub` fields, and a panic inside a connection task is swallowed by
+  `tokio::spawn`, which is the failure mode the root `CLAUDE.md` records three times.
 - An LLM failure transmits **nothing**, and no `WireFailure` text ever reaches the bus.
 
 Silence is also completely ordinary on CAN — almost every node ignores almost every frame — so

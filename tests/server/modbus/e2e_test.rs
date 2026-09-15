@@ -365,13 +365,14 @@ fn test_codec_encodes_bit_and_register_responses() {
         true, // byte 1 = 0b0000_0001
     ];
     assert_eq!(
-        codec::encode_bits_response(codec::FC_READ_COILS, &values),
+        codec::encode_bits_response(codec::FC_READ_COILS, &values).unwrap(),
         vec![0x01, 0x02, 0xCD, 0x01]
     );
 
     // Read Holding Registers response: byte count then big-endian registers.
     assert_eq!(
-        codec::encode_registers_response(codec::FC_READ_HOLDING_REGISTERS, &[0x022B, 0x0000]),
+        codec::encode_registers_response(codec::FC_READ_HOLDING_REGISTERS, &[0x022B, 0x0000])
+            .unwrap(),
         vec![0x03, 0x04, 0x02, 0x2B, 0x00, 0x00]
     );
 

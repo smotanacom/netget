@@ -41,13 +41,21 @@ pub const MAX_MESSAGE_LEN: usize = 65_535;
 /// octets or more wrapped the Parameter Length field and produced a message no SS7 peer
 /// could parse.
 ///
-/// The arithmetic: the common header is 8 octets, the parameter header 4, and Protocol
-/// Data's fixed fields (OPC, DPC, SI, NI, MP, SLS) another 12 — so 65535 − 24 = 65511.
+/// The arithmetic, and **the padding rule is part of it**. A body is always a whole number of
+/// 4-octet words — every parameter is padded up to one — so the largest body that fits under
+/// [`MAX_MESSAGE_LEN`] is `((65535 − 8) / 4) * 4 = 65524`, not 65527. Take off the 4-octet
+/// parameter header and Protocol Data's 12 fixed octets (OPC, DPC, SI, NI, MP, SLS) and 65508
+/// is left. The earlier form of this constant subtracted the headers and forgot the padding,
+/// which put it three octets too high — so a payload at exactly the documented limit produced
+/// a 65536-octet message, one past the ceiling. That is the same "padding is not in the
+/// length" trap this module's header warns about, met from the other side.
 ///
 /// This is three orders of magnitude above anything real. A genuine MSU carries at most 272
 /// octets of user part, which is why exceeding it means the model has misunderstood the
-/// field rather than hit a legitimate ceiling.
-pub const MAX_USER_DATA_LEN: usize = MAX_MESSAGE_LEN - HEADER_LEN - 4 - 12;
+/// field rather than hit a legitimate ceiling. It is also a *per-parameter* guide: a DATA
+/// message that also carries Network Appearance, Routing Context and Correlation ID has 24
+/// fewer octets to spend, and [`Message::encode`] is what enforces the real ceiling.
+pub const MAX_USER_DATA_LEN: usize = ((MAX_MESSAGE_LEN - HEADER_LEN) / 4) * 4 - 4 - 12;
 
 // ---------------------------------------------------------------------------
 // Message classes and types (RFC 4666 section 3.1.3 / 3.1.4)
@@ -407,12 +415,32 @@ impl Parameter {
         declared + padding_for(declared)
     }
 
-    pub fn write_into(&self, out: &mut Vec<u8>) {
+    /// Append the TLV, refusing a value whose Parameter Length would not fit the 16-bit field.
+    ///
+    /// The check comes before anything is written, so a refusal leaves `out` untouched: a
+    /// partial TLV would corrupt every parameter after it just as surely as the wrong length
+    /// did. The old `declared as u16` was worse than an oversize parameter — a 65532-octet
+    /// value makes `declared` 65536, which narrows to **0**, below the 4-octet TLV header
+    /// itself, so the parameter became unparseable and took every later parameter with it.
+    /// Silent in release and silent in debug, because a cast does not overflow-check.
+    pub fn write_into(&self, out: &mut Vec<u8>) -> Result<(), WireError> {
         let declared = self.declared_len();
+        if declared > u16::MAX as usize {
+            return Err(WireError::new(
+                ERR_PROTOCOL_ERROR,
+                format!(
+                    "parameter 0x{:04x} declares {declared} octets, past the {} a 16-bit \
+                     Parameter Length can carry",
+                    self.tag,
+                    u16::MAX
+                ),
+            ));
+        }
         out.extend_from_slice(&self.tag.to_be_bytes());
         out.extend_from_slice(&(declared as u16).to_be_bytes());
         out.extend_from_slice(&self.value);
         out.resize(out.len() + padding_for(declared), 0);
+        Ok(())
     }
 
     /// The value read as a 32-bit field, or `None` if it is not exactly four octets.
@@ -514,19 +542,36 @@ impl Message {
 
     /// Encode to the wire. The Message Length includes the common header and every parameter's
     /// padding.
-    pub fn encode(&self) -> Vec<u8> {
+    ///
+    /// Refuses anything [`parse_header`] would reject, which is the asymmetry this whole class
+    /// of finding is named after: `MAX_MESSAGE_LEN` bounded the **decode** side, against a
+    /// hostile peer, and nothing bounded the **encode** side, against the model. A message
+    /// whose parameters ran past the ceiling encoded happily and was then rejected by this
+    /// codec's own parser at the far end.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
         let body_len: usize = self.parameters.iter().map(|p| p.wire_len()).sum();
         let total = HEADER_LEN + body_len;
+        if total > MAX_MESSAGE_LEN {
+            return Err(WireError::new(
+                ERR_PROTOCOL_ERROR,
+                format!(
+                    "message of {} parameter(s) encodes to {total} octets, past the \
+                     {MAX_MESSAGE_LEN}-octet ceiling this codec's own parser enforces",
+                    self.parameters.len()
+                ),
+            ));
+        }
         let mut out = Vec::with_capacity(total);
         out.push(VERSION);
         out.push(0); // Reserved
         out.push(self.class);
         out.push(self.msg_type);
+        // Bounded above, so the cast cannot lose a bit.
         out.extend_from_slice(&(total as u32).to_be_bytes());
         for parameter in &self.parameters {
-            parameter.write_into(&mut out);
+            parameter.write_into(&mut out)?;
         }
-        out
+        Ok(out)
     }
 
     /// Decode a complete message: the common header followed by exactly `length - 8` body
@@ -641,20 +686,20 @@ impl ProtocolData {
 // ---------------------------------------------------------------------------
 
 /// ASPUP ACK (RFC 4666 section 3.5.4).
-pub fn aspup_ack(info_string: Option<&str>) -> Vec<u8> {
+pub fn aspup_ack(info_string: Option<&str>) -> Result<Vec<u8>, WireError> {
     Message::new(CLASS_ASPSM, ASPSM_ASPUP_ACK)
         .with_opt(TAG_INFO_STRING, info_string.map(|s| s.as_bytes().to_vec()))
         .encode()
 }
 
 /// ASPDN ACK (RFC 4666 section 3.5.5).
-pub fn aspdn_ack() -> Vec<u8> {
+pub fn aspdn_ack() -> Result<Vec<u8>, WireError> {
     Message::new(CLASS_ASPSM, ASPSM_ASPDN_ACK).encode()
 }
 
 /// BEAT ACK (RFC 4666 section 3.5.6). The Heartbeat Data is echoed verbatim, which is the
 /// entire point of the parameter: the ASP matches its own opaque token.
-pub fn beat_ack(heartbeat_data: Option<&[u8]>) -> Vec<u8> {
+pub fn beat_ack(heartbeat_data: Option<&[u8]>) -> Result<Vec<u8>, WireError> {
     Message::new(CLASS_ASPSM, ASPSM_BEAT_ACK)
         .with_opt(TAG_HEARTBEAT_DATA, heartbeat_data.map(|d| d.to_vec()))
         .encode()
@@ -665,7 +710,7 @@ pub fn aspac_ack(
     traffic_mode: Option<u32>,
     routing_context: Option<u32>,
     info_string: Option<&str>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, WireError> {
     Message::new(CLASS_ASPTM, ASPTM_ASPAC_ACK)
         .with_opt_u32(TAG_TRAFFIC_MODE_TYPE, traffic_mode)
         .with_opt_u32(TAG_ROUTING_CONTEXT, routing_context)
@@ -674,7 +719,7 @@ pub fn aspac_ack(
 }
 
 /// ASPIA ACK (RFC 4666 section 3.7.4).
-pub fn aspia_ack(routing_context: Option<u32>) -> Vec<u8> {
+pub fn aspia_ack(routing_context: Option<u32>) -> Result<Vec<u8>, WireError> {
     Message::new(CLASS_ASPTM, ASPTM_ASPIA_ACK)
         .with_opt_u32(TAG_ROUTING_CONTEXT, routing_context)
         .encode()
@@ -685,7 +730,7 @@ pub fn aspia_ack(routing_context: Option<u32>) -> Vec<u8> {
 /// The Diagnostic Information parameter is deliberately never populated. It is the one field
 /// in M3UA where an internal error string could reach a peer, and the rule in
 /// `crate::utils::wire_failure` is that the peer gets a category and the log gets the error.
-pub fn error(error_code: u32, routing_context: Option<u32>) -> Vec<u8> {
+pub fn error(error_code: u32, routing_context: Option<u32>) -> Result<Vec<u8>, WireError> {
     Message::new(CLASS_MGMT, MGMT_ERR)
         .with(Parameter::u32(TAG_ERROR_CODE, error_code))
         .with_opt_u32(TAG_ROUTING_CONTEXT, routing_context)
@@ -700,7 +745,7 @@ pub fn notify(
     asp_identifier: Option<u32>,
     routing_context: Option<u32>,
     info_string: Option<&str>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, WireError> {
     let status = ((status_type as u32) << 16) | status_info as u32;
     Message::new(CLASS_MGMT, MGMT_NTFY)
         .with(Parameter::u32(TAG_STATUS, status))
@@ -716,7 +761,7 @@ pub fn data(
     network_appearance: Option<u32>,
     routing_context: Option<u32>,
     correlation_id: Option<u32>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, WireError> {
     Message::new(CLASS_TRANSFER, TRANSFER_DATA)
         .with_opt_u32(TAG_NETWORK_APPEARANCE, network_appearance)
         .with_opt_u32(TAG_ROUTING_CONTEXT, routing_context)

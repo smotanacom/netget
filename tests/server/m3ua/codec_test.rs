@@ -57,7 +57,7 @@ mod m3ua_codec_test {
             0x00, 0x00, 0x00, 0x08, // Message Length = 8, the header itself
         ];
         assert_bytes(
-            &codec::aspup_ack(None),
+            &codec::aspup_ack(None).unwrap(),
             &expected,
             "ASPUP ACK, no parameters",
         );
@@ -83,7 +83,7 @@ mod m3ua_codec_test {
             0x00, 0x00,             // padding to the 4-octet boundary, counted by neither the
                                     // parameter length nor RFC 4666's definition of it
         ];
-        let encoded = codec::aspup_ack(Some("ok"));
+        let encoded = codec::aspup_ack(Some("ok")).unwrap();
         assert_bytes(&encoded, &expected, "ASPUP ACK with INFO String \"ok\"");
 
         // The two numbers that must differ, named explicitly so a regression says which one
@@ -117,7 +117,7 @@ mod m3ua_codec_test {
         ];
         let data = [0xde, 0xad, 0xbe, 0xef, 0x01];
         assert_bytes(
-            &codec::beat_ack(Some(&data)),
+            &codec::beat_ack(Some(&data)).unwrap(),
             &expected,
             "BEAT ACK echoing 5 octets of Heartbeat Data",
         );
@@ -138,7 +138,7 @@ mod m3ua_codec_test {
             0x00, 0x08,             // Length = 8; a 4-octet value needs no padding
             0x00, 0x00, 0x00, 0x0d, // 0x0d = Refused - Management Blocking
         ];
-        let encoded = codec::error(codec::ERR_REFUSED_MANAGEMENT_BLOCKING, None);
+        let encoded = codec::error(codec::ERR_REFUSED_MANAGEMENT_BLOCKING, None).unwrap();
         assert_bytes(&encoded, &expected, "ERR / Refused - Management Blocking");
 
         // The rule from `crate::utils::wire_failure`: the peer gets a category, the log gets the
@@ -174,7 +174,8 @@ mod m3ua_codec_test {
                 None,
                 None,
                 None,
-            ),
+            )
+            .unwrap(),
             &expected,
             "NTFY AS-ACTIVE",
         );
@@ -198,7 +199,7 @@ mod m3ua_codec_test {
             0x00, 0x00, 0x00, 0x64, // 100
         ];
         assert_bytes(
-            &codec::aspac_ack(Some(codec::TRAFFIC_MODE_LOADSHARE), Some(100), None),
+            &codec::aspac_ack(Some(codec::TRAFFIC_MODE_LOADSHARE), Some(100), None).unwrap(),
             &expected,
             "ASPAC ACK, loadshare, routing context 100",
         );
@@ -249,7 +250,7 @@ mod m3ua_codec_test {
             payload: vec![0x09, 0x81, 0x03],
         };
         assert_bytes(
-            &codec::data(&protocol_data, None, Some(100), None),
+            &codec::data(&protocol_data, None, Some(100), None).unwrap(),
             &expected,
             "DATA with routing context 100",
         );
@@ -441,15 +442,15 @@ mod m3ua_codec_test {
     #[test]
     fn peek_class_type_reads_the_header_without_decoding() {
         assert_eq!(
-            codec::peek_class_type(&codec::aspup_ack(None)),
+            codec::peek_class_type(&codec::aspup_ack(None).unwrap()),
             Some((codec::CLASS_ASPSM, codec::ASPSM_ASPUP_ACK))
         );
         assert_eq!(
-            codec::peek_class_type(&codec::error(codec::ERR_UNEXPECTED_MESSAGE, None)),
+            codec::peek_class_type(&codec::error(codec::ERR_UNEXPECTED_MESSAGE, None).unwrap()),
             Some((codec::CLASS_MGMT, codec::MGMT_ERR))
         );
         assert_eq!(
-            codec::peek_class_type(&codec::aspac_ack(None, None, None)),
+            codec::peek_class_type(&codec::aspac_ack(None, None, None).unwrap()),
             Some((codec::CLASS_ASPTM, codec::ASPTM_ASPAC_ACK))
         );
         assert_eq!(codec::peek_class_type(&[0x01, 0x00]), None);
@@ -515,11 +516,37 @@ mod m3ua_codec_test {
         );
 
         // The limit is derived from the format, not picked: common header + parameter header
-        // + Protocol Data's fixed fields must exactly account for the difference.
+        // + Protocol Data's fixed fields + the padding rule must exactly account for the
+        // difference. The padding half is easy to forget and was: a body is always a whole
+        // number of 4-octet words, so the largest one that fits is 65524 rather than 65527,
+        // and a constant that subtracted only the headers sat three octets too high — enough
+        // for a payload at exactly the documented limit to produce a 65536-octet message.
+        let declared = codec::MAX_USER_DATA_LEN + 4 + 12;
         assert_eq!(
-            codec::MAX_USER_DATA_LEN + codec::HEADER_LEN + 4 + 12,
-            codec::MAX_MESSAGE_LEN,
-            "MAX_USER_DATA_LEN must leave room for exactly the headers it is documented to"
+            declared % 4,
+            0,
+            "the largest Protocol Data parameter needs no padding, or the bound is not tight"
         );
+        assert_eq!(codec::HEADER_LEN + declared, 65_532);
+        assert!(codec::HEADER_LEN + declared <= codec::MAX_MESSAGE_LEN);
+        assert!(
+            codec::HEADER_LEN + declared + 4 > codec::MAX_MESSAGE_LEN,
+            "one more word must not fit, or the bound is loose rather than exact"
+        );
+
+        // And the constant is the *parameter* bound, not the message bound: a DATA message
+        // that also carries the three optional 8-octet parameters cannot spend all of it, and
+        // `Message::encode` is what says so rather than wrapping a length field.
+        let protocol_data = codec::ProtocolData {
+            opc: 1,
+            dpc: 2,
+            si: 3,
+            ni: 0,
+            mp: 0,
+            sls: 0,
+            payload: vec![0u8; codec::MAX_USER_DATA_LEN],
+        };
+        assert!(codec::data(&protocol_data, None, None, None).is_ok());
+        assert!(codec::data(&protocol_data, Some(1), Some(2), Some(3)).is_err());
     }
 }

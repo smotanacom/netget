@@ -34,6 +34,24 @@ pub const MAX_PAYLOAD_LEN: usize = 1024;
 /// CoAP version implemented here.
 pub const VERSION: u8 = 1;
 
+/// Longest token a message may carry, in octets (RFC 7252 §3).
+///
+/// TKL is four bits and 9-15 are reserved, so this is a format limit. It is stated once and
+/// enforced in **both** directions: `decode` refuses `tkl > 8` from a peer, and `encode`
+/// refuses an over-long token from the caller. The encoder used to cut instead, which is the
+/// worst available outcome on this protocol — CoAP's entire request/response matching *is*
+/// token equality, so a truncated token produces a reply that is discarded silently at the
+/// client with no error at either end.
+pub const MAX_TOKEN_LEN: usize = 8;
+
+/// Longest value a single option may carry, in octets.
+///
+/// The extended length form is `269 + a big-endian u16`, but `read_extended` saturates that
+/// addition at `u16::MAX`, so 65535 is the largest length this codec can read back — and an
+/// encoder must not produce a length its own decoder cannot. Stated so the encoder refuses
+/// rather than narrowing an option length with an `as u16`.
+pub const MAX_OPTION_LEN: usize = u16::MAX as usize;
+
 // ---------------------------------------------------------------------------
 // Option numbers (RFC 7252 §5.10, §12.2)
 // ---------------------------------------------------------------------------
@@ -249,6 +267,40 @@ impl fmt::Display for DecodeError {
     }
 }
 
+impl std::error::Error for DecodeError {}
+
+/// Why a message cannot be put on the wire.
+///
+/// The decode side above is bounded against a hostile peer; this is the same bound stated
+/// against the *caller*, which is the direction that had none. Both refusals are total: a
+/// message this codec would not accept back is never written in a shortened form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncodeError {
+    /// A token longer than the 4-bit TKL field can describe (RFC 7252 §3: 0-8 octets).
+    TokenTooLong { len: usize },
+    /// An option value longer than the extended length form can describe.
+    OptionTooLong { number: u16, len: usize },
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EncodeError::TokenTooLong { len } => write!(
+                f,
+                "token is {len} octets; RFC 7252 §3 allows 0-{MAX_TOKEN_LEN}, and CoAP matches \
+                 a response to its request by token equality, so a shortened one matches nothing"
+            ),
+            EncodeError::OptionTooLong { number, len } => write!(
+                f,
+                "option {number} carries {len} octets; the option length field tops out at \
+                 {MAX_OPTION_LEN}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
 impl CoapMessage {
     /// Decode a datagram.
     pub fn decode(buf: &[u8]) -> Result<CoapMessage, DecodeError> {
@@ -317,13 +369,30 @@ impl CoapMessage {
     }
 
     /// Encode to a datagram.
-    pub fn encode(&self) -> Vec<u8> {
+    ///
+    /// Refuses anything `decode` would not accept back, rather than shortening it to fit. See
+    /// [`MAX_TOKEN_LEN`] for why truncating a token is the worst outcome available here.
+    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        if self.token.len() > MAX_TOKEN_LEN {
+            return Err(EncodeError::TokenTooLong {
+                len: self.token.len(),
+            });
+        }
+        for (number, value) in &self.options {
+            if value.len() > MAX_OPTION_LEN {
+                return Err(EncodeError::OptionTooLong {
+                    number: *number,
+                    len: value.len(),
+                });
+            }
+        }
+
         let mut out = Vec::with_capacity(HEADER_LEN + self.token.len() + self.payload.len() + 16);
-        let tkl = self.token.len().min(8) as u8;
+        let tkl = self.token.len() as u8;
         out.push((VERSION << 6) | (self.mtype.to_bits() << 4) | tkl);
         out.push(self.code);
         out.extend_from_slice(&self.message_id.to_be_bytes());
-        out.extend_from_slice(&self.token[..tkl as usize]);
+        out.extend_from_slice(&self.token);
 
         let mut sorted = self.options.clone();
         // Options must be emitted in ascending order; `sort_by_key` is stable, so
@@ -335,6 +404,7 @@ impl CoapMessage {
             let delta = number.saturating_sub(last);
             last = *number;
 
+            // Range-checked above, so neither cast can lose a bit.
             let (delta_nibble, delta_ext) = split_extended(delta);
             let (length_nibble, length_ext) = split_extended(value.len() as u16);
 
@@ -349,7 +419,7 @@ impl CoapMessage {
             out.extend_from_slice(&self.payload);
         }
 
-        out
+        Ok(out)
     }
 
     /// Values of every occurrence of an option, in order.
