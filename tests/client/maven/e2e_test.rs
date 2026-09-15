@@ -11,9 +11,7 @@ mod maven_client_tests {
     /// Test Maven client downloading a well-known artifact
     /// LLM calls: 1 (client connection and download)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real Maven Central and requires
-              // --use-ollama. Under default strict-mock CI mode the LLM call 500s
-              // immediately and this assertion never passes.
+    #[ignore = "No .with_mock() configured: hits real Maven Central and requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_maven_client_download_artifact() -> E2EResult<()> {
         // Start Maven client to download a well-known artifact from Maven Central
         let client_config = NetGetConfig::new(
@@ -51,9 +49,7 @@ mod maven_client_tests {
     /// Test Maven client downloading a POM file
     /// LLM calls: 1 (client connection and POM download)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real Maven Central and requires
-              // --use-ollama. Under default strict-mock CI mode the LLM call 500s
-              // immediately and this assertion never passes.
+    #[ignore = "No .with_mock() configured: hits real Maven Central and requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_maven_client_download_pom() -> E2EResult<()> {
         // Start Maven client to download a POM file
         let client_config = NetGetConfig::new(
@@ -92,9 +88,7 @@ mod maven_client_tests {
     /// Test Maven client searching for artifact versions
     /// LLM calls: 1 (client connection and metadata fetch)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real Maven Central and requires
-              // --use-ollama. Under default strict-mock CI mode the LLM call 500s
-              // immediately and this assertion never passes.
+    #[ignore = "No .with_mock() configured: hits real Maven Central and requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_maven_client_search_versions() -> E2EResult<()> {
         // Start Maven client to search for artifact versions
         let client_config = NetGetConfig::new(
@@ -132,9 +126,7 @@ mod maven_client_tests {
     /// Test Maven client with custom repository URL
     /// LLM calls: 1 (client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real Maven Central and requires
-              // --use-ollama. Under default strict-mock CI mode the LLM call 500s
-              // immediately and this assertion never passes.
+    #[ignore = "No .with_mock() configured: hits real Maven Central and requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_maven_client_custom_repository() -> E2EResult<()> {
         // Start Maven client with explicit Maven Central URL
         let client_config = NetGetConfig::new(
@@ -165,9 +157,7 @@ mod maven_client_tests {
     /// Test Maven client handling missing artifact (404)
     /// LLM calls: 1 (client connection and failed download)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real Maven Central and requires
-              // --use-ollama. Under default strict-mock CI mode the LLM call 500s
-              // immediately and this assertion never passes.
+    #[ignore = "No .with_mock() configured: hits real Maven Central and requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_maven_client_missing_artifact() -> E2EResult<()> {
         // Start Maven client trying to download a non-existent artifact
         let client_config = NetGetConfig::new(

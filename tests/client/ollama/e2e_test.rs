@@ -95,7 +95,7 @@ mod ollama_client_tests {
     /// Test Ollama client can list models (real Ollama server required)
     /// LLM calls: 1 (client connection with list models action)
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a real Ollama serving on localhost:11434; the mocked variant covers the same path"]
     async fn test_ollama_client_list_models_real() -> E2EResult<()> {
         require_ollama().await;
 
@@ -201,7 +201,7 @@ mod ollama_client_tests {
     /// Test Ollama client can generate text (real Ollama server required)
     /// LLM calls: 1 (client connection with generate request)
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a real Ollama serving on localhost:11434; the mocked variant covers the same path"]
     async fn test_ollama_client_generate_real() -> E2EResult<()> {
         require_ollama().await;
 
@@ -305,7 +305,7 @@ mod ollama_client_tests {
     /// Test Ollama client chat completion (real Ollama server required)
     /// LLM calls: 1 (client connection with chat request)
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a real Ollama serving on localhost:11434; the mocked variant covers the same path"]
     async fn test_ollama_client_chat_real() -> E2EResult<()> {
         require_ollama().await;
 
@@ -408,7 +408,7 @@ mod ollama_client_tests {
     /// Test Ollama client with custom endpoint (real Ollama server required)
     /// LLM calls: 1 (client connection)
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a real Ollama serving on localhost:11434; the mocked variant covers the same path"]
     async fn test_ollama_client_custom_endpoint_real() -> E2EResult<()> {
         require_ollama().await;
 
@@ -494,7 +494,7 @@ mod ollama_client_tests {
     /// Test Ollama client error handling (invalid server) - no mock needed
     /// LLM calls: 1 (client connection attempt)
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a real Ollama serving on localhost:11434; the mocked variant covers the same path"]
     async fn test_ollama_client_error_handling_real() -> E2EResult<()> {
         // Use an invalid endpoint
         let client_config =

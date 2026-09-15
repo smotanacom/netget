@@ -34,9 +34,7 @@ mod pop3_client_tests {
     /// Test POP3 client connection
     /// LLM calls: 2 (1 server startup + 1 client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_pop3_client_connection() -> E2EResult<()> {
         println!("\n=== E2E Test: POP3 Client Connection ===");
 
@@ -91,9 +89,7 @@ mod pop3_client_tests {
     /// Test POP3 client authentication flow
     /// LLM calls: 2 (1 server startup + 1 client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_pop3_client_authentication() -> E2EResult<()> {
         println!("\n=== E2E Test: POP3 Client Authentication ===");
 
@@ -147,9 +143,7 @@ mod pop3_client_tests {
     /// Test POP3 client mailbox operations
     /// LLM calls: 2 (1 server startup + 1 client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_pop3_client_mailbox_operations() -> E2EResult<()> {
         println!("\n=== E2E Test: POP3 Client Mailbox Operations ===");
 

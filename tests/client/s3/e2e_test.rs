@@ -21,7 +21,7 @@ mod s3_client_tests {
     /// This test verifies that the S3 client can be initialized with proper configuration.
     /// For full E2E testing, a MinIO or LocalStack instance should be running.
     #[tokio::test]
-    #[ignore] // Requires MinIO/LocalStack running
+    #[ignore = "Requires MinIO/LocalStack running"]
     async fn test_s3_client_connect() -> E2EResult<()> {
         // Start an S3 client with MinIO endpoint
         let client_config = NetGetConfig::new(
@@ -59,7 +59,7 @@ mod s3_client_tests {
     /// Test S3 client can list buckets
     /// LLM calls: 2 (client initialization, list buckets operation)
     #[tokio::test]
-    #[ignore] // Requires MinIO/LocalStack running
+    #[ignore = "Requires MinIO/LocalStack running"]
     async fn test_s3_client_list_buckets() -> E2EResult<()> {
         // Start an S3 client and list buckets
         let client_config = NetGetConfig::new(
@@ -93,7 +93,7 @@ mod s3_client_tests {
     /// Test S3 client can perform object operations
     /// LLM calls: 3 (client init, put object, get object)
     #[tokio::test]
-    #[ignore] // Requires MinIO/LocalStack running with test bucket
+    #[ignore = "Requires MinIO/LocalStack running with test bucket"]
     async fn test_s3_client_object_operations() -> E2EResult<()> {
         // Start an S3 client and perform put/get operations
         let client_config = NetGetConfig::new(
@@ -134,9 +134,7 @@ mod s3_client_tests {
     /// Test S3 client with AWS credentials validation
     /// LLM calls: 1 (client initialization with invalid credentials)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_s3_client_invalid_credentials() -> E2EResult<()> {
         // Try to connect with invalid credentials (should fail gracefully)
         let client_config = NetGetConfig::new(

@@ -1,7 +1,7 @@
 use netget::protocol::server_registry::registry;
 
 #[test]
-#[ignore] // This test is ignored by default - run with --ignored to see keyword overlaps
+#[ignore = "This test is ignored by default - run with --ignored to see keyword overlaps"]
 fn test_keyword_overlaps() {
     // Build registry and check for overlaps
     let reg = registry();

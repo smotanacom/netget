@@ -114,9 +114,7 @@ mod postgresql_client_tests {
     /// Test PostgreSQL client connection and query execution
     /// LLM calls: 2 (server startup, client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_postgresql_client_connect_and_query() -> E2EResult<()> {
         // Start a PostgreSQL server listening on an available port
         let server_config = NetGetConfig::new(
@@ -172,9 +170,7 @@ mod postgresql_client_tests {
     /// Test PostgreSQL client can be controlled via LLM instructions
     /// LLM calls: 2 (server startup, client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_postgresql_client_llm_controlled_queries() -> E2EResult<()> {
         // Start a simple PostgreSQL server
         let server_config = NetGetConfig::new(
@@ -225,9 +221,7 @@ mod postgresql_client_tests {
     /// Test PostgreSQL client transaction support
     /// LLM calls: 2 (server startup, client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_postgresql_client_transactions() -> E2EResult<()> {
         // Start a PostgreSQL server
         let server_config = NetGetConfig::new(

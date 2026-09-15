@@ -34,7 +34,7 @@ mod tests {
     /// Requirements:
     /// - Release binary built: cargo build --release --all-features
     #[tokio::test]
-    #[ignore] // Requires release binary built
+    #[ignore = "Requires release binary built"]
     async fn test_full_bittorrent_network_integration() -> Result<()> {
         println!("\n=== BitTorrent Network Integration Test ===\n");
 

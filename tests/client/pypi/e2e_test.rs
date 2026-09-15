@@ -11,9 +11,7 @@ mod pypi_client_tests {
     /// Test PyPI client fetching package information
     /// LLM calls: 1 (client connection and package query)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real pypi.org and requires --use-ollama.
-              // Under default strict-mock CI mode the LLM call 500s immediately and this
-              // assertion never passes. Follows the precedent set by tests/client/npm.
+    #[ignore = "No .with_mock() configured: hits real pypi.org and requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_pypi_get_package_info() -> E2EResult<()> {
         // Start PyPI client that queries package info
         let client_config = NetGetConfig::new(
@@ -51,8 +49,7 @@ mod pypi_client_tests {
     /// Test PyPI client listing package files
     /// LLM calls: 1 (client connection and file list query)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real pypi.org and requires --use-ollama.
-              // See test_pypi_get_package_info for details.
+    #[ignore = "No .with_mock() configured: hits real pypi.org and requires --use-ollama. See test_pypi_get_package_info for details"]
     async fn test_pypi_list_package_files() -> E2EResult<()> {
         // Start PyPI client that lists available files
         let client_config = NetGetConfig::new(
@@ -94,8 +91,7 @@ mod pypi_client_tests {
     /// Test PyPI client handling non-existent package
     /// LLM calls: 1 (client connection and query)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real pypi.org and requires --use-ollama.
-              // See test_pypi_get_package_info for details.
+    #[ignore = "No .with_mock() configured: hits real pypi.org and requires --use-ollama. See test_pypi_get_package_info for details"]
     async fn test_pypi_nonexistent_package() -> E2EResult<()> {
         // Start PyPI client that queries a non-existent package
         let client_config = NetGetConfig::new(
@@ -134,8 +130,7 @@ mod pypi_client_tests {
     /// Test PyPI client with LLM-controlled package exploration
     /// LLM calls: 1 (client connection and exploration)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: hits real pypi.org and requires --use-ollama.
-              // See test_pypi_get_package_info for details.
+    #[ignore = "No .with_mock() configured: hits real pypi.org and requires --use-ollama. See test_pypi_get_package_info for details"]
     async fn test_pypi_llm_controlled_exploration() -> E2EResult<()> {
         // Client that explores package ecosystem based on LLM instruction
         let client_config = NetGetConfig::new(

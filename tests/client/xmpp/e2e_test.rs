@@ -18,7 +18,7 @@ use netget::state::{ClientId, ClientInstance, ClientStatus};
 /// Requires a local XMPP server (prosody/ejabberd) running on localhost:5222
 /// with test account: alice@localhost/netget
 #[tokio::test]
-#[ignore] // Requires local XMPP server
+#[ignore = "Requires local XMPP server"]
 async fn test_xmpp_client_connect() -> Result<()> {
     // Setup app state
     let app_state = Arc::new(AppState::new());
@@ -88,7 +88,7 @@ async fn test_xmpp_client_connect() -> Result<()> {
 /// This test sends a message to another JID.
 /// Requires local XMPP server with two test accounts.
 #[tokio::test]
-#[ignore] // Requires local XMPP server and manual verification
+#[ignore = "Requires local XMPP server and manual verification"]
 async fn test_xmpp_client_send_message() -> Result<()> {
     // Setup app state
     let app_state = Arc::new(AppState::new());
@@ -138,7 +138,7 @@ async fn test_xmpp_client_send_message() -> Result<()> {
 
 /// Test XMPP presence updates
 #[tokio::test]
-#[ignore] // Requires local XMPP server
+#[ignore = "Requires local XMPP server"]
 async fn test_xmpp_client_presence() -> Result<()> {
     // Setup app state
     let app_state = Arc::new(AppState::new());

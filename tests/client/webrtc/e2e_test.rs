@@ -14,7 +14,7 @@ mod tests {
 
     /// Test WebRTC client initialization and SDP offer generation
     #[tokio::test]
-    #[ignore] // Requires Ollama and manual peer for full testing
+    #[ignore = "Requires Ollama and manual peer for full testing"]
     async fn test_webrtc_client_offer_generation() {
         // Create app state
         let app_state = Arc::new(AppState::new());

@@ -11,7 +11,7 @@
 use netget::llm::embedded_inference::{EmbeddedLLMBackend, InferenceConfig};
 
 #[tokio::test]
-#[ignore] // Requires actual GGUF model file
+#[ignore = "Requires actual GGUF model file"]
 async fn test_load_model() {
     let backend = EmbeddedLLMBackend::new("./tests/fixtures/tiny-model.gguf")
         .await
@@ -23,7 +23,7 @@ async fn test_load_model() {
 }
 
 #[tokio::test]
-#[ignore] // Requires actual GGUF model file
+#[ignore = "Requires actual GGUF model file"]
 async fn test_generate() {
     let backend = EmbeddedLLMBackend::new("./tests/fixtures/tiny-model.gguf")
         .await

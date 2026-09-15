@@ -15,7 +15,7 @@ use tokio::time::sleep;
 
 /// Test that Bluetooth client can initialize and scan for devices
 #[tokio::test]
-#[ignore] // Requires real BLE hardware
+#[ignore = "Requires real BLE hardware"]
 async fn test_bluetooth_scan() {
     // This test is a placeholder for manual testing
     // To implement:
@@ -34,7 +34,7 @@ async fn test_bluetooth_scan() {
 
 /// Test that Bluetooth client can connect to a device by address
 #[tokio::test]
-#[ignore] // Requires real BLE hardware
+#[ignore = "Requires real BLE hardware"]
 async fn test_bluetooth_connect_by_address() {
     // This test is a placeholder for manual testing
     // To implement:
@@ -50,7 +50,7 @@ async fn test_bluetooth_connect_by_address() {
 
 /// Test that Bluetooth client can discover GATT services
 #[tokio::test]
-#[ignore] // Requires real BLE hardware
+#[ignore = "Requires real BLE hardware"]
 async fn test_bluetooth_discover_services() {
     // This test is a placeholder for manual testing
     // To implement:
@@ -65,7 +65,7 @@ async fn test_bluetooth_discover_services() {
 
 /// Test that Bluetooth client can read a characteristic
 #[tokio::test]
-#[ignore] // Requires real BLE hardware with Battery Service
+#[ignore = "Requires real BLE hardware with Battery Service"]
 async fn test_bluetooth_read_battery_level() {
     // This test is a placeholder for manual testing
     // To implement:
@@ -84,7 +84,7 @@ async fn test_bluetooth_read_battery_level() {
 
 /// Test that Bluetooth client can subscribe to notifications
 #[tokio::test]
-#[ignore] // Requires real BLE hardware with notify-capable characteristic
+#[ignore = "Requires real BLE hardware with notify-capable characteristic"]
 async fn test_bluetooth_subscribe_notifications() {
     // This test is a placeholder for manual testing
     // To implement:

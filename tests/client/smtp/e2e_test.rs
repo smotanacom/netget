@@ -44,9 +44,7 @@ mod smtp_client_tests {
     /// Test SMTP client connection
     /// LLM calls: 1 (client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama and a local python3
-              // SMTP debugging server. Under default strict-mock CI mode the LLM
-              // call 500s immediately and the client never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama and a local python3 SMTP debugging server; the LLM call is refused under strict-mock mode"]
     async fn test_smtp_client_connection() -> E2EResult<()> {
         // Start local SMTP server
         let mut smtp_server = start_local_smtp_server().await?;
@@ -93,9 +91,7 @@ mod smtp_client_tests {
     /// Note: This test verifies the client is ready to send, not actually sending
     /// (full send test requires email verification which is complex for E2E)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama and a local python3
-              // SMTP debugging server. Under default strict-mock CI mode the LLM
-              // call 500s immediately and the client never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama and a local python3 SMTP debugging server; the LLM call is refused under strict-mock mode"]
     async fn test_smtp_client_email_preparation() -> E2EResult<()> {
         // Start local SMTP server
         let mut smtp_server = start_local_smtp_server().await?;
@@ -133,9 +129,7 @@ mod smtp_client_tests {
     /// Test SMTP client without authentication (local server)
     /// LLM calls: 1 (client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama and a local python3
-              // SMTP debugging server. Under default strict-mock CI mode the LLM
-              // call 500s immediately and the client never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama and a local python3 SMTP debugging server; the LLM call is refused under strict-mock mode"]
     async fn test_smtp_client_no_auth() -> E2EResult<()> {
         // Start local SMTP server (no auth required)
         let mut smtp_server = start_local_smtp_server().await?;
