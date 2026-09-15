@@ -295,7 +295,7 @@ declare, whether or not anyone has looked at it.
 Robustness against a hostile peer is half of it. The other half is whether the model can drive
 the protocol at all — and the mock never tells you, because the mock is scripted.
 
-- [ ] **A real-model eval per protocol, tracked as a number.** `./test-e2e.sh --use-ollama`
+- [x] **A real-model eval per protocol, tracked as a number.** `./test-e2e.sh --use-ollama`
   exists. Make it a harness: for each protocol, N canonical operator instructions ("serve a
   page saying hello", "answer example.com with 1.2.3.4", "accept user alice, reject everyone
   else"), run against a small local model, drive with the real client, score pass/fail.
@@ -501,3 +501,39 @@ operations against real AWS, signed with ambient credentials); `spark` defaulted
 status to 200 *and* narrowed it unchecked; `zookeeper` defaulted `error_code` to 0, which is
 `Ok`. All fixed rather than baselined. Each appeared as "new" at one line and "gone" at another
 because merges had shifted the file — the shrink-only halves firing in both directions at once.
+
+**15 September 2026 — the real-model eval, and the defect it found instead.**
+
+`tests/eval/` — 16 protocols, 46 cases, each a plain-English operator instruction driven by a
+real third-party client, scored as a **pass rate over N runs** because NetGet passes no
+temperature or seed to Ollama. One rule: an instruction may never name an action, a parameter
+or an event, or the descriptions stop being what is under test. A deliberately *small* model,
+because a strong one papers over a bad description by guessing what was meant.
+
+**Result: 7 of 54 passed; 50 of 54 would have passed with a lenient parse.** 43 of the 47
+misses were one upstream defect — `ActionResponse::from_str` required the **whole** string to
+be a single JSON value, and small models append an explanation after the JSON constantly. The
+model named the right action with the right parameters every time and NetGet discarded the
+reply as `Invalid JSON`, which to the protocol is indistinguishable from a backend failure.
+
+**No test in the suite could have found this.** Every mock returns exactly the JSON its test
+author wrote, so the mock and the parser agree by construction. The defect lives in the gap
+between a mock and a model — which is the whole argument for this harness existing. Fixed;
+`tests/action_response_trailing_prose_test.rs` pins it, including the three guards that stop
+the widening from swallowing genuine failures.
+
+The near-miss is worth keeping: **the fenced form already worked**, because the fence stripper
+cuts at the closing backticks. The same model producing the same answer succeeded or failed on
+whether it used a code fence, which is why this read as a formatting quirk for so long.
+
+**The second finding is the class the harness was actually built for.** Told to serve a gopher
+menu whose first item is labelled "Welcome to NetGet", the model emitted all four items of
+`send_gopher_menu`'s **declared example** and none of the requested label. That is the
+`{{event.xid}}` defect wearing better clothes: a placeholder looks wrong on the wire and
+someone eventually notices, while plausible prose does not, and nothing downstream can tell a
+copied example from an intended answer. The classifier now names it automatically.
+
+**Follow-up this implies:** an action's `example` is rendered into the model's tool list, so it
+should be *obviously* a placeholder (`example.com`) rather than plausible content a model might
+reasonably ship. That is a sweep, not a ratchet — worth measuring once the parser fix lets the
+eval see past it.
