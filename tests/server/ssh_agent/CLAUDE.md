@@ -189,7 +189,7 @@ including:
 
 ### Phase 1: Test Helper Updates (Required first)
 
-1. Add Unix socket support to `tests/helpers.rs`
+1. Add Unix socket support to `tests/helpers/mod.rs`
 2. Implement `{SOCKET_PATH}` placeholder
 3. Add socket file cleanup logic
 

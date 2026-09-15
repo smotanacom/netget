@@ -182,16 +182,22 @@ invented by the handler and kept in its own memory (`set_memory` / `append_memor
 
 ## Testing
 
-**There is no E2E test.** Verify by hand:
+The suite is `tests/server/ssh/test.rs` (banner, version exchange, concurrent connects,
+script-vs-LLM auth routing, and one SFTP round trip) and `tests/server/ssh/llm_failure_test.rs`
+(the fail-closed paths: auth, shell command, exec). Nothing in either file is `#[ignore]`d.
+
+`test_sftp_basic_operations` is the one that uses a third-party client end to end: `ssh2`
+(libssh2 bindings) handshakes, authenticates with a password, opens the SFTP subsystem and
+completes `readdir` / `open` + `read` / `stat`, with unconditional assertions. The other ssh2
+tests are lower-level — `test_ssh_version_exchange` notes that ssh2 has timing and
+compatibility trouble against this russh server outside that path.
+
+Verify the interactive paths by hand, which no test covers:
 
 ```
 ssh -p 2222 -o StrictHostKeyChecking=no admin@localhost
 sftp -P 2222 -o StrictHostKeyChecking=no admin@localhost
 ```
-
-An automated test would need `tests/server/ssh/e2e_test.rs` with mocks covering `ssh_auth`,
-`ssh_banner`, `ssh_shell_command` and at least one `sftp_operation` round trip. That directory
-is outside this module's ownership.
 
 ## Example prompts
 

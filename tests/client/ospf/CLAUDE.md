@@ -389,4 +389,4 @@ netstat -g | grep 224.0.0.5
 - [RFC 2328 - OSPFv2](https://datatracker.ietf.org/doc/html/rfc2328)
 - [OSPF Server CLAUDE.md](../../../src/server/ospf/CLAUDE.md)
 - [OSPF Client CLAUDE.md](../../../src/client/ospf/CLAUDE.md)
-- [Test Infrastructure Guide](../../TEST_INFRASTRUCTURE_FIXES.md)
+- [Test Infrastructure Guide](../../README.md)

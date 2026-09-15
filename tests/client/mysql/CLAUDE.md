@@ -348,5 +348,5 @@ RUST_LOG=netget::client::mysql=trace ./cargo-isolated.sh test ...
 ## References
 
 - Implementation: `src/client/mysql/CLAUDE.md`
-- Test Helpers: `tests/helpers.rs`
+- Test Helpers: `tests/helpers/mod.rs`
 - MySQL Protocol: https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basics.html

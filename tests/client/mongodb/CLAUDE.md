@@ -466,5 +466,5 @@ docker stop mongodb-test && docker rm mongodb-test
 ## References
 
 - [MongoDB Rust Driver Testing](https://github.com/mongodb/mongo-rust-driver/tree/main/tests)
-- [NetGet Client Testing Patterns](../../mysql/CLAUDE.md)
-- [NetGet Test Infrastructure](../../../TEST_INFRASTRUCTURE_FIXES.md)
+- [NetGet Client Testing Patterns](../mysql/CLAUDE.md)
+- [NetGet Test Infrastructure](../../README.md)
