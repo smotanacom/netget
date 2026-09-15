@@ -235,9 +235,23 @@ fn declares_byte_const(src: &str) -> bool {
             continue;
         }
         let ty: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
-        if ty.starts_with("&[u8]") {
-            return true;
+        if !ty.starts_with("&[u8]") {
+            continue;
         }
+        // An EMPTY byte const is not canonical bytes, and treating it as such is a false
+        // positive with a real cost. `torrent_peer` gained `const CONNECTION_CAP_REFUSAL:
+        // &[u8] = b""` — a deliberate "refuse by closing, send nothing" — from the connection-
+        // cap sweep, and that alone made this limb flag the protocol's `info_hash` example.
+        //
+        // The premise of limb B is "the canonical bytes now exist twice and one copy will
+        // drift". With an empty const there is no second copy, so the premise does not hold.
+        // A 20-byte BitTorrent info hash is an identifier a caller supplies, not a descriptor
+        // derived from anything, and there is nothing for it to drift from.
+        let value = ty.split_once('=').map(|(_, v)| v.trim()).unwrap_or("");
+        if value.starts_with("b\"\"") || value.starts_with("&[]") || value == "\"\"" {
+            continue;
+        }
+        return true;
     }
     false
 }
@@ -432,7 +446,20 @@ fn the_rule_flags_the_historical_defect_and_not_its_fix() {
         "pub const HID_MOUSE_REPORT_DESCRIPTOR: &[u8] = &[0x05, 0x01];"
     ));
     assert!(declares_byte_const("const ATR: &[u8] = &[0x3b];"));
-    assert!(declares_byte_const("pub const X: & [ u8 ] = &[];"));
+
+    // An empty byte const declares no canonical bytes, so it must not arm limb B. This is a
+    // real case: `torrent_peer`'s `CONNECTION_CAP_REFUSAL` is `b""` because that protocol
+    // refuses by closing rather than by answering, and without this the protocol's 20-byte
+    // info_hash example was reported as drift from bytes that do not exist.
+    assert!(!declares_byte_const(
+        "const CONNECTION_CAP_REFUSAL: &[u8] = b\"\";"
+    ));
+    // Whitespace tolerance in the TYPE is what this line is for. Its value used to be `&[]`,
+    // which was incidental filler until empty values started meaning "no canonical bytes" —
+    // so it now carries a real one, and still tests the spacing it was written for.
+    assert!(declares_byte_const(
+        "pub const X: & [ u8 ] = &[0x01, 0x02];"
+    ));
     assert!(
         !declares_byte_const("const TIMEOUT: u64 = 30;"),
         "only a byte-array const establishes a canonical byte sequence"
