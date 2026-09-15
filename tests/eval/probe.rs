@@ -66,7 +66,15 @@ impl ProbeOutcome {
 }
 
 /// Is this client installed?
+///
+/// An absolute path is checked directly. Some cases name one deliberately —
+/// MySQL must use the 8.0 client, because the 9.x one cannot load the
+/// `mysql_native_password` plugin NetGet's server offers and dies before a query
+/// exists — and a PATH-only search would report those as missing.
 pub fn binary_available(bin: &str) -> bool {
+    if bin.contains('/') {
+        return std::path::Path::new(bin).is_file();
+    }
     which_path(bin).is_some()
 }
 

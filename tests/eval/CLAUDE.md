@@ -57,8 +57,13 @@ event. Setup correctness is a separate question with its own tests in
    that reads as a pass is the exact defect `PROTOCOL_QUALITY.md` catalogues in
    the rest of the suite (19 files that print `SKIP` and return `Ok(())`).
 4. **Check what the client observed**, not what netget logged — except for
-   one-way protocols (syslog), where `Expect::in_server_log` is the only
-   observable and the runner waits for the needle rather than sleeping.
+   one-way protocols (syslog), where `Expect::executed_action` is the only
+   observable. That check sees **only netget's `Executing action` lines**, never
+   the whole log, and the reason is a false pass it already produced: netget
+   dumps a rejected model reply into the log verbatim, so a whole-log search
+   matched `{"type": "ignore_syslog_message"}` inside a reply that had been
+   *thrown away*, and syslog scored 3/3 having executed nothing. The model
+   naming an action and netget running it are different events.
 
 ## Non-determinism: why the score is a rate
 
