@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::debug;
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::actions::protocol_trait::{ActionResult, Server};
@@ -107,9 +107,13 @@ impl StunServer {
                                 Self::parse_stun_header(&data);
 
                             if !is_valid {
+                                // Decided by the protocol, before any model call: RFC 8489
+                                // says a server answers Binding *Requests* and nothing else,
+                                // and answering anything else makes this a reflector.
                                 Log::new(Some(&status_clone)).debug(format!(
-                                    "STUN dropped an unservable {} message from {} — only \
-                                     Binding requests are answered (see parse_stun_header)",
+                                    "STUN dropped an unservable {} message from {} \
+                                     decision=protocol_error — only Binding requests are \
+                                     answered (see parse_stun_header)",
                                     message_type, peer_addr
                                 ));
                                 return;
@@ -150,6 +154,7 @@ impl StunServer {
                                     peer_addr,
                                     &transaction_id_hex,
                                     &status_clone,
+                                    "static_default",
                                 )
                                 .await;
                                 return;
@@ -189,12 +194,24 @@ impl StunServer {
                                         execution_result.protocol_results.len()
                                     ));
 
+                                    // Classify the answer before consuming it: `ignore_request`
+                                    // is the model deciding to say nothing, which must stay
+                                    // distinguishable from the model having said nothing.
+                                    let action_count = execution_result.raw_actions.len();
+                                    let explicitly_ignored =
+                                        execution_result.raw_actions.iter().any(|a| {
+                                            a.get("type").and_then(|v| v.as_str())
+                                                == Some("ignore_request")
+                                        });
+                                    let mut datagrams_sent = 0usize;
+
                                     for protocol_result in execution_result.protocol_results {
                                         if let Some(output_data) =
                                             protocol_result.get_all_output().first()
                                         {
                                             let _ =
                                                 socket_clone.send_to(output_data, peer_addr).await;
+                                            datagrams_sent += 1;
 
                                             // DEBUG: Log summary
                                             log.debug(format!(
@@ -216,6 +233,32 @@ impl StunServer {
                                             log.debug("STUN protocol result has no output data");
                                         }
                                     }
+
+                                    // One grep-able line per request saying how it was decided.
+                                    // Silence and refusal both leave the client waiting out its
+                                    // retransmission schedule, so the log is the only place the
+                                    // two can be told apart.
+                                    if datagrams_sent > 0 {
+                                        log.info(format!(
+                                            "STUN binding request from {} ({}) \
+                                             decision=model_answer ({} datagram(s) sent)",
+                                            peer_addr, connection_id, datagrams_sent
+                                        ));
+                                    } else if explicitly_ignored {
+                                        log.info(format!(
+                                            "STUN binding request from {} ({}) \
+                                             decision=model_reject (ignore_request: the model \
+                                             chose to send nothing)",
+                                            peer_addr, connection_id
+                                        ));
+                                    } else {
+                                        log.warn(format!(
+                                            "STUN binding request from {} ({}) \
+                                             decision=model_silent actions={} — nothing was \
+                                             sent and the client will time out",
+                                            peer_addr, connection_id, action_count
+                                        ));
+                                    }
                                 }
                                 Err(e) => {
                                     // Fail closed to the correct static default, not to a
@@ -225,13 +268,26 @@ impl StunServer {
                                     // here — a STUN Binding response is never a credential or an
                                     // approval — so send it and say so, rather than dropping the
                                     // request or inventing an address.
-                                    error!(
-                                        "STUN LLM call failed for request from {} ({}): {} — falling back to static binding response",
-                                        peer_addr, connection_id, e
-                                    );
-                                    let _ = status_clone.send(format!(
-                                        "✗ STUN LLM error: {} — sending static binding response",
-                                        e
+                                    //
+                                    // The token is deliberately NOT `fail_closed_*`: the peer
+                                    // gets an affirmative Binding Success Response here, and a
+                                    // tag claiming otherwise would be a lie. The error and its
+                                    // overload category go to the log only — never onto the
+                                    // wire, where a STUN message has no free-text field anyway.
+                                    let category =
+                                        match crate::utils::wire_failure::WireFailure::classify(&e)
+                                        {
+                                            crate::utils::wire_failure::WireFailure::Overloaded => {
+                                                "overloaded"
+                                            }
+                                            crate::utils::wire_failure::WireFailure::Unavailable => {
+                                                "unavailable"
+                                            }
+                                        };
+                                    Log::new(Some(&status_clone)).error(format!(
+                                        "✗ STUN LLM call failed for request from {} ({}) \
+                                         category={}: {}",
+                                        peer_addr, connection_id, category, e
                                     ));
                                     send_static_binding_response(
                                         protocol_clone.as_ref(),
@@ -239,6 +295,7 @@ impl StunServer {
                                         peer_addr,
                                         &transaction_id_hex,
                                         &status_clone,
+                                        "static_fallback_llm_error",
                                     )
                                     .await;
                                 }
@@ -369,12 +426,18 @@ async fn operator_wants_dynamic(
 
 /// Build and send the mechanical STUN Binding Success Response with no LLM involvement:
 /// XOR-MAPPED-ADDRESS = the client's own source address, transaction ID echoed verbatim.
+///
+/// `decision` is the grep-able token for *why* this response is the one being sent —
+/// `static_default` (the operator never opted into model control, so no model was asked) or
+/// `static_fallback_llm_error` (they did, and the backend failed). It is emitted on the same
+/// line as the bytes, so one line per request says both what went out and what decided it.
 async fn send_static_binding_response(
     protocol: &StunProtocol,
     socket: &UdpSocket,
     peer_addr: SocketAddr,
     transaction_id_hex: &str,
     status: &mpsc::UnboundedSender<String>,
+    decision: &str,
 ) {
     let action = serde_json::json!({
         "type": "send_stun_binding_response",
@@ -390,24 +453,28 @@ async fn send_static_binding_response(
                 bytes.len(),
                 peer_addr
             );
-            let _ = status.send(format!(
-                "→ STUN static binding response to {} ({} bytes)",
+            Log::new(Some(status)).info(format!(
+                "→ STUN static binding response to {} ({} bytes) decision={}",
                 peer_addr,
-                bytes.len()
+                bytes.len(),
+                decision
             ));
         }
         Ok(_) => {
-            warn!(
-                "STUN static binding response produced no output for {}",
+            Log::new(Some(status)).warn(format!(
+                "STUN static binding response produced no output for {} \
+                 decision=fail_closed_no_action (nothing sent)",
                 peer_addr
-            );
+            ));
         }
         Err(e) => {
-            error!(
-                "STUN failed to build static binding response for {}: {}",
+            // Our own mechanical response failed to build, so nothing goes out at all. The
+            // client sees a lost datagram; the log is the only record that it was not.
+            Log::new(Some(status)).error(format!(
+                "✗ STUN failed to build the static binding response for {} \
+                 decision=fail_closed_action_error: {}",
                 peer_addr, e
-            );
-            let _ = status.send(format!("✗ STUN static binding response failed: {e}"));
+            ));
         }
     }
 }

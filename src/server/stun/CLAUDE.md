@@ -408,22 +408,52 @@ arrive. On an untrusted network put a rate limiter in front of it.
 - WebRTC STUN Usage: https://developer.mozilla.org/en-US/docs/Web/API/RTCIceServer
 - STUN Message Structure: https://datatracker.ietf.org/doc/html/rfc8489#section-6
 
-## Failure behaviour: the correct static response, not an error
+## Failure behaviour
 
-When `call_llm` returns `Err`, the request is answered with the ordinary **Binding Success
-Response** — the client's real reflected address, its transaction ID echoed — by
-`send_static_binding_response` in `mod.rs`, and the backend error goes to the log and the
-status stream only. Covered by `tests/server/stun/llm_failure_test.rs`.
+STUN is **not** on the root `CLAUDE.md` deliberately-silent list, and it should not be added
+to it: when `call_llm` returns `Err` the request is answered with the ordinary **Binding
+Success Response** — the client's real reflected address, its transaction ID echoed — by
+`send_static_binding_response` in `mod.rs`. The backend error and its overload category go to
+the log and the status stream only; nothing derived from an error ever reaches the wire, and a
+STUN message has no free-text field to put one in anyway.
 
-This is a fail-*closed* answer despite looking permissive, and STUN is the rare protocol
-where that is true: a Binding response is neither a credential nor an approval, it is a fact
-about the requester's own source address, and it is exactly what the server would have sent
-had the operator never opted into LLM control. The model is consulted here only to permit
-*lying* about that address; falling back to the truth withholds the model's influence rather
-than granting anything. Compare `src/server/turn/`, where the same failure must grant
-nothing, and `src/server/radius/`, where it must refuse — there the reply *is* an assertion.
+The silences STUN does have are two, and both are deliberate: a datagram that is not a Binding
+**Request** is dropped without a byte leaving the socket (RFC 8489, and the reflection control
+— see `## Security Considerations`), and the model can choose silence explicitly with
+`ignore_request`.
 
-**This section used to describe a 500 Binding Error Response instead**, matching an earlier
-implementation. `StunProtocol::build_error_response` survives from it and is now reached only
-through the `send_stun_error_response` action, i.e. when a handler or the model refuses a
-request deliberately.
+Every terminal outcome of `stun_binding_request`, and the token it logs:
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Not a Binding Request (bad length, bad cookie, wrong class/method) | nothing | DEBUG `decision=protocol_error` |
+| Operator never opted into model control | Binding Success Response (reflected address) | INFO `decision=static_default` |
+| Model answered with `send_stun_binding_response` / `send_stun_error_response` | that message | INFO `decision=model_answer` |
+| Model answered `ignore_request` | nothing | INFO `decision=model_reject` |
+| Model answered with nothing usable | **nothing** — the client waits out its retransmissions | WARN `decision=model_silent actions=<n>` |
+| Backend failed (`call_llm` → `Err`) | Binding Success Response (reflected address) | ERROR `category=overloaded\|unavailable` + INFO `decision=static_fallback_llm_error` |
+| Our own static response failed to build | nothing | ERROR `decision=fail_closed_action_error` |
+| Our own static response executed but produced no bytes | nothing | WARN `decision=fail_closed_no_action` |
+
+`decision=static_default` and `decision=static_fallback_llm_error` are STUN-specific tokens,
+and the reason they are not `fail_closed_*` is the point: **the peer gets an affirmative
+answer on both paths**, so a `fail_closed_` tag would be a lie to anyone grepping for it. The
+answer is still safe, and STUN is the rare protocol where that is true: a Binding response is
+neither a credential nor an approval, it is a fact about the requester's own source address,
+and it is exactly what the server would have sent had the operator never opted into LLM
+control. The model is consulted here only to permit *lying* about that address, so falling
+back to the truth withholds the model's influence rather than granting anything. Compare
+`src/server/turn/`, where the same failure must grant nothing, and `src/server/radius/`, where
+it must refuse — there the reply *is* an assertion.
+
+`decision=model_silent` is the one outcome with no wire signal at all: the model was asked,
+produced no usable action, and the client is left to time out. That is unchanged behaviour,
+now visible.
+
+Covered by `tests/server/stun/llm_failure_test.rs`, which asserts both the fallback bytes and
+the `decision=static_fallback_llm_error` tag.
+
+**An older version of this section described a 500 Binding Error Response instead**, matching
+an earlier implementation. `StunProtocol::build_error_response` survives from it and is now
+reached only through the `send_stun_error_response` action, i.e. when a handler or the model
+refuses a request deliberately.

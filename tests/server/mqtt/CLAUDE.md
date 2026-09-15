@@ -18,8 +18,8 @@ Seven tests, none `#[ignore]`d, none able to skip.
 | `test_mqtt_keyword_detection` | `e2e_test.rs` | every keyword `MqttProtocol::keywords()` advertises resolves to `MQTT` |
 | `test_mqtt_basic_connect` | `e2e_test.rs` | **rumqttc** completes CONNECT → CONNACK |
 | `test_mqtt_subscribe_and_receive_a_published_message` | `e2e_test.rs` | **rumqttc** completes CONNECT → SUBSCRIBE → SUBACK → PUBLISH and receives the broker's own PUBLISH back, topic and payload asserted |
-| `test_mqtt_refuses_connect_when_llm_fails` | `llm_failure_test.rs` | CONNACK return code 3 and a close, not code 0 |
-| `test_mqtt_refuses_subscribe_when_llm_fails` | `llm_failure_test.rs` | SUBACK 0x80 per filter |
+| `test_mqtt_refuses_connect_when_llm_fails` | `llm_failure_test.rs` | CONNACK return code 3 and a close, not code 0; and the log carries `decision=fail_closed_llm_*`, never `decision=model_silent` (whose CONNECT default is code 0, an accepted session) |
+| `test_mqtt_refuses_subscribe_when_llm_fails` | `llm_failure_test.rs` | SUBACK 0x80 per filter, tagged `decision=fail_closed_llm_*` on `mqtt_subscribe`, while the CONNECT on the same connection is tagged `decision=model_answer` |
 | `injected_mqtt_publish_reaches_raw_socket_and_close_sends_eof` | `peer_inject_test.rs` | the dashboard's `[ message this peer ]` / `[ disconnect this peer ]` reach a live connection |
 
 `test_mqtt_subscribe_and_receive_a_published_message` is the evidence behind the **Beta**
