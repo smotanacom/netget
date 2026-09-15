@@ -217,15 +217,16 @@ impl LdapProtocol {
 // Implement Protocol trait (common functionality)
 impl Protocol for LdapProtocol {
     fn get_startup_parameters(&self) -> Vec<crate::llm::actions::ParameterDefinition> {
-        vec![
-                crate::llm::actions::ParameterDefinition {
-                    name: "send_first".to_string(),
-                    type_hint: "boolean".to_string(),
-                    description: "Accepted and ignored: LDAP is strictly client-driven, so the server never speaks first".to_string(),
-                    required: false,
-                    example: serde_json::json!(false),
-                },
-            ]
+        vec![crate::llm::actions::ParameterDefinition {
+            name: "send_first".to_string(),
+            type_hint: "boolean".to_string(),
+            description: "Unsupported by this server and refused if set to true. LDAP: \
+                                  the client sends a BindRequest or SearchRequest first and \
+                                  every server message is a response framed against one."
+                .to_string(),
+            required: false,
+            example: serde_json::json!(false),
+        }]
     }
     fn get_async_actions(&self, _state: &AppState) -> Vec<ActionDefinition> {
         // LDAP doesn't need async actions for now
@@ -366,13 +367,30 @@ impl Server for LdapProtocol {
     > {
         Box::pin(async move {
             use crate::server::ldap::LdapServer;
-            let _send_first = ctx
+            // `send_first` stays declared so a caller that passes `false` still validates - an
+            // undeclared key is refused outright - but `true` is refused rather than ignored.
+            // LDAP: the client sends a BindRequest or a SearchRequest first and every server
+            // message is a response framed against one, so there is nothing for this to turn
+            // on.
+            //
+            // This was `let _send_first = …`: read, then dropped on the floor. The September
+            // sweep that fixed the same defect in seven other servers matched on a discarded
+            // `_send_first` *parameter* and missed this one, because ldap discards it a layer
+            // later, in a local binding.
+            let send_first = ctx
                 .startup_params
                 .as_ref()
                 .map(|p| p.get_optional_bool("send_first"))
                 .transpose()?
                 .flatten()
                 .unwrap_or(false);
+            if send_first {
+                return Err(anyhow::anyhow!(
+                    "send_first is not supported by the LDAP server: the client sends a \
+                     BindRequest or SearchRequest first and every server message is a \
+                     response framed against one."
+                ));
+            }
 
             LdapServer::spawn_with_llm_actions(
                 ctx.legacy_listen_addr(),
