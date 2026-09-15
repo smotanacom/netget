@@ -98,7 +98,6 @@ mod ipp_client_tests {
         let client = start_netget_client(client_config).await?;
 
         // Give client time to connect and query
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
         client.wait_for_any(&["connected", "IPP"], 30).await;
@@ -216,7 +215,7 @@ mod ipp_client_tests {
 
         let client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify client is IPP protocol
         assert_eq!(client.protocol, "IPP", "Client should be IPP protocol");
@@ -326,8 +325,6 @@ mod ipp_client_tests {
         });
 
         let client = start_netget_client(client_config).await?;
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         println!("✅ IPP client successfully queried job attributes");
 

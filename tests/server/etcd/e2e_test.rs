@@ -211,7 +211,7 @@ Respond with appropriate etcd_range_response, etcd_put_response, etc. actions.
     let port = server.port;
 
     // Wait for server to be fully ready
-    sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     // Verify server started with etcd stack
     // REMOVED: assert_stack_name call

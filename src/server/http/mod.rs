@@ -341,6 +341,12 @@ async fn handle_http_request_inner(
 
                     // Check for HTTP2-Settings header (required for h2c upgrade)
                     if req.headers().get("HTTP2-Settings").is_none() {
+                        // Refused by the protocol before any model call.
+                        Log::new(Some(&status_tx)).warn(format!(
+                            "HTTP h2c upgrade on connection {} decision=protocol_error: no \
+                             HTTP2-Settings header (no LLM call)",
+                            connection_id
+                        ));
                         let response = Response::builder()
                             .status(400) // Bad Request
                             .body(Full::new(Bytes::from(
@@ -413,8 +419,11 @@ async fn handle_http_request_inner(
         if let Some(upgrade_header) = req.headers().get(hyper::header::UPGRADE) {
             if let Ok(upgrade_value) = upgrade_header.to_str() {
                 if upgrade_value.contains("h2c") {
-                    Log::new(Some(&status_tx))
-                        .info("HTTP/2 upgrade not supported (http2 feature disabled)".to_string());
+                    Log::new(Some(&status_tx)).info(format!(
+                        "HTTP h2c upgrade on connection {} decision=protocol_error: not \
+                         supported (http2 feature disabled, no LLM call)",
+                        connection_id
+                    ));
 
                     let response = Response::builder()
                         .status(501) // Not Implemented
@@ -476,8 +485,10 @@ async fn handle_http_request_inner(
     // no LLM call. With no filter configured this is a no-op (pass-through).
     if !filter.is_pass_through() && !filter.allows(&request_data, &path) {
         let resp = filter.rejection();
+        // The server's own request_filter refused this, not the model, and no LLM call was
+        // made. Its own token so it is never read as the model having answered.
         Log::new(Some(&status_tx)).info(format!(
-            "HTTP filtered {} {} -> {} (no LLM call)",
+            "HTTP {} {} decision=refused_by_filter -> {} (no LLM call)",
             request_data.method,
             path,
             resp.status().as_u16()
@@ -558,6 +569,70 @@ async fn handle_http_request_inner(
             // Display messages
             for msg in execution_result.messages {
                 let _ = status_tx.send(msg);
+            }
+
+            // `build_response` decides this protocol's terminal outcome, and it decides it
+            // silently. It lives in `src/server/http_common/handler.rs`, shared with
+            // ipp/openapi/…, so the tag has to be applied here at the call site instead.
+            //
+            // The predicate below is the same one `build_response` uses for its internal
+            // `produced_response` flag: an `Output` whose bytes parse as JSON. When it is
+            // false the model produced no usable `send_http_response`, and the server
+            // answers anyway — with the configured `default_response` if there is one, and
+            // otherwise with a blank **200**.
+            //
+            // **That last branch is a fail-open**, recorded here rather than repaired in
+            // this pass: an unreachable model, a model that answered with nothing, and a
+            // model that deliberately answered `200 OK` are three different things that all
+            // reach the peer as `200 OK` with an empty body. `decision=fail_closed_*` would
+            // be a lie on that path, so the silence is tagged as the model's and the
+            // fallback that was actually used is named in the same line.
+            let produced_response = execution_result.protocol_results.iter().any(|r| {
+                matches!(
+                    r,
+                    crate::llm::actions::protocol_trait::ActionResult::Output(out)
+                        if serde_json::from_slice::<serde_json::Value>(out).is_ok()
+                )
+            });
+            let failure_summary = execution_result
+                .failures
+                .iter()
+                .map(|f| format!("{}: {}", f.action, f.error))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let has_default_response = filter.default_response_parts().is_some();
+            let fallback = if has_default_response {
+                "default_response"
+            } else {
+                "blank_200"
+            };
+            let subject = format!(
+                "HTTP {} {} (connection {})",
+                request_data.method, request_data.uri, connection_id
+            );
+            let log = Log::new(Some(&status_tx));
+            if produced_response {
+                log.info(format!("{} decision=model_answer", subject));
+            } else if !failure_summary.is_empty() {
+                log.error(format!(
+                    "{} decision=model_bad_action fallback={}: the model answered but its \
+                     action(s) could not be executed ({}), and the peer is still given an \
+                     affirmative response",
+                    subject, fallback, failure_summary
+                ));
+            } else if has_default_response {
+                log.warn(format!(
+                    "{} decision=model_silent fallback=default_response: the model produced no \
+                     send_http_response, so the server's configured default_response was sent",
+                    subject
+                ));
+            } else {
+                log.warn(format!(
+                    "{} decision=model_silent fallback=blank_200: the model produced no \
+                     send_http_response and no default_response is configured, so the peer is \
+                     answered 200 with an empty body (fail-open)",
+                    subject
+                ));
             }
 
             // Use shared response building logic

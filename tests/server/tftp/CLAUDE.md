@@ -155,3 +155,20 @@ NETGET_USE_OLLAMA=1 cargo test --features tftp --test server::tftp::e2e_test
 - **Assertions**: Multiple assertions per test (opcode, block numbers, data content)
 - **Timeouts**: 5-second timeouts on all UDP receives (prevents hanging)
 - **LLM efficiency**: < 10 LLM calls total (meets project requirement)
+
+## `decision_tag_test.rs`
+
+Two tests, 2 LLM calls each, pinning the one distinction the TFTP wire cannot carry.
+
+| Test | What it asserts |
+|---|---|
+| `test_tftp_backend_failure_is_tagged_fail_closed` | An RRQ during a backend outage returns ERROR code 0 with one of the two **fixed** category messages (never netget's error text), and the log carries `decision=fail_closed_llm_*` and *not* `decision=model_reject` |
+| `test_tftp_handler_refusal_is_tagged_model_reject` | An RRQ the handler refuses with `send_tftp_error` returns the handler's own code and message, and the log carries `decision=model_reject` and *not* `decision=fail_closed` |
+
+Both put **opcode 5** on the wire, and a client parses nothing that tells them apart — which
+is the point. Each test asserts the packet *and* the log line, because either half alone
+proves nothing: a tag with no packet behind it describes something that did not happen, and a
+packet with no tag is the defect the pass exists to remove.
+
+See `src/server/tftp/CLAUDE.md`, "Failure behaviour", for every outcome and its token,
+including the two that still write nothing at all (`model_silent`, `fail_closed_bad_action`).

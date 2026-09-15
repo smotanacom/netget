@@ -99,6 +99,30 @@ async fn test_snowflake_refuses_login_when_llm_fails() -> E2EResult<()> {
         );
     }
 
+    // The envelope a driver sees is identical to the one `test_snowflake_login_refused`
+    // produces from a deliberate `snowflake_error`, so the wire cannot carry the difference.
+    // The `decision=` tag is where it lives, and `grep decision=fail_closed` is the diagnostic
+    // the root CLAUDE.md teaches — assert it is actually there.
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+    let lines = server.get_output().await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("Snowflake login") && l.contains("decision=fail_closed_")),
+        "a backend outage on the login endpoint must be logged with a fail_closed decision \
+         tag; without it it is indistinguishable from the model denying the login. Output \
+         was:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("decision=model_reject")),
+        "the model never answered, so nothing here may be recorded as its decision. Output \
+         was:\n{}",
+        lines.join("\n")
+    );
+
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;

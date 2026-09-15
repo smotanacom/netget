@@ -468,3 +468,27 @@ no multi-hop.
 
 Order of work to make a `Beta` rating meaningful: finish the link handshake, then cell
 digests, then a real `tor` or Arti client in the E2E suite, then EXTEND.
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/tor_relay/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_CELL_READ_TIMEOUT` | 30s | Once TLS is up the link protocol is client-speaks-first: the VERSIONS cell is the first thing a client sends and the relay says nothing before it. |
+| `IDLE_BETWEEN_CELLS_TIMEOUT` | 900s | Derived from Tor's own answer to the same question. `KeepalivePeriod` defaults to five minutes: a relay sends a PADDING cell that often on an open connection precisely so an idle-but-live link keeps proving it is live through firewalls. Three of those periods with neither a cell nor a padding keepalive means the peer is gone, not quiet. (`CircuitIdleTimeout`, an hour, is about circuits, not about a connection producing nothing at all.) |
+| `MAX_CONNECTIONS` | 256 | The cap is applied on the raw TCP accept, before the TLS handshake, so the only vocabulary available is TLS's: **a plaintext fatal alert, `internal_error`**. The Tor link protocol has nothing at all that may precede VERSIONS. |
+
+**The deadline covers the read and nothing else.** The deadline is armed immediately before the `select!` and covers only the wait, not the loop body — `handle_cell` awaits the model above it and may park a cell for a human, and none of that time is counted. **Not covered:** the outbound exit-stream forwarder (`spawn_stream_forwarder`) reads from a target this relay dialled out to, not from an inbound peer, so it is outside this bound. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

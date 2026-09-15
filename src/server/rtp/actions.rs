@@ -82,6 +82,9 @@ impl Protocol for RtpProtocol {
         ProtocolMetadataV2::builder()
             .connectionless()
             .state(DevelopmentState::Experimental)
+            // Deliberately silent: An RTP packet asserts media content at a timestamp; there
+            // is no error packet, and a fabricated one is played.
+            .deliberately_silent()
             .implementation(
                 "Manual RFC 3550 packetizer with a G.711 (PCMU/PCMA) synthesis engine; the model \
                  describes content, Rust owns the samples and framing",

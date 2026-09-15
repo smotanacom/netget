@@ -381,4 +381,4 @@ cargo test --features mysql,postgresql,redis,mongodb-server,cassandra -- --test-
 
 - [MongoDB Rust Driver Testing](https://github.com/mongodb/mongo-rust-driver/tree/main/tests)
 - [BSON Test Utilities](https://docs.rs/bson/latest/bson/)
-- [NetGet Test Infrastructure](../../../TEST_INFRASTRUCTURE_FIXES.md)
+- [NetGet Test Infrastructure](../../README.md)

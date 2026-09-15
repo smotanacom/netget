@@ -1166,6 +1166,10 @@ sha1 = "0.10"  # For info_hash calculation
 feed-rs = "2"
 async-nats = "0.50.0"
 async-stomp = "0.6.3"
+# Property-based round-trip tests for the hand-written codecs (tests/codec_property_test.rs).
+# `std` only: no forking, no persistence file, so a failing case is reported by the test
+# binary rather than written into the source tree.
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
 
 [build-dependencies]
 # Protocol buffer compiler for etcd gRPC service
@@ -1176,6 +1180,15 @@ tonic-build = "0.12"
 # Keep prebuilt binaries small: symbols stripped, thin LTO.
 strip = "symbols"
 lto = "thin"
+# Arithmetic overflow must panic where it SHIPS, not only where it is tested.
+#
+# Cargo's default is the exact opposite: `overflow-checks` is on in dev/test and off in release.
+# STOMP's `content-length: 18446744073709551615` is the worked example - it panicked in every
+# test build and wrapped silently in the shipped one, so the place it was found was the place
+# it was harmless. A wrapped length is a wrong answer given confidently; a panic is a logged
+# task death (`src/panic_log.rs`), which is strictly better for a server whose inputs are
+# hostile by design.
+overflow-checks = true
 
 # The browser bundle (crates/netget-web, ./web/build.sh): size over speed. With 68 protocols
 # compiled in, the .wasm is what the visitor downloads, and it is not CPU-bound.

@@ -20,6 +20,34 @@ use tracing::{debug, error, info, trace, warn};
 /// TDS packet size we advertise in the login ENVCHANGE and honour when writing.
 const TDS_PACKET_SIZE: usize = 4096;
 
+/// How long to wait for a peer's first TDS packet after it has connected.
+///
+/// TDS is client-speaks-first: PRELOGIN is the first packet and the server says nothing before
+/// it. `tiberius`, `sqlcmd` and every ADO.NET driver send it inside the connect path, so a peer
+/// that has connected and sent nothing has begun no session — and that is the state an
+/// unauthenticated flood lives in.
+const FIRST_PACKET_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* packet once the peer has logged in.
+///
+/// SQL Server has no idle-disconnect default to copy, so the number is argued the same way
+/// MySQL's and PostgreSQL's are: this server holds nothing a reconnect would lose — no tables,
+/// no temp tables, no open transaction, no state the model carries between batches — so a
+/// pooled connection reaped here costs one transparent reconnect. Ten minutes is far above any
+/// connection pool's keepalive interval and still bounds the hold.
+const IDLE_BETWEEN_PACKETS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Concurrent connections this server admits.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a plain close, which is what a real SQL Server does.
+///
+/// TDS has no message a server may send to a client still in PRELOGIN: every server packet is a
+/// typed response to a request, and a TABULAR_RESULT carrying an ERROR token read in that state
+/// is a framing violation, not a diagnosis. The refusal is in the log instead, tagged
+/// `decision=fail_closed_connection_cap`.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// SQL Server's own "Login failed for user '%.*ls'." error. Severity 14 is what a real
 /// instance sends, and every driver already maps it to an authentication failure.
 const LOGIN_FAILED_ERROR: u32 = 18456;
@@ -82,10 +110,19 @@ impl MssqlServer {
         let task_registrar = app_state.clone();
 
         // Spawn the accept loop
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "MSSQL",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, addr, permit)) => {
                         Log::new(Some(&status_tx)).info(format!("MSSQL connection from {}", addr));
 
                         let connection_id =
@@ -128,6 +165,9 @@ impl MssqlServer {
                         );
 
                         tokio::spawn(async move {
+                            // Held for the life of the session, so the cap counts live
+                            // connections rather than accepts.
+                            let _permit = permit;
                             if let Err(e) = handler.handle_connection(stream).await {
                                 error!("MSSQL connection error: {:?}", e);
                             }
@@ -223,8 +263,20 @@ impl MssqlHandler {
 
         // Handle TDS protocol negotiation and queries
         loop {
+            // Both reads below are bounded by this deadline, and nothing else in the loop is.
+            // The LLM round-trip that decides a login or answers a batch, and a `manual` rule
+            // parking either for a human (`src/state/intercepts.rs`, 300s by default), happen
+            // after a whole packet has been read — outside the deadline by construction, so
+            // neither can be cut short. What is bounded is a peer holding the connection while
+            // sending nothing, and one that announces a packet length and then stalls.
+            let read_timeout = if authenticated {
+                IDLE_BETWEEN_PACKETS_TIMEOUT
+            } else {
+                FIRST_PACKET_READ_TIMEOUT
+            };
+
             // Read TDS packet header (8 bytes)
-            let header = match self.read_tds_header(&mut stream).await {
+            let header = match self.read_tds_header(&mut stream, read_timeout).await {
                 Ok(h) => h,
                 Err(e) => {
                     debug!("Error reading TDS header: {}", e);
@@ -240,7 +292,19 @@ impl MssqlHandler {
             // Read packet data
             let data_len = header.length - 8;
             let mut data = vec![0u8; data_len as usize];
-            stream.read_exact(&mut data).await?;
+            match tokio::time::timeout(read_timeout, stream.read_exact(&mut data)).await {
+                Ok(read) => read?,
+                Err(_) => {
+                    debug!(
+                        "MSSQL connection {} announced a {}-byte packet and stalled for {}s \
+                         without delivering it; closing",
+                        self.connection_id,
+                        header.length,
+                        read_timeout.as_secs()
+                    );
+                    break;
+                }
+            };
 
             // Only the *sent* side was counted before, so every MSSQL connection in the
             // dashboard rail showed a growing ↑ against a permanently zero ↓, and
@@ -347,9 +411,21 @@ impl MssqlHandler {
     }
 
     /// Read TDS packet header (8 bytes)
-    async fn read_tds_header(&self, stream: &mut TcpStream) -> Result<TdsHeader> {
+    async fn read_tds_header(
+        &self,
+        stream: &mut TcpStream,
+        read_timeout: std::time::Duration,
+    ) -> Result<TdsHeader> {
         let mut header_bytes = [0u8; 8];
-        stream.read_exact(&mut header_bytes).await?;
+        match tokio::time::timeout(read_timeout, stream.read_exact(&mut header_bytes)).await {
+            Ok(read) => read?,
+            Err(_) => {
+                anyhow::bail!(
+                    "peer sent nothing for {}s; closing idle connection",
+                    read_timeout.as_secs()
+                )
+            }
+        };
 
         Ok(TdsHeader {
             packet_type: header_bytes[0],

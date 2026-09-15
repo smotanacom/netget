@@ -86,6 +86,39 @@ Silence is not an option on a full update request: RFB has no "no answer" reply,
 that asked for the whole screen and receives nothing waits forever. Equating "no answer" with
 "nothing changed" would be exactly the fail-open shape that bit OAuth2.
 
+## Failure behaviour
+
+`VncConnection::consult` emits exactly one `decision=` line per event, so a backend outage, a
+model that said nothing, and a model that explicitly refused are never the same log line. RFB
+cannot carry the distinction — the placeholder screen looks the same whatever produced it — so
+the log is the only place it can live.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| `vnc_render_display` / `vnc_set_clipboard` / `vnc_no_change` | that screen or clipboard text; `vnc_no_change` re-sends the last screen on a full request | INFO `decision=model_answer` |
+| `close_connection` | connection closed after the pending frame | INFO `decision=model_reject` |
+| Model answered with nothing this protocol can use | placeholder screen, fixed caption | WARN `decision=model_silent` |
+| The model's actions were refused by the executor, or its render result could not be decoded | placeholder screen, fixed caption | ERROR `decision=fail_closed_bad_action` |
+| Backend failed | placeholder screen, fixed caption | ERROR `decision=fail_closed_llm_error` |
+| Backend saturated (`WireFailure::Overloaded`) | placeholder screen, fixed caption | ERROR `decision=fail_closed_llm_overloaded` |
+| Client chose a security type other than None | SecurityResult failure + a **byte-literal** reason | WARN `decision=protocol_error` |
+
+`tests/server/vnc/test.rs::test_vnc_backend_failure_is_tagged_fail_closed` pins the backend
+row; `test_vnc_placeholder_when_model_gives_no_usable_answer` pins the `model_silent` row and
+asserts the backend row is *not* claimed in the same run.
+
+**Nothing NetGet knows reaches the peer's viewer.** Two places could leak and neither does: the
+placeholder's caption is one of four fixed strings chosen by the caller (`"the model gave no
+screen to draw"` and friends), not `Decision::no_answer`, which holds the error text and is only
+read as a flag; and the RFB SecurityResult reason — which a viewer renders verbatim in a dialog
+box — is a `b"..."` literal. Keep both that way: this is precisely the class
+`tests/wire_failure_test.rs` guards.
+
+**Admission is not a model decision.** `perform_handshake` offers security type 1 (None) and
+accepts any client that picks it, with no LLM call anywhere in the path — see "Limitations".
+That is the documented design, not a fail-open introduced by a failure: there is no event on
+which a model could ever have refused a viewer.
+
 ## Startup parameters
 
 | Name | Type | Default | Notes |

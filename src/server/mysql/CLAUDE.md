@@ -217,3 +217,27 @@ unknown table with mysql_error_response error_code 1146.
 - [MySQL client/server protocol](https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_connection_phase.html)
 - [opensrv-mysql](https://docs.rs/opensrv-mysql/)
 - [mysql_async](https://docs.rs/mysql_async/) — used by the E2E tests
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/mysql/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `HANDSHAKE_RESPONSE_TIMEOUT` | 30s | MySQL is server-speaks-first: `opensrv-mysql` writes the initial handshake and a real client answers at once, with the credentials already in hand. This bounds "connected, took the greeting, said nothing". |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 600s | Real MySQL's `wait_timeout` defaults to **eight hours**, a bound in name only, so copying it was not an option the way copying Kafka's was. Ten minutes is safe because of what this server is: it holds no session state a reconnect would lose (the no-storage rule), so a reaped pooled connection costs `mysql_async` or a JDBC pool one transparent reconnect. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **an ERR packet carrying error 1040 `ER_CON_COUNT_ERROR`, SQLSTATE `08004`** — precisely what a real MySQL server sends, in precisely this position, in place of the initial handshake as packet sequence 0. `mysql_async` surfaces "Too many connections" and the CLI prints `ERROR 1040 (08004)`. |
+
+**The deadline covers the read and nothing else.** `AsyncMysqlIntermediary::run_on` owns the protocol loop, so there is no `read()` of ours to wrap — but it takes a *generic* reader, which is the seam. `IdleTimeoutReader` arms its clock only while a read is actually outstanding, so while `MysqlHandler` is working the reader is not being polled and no clock runs. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

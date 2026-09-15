@@ -220,3 +220,27 @@ unknown relation with postgresql_error_response code 42P01.
 - [pgwire](https://docs.rs/pgwire/)
 - [tokio-postgres](https://docs.rs/tokio-postgres/) — used by the E2E tests
 - [PostgreSQL error codes](https://www.postgresql.org/docs/current/errcodes-appendix.html)
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/postgresql/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_BYTE_READ_TIMEOUT` | 60s | Enforced with `TcpStream::peek` before the socket reaches pgwire, so the StartupMessage is untouched. Matches pgwire's own internal `STARTUP_TIMEOUT`, which bounds the startup *exchange*; this bounds the silence before it begins, which pgwire does not. |
+| `IDLE_SESSION_TIMEOUT` | 600s | Real PostgreSQL's `idle_session_timeout` ships disabled, so there is no upstream default to copy. Ten minutes, for the same reason as MySQL's: no tables, no temp tables, no open transaction, so a reaped pooled connection costs `tokio-postgres`, SQLAlchemy or pgbouncer one transparent reconnect. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **a v3 `ErrorResponse` with SQLSTATE `53300 too_many_connections`** — the state real PostgreSQL uses for "sorry, too many clients already", and the one this file already maps backend overload onto, so a driver treats it as transient. Sending it before the StartupMessage is a small liberty that libpq-family clients handle: they write startup, then read, and an ErrorResponse is a legal thing to find there. |
+
+**The deadline covers the read and nothing else.** `process_socket` takes a concrete `TcpStream` and owns every read, so the idle bound is a watchdog over `ConnectionActivity` instead. `resolve` holds a busy guard for the whole answer, so a statement waiting on the model or parked for a human is never counted as idle. The connection is dropped rather than sent a FATAL 57P05, because pgwire exposes no way to write into the socket from outside. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

@@ -74,21 +74,45 @@ passive mode to configure — and has been removed. `send_first` is not declared
 server always sends the greeting event itself, so passing `send_first` would only earn an
 "unsupported" warning from `server_startup`.
 
-### Error handling
+## Failure behaviour
 
-A handler failure is not silent, and the peer never sees the error text. Both paths classify
-the failure with `crate::utils::WireFailure` and put only its `&'static str` category on the
-wire; the error itself goes to the log:
+FTP is **not** one of the deliberately-silent protocols: RFC 959 gives it a reply code for
+every terminal outcome, so a refusal can be stated on the wire and does not have to live only
+in the log. Every outcome below is tagged with a `decision=` token in `mod.rs`, at the level
+named, so `grep decision=fail_closed` finds exactly the requests the model did not answer.
+The peer never sees the error text — both failure paths put only
+`crate::utils::WireFailure`'s `&'static str` category in the 421, and the error goes to the log.
 
-| Path | Wire | Log |
+`<cmd>` below is the command line as received (`CONNECTION_ESTABLISHED` for the greeting
+event, which is a sentinel and not something a client sends).
+
+| Outcome | On the wire | Log |
 |---|---|---|
-| greeting | `421 Service not available, closing control connection (netget: …)` then close | WARN with the full error |
-| command | `421 Service not available, closing control connection (netget: …)` then close | WARN with the full error |
+| Model answered with `send_ftp_response` / `_multiline` / `_data` / `_list` | those bytes verbatim | INFO `decision=model_answer (reply <code>)` |
+| Model answered `close_connection` and nothing else | control connection closed, no reply | INFO `decision=model_reject` |
+| Model answered `wait_for_more` and nothing else | nothing — the next command line is read | INFO `decision=model_wait_for_more` |
+| Model answered with no usable action at all | **nothing**; the client waits for its own timeout | WARN `decision=model_silent` |
+| Executor refused the model's action (bad `code`, CR/LF in `message`, unknown action) | **nothing**; the client waits for its own timeout | ERROR `decision=fail_closed_bad_action` naming the action and the reason |
+| Backend failed (unreachable, retries exhausted, malformed) | `421 Service not available, closing control connection (netget: request could not be processed)` then close | ERROR `decision=fail_closed_llm_error` with the full error |
+| Backend saturated | `421 Service not available, closing control connection (netget: backend at capacity, retry later)` then close | ERROR `decision=fail_closed_llm_overloaded` with the full error |
+| Control line over `MAX_COMMAND_LINE` with no newline | `500 Command line too long` then close | WARN `decision=refused_line_too_long` |
 
 421 rather than silence because an FTP client may not send a command until it has read a
 greeting, so a silent greeting failure hangs the client until its own timeout. The two
-categories are `netget: backend at capacity, retry later` (overload — retryable) and
-`netget: request could not be processed`.
+categories are kept apart deliberately: one is retryable and one is not.
+
+**There is no fail-open here, and that is the property to preserve.** Nothing in `actions.rs`
+can synthesise a reply — `execute_action` produces only the packet a named action asked for,
+and an unknown action name is an `Err`, not a default. So no failure path can produce a 2xx:
+an LLM outage during `USER`/`PASS` yields 421 and a closed connection, never 230. If you add a
+fallback reply to either failure path, it must not be in the 2xx range.
+
+**Three outcomes still share one thing on the wire — nothing.** `model_reject`,
+`model_wait_for_more`, `model_silent` and `fail_closed_bad_action` all write no bytes, so only
+the log distinguishes them. That is why `model_silent` is WARN and `fail_closed_bad_action` is
+ERROR while the two deliberate ones are INFO. Tagging them was this pass's job; giving
+`model_silent` and `fail_closed_bad_action` a real reply (451 and 500 respectively would be
+the RFC 959 answers) was deliberately **not**, because it changes what a peer sees.
 
 ## LLM Integration
 

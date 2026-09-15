@@ -1,16 +1,41 @@
 //! Real-client validation: fetch the HLS playlist and a segment with `curl`.
 //!
-//! `#[ignore]` because it shells out to `curl` (not guaranteed on CI). Run manually:
+//! **Not `#[ignore]`d, and it does not skip.** It used to be `#[ignore]`d for "run manually",
+//! which means it never ran anywhere — an `#[ignore]` is a skip gate with better manners, and
+//! `CLAUDE.md` names it as one of the three ways evidence fails to execute. If `curl` is absent
+//! this test fails and says how to install it.
+//!
+//! **What this does *not* establish**, and the reason HLS stays `Experimental`: `curl` is a
+//! generic HTTP client. It proves the HTTP transport underneath HLS answers, exactly as
+//! `reqwest` does for `couchdb`/`openapi`/`spark`; it parses no `#EXTM3U` playlist and decodes
+//! no segment, so it says nothing about the layer NetGet actually authors. Real HLS evidence
+//! needs a player — `ffprobe` reads an HLS master playlist natively — and that test does not
+//! exist yet.
 //!
 //! ```bash
 //! ./cargo-isolated.sh test --no-default-features --features hls \
-//!     --test server -- --ignored --test-threads=1 hls::curl
+//!     --test server -- --test-threads=100 hls::curl
 //! ```
 
 #![cfg(feature = "hls")]
 
 use crate::server::helpers::*;
 use std::time::Duration;
+
+/// Fail, never skip, when `curl` is absent.
+fn require_curl() -> Result<(), Box<dyn std::error::Error>> {
+    match std::process::Command::new("curl").arg("--version").output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(format!("`curl --version` exited {}", out.status).into()),
+        Err(e) => Err(format!(
+            "curl is not available ({e}): this test drives a client NetGet did not write \
+             against the HLS server, and skipping it would report a pass for a test that \
+             asserted nothing. Install it with `brew install curl` (macOS) or \
+             `apt-get install -y curl` (Debian/Ubuntu)."
+        )
+        .into()),
+    }
+}
 
 fn curl(url: &str, args: &[&str]) -> (String, String) {
     let mut a: Vec<&str> = vec!["-s", "-i"];
@@ -27,8 +52,8 @@ fn curl(url: &str, args: &[&str]) -> (String, String) {
 }
 
 #[tokio::test]
-#[ignore = "requires curl installed; run manually"]
 async fn curl_fetches_playlist_and_segment() -> E2EResult<()> {
+    require_curl()?;
     let prompt = "listen on port 0 via hls\n\nServe a 2-segment VOD playlist and a segment body.";
     let config = NetGetConfig::new(prompt)
         .with_log_level("off")

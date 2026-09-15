@@ -129,11 +129,19 @@ impl IrcServer {
                                         // and its prefix is gone. ERROR + close is IRC's own
                                         // way of ending a link, and it names the limit so a
                                         // real client's operator can see what happened.
+                                        // Refused by the protocol before any model call, so
+                                        // it is neither the model's answer nor a backend
+                                        // failure and carries its own token.
                                         error!(
                                             "IRC connection {} sent {} bytes with no newline \
-                                             (limit {}), closing",
+                                             (limit {}), closing decision=refused_body_too_large",
                                             connection_id, n, MAX_IRC_READ_LINE
                                         );
+                                        let _ = status_clone.send(format!(
+                                            "[ERROR] IRC connection {} exceeded {} bytes with no \
+                                             newline decision=refused_body_too_large",
+                                            connection_id, MAX_IRC_READ_LINE
+                                        ));
                                         let reply = format!(
                                             "ERROR :Closing link: message exceeds {MAX_IRC_READ_LINE} bytes\r\n"
                                         );
@@ -219,9 +227,19 @@ impl IrcServer {
                                             execution_result.protocol_results.len()
                                         ));
 
+                                        // Which terminal outcome this answer was. Computed
+                                        // here rather than inferred from the log later,
+                                        // because "the model sent a numeric", "the model
+                                        // asked to hang up" and "the model said nothing" are
+                                        // three different things that all end with the server
+                                        // going back to reading.
+                                        let mut wrote_output = false;
+                                        let mut asked_to_close = false;
+                                        let failures = execution_result.failures.len();
                                         for protocol_result in execution_result.protocol_results {
                                             match protocol_result {
                                                 ActionResult::Output(data) => {
+                                                    wrote_output = true;
                                                     let response = String::from_utf8_lossy(&data);
                                                     let formatted = if response.ends_with("\r\n") {
                                                         response.to_string()
@@ -271,9 +289,49 @@ impl IrcServer {
                                                         formatted.trim()
                                                     ));
                                                 }
-                                                ActionResult::CloseConnection => break,
+                                                ActionResult::CloseConnection => {
+                                                    asked_to_close = true;
+                                                    break;
+                                                }
                                                 _ => {}
                                             }
+                                        }
+
+                                        // One decision line per request. `model_reject` is the
+                                        // model choosing to end the link rather than answer;
+                                        // `model_silent` is an answer with nothing usable in
+                                        // it; `fail_closed_bad_action` is an answer the
+                                        // executor refused. All three leave the peer with no
+                                        // reply, so the log is the only place they differ.
+                                        let decision = if wrote_output {
+                                            "model_answer"
+                                        } else if asked_to_close {
+                                            "model_reject"
+                                        } else if failures == 0 {
+                                            "model_silent"
+                                        } else {
+                                            "fail_closed_bad_action"
+                                        };
+                                        let summary = format!(
+                                            "IRC {} on connection {} from {} decision={} ({} failed action(s))",
+                                            irc_command_token(&line),
+                                            connection_id,
+                                            remote_addr,
+                                            decision,
+                                            failures
+                                        );
+                                        if decision == "fail_closed_bad_action" {
+                                            error!("{}", summary);
+                                            let _ =
+                                                status_clone.send(format!("[ERROR] {}", summary));
+                                        } else if decision == "model_silent" {
+                                            tracing::warn!("{}", summary);
+                                            let _ =
+                                                status_clone.send(format!("[WARN] {}", summary));
+                                        } else {
+                                            info!("{}", summary);
+                                            let _ =
+                                                status_clone.send(format!("[INFO] {}", summary));
                                         }
                                     }
                                     Err(e) => {
@@ -284,11 +342,28 @@ impl IrcServer {
                                         // exactly this - a command the server understood and
                                         // could not carry out - and it can never be mistaken
                                         // for a registration, a JOIN or a PRIVMSG.
-                                        error!(
-                                            "IRC LLM call failed on connection {}: {}",
-                                            connection_id, e
-                                        );
+                                        // Saturation keeps the link (the client may retry);
+                                        // anything else closes it. Both look like a 400 to the
+                                        // client, so the token carries the distinction, and
+                                        // the error goes only here — never into the numeric's
+                                        // trailing parameter, which a real IRC client prints
+                                        // verbatim to a human.
+                                        let token = if crate::utils::WireFailure::classify(&e)
+                                            .is_overloaded()
+                                        {
+                                            "fail_closed_llm_overloaded"
+                                        } else {
+                                            "fail_closed_llm_error"
+                                        };
                                         let command = irc_command_token(&line);
+                                        error!(
+                                            "IRC {} on connection {} from {} decision={}: {}",
+                                            command, connection_id, remote_addr, token, e
+                                        );
+                                        let _ = status_clone.send(format!(
+                                            "[ERROR] IRC {} on connection {} from {} decision={}",
+                                            command, connection_id, remote_addr, token
+                                        ));
                                         let (reply, close) = irc_failure_reply(&command, &e);
                                         let _ = status_clone.send(format!(
                                             "[ERROR] IRC connection {} replying: {}",

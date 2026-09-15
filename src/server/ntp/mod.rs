@@ -166,11 +166,15 @@ impl NtpServer {
                             .await;
 
                             if !wants_dynamic {
+                                // No model was consulted at all: the operator opted into
+                                // nothing, so the mechanical answer *is* the policy. Tagged
+                                // distinctly so it can never be read as a model answer.
                                 send_static_time_response(
                                     &protocol,
                                     socket_clone.as_ref(),
                                     peer_addr,
                                     &status_clone,
+                                    "static_default",
                                 )
                                 .await;
                                 return;
@@ -206,6 +210,54 @@ impl NtpServer {
                                         execution_result.protocol_results.len()
                                     ));
 
+                                    // Classify the outcome *before* `protocol_results` is
+                                    // consumed below. Without this the log cannot tell a model
+                                    // that answered from one that refused (`ignore_request`)
+                                    // from one that said nothing at all - all three leave the
+                                    // same trace today, and two of them leave the client with
+                                    // no reply.
+                                    let produced_output = execution_result
+                                        .protocol_results
+                                        .iter()
+                                        .any(|r| !r.get_all_output().is_empty());
+                                    let explicitly_ignored =
+                                        execution_result.raw_actions.iter().any(|a| {
+                                            a.get("type").and_then(|t| t.as_str())
+                                                == Some("ignore_request")
+                                        });
+                                    let action_failures = execution_result
+                                        .failures
+                                        .iter()
+                                        .map(|f| format!("{}: {}", f.action, f.error))
+                                        .collect::<Vec<_>>()
+                                        .join("; ");
+
+                                    let decision_log = Log::new(Some(&status_clone));
+                                    if produced_output {
+                                        decision_log.info(format!(
+                                            "NTP request from {} decision=model_answer",
+                                            peer_addr
+                                        ));
+                                    } else if explicitly_ignored {
+                                        decision_log.info(format!(
+                                            "NTP request from {} decision=model_reject \
+                                             (ignore_request: no reply sent)",
+                                            peer_addr
+                                        ));
+                                    } else if !action_failures.is_empty() {
+                                        decision_log.error(format!(
+                                            "NTP request from {} decision=fail_closed_bad_action \
+                                             ({}); no reply sent",
+                                            peer_addr, action_failures
+                                        ));
+                                    } else {
+                                        decision_log.warn(format!(
+                                            "NTP request from {} decision=model_silent; no reply \
+                                             sent and the client keeps polling",
+                                            peer_addr
+                                        ));
+                                    }
+
                                     for protocol_result in execution_result.protocol_results {
                                         if let Some(output_data) =
                                             protocol_result.get_all_output().first()
@@ -238,22 +290,33 @@ impl NtpServer {
                                     }
                                 }
                                 Err(e) => {
-                                    // Fail closed to the correct static default, not to a
-                                    // permissive or fabricated answer. The operator opted into
-                                    // LLM control and the LLM failed; the mechanical response
-                                    // (the true current time) is the safe fallback here — it can
-                                    // never be a lie in the operator's favour — so send it and
-                                    // say so, rather than dropping the request or inventing a
-                                    // clock reading.
-                                    Log::new(Some(&status_clone)).warn(format!(
-                                        "NTP LLM error: {} — sending static time response",
-                                        e
+                                    // The operator opted into LLM control and the LLM failed;
+                                    // the mechanical response (the true current time) is the
+                                    // fallback — it can never be a lie in the operator's
+                                    // favour — so send it and say so, rather than dropping the
+                                    // request or inventing a clock reading.
+                                    //
+                                    // This is deliberately **not** tagged `fail_closed_*`: the
+                                    // client receives a usable, affirmative stratum-2 time
+                                    // sample, so claiming the server denied would be a lie in
+                                    // the log. `decision=static_default_llm_error` is the
+                                    // honest token — see `src/server/ntp/CLAUDE.md`.
+                                    let category = match crate::utils::WireFailure::classify(&e) {
+                                        crate::utils::WireFailure::Overloaded => "overloaded",
+                                        crate::utils::WireFailure::Unavailable => "unavailable",
+                                    };
+                                    Log::new(Some(&status_clone)).error(format!(
+                                        "NTP request from {} decision=static_default_llm_error \
+                                         category={}: {} — answering with the mechanical static \
+                                         time response",
+                                        peer_addr, category, e
                                     ));
                                     send_static_time_response(
                                         &protocol,
                                         socket_clone.as_ref(),
                                         peer_addr,
                                         &status_clone,
+                                        "static_default_llm_error",
                                     )
                                     .await;
                                 }
@@ -303,11 +366,16 @@ async fn operator_wants_dynamic(
 /// Build and send the mechanical NTP time response with no LLM involvement: stratum 2, LOCL
 /// reference clock, current-time timestamps. The per-request `protocol` echoes the client's
 /// transmit timestamp as the origin and answers in the client's own version.
+///
+/// `decision` is the token this send is recorded under — `static_default` when no model was
+/// consulted, `static_default_llm_error` when one was and it failed — so the two can never be
+/// conflated in the log.
 async fn send_static_time_response(
     protocol: &NtpProtocol,
     socket: &UdpSocket,
     peer_addr: SocketAddr,
     status: &mpsc::UnboundedSender<String>,
+    decision: &str,
 ) {
     let action = serde_json::json!({
         "type": "send_ntp_time_response",
@@ -321,19 +389,24 @@ async fn send_static_time_response(
         Ok(ActionResult::Output(bytes)) => {
             let _ = socket.send_to(&bytes, peer_addr).await;
             Log::new(Some(status)).info(format!(
-                "NTP static time response to {} ({} bytes)",
+                "NTP static time response to {} ({} bytes) decision={}",
                 peer_addr,
-                bytes.len()
+                bytes.len(),
+                decision
             ));
         }
         Ok(_) => {
             warn!(
-                "NTP static time response produced no output for {}",
+                "NTP static time response produced no output for {} \
+                 decision=fail_closed_action_error",
                 peer_addr
             );
         }
         Err(e) => {
-            Log::new(Some(status)).error(format!("NTP static time response failed: {e}"));
+            Log::new(Some(status)).error(format!(
+                "NTP static time response to {peer_addr} failed \
+                 decision=fail_closed_action_error: {e}"
+            ));
         }
     }
 }

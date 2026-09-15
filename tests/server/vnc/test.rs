@@ -578,10 +578,104 @@ async fn test_vnc_placeholder_when_model_gives_no_usable_answer() -> E2EResult<(
         "the server must report that the event went unanswered; output was:\n{}",
         output.join("\n")
     );
+    // The model was reached and answered with nothing this protocol can use. That is its own
+    // silence, not a backend failure, and the two must not share a log line.
+    assert!(
+        output
+            .iter()
+            .any(|line| line.contains("decision=model_silent")),
+        "a model that answered with no usable action must be tagged decision=model_silent, \
+         distinct from decision=fail_closed_llm_error; output was:\n{}",
+        output.join("\n")
+    );
+    assert!(
+        !output
+            .iter()
+            .any(|line| line.contains("decision=fail_closed_llm_error")),
+        "the backend answered here, so nothing may be tagged as a backend failure; output \
+         was:\n{}",
+        output.join("\n")
+    );
 
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after
     // the sleep expires, and the test reports it as never having happened.
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    Ok(())
+}
+
+/// A backend failure and a model that said nothing both put the placeholder screen up, so RFB
+/// itself cannot tell them apart — the log is the only place the distinction can live.
+///
+/// This forces `call_llm` into its `Err` arm the way `tests/server/cdp/e2e_test.rs` does: the
+/// mock answers the event with something that is not an action at all, so the retry/repair loop
+/// exhausts. The assertions are the pair that matters — the peer still gets a screen (RFB has
+/// no "no answer" reply, so silence would hang the viewer), and the line carries
+/// `decision=fail_closed_llm_error`, never `model_silent` or `model_answer`.
+#[tokio::test]
+async fn test_vnc_backend_failure_is_tagged_fail_closed() -> E2EResult<()> {
+    let config = NetGetConfig::new("listen on port {AVAILABLE_PORT} via vnc").with_mock(|mock| {
+        mock.on_instruction_containing("vnc")
+            .respond_with_actions(json!([{
+                "type": "open_server",
+                "port": 0,
+                "base_stack": "VNC",
+                "instruction": "Draw something"
+            }]))
+            .expect_calls(1)
+            .and()
+            // Not JSON and not an action: the repair loop exhausts and `call_llm` returns Err.
+            .on_event("vnc_framebuffer_update_request")
+            .respond_with_raw("the backend is having a bad day and this is not an action")
+            .expect_at_least(1)
+            .and()
+    });
+
+    let server = helpers::start_netget_server(config).await?;
+
+    let mut client = VncClient::connect(server.port).await?;
+    client.handshake().await?;
+    let init = client.initialize().await?;
+
+    client
+        .request_framebuffer_update(false, 0, 0, init.width, init.height)
+        .await?;
+    let frame = client.read_full_update("backend failure").await?;
+    assert_full_frame(&frame, &init, "backend failure");
+    assert_eq!(
+        frame.rgb(5, 5),
+        (
+            PLACEHOLDER_BACKGROUND.r,
+            PLACEHOLDER_BACKGROUND.g,
+            PLACEHOLDER_BACKGROUND.b
+        ),
+        "a full update must still be answered when the backend failed; RFB has no way to say \
+         'no answer', so a viewer that gets nothing waits forever"
+    );
+
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+
+    let output = server.get_output().await;
+    assert!(
+        output
+            .iter()
+            .any(|line| line.contains("decision=fail_closed_llm_error")),
+        "a backend failure must be tagged decision=fail_closed_llm_error so it is \
+         distinguishable from a model that answered with nothing; output was:\n{}",
+        output.join("\n")
+    );
+    assert!(
+        !output.iter().any(|line| {
+            line.contains("vnc_framebuffer_update_request") && line.contains("decision=model_")
+        }),
+        "a backend failure must never be reported as a decision the model took; output was:\n{}",
+        output.join("\n")
+    );
+
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;

@@ -123,7 +123,7 @@ async fn test_smb_negotiate() -> E2EResult<()> {
     let server = start_netget_server(config).await?;
 
     // Wait for server to be ready
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     // Connect via TCP
     let addr = format!("127.0.0.1:{}", server.port);
@@ -204,7 +204,7 @@ async fn test_smb_session_setup() -> E2EResult<()> {
 
     let server = start_netget_server(config).await?;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
     println!("  [TEST] Connecting to {}", addr);
@@ -294,7 +294,7 @@ async fn test_smb_concurrent_connections() -> E2EResult<()> {
 
     let server = start_netget_server(config).await?;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
 
@@ -379,7 +379,7 @@ async fn test_smb_server_responsiveness() -> E2EResult<()> {
 
     let server = start_netget_server(config).await?;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
     println!("  [TEST] Connecting to {}", addr);
@@ -526,7 +526,7 @@ async fn test_smb_auth_llm_controlled() -> E2EResult<()> {
 
     let server = start_netget_server(config).await?;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
     println!("  [TEST] Connecting to {}", addr);
@@ -609,7 +609,7 @@ async fn test_smb_connection_tracking() -> E2EResult<()> {
 
     let server = start_netget_server(config).await?;
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
 
@@ -924,7 +924,7 @@ async fn test_smb_read_binary_content_is_decoded() -> E2EResult<()> {
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port))?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -1014,7 +1014,7 @@ async fn test_smb_default_encoding_is_literal_text() -> E2EResult<()> {
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port))?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -1106,7 +1106,7 @@ async fn test_smb_write_requires_model_approval() -> E2EResult<()> {
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port))?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -1183,7 +1183,7 @@ async fn test_smb_write_approved_reports_byte_count() -> E2EResult<()> {
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port))?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -1266,7 +1266,7 @@ async fn test_smb_file_operation_without_a_session_is_refused() -> E2EResult<()>
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port))?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;

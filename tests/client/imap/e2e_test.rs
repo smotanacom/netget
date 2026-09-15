@@ -133,7 +133,6 @@ mod imap_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to connect and authenticate
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
         client
@@ -285,7 +284,7 @@ mod imap_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify the client is IMAP protocol
         assert_eq!(client.protocol, "IMAP", "Client should be IMAP protocol");
@@ -444,7 +443,7 @@ mod imap_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify client performed search
         let output = client.get_output().await;
@@ -625,7 +624,7 @@ mod imap_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify client fetched message
         let output = client.get_output().await;

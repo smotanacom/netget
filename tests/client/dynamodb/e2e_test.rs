@@ -91,7 +91,7 @@ mod dynamodb_client_tests {
     /// Test DynamoDB client PutItem and GetItem operations
     /// This test uses manual SDK calls instead of NetGet for now
     #[tokio::test]
-    #[ignore] // Requires DynamoDB Local or LocalStack running on localhost:8000
+    #[ignore = "Requires DynamoDB Local or LocalStack running on localhost:8000"]
     async fn test_dynamodb_client_put_and_get() -> anyhow::Result<()> {
         let client = create_test_client().await;
         let table_name = "netget_test_users";
@@ -152,7 +152,7 @@ mod dynamodb_client_tests {
 
     /// Test DynamoDB client Scan operation
     #[tokio::test]
-    #[ignore] // Requires DynamoDB Local or LocalStack running on localhost:8000
+    #[ignore = "Requires DynamoDB Local or LocalStack running on localhost:8000"]
     async fn test_dynamodb_client_scan() -> anyhow::Result<()> {
         let client = create_test_client().await;
         let table_name = "netget_test_scan";
@@ -196,7 +196,7 @@ mod dynamodb_client_tests {
 
     /// Test DynamoDB client UpdateItem operation
     #[tokio::test]
-    #[ignore] // Requires DynamoDB Local or LocalStack running on localhost:8000
+    #[ignore = "Requires DynamoDB Local or LocalStack running on localhost:8000"]
     async fn test_dynamodb_client_update() -> anyhow::Result<()> {
         let client = create_test_client().await;
         let table_name = "netget_test_update";
@@ -263,7 +263,7 @@ mod dynamodb_client_tests {
 
     /// Test DynamoDB client DeleteItem operation
     #[tokio::test]
-    #[ignore] // Requires DynamoDB Local or LocalStack running on localhost:8000
+    #[ignore = "Requires DynamoDB Local or LocalStack running on localhost:8000"]
     async fn test_dynamodb_client_delete() -> anyhow::Result<()> {
         let client = create_test_client().await;
         let table_name = "netget_test_delete";

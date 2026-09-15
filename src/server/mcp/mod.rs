@@ -94,6 +94,47 @@ const MCP_SERVER_BUSY_CODE: i32 = -32000;
 #[cfg(feature = "mcp")]
 const DEFAULT_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// How long to wait for the peer's first byte after it connects.
+///
+/// MCP rides on HTTP POST and is client-speaks-first: the request line is the first thing on
+/// the wire and the server says nothing before it. A peer that has connected and sent nothing
+/// has made no request, which is the state an unauthenticated flood lives in — and the one this
+/// server had no bound on at all.
+#[cfg(feature = "mcp")]
+const FIRST_REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* request on a keep-alive connection.
+///
+/// MCP is strictly request/response over HTTP, and a client holds its connection open between
+/// calls — an editor with an MCP server attached may go minutes between tool calls while a
+/// human thinks. Five minutes covers that; a client whose connection is reaped reconnects on
+/// its next call and loses nothing, because MCP session state lives in this server's own map
+/// and is keyed by session id, not by socket.
+///
+/// Crucially this bound applies **only while no request is outstanding** — see
+/// `relay_mcp_connection`. A request waiting on the model, or parked for a human at the
+/// dashboard (`src/state/intercepts.rs`, 300s by default), is not idle and is never timed out.
+#[cfg(feature = "mcp")]
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Concurrent connections this server admits.
+#[cfg(feature = "mcp")]
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// HTTP `503` carrying a JSON-RPC error object with [`MCP_SERVER_BUSY_CODE`] — both layers of
+/// this protocol's own vocabulary at once, so an HTTP client sees a 503 with `Retry-After` and
+/// a JSON-RPC client that reads the body sees the same "server is at capacity, retry" code this
+/// server already returns when the backend is overloaded.
+///
+/// `Content-Length` is 82, which is the length of the JSON object on the last line.
+#[cfg(feature = "mcp")]
+const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+    Content-Type: application/json\r\nContent-Length: 82\r\nRetry-After: 5\r\n\
+    Connection: close\r\n\r\n\
+    {\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32000,\"message\":\"server at capacity\"}}";
+
 /// Turn an `mcp_error_response` action result into the JSON-RPC error it describes.
 ///
 /// `mcp_error_response` is offered to the handler on every MCP event. Nothing used to consume
@@ -249,14 +290,34 @@ impl McpServer {
             .route("/", post(handle_jsonrpc))
             .with_state(server_state);
 
-        // Spawn server
-        let accept_handle = tokio::spawn(async move {
-            if let Err(e) = axum::serve(listener, app).await {
-                console_error!(status_tx, "MCP server error: {}", e);
+        // `axum::serve` owns its accept loop and takes a concrete `TcpListener`, so there is no
+        // seam inside it for a connection cap or a read deadline — the same wall
+        // `src/server/nfs/guard.rs` hit with `NFSTcpListener`, and the answer is the same one:
+        // NetGet keeps the public listener and runs the crate behind it on a loopback-only
+        // ephemeral port, screening every connection on its own side of the socket.
+        //
+        // The cost is honest and worth stating: the axum handler sees the loopback relay as its
+        // peer, so `handle_jsonrpc` cannot report the real client address, and the loopback
+        // backend is reachable by other processes on this machine (again as with NFS).
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let backend_addr = backend.local_addr()?;
+
+        let backend_status = status_tx.clone();
+        let backend_handle = tokio::spawn(async move {
+            if let Err(e) = axum::serve(backend, app).await {
+                console_error!(backend_status, "MCP server error: {}", e);
             }
         });
 
-        // Register the accept loop so stop_server can abort it and release the port.
+        let accept_handle = tokio::spawn(async move {
+            serve_screened_mcp(listener, backend_addr, status_tx).await;
+        });
+
+        // Both tasks are registered: aborting only the front one would leave axum holding the
+        // loopback port, so `stop_server` would not actually stop the server.
+        task_registrar
+            .register_server_task(server_id, backend_handle)
+            .await;
         task_registrar
             .register_server_task(server_id, accept_handle)
             .await;
@@ -1031,5 +1092,144 @@ async fn handle_cancelled(state: &McpServerState, params: Option<Value>) {
 async fn handle_progress(_state: &McpServerState, params: Option<Value>) {
     if let Some(progress) = params {
         trace!("MCP progress: {}", progress);
+    }
+}
+
+/// Accept on NetGet's own listener, apply the cap and the read deadlines, and relay each
+/// admitted connection to the loopback axum backend.
+///
+/// Runs until the task is aborted, which `stop_server` does through
+/// `AppState::register_server_task`.
+#[cfg(feature = "mcp")]
+async fn serve_screened_mcp(
+    listener: tokio::net::TcpListener,
+    backend_addr: SocketAddr,
+    status_tx: mpsc::UnboundedSender<String>,
+) {
+    let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+    loop {
+        let (peer_stream, peer_addr, permit) = match crate::server::accept_bounded::accept_bounded(
+            &listener,
+            &limiter,
+            CONNECTION_CAP_REFUSAL,
+            "MCP",
+            Some(&status_tx),
+        )
+        .await
+        {
+            Ok(triple) => triple,
+            Err(e) => {
+                console_error!(status_tx, "MCP accept failed, listener stopped: {}", e);
+                return;
+            }
+        };
+
+        let status = status_tx.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            relay_mcp_connection(peer_stream, peer_addr, backend_addr, status).await;
+        });
+    }
+}
+
+/// Relay one admitted connection, bounding only the peer's *silence*.
+///
+/// The rule that makes this safe is the one the project learned from TFTP: a connection waiting
+/// on a slow answer is not idle. MCP is strictly request/response, so "waiting on us" is exactly
+/// "bytes have gone peer → backend and none have come back yet", and `awaiting_response` tracks
+/// that. While it is set, the read deadline re-arms instead of closing — so an LLM round-trip,
+/// or a request parked for a human at the dashboard for as long as they need, can never be
+/// timed out from under itself. Only a peer that has been answered and then says nothing, or
+/// that never said anything at all, is closed.
+#[cfg(feature = "mcp")]
+async fn relay_mcp_connection(
+    peer_stream: tokio::net::TcpStream,
+    peer_addr: SocketAddr,
+    backend_addr: SocketAddr,
+    status_tx: mpsc::UnboundedSender<String>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let backend_stream = match tokio::net::TcpStream::connect(backend_addr).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            console_error!(status_tx, "MCP could not reach its own backend: {}", e);
+            return;
+        }
+    };
+
+    let (mut peer_read, mut peer_write) = tokio::io::split(peer_stream);
+    let (mut backend_read, mut backend_write) = tokio::io::split(backend_stream);
+
+    let awaiting_response = Arc::new(AtomicBool::new(false));
+
+    let to_backend_awaiting = Arc::clone(&awaiting_response);
+    let to_backend_status = status_tx.clone();
+    let to_backend = tokio::spawn(async move {
+        let mut buf = vec![0u8; 16 * 1024];
+        let mut seen_request = false;
+        loop {
+            let bound = if seen_request {
+                IDLE_BETWEEN_REQUESTS_TIMEOUT
+            } else {
+                FIRST_REQUEST_READ_TIMEOUT
+            };
+            let read = loop {
+                match tokio::time::timeout(bound, peer_read.read(&mut buf)).await {
+                    Ok(read) => break Some(read),
+                    Err(_) => {
+                        if to_backend_awaiting.load(Ordering::SeqCst) {
+                            // The peer is waiting for an answer we have not produced yet.
+                            // That is not silence; re-arm.
+                            continue;
+                        }
+                        Log::new(Some(&to_backend_status)).info(format!(
+                            "MCP peer {} sent nothing for {}s; closing idle connection",
+                            peer_addr,
+                            bound.as_secs()
+                        ));
+                        break None;
+                    }
+                }
+            };
+            let n = match read {
+                Some(Ok(0)) | None => break,
+                Some(Ok(n)) => n,
+                Some(Err(_)) => break,
+            };
+            seen_request = true;
+            to_backend_awaiting.store(true, Ordering::SeqCst);
+            if backend_write.write_all(&buf[..n]).await.is_err() {
+                break;
+            }
+        }
+        let _ = backend_write.shutdown().await;
+    });
+
+    let to_peer_awaiting = Arc::clone(&awaiting_response);
+    let to_peer = tokio::spawn(async move {
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            match backend_read.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if peer_write.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                    // Answered: from here the peer owes us the next request, so the idle
+                    // deadline becomes meaningful again.
+                    to_peer_awaiting.store(false, Ordering::SeqCst);
+                }
+            }
+        }
+        let _ = peer_write.shutdown().await;
+    });
+
+    // Either direction ending ends the connection: a half-open relay would be one more way to
+    // hold a socket for nothing.
+    tokio::select! {
+        _ = to_backend => {}
+        _ = to_peer => {}
     }
 }

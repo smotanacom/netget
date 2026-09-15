@@ -371,3 +371,70 @@ where
         ).into()),
     }
 }
+
+/// Wait until the server has said, in its own output, that it is bound and listening.
+///
+/// This is the condition the fixed `sleep` after `start_netget_server` stood in for.
+/// `start_netget_server` returns once it has *parsed* the startup conversation, and the
+/// line that satisfied it can be "Updated conversation state after server changes" rather
+/// than a bind confirmation — so suites slept one or two seconds and hoped. Under
+/// `--test-threads=100` that hope is where this repo's load-flakes came from: the sleep is
+/// a constant, the scheduling delay is not.
+///
+/// # Why this does not connect a socket
+///
+/// The obvious implementation — `TcpStream::connect` in a loop until it succeeds — is a
+/// stronger observation and is **wrong here**, which cost a debugging pass to find. A TCP
+/// connection the test opens is a *peer*: NNTP greets it, raises `nntp_command_received`
+/// with `command: "GREETING"`, and spends an LLM call on it. Two NNTP tests failed with
+/// `Rule #0 (GREETING): Expected 1 calls, got 2` — the probe had been served. Every
+/// assertion in this suite is a call count, so a readiness check that itself provokes a
+/// call corrupts the thing it is protecting.
+///
+/// A log line cannot be served. Where the confirmation is already in the buffer this
+/// returns immediately, which is correct: the bind really has happened. What it adds over
+/// deleting the sleep outright is that the assumption is now *checked* — a server that
+/// never announced a listener fails here, loudly, instead of failing later as a refused
+/// connection somewhere less obvious.
+///
+/// UDP, raw and off-network protocols announce themselves the same way; for anything that
+/// has to wait on an *exchange* rather than a bind, use `wait_for_mocks`.
+#[allow(dead_code)]
+pub async fn wait_for_server_listening(
+    server: &super::server::NetGetServer,
+    timeout_duration: Duration,
+) -> E2EResult<()> {
+    const CONFIRMATIONS: &[&str] = &[
+        "listening on",
+        "ready on",
+        "Server is running",
+        "advertising",
+        "Press Ctrl+C to stop",
+    ];
+    let start = std::time::Instant::now();
+    loop {
+        for needle in CONFIRMATIONS {
+            if server.output_contains(needle).await {
+                return Ok(());
+            }
+        }
+        if start.elapsed() >= timeout_duration {
+            let output = server.get_output().await;
+            return Err(format!(
+                "server never announced a listener within {:?}. Looked for {:?}. Last 20 lines:\n{}",
+                timeout_duration,
+                CONFIRMATIONS,
+                output
+                    .iter()
+                    .rev()
+                    .take(20)
+                    .rev()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+            .into());
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+}

@@ -133,6 +133,45 @@ write, or a byte sequence with no line ending). There are no async (user-trigger
 |--------------|---------|-----------------------------------------------------|
 | `send_first` | boolean | `true` raises `telnet_connection_opened` on connect |
 
+## Failure behaviour
+
+Telnet has no status code, no framing and no transaction id — it is a byte stream with a human
+on the other end — so on the wire it can say only two things: bytes, or nothing. Every `decision=`
+distinction therefore has to live in the log, and three of the outcomes below are byte-for-byte
+identical to the peer.
+
+Nothing the server writes to the peer ever contains the error. `telnet_failure_notice` builds
+its line from `crate::utils::WireFailure::classify(err).text()`, which returns `&'static str`
+precisely so no value derived from an error can escape through it. This is the path that once
+printed `[netget] cannot answer right now: ✗ LLM failed to generate valid response after
+retries.` onto a stranger's terminal; `tests/wire_failure_test.rs` fails the build if the idiom
+comes back.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Model answered `send_telnet_*` | those bytes | INFO `decision=model_answer` |
+| Model answered `close_connection` with no reply | session closed, nothing written | INFO `decision=model_reject` |
+| Model answered `wait_for_more` | nothing; session stays open | INFO `decision=model_wait_for_more` |
+| Model answered with no usable action | nothing; session stays open | WARN `decision=model_silent` |
+| An action could not be executed | nothing | ERROR `decision=fail_closed_bad_action` |
+| Backend failed / saturated | `\r\n[netget] <category>\r\n` — a category, never the error | ERROR `decision=fail_closed_llm_error` / `decision=fail_closed_llm_overloaded` |
+| Peer sent >8 KiB with no newline | `\r\n[netget] line too long\r\n`, then close | WARN `decision=refused_line_too_long` (no LLM call was made) |
+
+The `send_first` greeting path carries the same tags, prefixed `Telnet greeting for …` instead
+of `Telnet line from …`; `decision=model_silent` there means `send_first` was asked for and the
+model produced no banner, so the peer stares at a blank screen with no notice.
+
+Two invented tokens, both because the sanctioned set has no row for them:
+`decision=model_wait_for_more` (a *deliberate* "nothing yet", which the wire cannot distinguish
+from accidental silence) and `decision=refused_line_too_long` (the protocol refused before any
+model call, so no `model_*` or `fail_closed_llm_*` token applies).
+
+**Known rough edge, not repaired in the tagging pass**: `decision=model_silent` leaves the peer
+with no notice at all and the session open, so a human sees a terminal that looks hung. That is
+not a fail-open — nothing affirmative is asserted — but it is worse than the backend-failure
+path, which at least says something. `tests/server/telnet/decision_tag_test.rs` pins the current
+behaviour so changing it is deliberate.
+
 ## Storage
 
 None. The protocol holds no session state, no filesystem and no user database. Anything that
@@ -141,14 +180,15 @@ the handler's own memory.
 
 ## Testing
 
-`tests/server/telnet/` holds three suites, all declared in its own `mod.rs` and all running.
+`tests/server/telnet/` holds four suites, all declared in its own `mod.rs` and all running.
 (This section used to say the directory did not exist; it did, and `tests/server/mod.rs` had
 declared it all along.)
 
 | File | Covers |
 |---|---|
 | `test.rs` | echo, prompt, multiple lines on one connection, concurrent connections |
-| `llm_failure_test.rs` | the notice written when the backend fails, and that it carries no error text |
+| `llm_failure_test.rs` | the notice written when the backend fails, that it carries no error text, and that the log carries `decision=fail_closed_llm_*` |
+| `decision_tag_test.rs` | the two silent endings: `close_connection` → `decision=model_reject` and session closed; an empty answer → `decision=model_silent`, nothing written, session left open |
 | `line_framing_test.rs` | a real `telnet(1)` negotiation preamble leaving the handler exactly the typed line, and an 8 KiB run with no newline being refused |
 
 `line_framing_test.rs` asserts the *content* the handler received (`[hello]`), not merely that

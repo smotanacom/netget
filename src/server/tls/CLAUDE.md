@@ -463,3 +463,27 @@ signal reachable through rustls' public API.
 
 `tests/server/tls/llm_failure_test.rs` asserts `read() -> Ok(0)`, which is exactly the
 distinction: an abrupt close without the alert surfaces as `UnexpectedEof` instead.
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/tls/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_RECORD_READ_TIMEOUT` | 60s | Covers the TLS handshake *and* the first application record, because from the peer's side they are one condition: it holds a socket and has produced nothing usable. `acceptor.accept()` was previously unbounded, so a peer that never sent a ClientHello held a task and a rustls state machine for as long as it liked — cheaper for an attacker than a completed connection. |
+| `IDLE_AFTER_DATA_TIMEOUT` | 300s | TLS is a carrier, not an application: whatever rides on it decides what "idle" means, and this server cannot know. Five minutes sits well above any request/response turnaround an operator would run over it and well below an unbounded hold. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **a plaintext fatal alert record**, level `fatal`, description `internal_error`(80). TLS defines no "server busy" alert and RFC 8446's closest is `internal_error` — what a server sends when it cannot proceed for reasons unrelated to the peer. A client reports "received fatal alert: internal_error" instead of a bare reset. |
+
+**The deadline covers the read and nothing else.** TLS is the one server here whose read loop runs *concurrently* with the answer: `handle_data_with_actions` is spawned and the loop goes straight back to reading, so a record parked for a human sits inside the read deadline while it happens. `ConnectionActivity` is marked busy before the task is spawned and released when it ends, and the read deadline re-arms rather than closing while it is set. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

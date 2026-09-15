@@ -104,7 +104,7 @@ async fn test_ftp_client_connect_to_server() -> E2EResult<()> {
     println!("FTP Client started");
 
     // Give time for client to connect and exchange greeting
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    client.wait_for_mocks(30).await;
 
     println!("FTP client connected to server successfully");
 

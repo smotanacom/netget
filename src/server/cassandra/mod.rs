@@ -36,6 +36,45 @@ use tracing::{debug, error, trace, warn};
 /// Largest frame body accepted, matching the native protocol's own 256 MiB maximum.
 const MAX_FRAME_BODY_BYTES: usize = 256 * 1024 * 1024;
 
+/// How long to wait for a peer's first frame after it has connected.
+///
+/// CQL is client-speaks-first: the driver sends OPTIONS and then STARTUP inside its connect
+/// path, and the server says nothing before them. A peer that has connected and sent nothing
+/// has not begun a handshake, so it gets the short bound — and this is the one an
+/// unauthenticated flood lives under, because it never reaches the idle bound below.
+const FIRST_FRAME_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* frame once the connection is ready.
+///
+/// Fifteen minutes, and long on purpose. A Cassandra driver holds a *pool* of persistent
+/// connections and legitimately sends nothing on most of them for long stretches — that is how
+/// the protocol is meant to be used, not a symptom. What keeps the bound meaningful is that the
+/// drivers answer the same question themselves: both the DataStax and ScyllaDB drivers send a
+/// heartbeat OPTIONS on an idle connection, at a default interval of 30 seconds, precisely so
+/// an idle-but-live connection keeps proving it is live. Fifteen minutes is thirty of those
+/// intervals; a connection that produces neither a query nor a single heartbeat in that time is
+/// indistinguishable from a peer that has gone away. (Cassandra's own
+/// `native_transport_idle_timeout_in_ms` ships disabled, so unlike Kafka there is no upstream
+/// default to copy.)
+const IDLE_BETWEEN_FRAMES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Concurrent connections this server admits.
+///
+/// Each connection may buffer a frame of up to [`MAX_FRAME_BODY_BYTES`], so the cap is what
+/// turns that per-connection bound into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a plain close, and the reason is specific to CQL.
+///
+/// There *is* a natural vocabulary — an ERROR frame carrying
+/// [`CASSANDRA_ERROR_OVERLOADED`] — but every CQL frame is stamped with the protocol version,
+/// and the version is chosen by the client's first frame, which this peer has not sent. Any
+/// ERROR written here would have to guess it, and guessing wrong replaces a clear "server is
+/// full" with a protocol-version error: strictly less informative than silence. Real Cassandra
+/// exceeding `native_transport_max_concurrent_connections` closes the channel without a frame
+/// for the same reason. The refusal is logged with `decision=fail_closed_connection_cap`.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// Cap on prepared statements retained per connection.
 ///
 /// This is protocol session state, not storage: it holds the query text a client asked the
@@ -142,10 +181,19 @@ impl CassandraServer {
         ));
 
         // Spawn the accept loop
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Cassandra",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, addr, permit)) => {
                         Log::new(Some(&status_tx))
                             .debug(format!("Cassandra connection from {}", addr));
 
@@ -153,6 +201,9 @@ impl CassandraServer {
                         let status_tx_clone = status_tx.clone();
 
                         tokio::spawn(async move {
+                            // Held for the life of the connection, so the cap counts live
+                            // clients rather than accepts.
+                            let _permit = permit;
                             if let Err(e) = server_clone
                                 .handle_connection(stream, addr, status_tx_clone)
                                 .await
@@ -227,8 +278,32 @@ impl CassandraServer {
         let mut closing = false;
 
         loop {
+            // The deadline wraps this `read_buf` and nothing else in the loop. The LLM
+            // round-trip that answers a query, and a `manual` rule parking it for a human
+            // (`src/state/intercepts.rs`, 300s by default), happen in the frame loop below,
+            // after bytes have already arrived — so neither is inside a read deadline and
+            // neither can be cut short by one. Only a peer that holds the connection while
+            // sending nothing is bounded.
+            let read_timeout = if conn_state.ready {
+                IDLE_BETWEEN_FRAMES_TIMEOUT
+            } else {
+                FIRST_FRAME_READ_TIMEOUT
+            };
+
             // Read data from stream
-            let n = match stream.read_buf(&mut buffer).await {
+            let read = match tokio::time::timeout(read_timeout, stream.read_buf(&mut buffer)).await
+            {
+                Ok(read) => read,
+                Err(_) => {
+                    Log::new(Some(&status_tx)).debug(format!(
+                        "Cassandra client {} sent nothing for {}s; closing idle connection",
+                        addr,
+                        read_timeout.as_secs()
+                    ));
+                    break;
+                }
+            };
+            let n = match read {
                 Ok(0) => {
                     Log::new(Some(&status_tx))
                         .debug(format!("Cassandra client {} disconnected", addr));

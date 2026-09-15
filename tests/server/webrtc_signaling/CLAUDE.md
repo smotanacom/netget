@@ -144,6 +144,14 @@ unmocked, so the mock Ollama server answers HTTP 500 and `call_llm` returns `Err
 
 Both assert on real WebSocket frames and both end with `verify_mocks()`.
 
+Both also assert the `decision=` tag, which is the half of the contract the wire cannot carry.
+Test 1 requires `decision=llm_error_peer_admitted` and requires that **no** `WebRTC signaling`
+line claims a `decision=model_*` the model never took. Test 2 requires that the
+`webrtc_signaling_message_received` line carries `decision=llm_error_notice_only` — paired with
+the wire silence asserted immediately above it, because either half alone proves nothing: a log
+line with no silence is an unchecked claim, and silence with no log line is indistinguishable
+from the event never having fired.
+
 ## Event Types Tested
 
 1. **webrtc_signaling_peer_connected** - Triggered when peer registers via WebSocket
@@ -263,5 +271,5 @@ This flow is **automatic** and requires **no LLM involvement**. The LLM is only 
 
 - Main implementation: `src/server/webrtc_signaling/CLAUDE.md`
 - WebRTC server tests: `tests/server/webrtc/CLAUDE.md`
-- Test helpers: `tests/helpers.rs`
-- Mock framework: `src/llm/mock.rs`
+- Test helpers: `tests/helpers/mod.rs`
+- Mock framework: `tests/helpers/mock_ollama.rs`

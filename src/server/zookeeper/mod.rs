@@ -51,7 +51,56 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+
+/// How long to wait for the ConnectRequest from a peer that has only connected.
+///
+/// ZooKeeper is client-speaks-first: the ConnectRequest is the first frame on the wire and the
+/// server says nothing before it. Every real client sends it inside its connect path. A peer
+/// that has opened the socket and said nothing has not started a session, so it gets the short
+/// bound — and this is the one an unauthenticated flood lives under.
+const CONNECT_REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Floor under the session-derived idle bound (see [`idle_timeout_for`]).
+///
+/// [`MIN_SESSION_TIMEOUT_MS`] is four seconds, and doubling it leaves eight — short enough that
+/// a scheduling hiccup on a loaded test runner could close a healthy session. Thirty seconds
+/// costs nothing against an attacker (who never reaches this bound at all: it applies only
+/// after a session exists) and removes that failure mode.
+const MIN_IDLE_AFTER_CONNECT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Concurrent connections this server admits.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a plain close, which is exactly what a real ZooKeeper
+/// does.
+///
+/// There is no pre-session error frame in the protocol — the first thing the server may write
+/// is a ConnectResponse, and writing one would *admit* the peer rather than refuse it, which is
+/// the fail-open shape this codebase treats as its most dangerous pattern. Real ZooKeeper
+/// hitting `maxClientCnxns` closes the socket without a reply and logs "Too many connections
+/// from …"; this does the same, and the log line carries `decision=fail_closed_connection_cap`.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
+/// The idle bound for a connection that has a session, derived from that session.
+///
+/// This is the protocol answering the question itself. A real ZooKeeper server expires a
+/// session when it has heard nothing from the client for the *negotiated* session timeout, and
+/// the client pings at a third of that interval precisely so an idle-but-live session keeps
+/// proving it is alive. So the bound is not a number picked here at all — it is the value this
+/// very connection negotiated, doubled, so a client that misses a ping is not punished for it,
+/// and floored at [`MIN_IDLE_AFTER_CONNECT`]. With [`MAX_SESSION_TIMEOUT_MS`] at 40s the
+/// widest this can be is 80 seconds.
+fn idle_timeout_for(session: &ZookeeperSession) -> std::time::Duration {
+    std::time::Duration::from_millis(session.timeout_ms.max(0) as u64 * 2)
+        .max(MIN_IDLE_AFTER_CONNECT)
+}
 use tracing::{debug, error, info, trace, warn};
+
+/// ZooKeeper's `SystemError` (-1): "this did not work", as the protocol defines it.
+///
+/// Used wherever a reply's `error_code` is absent. Code 0 is `Ok`, so defaulting to 0 tells a
+/// client that a create or a setData it never confirmed actually happened.
+const ZK_SYSTEM_ERROR: i64 = -1;
 
 /// ZooKeeper server implementation
 pub struct ZookeeperServer {
@@ -107,10 +156,19 @@ impl ZookeeperServer {
 
         // Spawn the accept loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "ZooKeeper",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, addr, permit)) => {
                         console_debug!(status_tx, "ZooKeeper connection from {}", addr);
 
                         let connection_id =
@@ -124,6 +182,9 @@ impl ZookeeperServer {
 
                         // Spawn connection handler
                         tokio::spawn(async move {
+                            // Held for the life of the connection, so the cap counts live
+                            // sessions rather than accepts.
+                            let _permit = permit;
                             if let Err(e) = Self::handle_connection(
                                 stream,
                                 server_clone,
@@ -424,9 +485,37 @@ impl ZookeeperServer {
         let mut session: Option<ZookeeperSession> = None;
 
         loop {
+            // Both reads below are bounded by this deadline, and nothing else in the loop is.
+            // The LLM round-trip that answers the request, and a `manual` rule parking it for a
+            // human (`src/state/intercepts.rs`, 300s by default), happen further down once the
+            // whole frame has arrived — so neither is inside a read deadline and neither can be
+            // cut short by one. What is bounded is a peer that holds the connection while
+            // sending nothing, and one that announces a frame length and then stalls.
+            let read_timeout = match session.as_ref() {
+                Some(session) => idle_timeout_for(session),
+                None => CONNECT_REQUEST_READ_TIMEOUT,
+            };
+
             // Read ZooKeeper request header (4 bytes length + payload)
             let mut len_buf = [0u8; 4];
-            match read_half.read_exact(&mut len_buf).await {
+            let header_read = match tokio::time::timeout(
+                read_timeout,
+                read_half.read_exact(&mut len_buf),
+            )
+            .await
+            {
+                Ok(read) => read,
+                Err(_) => {
+                    debug!(
+                        "ZooKeeper connection {} sent nothing for {}s; closing idle \
+                             connection",
+                        connection_id,
+                        read_timeout.as_secs()
+                    );
+                    break;
+                }
+            };
+            match header_read {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     debug!("ZooKeeper client disconnected");
@@ -453,7 +542,19 @@ impl ZookeeperServer {
 
             // Read payload
             let mut payload = vec![0u8; len];
-            read_half.read_exact(&mut payload).await?;
+            match tokio::time::timeout(read_timeout, read_half.read_exact(&mut payload)).await {
+                Ok(read) => read?,
+                Err(_) => {
+                    debug!(
+                        "ZooKeeper connection {} announced {} octets and stalled for {}s \
+                         without delivering them; closing",
+                        connection_id,
+                        len,
+                        read_timeout.as_secs()
+                    );
+                    break;
+                }
+            };
             if let Some(server_id) = server_id {
                 app_state
                     .update_connection_stats(
@@ -588,8 +689,17 @@ impl ZookeeperServer {
                                 // rather than 0: xid 0 is never a valid reply to a real
                                 // request (negative xids are reserved for pings and watch
                                 // notifications) and leaves the client waiting forever.
-                                let error_code =
-                                    data.get("error_code").and_then(|v| v.as_i64()).unwrap_or(0);
+                                // ZooKeeper error code 0 is `Ok`. Defaulting to it means a
+                                // model that produced a reply without deciding an outcome
+                                // tells the client the operation succeeded - and for a
+                                // create or a setData, the client then proceeds as though a
+                                // znode exists. -1 is `SystemError`, the code the protocol
+                                // defines for "this did not work", which is the honest
+                                // answer for a reply nobody finished describing.
+                                let error_code = data
+                                    .get("error_code")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(ZK_SYSTEM_ERROR);
                                 let response = Self::custom_reply_body(&data, request_info.xid);
                                 let sent = Self::write_frame(
                                     write_half,
@@ -704,7 +814,13 @@ impl ZookeeperServer {
             .map(|v| v as i32)
             .unwrap_or(default_xid);
         let zxid = data.get("zxid").and_then(|v| v.as_i64()).unwrap_or(0);
-        let error_code = data.get("error_code").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        // Same reasoning as the reply path above: absent means failure, not success. The cast
+        // is range-checked too - an out-of-range code narrowed by `as i32` could land on 0.
+        let error_code = data
+            .get("error_code")
+            .and_then(|v| v.as_i64())
+            .and_then(|v| i32::try_from(v).ok())
+            .unwrap_or(ZK_SYSTEM_ERROR as i32);
         let body = data
             .get("body_hex")
             .and_then(|v| v.as_str())

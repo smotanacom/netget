@@ -228,7 +228,7 @@ async fn reads_a_two_block_file() -> E2EResult<()> {
     let client = helpers::start_netget_client(config).await?;
 
     // Give the transfer time to run: four LLM round trips plus the UDP exchange.
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    client.wait_for_mocks(30).await;
 
     let seen = observed.lock().await;
     assert_eq!(

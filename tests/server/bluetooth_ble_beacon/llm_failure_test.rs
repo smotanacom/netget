@@ -51,6 +51,12 @@ fn the_failure_message_says_nothing_is_being_advertised() {
         message.contains("Ollama connection refused"),
         "the underlying cause must survive: {message}"
     );
+    assert!(
+        message.contains("decision=fail_closed_llm_error"),
+        "a beacon writes nothing on any failure path, so the log line is the only place a \
+         backend outage can be told apart from a handler that chose to advertise nothing: \
+         {message}"
+    );
 
     // No fallback is offered anywhere in the text. Suggesting a default UUID here is how a
     // fail-open default gets added later by someone reading only the error message.
@@ -76,6 +82,12 @@ fn an_overloaded_backend_is_distinguished_from_a_broken_one() {
         message.contains("saturated"),
         "a rate-limiter refusal is transient and should say so: {message}"
     );
+    assert!(
+        message.contains("decision=fail_closed_llm_overloaded")
+            && !message.contains("decision=fail_closed_llm_error"),
+        "the two backend failures carry different tokens, or `grep decision=` cannot separate \
+         a saturated backend from a broken one: {message}"
+    );
 
     let broken = anyhow::anyhow!("model returned unparseable JSON");
     let message = beacon_configuration_failure("NetGet-Beacon", "hci0", &broken);
@@ -83,6 +95,94 @@ fn an_overloaded_backend_is_distinguished_from_a_broken_one() {
         !message.contains("saturated"),
         "a genuine handler fault must not be advertised as retryable: {message}"
     );
+    assert!(
+        message.contains("decision=fail_closed_llm_error")
+            && !message.contains("decision=fail_closed_llm_overloaded"),
+        "a broken backend must not be tagged as a saturated one: {message}"
+    );
+}
+
+/// The platform refusal is a *different* terminal outcome and carries its own token.
+///
+/// This is the pair the whole tagging exercise exists for. A beacon puts nothing on the air in
+/// either case, so without the tag "macOS cannot set an advertising payload" and "Ollama is
+/// down" are the same observation — and they send an operator to two completely different
+/// places. `refused_adapter_unavailable` is protocol-invented (no model was consulted: the
+/// radio fails before any event exists), which is why it is not one of the `fail_closed_llm_*`
+/// pair.
+///
+/// Runs for real on macOS and Windows, where `BeaconAdvertiser::open` refuses without touching
+/// hardware; on Linux the same call reaches BlueZ and its outcome depends on the host, so there
+/// is nothing a runner could assert.
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn the_platform_refusal_is_tagged_and_not_confused_with_a_backend_failure(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use netget::llm::actions::protocol_trait::{Protocol, Server};
+    use netget::llm::OllamaClient;
+    use netget::protocol::{SpawnContext, StartupParams};
+    use netget::server::bluetooth_ble_beacon::actions::BluetoothBleBeaconProtocol;
+    use netget::state::app_state::AppState;
+    use std::sync::Arc;
+
+    let state = Arc::new(AppState::new());
+    let protocol = BluetoothBleBeaconProtocol::new();
+    let startup_params = StartupParams::new(
+        serde_json::json!({"device_name": "NetGet-Beacon"}),
+        protocol.get_startup_parameters(),
+    )?;
+    let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    #[allow(deprecated)]
+    let ctx = SpawnContext {
+        listen_addr: "127.0.0.1:0".parse()?,
+        mac_address: None,
+        interface: None,
+        host: None,
+        port: None,
+        // Deliberately unreachable: the refusal below must happen before any model call, and a
+        // test that could quietly talk to a real Ollama would not be proving that.
+        llm_client: OllamaClient::new("http://127.0.0.1:1"),
+        state: state.clone(),
+        status_tx,
+        server_id: netget::state::ServerId::new(1),
+        startup_params: Some(startup_params),
+    };
+
+    protocol
+        .spawn(ctx)
+        .await
+        .expect_err("a platform without advertising-payload support must not report Running");
+
+    let mut logged = Vec::new();
+    while let Ok(line) = status_rx.try_recv() {
+        logged.push(line);
+    }
+
+    let tagged = match logged
+        .iter()
+        .find(|l| l.contains("decision=refused_adapter_unavailable"))
+    {
+        Some(line) => line,
+        None => panic!("the platform refusal must be tagged on the status stream: {logged:?}"),
+    };
+    assert!(
+        tagged.starts_with("[ERROR]"),
+        "a server that cannot start is an ERROR, not a warning: {tagged}"
+    );
+    assert!(
+        tagged.contains("NetGet-Beacon"),
+        "the tag needs a subject or it cannot be attributed to an instance: {tagged}"
+    );
+    assert!(
+        !logged
+            .iter()
+            .any(|l| l.contains("decision=fail_closed_llm_error")
+                || l.contains("decision=fail_closed_llm_overloaded")),
+        "no model was consulted, so nothing may be blamed on the backend: {logged:?}"
+    );
+
+    Ok(())
 }
 
 /// On Linux, the whole path: adapter opens, the model call fails, nothing is advertised.
@@ -145,6 +245,13 @@ async fn spawn_fails_closed_when_the_handler_is_unreachable(
             .any(|l| l.starts_with("[ERROR]") && l.contains("NOTHING is being advertised")),
         "the failure must reach the status stream at ERROR, not only the returned error: \
          {logged:?}"
+    );
+    assert!(
+        logged
+            .iter()
+            .any(|l| l.contains("decision=fail_closed_llm_error")),
+        "an unreachable backend is a backend failure and must be tagged as one — not as the \
+         adapter refusal, which is what a reader would otherwise have to guess: {logged:?}"
     );
 
     Ok(())

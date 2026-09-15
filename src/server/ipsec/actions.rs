@@ -111,6 +111,9 @@ impl Protocol for IpsecProtocol {
         ProtocolMetadataV2::builder()
             .connectionless()
             .state(DevelopmentState::Experimental)
+            // Deliberately silent: An IKE response asserts a negotiated security association.
+            // Fabricating one is worse than any timeout.
+            .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(500))
             .implementation(
                 "Receive-only IKE honeypot: manual 28-byte header parsing plus payload-chain \

@@ -451,7 +451,7 @@ impl Protocol for MemcachedProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             // 11211 is above 1023; PrivilegedPort here would be dead code.
             .privilege_requirement(PrivilegeRequirement::None)
             .implementation(
@@ -468,15 +468,20 @@ impl Protocol for MemcachedProtocol {
                  stored anywhere in this server.",
             )
             .e2e_testing(
-                "NO INDEPENDENT CLIENT IN THE RUNNING SUITE, which is why this is \
-                 Experimental and not Beta. The libmemcached 1.0.18 checks \
-                 (memcat/memstat/memping) in tests/server/memcached/real_client_test.rs sit \
-                 behind a skip-when-missing gate: without the binaries they print SKIP and \
-                 return Ok(()), so on a runner that lacks libmemcached they are a silent \
-                 pass and prove nothing. Everything that always runs is raw-socket - our \
-                 parser checked against our framer - asserting exact VALUE/END framing, byte \
-                 counts, a payload containing CRLF, and that a rejected storage header \
-                 consumes its data block instead of leaving it to be parsed as commands.",
+                "libmemcached 1.0.18's C tools are the independent peer, in \
+                 tests/server/memcached/real_client_test.rs: memcat reads a model-invented \
+                 value (it parses the VALUE header and reads exactly that many bytes, so a \
+                 wrong count shows up as an empty or truncated result rather than a pass), \
+                 and memstat and memping accept our STAT/END and VERSION replies. They are a \
+                 separate C implementation invoked as subprocesses, never linked. Neither \
+                 test is #[ignore]d and both now FAIL rather than skip when the binaries are \
+                 absent; until September 2026 they printed SKIPPED and returned Ok(()), a \
+                 silent pass, which is what held this at Experimental. The always-running \
+                 raw-socket tests remain the byte-level check - exact VALUE/END framing, byte \
+                 counts, a payload containing CRLF, and a rejected storage header consuming \
+                 its data block instead of leaving it to be parsed as commands. Untested \
+                 against any client for the binary protocol or the meta commands, neither of \
+                 which is implemented.",
             )
             .notes(
                 "STORES NOTHING BY DESIGN: there is no map or table in the Rust code, so \

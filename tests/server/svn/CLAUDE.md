@@ -201,6 +201,5 @@ RUST_LOG=netget=trace ./cargo-isolated.sh test --no-default-features --features 
 ## References
 
 - [SVN Protocol Specification](https://svn.apache.org/repos/asf/subversion/trunk/subversion/libsvn_ra_svn/protocol)
-- [NetGet Test Infrastructure](../../TEST_INFRASTRUCTURE_FIXES.md)
-- [NetGet Test Status](../../TEST_STATUS_REPORT.md)
+- [NetGet Test Infrastructure](../../README.md)
 - [Whois E2E Tests](../whois/e2e_test.rs) (similar pattern)

@@ -51,6 +51,9 @@ impl Protocol for RipProtocol {
         ProtocolMetadataV2::builder()
             .connectionless()
             .state(DevelopmentState::Experimental)
+            // Deliberately silent: A RIP response asserts routes. A fabricated one is
+            // installed in a real routing table.
+            .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(520))
             .implementation("Manual RIPv2 packet construction (RFC 2453)")
             .llm_control("Optional: which routes to advertise is a policy decision (LLM); with no policy configured the server stays silent with no LLM call")

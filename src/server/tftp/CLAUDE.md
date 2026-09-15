@@ -234,13 +234,49 @@ RFC 1350 defines error codes 0-7 and none of them means "try again", so both cas
 | `crate::llm::is_overload_error` is true | `Server overloaded, retry later` |
 | any other LLM failure | `Internal error: LLM backend failure` |
 
-Everything routes through `fail_transfer_on_llm_error`, which logs at **WARN** (tracing +
-status stream - the client still gets an ERROR packet and the transfer is torn down cleanly,
-so this is not a server fault), sends the packet, removes the transfer from the map and
-closes the connection - so no transfer state or connection entry leaks. It never
+Everything routes through `fail_transfer_on_llm_error`, which logs at **ERROR** with a
+`decision=` token (tracing + status stream), sends the packet, removes the transfer from the
+map and closes the connection - so no transfer state or connection entry leaks. It never
 sends a plausible-looking DATA or ACK: an outage must not be indistinguishable from a
 successful transfer. `tests/server/tftp/llm_failure_test.rs` covers all three failure points
 against real UDP sockets.
+
+## Failure behaviour
+
+TFTP is **not** one of the deliberately-silent protocols. It has a real ERROR frame (opcode 5
+with a code and a NUL-terminated message), so a refusal is expressible on the wire — and
+because it is, the outcome that writes *nothing* is the dangerous one: the client sits
+retransmitting into a socket nobody reads until its own timeout, and the transfer stays
+registered until then.
+
+Every terminal outcome of every one of the four LLM call sites is now tagged. `<stage>` is the
+call site: `RRQ`, `WRQ`, `ACK continuation`, `DATA block`, so a grep says where a transfer
+stopped as well as why. `Self::classify_outcome` decides the token before `protocol_results`
+is consumed; `Self::log_decision` emits it at the level below.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Handler answered with `send_tftp_data` / `send_tftp_ack` | that packet; the transfer continues | INFO `TFTP <stage> from <peer> decision=model_answer` |
+| Handler answered with `send_tftp_error` | ERROR packet; the transfer is torn down | INFO `decision=model_reject` |
+| Handler answered with no usable action | **nothing**; the client retransmits until it times out and the transfer entry survives until then | WARN `decision=model_silent` |
+| Executor refused the handler's action (bad block number, unknown action, undecodable `data_hex`) | **nothing**, same as above | ERROR `decision=fail_closed_bad_action` naming the action and the reason |
+| Backend failed | ERROR code 0, `Internal error: LLM backend failure`; transfer torn down | ERROR `decision=fail_closed_llm_error` with the full error |
+| Backend saturated | ERROR code 0, `Server overloaded, retry later`; transfer torn down | ERROR `decision=fail_closed_llm_overloaded` with the full error |
+
+The two ERROR messages are byte-literals built by `llm_failure_error_packet`; nothing derived
+from the error reaches the wire, which is what `tests/wire_failure_test.rs` enforces.
+
+**Known gap, tagged rather than fixed in this pass.** `model_silent` and
+`fail_closed_bad_action` write nothing, although the protocol has an ERROR frame that could
+say so — the natural answers would be code 0 with a fixed message, exactly as the LLM-failure
+path already does. Changing that alters what a peer sees, so it was left alone and made
+greppable instead. If you close it, reuse `fail_transfer_on_llm_error`'s shape: fixed message,
+tear the transfer down, keep the tag.
+
+**TFTP is not `connectionless`, and the ERROR frame is why that matters here.** A transfer is
+stateful and is idle for the whole of an LLM call, so declaring `.connectionless()` would let
+the 10-second idle sweep evict live transfers out from under themselves — see the root
+`CLAUDE.md`. Riding UDP is not the test; having no connection concept is.
 
 ### Example LLM Responses
 

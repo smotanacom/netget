@@ -73,8 +73,10 @@ truncated output rather than a passing test. `memstat` parses `STAT` lines up to
 | `libmemcached_memcat_reads_a_value_the_model_invented` | ≥2 | A foreign C client reads a model-invented value |
 | `libmemcached_memstat_and_memping_accept_our_replies` | ≥3 | Stats and version framing accepted by a foreign client |
 
-Both skip with an explicit message when the tools are absent, rather than failing or silently
-passing. These use `expect_at_least` rather than `expect_calls` because libmemcached opens
+Both **fail** with an explicit message when the tools are absent — they do not skip. A
+skip-when-missing gate returns `Ok(())` on a runner without libmemcached, which is a silent
+pass, and Memcached's `Beta` rating would then rest on nothing. Install with
+`brew install libmemcached` or `apt-get install -y libmemcached-tools`. These use `expect_at_least` rather than `expect_calls` because libmemcached opens
 connections and issues probe commands at its own discretion.
 
 ## Not tested, because not implemented

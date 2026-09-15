@@ -73,7 +73,7 @@ mod e2e_cassandra {
         let server = start_netget_server(config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via Scylla client
         let uri = format!("127.0.0.1:{}", server.port);
@@ -175,7 +175,7 @@ mod e2e_cassandra {
         let server = start_netget_server(config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via Scylla client
         let uri = format!("127.0.0.1:{}", server.port);
@@ -285,7 +285,7 @@ mod e2e_cassandra {
         let server = start_netget_server(config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via Scylla client
         let uri = format!("127.0.0.1:{}", server.port);
@@ -388,7 +388,7 @@ mod e2e_cassandra {
         let server = start_netget_server(config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via Scylla client
         let uri = format!("127.0.0.1:{}", server.port);
@@ -506,7 +506,7 @@ mod e2e_cassandra {
         let server = start_netget_server(config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         let uri = format!("127.0.0.1:{}", server.port);
         println!("  [TEST] Testing concurrent connections to {}", uri);
@@ -650,7 +650,7 @@ mod e2e_cassandra {
         let server = start_netget_server(config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via Scylla client
         let uri = format!("127.0.0.1:{}", server.port);
@@ -795,7 +795,7 @@ mod e2e_cassandra {
         let server = start_netget_server(config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         let uri = format!("127.0.0.1:{}", server.port);
         println!("  [TEST] Connecting to {}", uri);
@@ -947,7 +947,7 @@ mod e2e_cassandra {
         let server = start_netget_server(config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         let uri = format!("127.0.0.1:{}", server.port);
         println!("  [TEST] Connecting to {}", uri);

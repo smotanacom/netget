@@ -22,6 +22,41 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{error, trace, warn};
 
+/// How long to wait for the client's handshake response after the greeting goes out.
+///
+/// MySQL is server-speaks-first: `opensrv-mysql` writes the initial handshake packet, and a
+/// real client answers it at once — it has the credentials in hand already and asks nobody.
+/// This is therefore a bound on "connected, took the greeting, said nothing", which is exactly
+/// what an unauthenticated flood looks like.
+const HANDSHAKE_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* command once the session is up.
+///
+/// Real MySQL's `wait_timeout` defaults to **eight hours**, which is a bound in name only, so
+/// copying it is not an option here the way copying Kafka's `connections.max.idle.ms` was. Ten
+/// minutes instead, and the reason it is safe is what this server *is*: it holds no session
+/// state a reconnect would lose — no tables, no temporary tables, no open transaction, nothing
+/// the model remembers between statements (see the no-storage rule in the project CLAUDE.md).
+/// A pooled connection reaped here costs `mysql_async` or a JDBC pool one transparent reconnect,
+/// and ten minutes is far above any pool's keepalive interval.
+const IDLE_BETWEEN_COMMANDS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Concurrent connections this server admits.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// An ERR packet carrying error **1040, `ER_CON_COUNT_ERROR`, SQLSTATE `08004`** — which is
+/// precisely what a real MySQL server sends, in precisely this position, when `max_connections`
+/// is reached: in place of the initial handshake, as packet sequence 0. Every client in the
+/// ecosystem already recognises it, so `mysql_async` surfaces "Too many connections" and the
+/// `mysql` CLI prints `ERROR 1040 (08004)` rather than reporting a broken pipe.
+///
+/// Laid out by hand because it is a wire packet: a 3-byte little-endian payload length (29) and
+/// a sequence byte (0), then `0xFF` marking an ERR packet, the error number 1040 little-endian,
+/// the `#` SQL-state marker, the five-character state, and the message.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"\x1d\x00\x00\x00\xff\x10\x04#08004Too many connections";
+
 /// Cap on prepared statements retained per connection.
 ///
 /// The map is keyed by statement id and only pruned by an explicit COM_STMT_CLOSE, so a client
@@ -102,10 +137,19 @@ impl MysqlServer {
         let task_registrar = app_state.clone();
 
         // Spawn the accept loop
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "MySQL",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, addr, permit)) => {
                         Log::new(Some(&status_tx)).info(format!("MySQL connection from {}", addr));
 
                         let connection_id =
@@ -150,8 +194,25 @@ impl MysqlServer {
                         let conn_state_owner = server.app_state.clone();
                         let conn_server_id = server.server_id;
                         let conn_handle = tokio::spawn(async move {
+                            // Held for the life of the session, so the cap counts live
+                            // connections rather than accepts.
+                            let _permit = permit;
                             // MySQL requires split read/write streams
                             let (reader, writer) = tokio::io::split(stream);
+                            // `AsyncMysqlIntermediary::run_on` owns the protocol loop, so there
+                            // is no `read()` of ours to wrap in a deadline — but it takes a
+                            // *generic* reader, which is the seam. `IdleTimeoutReader` arms its
+                            // clock only while a read is actually outstanding, so the LLM
+                            // round-trip that answers a query, and a `manual` rule parking that
+                            // query for a human (`src/state/intercepts.rs`, 300s by default),
+                            // run with no deadline over them at all: the reader is not being
+                            // polled while `MysqlHandler` is working.
+                            let reader =
+                                crate::server::accept_bounded::IdleTimeoutReader::with_first(
+                                    reader,
+                                    HANDSHAKE_RESPONSE_TIMEOUT,
+                                    IDLE_BETWEEN_COMMANDS_TIMEOUT,
+                                );
                             if let Err(e) =
                                 AsyncMysqlIntermediary::run_on(handler, reader, writer).await
                             {

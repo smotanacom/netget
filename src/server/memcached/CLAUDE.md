@@ -1,6 +1,19 @@
 # Memcached Server (text protocol)
 
-TCP 11211. The model is the cache.
+TCP 11211. The model is the cache. **Beta.**
+
+Beta rests on libmemcached 1.0.18's C tools in
+`tests/server/memcached/real_client_test.rs` — `memcat` reads a model-invented value,
+`memstat` and `memping` accept our `STAT`/`END` and `VERSION` replies. They are a separate C
+implementation, invoked as subprocesses and never linked, and `memcat` is picky in exactly the
+right place: it reads the byte count out of the `VALUE` header and then reads that many bytes,
+so a wrong count surfaces as an empty or truncated result rather than as a pass. Neither test
+is `#[ignore]`d and both **fail** rather than skip when the binaries are absent — they printed
+`SKIPPED` and returned `Ok(())` until September 2026, a silent pass, which is what held this at
+Experimental.
+
+Still unproven: the binary protocol and the meta commands (`mg`/`ms`/`md`), neither of which is
+implemented, so no client has been pointed at them.
 
 Files: `protocol.rs` (pure parsing and reply framing), `actions.rs` (LLM vocabulary +
 executor), `mod.rs` (listener, per-connection loop).
@@ -160,3 +173,27 @@ would be dead code — the `svn`/`PrivilegedPort(3690)` mistake.
 - One LLM call per command. A client that pipelines a hundred `get`s costs a hundred calls;
   use a script handler for anything throughput-shaped.
 - UDP memcached (the legacy `-U` mode) is not implemented.
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/memcached/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_COMMAND_READ_TIMEOUT` | 30s | The text protocol is client-speaks-first with no greeting; every real client issues a command immediately. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 120s | The shortest of the eighteen, because memcached has no session: every command is independent, the server holds nothing on a client's behalf, and a closed connection costs a pooling client one transparent reconnect. Real memcached's optional `-o idle_timeout` refuses to be set below 30 seconds, which is the protocol's own statement about how short is too short; two minutes is generous against that. |
+| `MAX_CONNECTIONS` | 256 | Each connection may buffer up to `MAX_BUFFERED`. Refusal: **`SERVER_ERROR too many connections`** — the text protocol's one way to say the server failed, already used here for the over-long-command case. No client can read it as a cache hit, a stored value or a successful delete, which is what makes it safe to send to a peer that has not spoken. |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

@@ -163,6 +163,13 @@ pub fn init_logging(args: &Args, is_interactive: bool) -> Result<()> {
             .init();
     }
 
+    // Every entry point comes through here before doing any work, which is why the hook is
+    // installed here rather than in `main`: `--mcp`, `--mcp-http`, `--simple` and the
+    // non-interactive runner each reach `run()` by a different path and none of them touched
+    // the TUI's hook. Installed *after* the subscriber, because a panic logged before there is
+    // one goes exactly where the panic would have gone.
+    crate::panic_log::install();
+
     Ok(())
 }
 

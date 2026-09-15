@@ -26,7 +26,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::sync::mpsc;
-use tracing::{error, trace};
+use tracing::{error, trace, warn};
 
 use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ActionResult;
@@ -242,10 +242,20 @@ async fn handle_spark_request_inner(
     trace!("Spark request body: {}", body_str);
 
     if operation == "version" {
+        // Answered by the server from a startup parameter; the model is never asked, so the
+        // tag says `static_answer` rather than claiming a `model_answer` nobody produced.
+        Log::new(Some(&status_tx)).debug(format!(
+            "Spark {} {} decision=static_answer: version banner, no LLM call",
+            method, path
+        ));
         let body = serde_json::json!({ "spark": version.as_str() }).to_string();
         return Ok(build_spark_response(200, body, "application/json"));
     }
     if operation == "unknown" {
+        Log::new(Some(&status_tx)).debug(format!(
+            "Spark {} {} decision=unknown_endpoint: 404, no LLM call",
+            method, path
+        ));
         return Ok(build_spark_response(
             404,
             format!("no such endpoint: {path}"),
@@ -278,8 +288,29 @@ async fn handle_spark_request_inner(
             for result in execution_result.protocol_results {
                 if let ActionResult::Custom { name, data } = result {
                     if name == "spark_response" {
-                        let status =
-                            data.get("status").and_then(|v| v.as_u64()).unwrap_or(200) as u16;
+                        // Two defects in one expression, and they compound. `unwrap_or(200)`
+                        // makes an omitted status a success, so a model that produced a
+                        // `spark_response` without deciding one tells the client the job
+                        // succeeded. And `as u16` narrows without a range check, so
+                        // `65736 as u16 == 200` turns a nonsense status into that same
+                        // success - the LDAP `result_code as u8` shape.
+                        //
+                        // 500 is the honest default: a response the model did not finish
+                        // describing is a server-side failure, not an "OK". Out-of-range is
+                        // logged and refused rather than truncated, because truncation turns
+                        // an obvious error into a believable answer.
+                        let status = match data.get("status").and_then(|v| v.as_u64()) {
+                            Some(raw) => u16::try_from(raw)
+                                .ok()
+                                .filter(|s| (100..=599).contains(s))
+                                .unwrap_or_else(|| {
+                                    warn!(
+                                        "Spark: ignoring out-of-range status {raw},                                          answering 500"
+                                    );
+                                    500
+                                }),
+                            None => 500,
+                        };
                         let body = data
                             .get("body")
                             .and_then(|v| v.as_str())
@@ -289,7 +320,17 @@ async fn handle_spark_request_inner(
                             .get("content_type")
                             .and_then(|v| v.as_str())
                             .unwrap_or("application/json");
-                        Log::new(Some(&status_tx)).debug(format!("Spark -> {}", status));
+                        // A 4xx/5xx the model chose is a refusal it decided; a 2xx is an
+                        // answer. Both came from the model, and neither is fail-closed.
+                        let decision = if status >= 400 {
+                            "model_reject"
+                        } else {
+                            "model_answer"
+                        };
+                        Log::new(Some(&status_tx)).info(format!(
+                            "Spark {} {} op={} decision={}: answering {}",
+                            method, path, operation, decision, status
+                        ));
                         trace!("Spark response body: {}", body);
                         return Ok(build_spark_response(status, body, ct));
                     }
@@ -298,23 +339,28 @@ async fn handle_spark_request_inner(
             // Fail-closed: the model answered but produced no Spark response. A bare `[]` with
             // 200 is a valid "no applications/jobs" result and a client cannot tell it from a
             // backend that never ran — so answer 500 instead of that empty array.
-            Log::new(Some(&status_tx))
-                .error("Spark: LLM returned no spark_response action; answering 500");
+            Log::new(Some(&status_tx)).warn(format!(
+                "Spark {} {} op={} decision=model_silent: no spark_response action; answering \
+                 500",
+                method, path, operation
+            ));
             Ok(build_spark_error(
                 500,
                 "netget: model produced no Spark response",
             ))
         }
         Err(e) => {
-            let overloaded = crate::llm::is_overload_error(&e);
-            let status = if overloaded { 503u16 } else { 500u16 };
-            error!("LLM error for Spark request (status {}): {}", status, e);
-            console_error!(
-                status_tx,
-                "Spark answering {} on LLM failure: {}",
-                status,
-                e
-            );
+            let (status, decision) = match crate::utils::WireFailure::classify(&e) {
+                crate::utils::WireFailure::Overloaded => (503u16, "fail_closed_llm_overloaded"),
+                crate::utils::WireFailure::Unavailable => (500u16, "fail_closed_llm_error"),
+            };
+            // One line carrying both sinks: the tag and the error go to `netget.log` and to
+            // the status stream the TUI and the test harness read. The *peer* gets only the
+            // category below.
+            Log::new(Some(&status_tx)).error(format!(
+                "Spark {} {} op={} decision={}: answering {}: {}",
+                method, path, operation, decision, status, e
+            ));
             let reason = crate::utils::WireFailure::classify(&e).prefixed_text();
             Ok(build_spark_error(status, reason))
         }

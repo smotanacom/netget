@@ -187,3 +187,17 @@ Properties are key-value pairs:
 - Keys typically lowercase
 - Values as strings
 - Example: `{"version": "1.0", "path": "/api"}`
+
+## `llm_failure_test.rs`
+
+One test, `test_mdns_stays_silent_but_reports_the_failure`: the mock has no rule for the
+startup event, so `call_llm` returns `Err`. It asserts the responder still comes up, that no
+service was registered (nothing registered ⇒ nothing announced — the available stand-in for
+"no datagram left the host" on a protocol that binds no socket of its own), and that the
+failure is logged with `decision=fail_closed_llm_error` and **not** `decision=model_silent`.
+
+That pair is the contract. Silence on the wire is correct here and is the same silence a
+handler that asked for no services produces, so without the tag an outage and a policy are one
+log line. See the failure-behaviour table in `src/server/mdns/CLAUDE.md`.
+
+LLM call budget: 1 (startup); the mDNS startup-event call is *made to fail on purpose*.

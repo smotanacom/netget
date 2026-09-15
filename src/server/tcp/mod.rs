@@ -161,19 +161,25 @@ impl TcpServer {
                             let connections_clone = connections.clone();
                             let write_half_for_conn = write_half_arc.clone();
                             let protocol_clone = protocol.clone();
-                            tokio::spawn(async move {
-                                Self::send_banner(
-                                    connection_id,
-                                    server_id,
-                                    llm_client_clone,
-                                    app_state_clone,
-                                    status_tx_clone,
-                                    connections_clone,
-                                    write_half_for_conn,
-                                    protocol_clone,
-                                )
+                            // Tracked, not detached: a banner task holds the write half and
+                            // makes an LLM call, so a detached one keeps talking to a peer
+                            // after the operator stopped the server.
+                            let state_for_spawn = app_state.clone();
+                            state_for_spawn
+                                .spawn_server_task(server_id, async move {
+                                    Self::send_banner(
+                                        connection_id,
+                                        server_id,
+                                        llm_client_clone,
+                                        app_state_clone,
+                                        status_tx_clone,
+                                        connections_clone,
+                                        write_half_for_conn,
+                                        protocol_clone,
+                                    )
+                                    .await;
+                                })
                                 .await;
-                            });
                         }
 
                         // Spawn reader task
@@ -182,108 +188,138 @@ impl TcpServer {
                         let status_tx_clone = status_tx.clone();
                         let connections_clone = connections.clone();
                         let protocol_clone = protocol.clone();
-                        tokio::spawn(async move {
-                            let mut buffer = vec![0u8; 8192];
-                            let mut read_half = read_half;
+                        // The per-connection reader is registered with the server, so
+                        // `stop_server` aborts it along with the accept loop. Registering
+                        // prunes finished handles, so one entry per live connection is the
+                        // steady state however many connections have come and gone.
+                        //
+                        // Without this, stopping released the listening socket and left every
+                        // in-flight connection running: still reading, still answering, still
+                        // spending LLM budget on a server the operator had stopped.
+                        let state_for_reader = app_state.clone();
+                        state_for_reader
+                            .spawn_server_task(server_id, async move {
+                                let mut buffer = vec![0u8; 8192];
+                                let mut read_half = read_half;
 
-                            loop {
-                                match read_half.read(&mut buffer).await {
-                                    Ok(0) => {
-                                        // Connection closed
-                                        connections_clone.lock().await.remove(&connection_id);
-                                        app_state_clone
-                                            .remove_peer_handle(server_id, connection_id.as_u32())
-                                            .await;
-                                        app_state_clone
-                                            .close_connection_on_server(server_id, connection_id)
-                                            .await;
-                                        Log::new(Some(&status_tx_clone))
-                                            .info(format!("Connection {connection_id} closed"));
-                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                                        break;
-                                    }
-                                    Ok(n) => {
-                                        let data = Bytes::copy_from_slice(&buffer[..n]);
-
-                                        // Data summary + full payload. These are FileOnly:
-                                        // the tcp_data_received event template renders the
-                                        // equivalent lines to the TUI (see actions.rs), so
-                                        // streaming the payload here too would duplicate it
-                                        // and load the unbounded status channel.
-                                        let log = Log::new(Some(&status_tx_clone));
-                                        if data.iter().all(|&b| {
-                                            b.is_ascii_graphic() || b.is_ascii_whitespace()
-                                        }) {
-                                            let data_str = String::from_utf8_lossy(&data);
-                                            let preview = if data_str.len() > 100 {
-                                                format!("{}...", &data_str[..100])
-                                            } else {
-                                                data_str.to_string()
-                                            };
-                                            log.debug(format!(
-                                                "TCP received {} bytes on {}: {}",
-                                                n, connection_id, preview
-                                            ));
-                                            log.trace(format!("TCP data (text): {:?}", data_str));
-                                        } else {
-                                            log.debug(format!(
-                                                "TCP received {} bytes on {} (binary data)",
-                                                n, connection_id
-                                            ));
-                                            log.trace(format!(
-                                                "TCP data (hex): {}",
-                                                hex::encode(&data)
-                                            ));
+                                loop {
+                                    match read_half.read(&mut buffer).await {
+                                        Ok(0) => {
+                                            // Connection closed
+                                            connections_clone.lock().await.remove(&connection_id);
+                                            app_state_clone
+                                                .remove_peer_handle(
+                                                    server_id,
+                                                    connection_id.as_u32(),
+                                                )
+                                                .await;
+                                            app_state_clone
+                                                .close_connection_on_server(
+                                                    server_id,
+                                                    connection_id,
+                                                )
+                                                .await;
+                                            Log::new(Some(&status_tx_clone))
+                                                .info(format!("Connection {connection_id} closed"));
+                                            let _ =
+                                                status_tx_clone.send("__UPDATE_UI__".to_string());
+                                            break;
                                         }
+                                        Ok(n) => {
+                                            let data = Bytes::copy_from_slice(&buffer[..n]);
 
-                                        // Keep the connection's counters live: the
-                                        // dashboard and /status read these, and TCP
-                                        // was the one server never updating them.
-                                        app_state_clone
-                                            .update_connection_stats(
-                                                server_id,
-                                                connection_id,
-                                                Some(n as u64),
-                                                None,
-                                                Some(1),
-                                                None,
-                                            )
-                                            .await;
+                                            // Data summary + full payload. These are FileOnly:
+                                            // the tcp_data_received event template renders the
+                                            // equivalent lines to the TUI (see actions.rs), so
+                                            // streaming the payload here too would duplicate it
+                                            // and load the unbounded status channel.
+                                            let log = Log::new(Some(&status_tx_clone));
+                                            if data.iter().all(|&b| {
+                                                b.is_ascii_graphic() || b.is_ascii_whitespace()
+                                            }) {
+                                                let data_str = String::from_utf8_lossy(&data);
+                                                let preview = if data_str.len() > 100 {
+                                                    format!("{}...", &data_str[..100])
+                                                } else {
+                                                    data_str.to_string()
+                                                };
+                                                log.debug(format!(
+                                                    "TCP received {} bytes on {}: {}",
+                                                    n, connection_id, preview
+                                                ));
+                                                log.trace(format!(
+                                                    "TCP data (text): {:?}",
+                                                    data_str
+                                                ));
+                                            } else {
+                                                log.debug(format!(
+                                                    "TCP received {} bytes on {} (binary data)",
+                                                    n, connection_id
+                                                ));
+                                                log.trace(format!(
+                                                    "TCP data (hex): {}",
+                                                    hex::encode(&data)
+                                                ));
+                                            }
 
-                                        // Handle data in separate task
-                                        let llm_clone = llm_client_clone.clone();
-                                        let state_clone = app_state_clone.clone();
-                                        let status_clone = status_tx_clone.clone();
-                                        let conns_clone = connections_clone.clone();
-                                        let protocol_clone = protocol_clone.clone();
-                                        tokio::spawn(async move {
-                                            Self::handle_data_with_actions(
-                                                connection_id,
-                                                server_id,
-                                                data,
-                                                llm_clone,
-                                                state_clone,
-                                                status_clone,
-                                                conns_clone,
-                                                protocol_clone,
-                                            )
-                                            .await;
-                                        });
-                                    }
-                                    Err(e) => {
-                                        Log::new(Some(&status_tx_clone)).error(format!(
-                                            "Read error on {}: {}",
-                                            connection_id, e
-                                        ));
-                                        connections_clone.lock().await.remove(&connection_id);
-                                        app_state_clone
-                                            .remove_peer_handle(server_id, connection_id.as_u32())
-                                            .await;
-                                        break;
+                                            // Keep the connection's counters live: the
+                                            // dashboard and /status read these, and TCP
+                                            // was the one server never updating them.
+                                            app_state_clone
+                                                .update_connection_stats(
+                                                    server_id,
+                                                    connection_id,
+                                                    Some(n as u64),
+                                                    None,
+                                                    Some(1),
+                                                    None,
+                                                )
+                                                .await;
+
+                                            // Handle data in separate task
+                                            let llm_clone = llm_client_clone.clone();
+                                            let state_clone = app_state_clone.clone();
+                                            let status_clone = status_tx_clone.clone();
+                                            let conns_clone = connections_clone.clone();
+                                            let protocol_clone = protocol_clone.clone();
+                                            // The per-request handler makes the LLM call and
+                                            // writes the reply, so it is the task that must not
+                                            // outlive a stop.
+                                            let state_for_data = app_state_clone.clone();
+                                            state_for_data
+                                                .spawn_server_task(server_id, async move {
+                                                    Self::handle_data_with_actions(
+                                                        connection_id,
+                                                        server_id,
+                                                        data,
+                                                        llm_clone,
+                                                        state_clone,
+                                                        status_clone,
+                                                        conns_clone,
+                                                        protocol_clone,
+                                                    )
+                                                    .await;
+                                                })
+                                                .await;
+                                        }
+                                        Err(e) => {
+                                            Log::new(Some(&status_tx_clone)).error(format!(
+                                                "Read error on {}: {}",
+                                                connection_id, e
+                                            ));
+                                            connections_clone.lock().await.remove(&connection_id);
+                                            app_state_clone
+                                                .remove_peer_handle(
+                                                    server_id,
+                                                    connection_id.as_u32(),
+                                                )
+                                                .await;
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("Accept error: {}", e));

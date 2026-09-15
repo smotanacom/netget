@@ -253,7 +253,7 @@ async fn test_smb_create_errors_when_llm_fails() -> E2EResult<()> {
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port))?;
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;
@@ -324,7 +324,7 @@ async fn test_smb_read_errors_when_llm_fails_and_connection_survives() -> E2ERes
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let mut stream = TcpStream::connect(format!("127.0.0.1:{}", server.port))?;
     stream.set_read_timeout(Some(Duration::from_secs(60)))?;

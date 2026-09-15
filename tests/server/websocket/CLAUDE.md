@@ -20,8 +20,14 @@ That last point is what makes it worth the lines: it asserts the server **never 
 which no high-level client API would expose.
 
 `websocat` 1.14.1 is the second peer — a separately built, widely used binary — and runs the
-same server end to end. It is skipped with a printed note if `which websocat` fails, so the
-suite is not tied to the machine.
+same server end to end, and it **fails rather than skips** when `websocat` is absent. That is
+what makes it evidence: a `SKIP: … is not installed` gate returns `Ok(())` on any runner without
+the binary, which is a silent pass, and the rating would rest on nothing.
+
+`websocat` 1.14.1 links `websocket-0.27.1` / `websocket-base-0.26.5` (rust-websocket), **not**
+`tungstenite` — read out of the installed binary's embedded crate paths. So it is a genuinely
+independent RFC 6455 implementation and not the circular-evidence case where the peer is the
+same crate the server frames with. This is what the WebSocket server's `Beta` rating rests on.
 
 ## Tests
 
@@ -36,6 +42,7 @@ suite is not tied to the machine.
 | `test_non_upgrade_request_is_refused_without_a_model_call` | 400 and 426 are answered directly, and `verify_mocks` proves the model was never consulted | 0 extra |
 | `test_websocket_subprotocol_and_rejection` | the model picks one offered subprotocol and it is echoed; a declined upgrade returns the handler's own status | 4 |
 | `test_websocket_with_websocat` | a real external client gets the unprompted greeting and its echo | 1 |
+| `test_websocket_handshake_backend_failure_is_tagged_fail_closed` | an unanswerable `websocket_handshake` is refused with 503, logged `decision=fail_closed_llm_error`, and never as `decision=model_reject` | 1 + one deliberately failing event |
 
 ### `test_websocket_wire_protocol_against_raw_client`
 
@@ -53,7 +60,7 @@ Six protocol-level assertions on one connection:
    reassembled `fragment`
 6. a close with code 1000 is echoed with the same big-endian status code
 
-## LLM call budget: 6 total
+## LLM call budget: 7 total, plus repair retries on one deliberate failure
 
 The echo server used by three of the tests is configured entirely with **static handlers** in
 the `open_server` action, so the handshake, the greeting, every echo, the ping and the close all

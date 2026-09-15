@@ -172,7 +172,7 @@ async fn fetches_and_parses_a_feed_into_structured_items() -> E2EResult<()> {
     });
 
     let client = helpers::start_netget_client(config).await?;
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    client.wait_for_mocks(30).await;
 
     let requested = paths.lock().await.clone();
     assert_eq!(

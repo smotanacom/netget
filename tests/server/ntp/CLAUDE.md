@@ -138,3 +138,23 @@ LLM call (7 total).
 - [RFC 5905: NTPv4](https://datatracker.ietf.org/doc/html/rfc5905)
 - [RFC 4330: SNTPv4](https://datatracker.ietf.org/doc/html/rfc4330)
 - [rsntp](https://docs.rs/rsntp/latest/rsntp/)
+
+## `decision_tag_test.rs`
+
+`test_ntp_llm_failure_is_tagged_static_default_not_fail_closed` — 1 LLM call (the startup
+instruction); the `ntp_request` event has no rule, so the mock answers 500 and `call_llm`
+returns `Err`.
+
+It asserts **both** halves of NTP's awkward failure contract, and the negative assertion is
+the substantive one:
+
+- the wire carries a real stratum-2 reply with the client's transmit timestamp echoed — an
+  affirmative, usable time sample, not a denial;
+- the log carries `decision=static_default_llm_error`;
+- the log does **not** carry `decision=fail_closed_llm*`, because the peer was not denied
+  anything and `grep decision=fail_closed` must not report a denial that never happened.
+
+If the wire behaviour is ever changed to a Kiss-o'-Death (`actions::build_kod_packet` exists
+and is currently called by nothing), the stratum assertion fails first — deliberately, so the
+token has to be revisited in the same change. See `src/server/ntp/CLAUDE.md`,
+"Failure behaviour".

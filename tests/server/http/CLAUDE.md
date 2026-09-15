@@ -26,7 +26,10 @@ application scenarios.
 - `failure_semantics_test.rs` (3 tests): 1 LLM call each — only the startup instruction is
   mocked, and every `http_request` is deliberately left unmatched so the mock answers HTTP
   500 and netget reports a backend failure
-- **Total: 17 LLM calls** (above 10 target, but necessary for comprehensive HTTP testing)
+- `decision_tag_test.rs` (2 tests): 1 LLM call for the backend-failure test (startup only,
+  the event is deliberately unmatched) and 2 for the fail-open test (startup + one
+  `http_request` answered with an empty action list)
+- **Total: 20 LLM calls** (above 10 target, but necessary for comprehensive HTTP testing)
 
 **Optimization Opportunity**: Could consolidate into 2-3 comprehensive servers:
 
@@ -180,6 +183,25 @@ backend failure.
   `http_common::MAX_REQUEST_BODY_BYTES` (8 MiB) is answered **413**, and `expect_calls(1)`
   on the startup rule proves it cost **no** LLM call: had the request reached the model,
   the unmatched event would be a second recorded call and `verify_mocks` would fail.
+
+### 11. Decision tags (`decision_tag_test.rs`)
+
+Every request now ends in exactly one `decision=` line, and these two pin the pair that used
+to be indistinguishable.
+
+- `test_http_backend_failure_is_tagged_fail_closed` — the mock answers the startup
+  instruction and nothing else, so `call_llm` returns `Err`. Asserts `500` on the wire and
+  `decision=fail_closed_llm_error` in the log, **and** that no `decision=model_silent` line
+  appears: a dead backend must not read as the model choosing to say nothing.
+- `test_http_model_silence_answers_200_and_is_tagged_as_a_fail_open` — the model *is*
+  reached and answers `{"actions": []}`. Asserts the **current, fail-open** wire behaviour
+  (an empty `200`) so that changing it is deliberate, and that the log says
+  `decision=model_silent fallback=blank_200` — which names both whose silence it was and
+  which fallback answered the peer in its place.
+
+The second test is the one to read before touching `build_response`: an unreachable model, a
+model that answered nothing, and a model that deliberately answered `200` all reach the peer
+identically today.
 
 ## Known Issues
 

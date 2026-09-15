@@ -28,7 +28,7 @@ mod tests {
     /// - Official tor binary in PATH (brew install tor on macOS)
     /// - Release binary built: cargo build --release --all-features
     #[tokio::test]
-    #[ignore] // Requires tor binary installed and release binary built
+    #[ignore = "Requires tor binary installed and release binary built"]
     async fn test_full_tor_network_integration() -> Result<()> {
         println!("\n=== Tor Network Integration Test ===\n");
 

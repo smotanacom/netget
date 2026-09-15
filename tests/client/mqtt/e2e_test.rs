@@ -72,7 +72,7 @@ async fn stop_mosquitto_broker() {
 
 /// Test basic MQTT client connection and LLM-controlled subscription
 #[tokio::test]
-#[ignore] // Requires Docker (Mosquitto broker) and real Ollama (no .with_mock() configured)
+#[ignore = "Requires Docker (Mosquitto broker) and real Ollama (no .with_mock() configured)"]
 async fn test_mqtt_client_basic() -> Result<(), Box<dyn std::error::Error>> {
     start_mosquitto_broker().await?;
 
@@ -156,7 +156,7 @@ async fn test_mqtt_client_basic() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Test MQTT client with QoS levels
 #[tokio::test]
-#[ignore] // Requires Docker (Mosquitto broker) and real Ollama (no .with_mock() configured)
+#[ignore = "Requires Docker (Mosquitto broker) and real Ollama (no .with_mock() configured)"]
 async fn test_mqtt_client_qos() -> Result<(), Box<dyn std::error::Error>> {
     start_mosquitto_broker().await?;
 
@@ -214,7 +214,7 @@ async fn test_mqtt_client_qos() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Test MQTT client with wildcards
 #[tokio::test]
-#[ignore] // Requires Docker (Mosquitto broker) and real Ollama (no .with_mock() configured)
+#[ignore = "Requires Docker (Mosquitto broker) and real Ollama (no .with_mock() configured)"]
 async fn test_mqtt_client_wildcards() -> Result<(), Box<dyn std::error::Error>> {
     start_mosquitto_broker().await?;
 
@@ -277,7 +277,7 @@ async fn test_mqtt_client_wildcards() -> Result<(), Box<dyn std::error::Error>> 
 
 /// Test retained messages
 #[tokio::test]
-#[ignore] // Requires Docker (Mosquitto broker) and real Ollama (no .with_mock() configured)
+#[ignore = "Requires Docker (Mosquitto broker) and real Ollama (no .with_mock() configured)"]
 async fn test_mqtt_client_retained() -> Result<(), Box<dyn std::error::Error>> {
     start_mosquitto_broker().await?;
 

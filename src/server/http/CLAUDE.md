@@ -52,23 +52,52 @@ There are no async actions: HTTP is purely reactive.
 
 ### Failure behavior
 
-- LLM call fails → the *category* reaches the client, never the error text
-  (`crate::utils::WireFailure`). An **overloaded** backend → `503` + `Retry-After: 1`,
-  so the client backs off instead of recording a permanent fault; anything else → `500`.
-  The log carries `decision=fail_closed_llm_overloaded` / `decision=fail_closed_llm_error`
-  alongside the full error. This is the behaviour root `CLAUDE.md` tells other protocols
-  to copy; `tests/server/http/failure_semantics_test.rs` pins it.
-- Model emits no `send_http_response` → the server's `default_response` startup param
-  if set, otherwise an empty `200`. The `send_http_response` action and `http_request`
-  event descriptions now tell the model to always answer and to honor the client's
-  `Accept` header (return a matching `Content-Type`; 404 for an image/binary it cannot
-  produce), and the `request_filter` param is recommended so favicon/preflight noise
-  never reaches the model.
-- Model emits a `send_http_response` the executor rejects (e.g. a status outside
-  100-599) → the action is dropped with a warning by
-  `execute_actions()` and the client still gets the empty `200`. This is why the
-  executor is lenient about status/body shapes; see `http_common/CLAUDE.md`.
+Every request ends in exactly one `decision=` line. The table is the whole contract; the
+notes below it are the parts that are easy to get wrong.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Model emitted a parseable `send_http_response` | that response | INFO `decision=model_answer` |
+| Model emitted none, `default_response` **is** configured | that default | WARN `decision=model_silent fallback=default_response` |
+| Model emitted none, no `default_response` | **`200` with an empty body** | WARN `decision=model_silent fallback=blank_200` |
+| Model's action was refused by the executor | the same fallback as above | ERROR `decision=model_bad_action fallback=…` |
+| Backend saturated | `503` + `Retry-After: 1`, body = category | ERROR `decision=fail_closed_llm_overloaded` |
+| Backend failed | `500`, body = category | ERROR `decision=fail_closed_llm_error` |
+| Body over `MAX_REQUEST_BODY_BYTES` | `413`, no LLM call | `decision=refused_body_too_large` |
+| Refused by `request_filter` | `filtered_response` (default 404), no LLM call | INFO `decision=refused_by_filter` |
+| `h2c` upgrade without `HTTP2-Settings`, or with `http2` off | `400` / `501`, no LLM call | `decision=protocol_error` |
+
+- **The peer gets a category, never the error text** (`crate::utils::WireFailure`). Overload
+  becomes `503` + `Retry-After` rather than `500` so a client backs off instead of recording a
+  permanent fault. This is the behaviour root `CLAUDE.md` tells other protocols to copy;
+  `tests/server/http/failure_semantics_test.rs` pins it.
+- **`decision=model_silent fallback=blank_200` is a fail-open, and it is stated rather than
+  fixed.** When the model produces no `send_http_response` and the server has no
+  `default_response`, `build_response` answers `200 OK` with an empty body — so an unreachable
+  model, a model that answered nothing, and a model that deliberately answered `200` all reach
+  the peer identically. Tagging it `fail_closed_*` would be a lie (the peer got an OK), so the
+  log says whose silence it was and which fallback spoke in its place.
+  `tests/server/http/decision_tag_test.rs` asserts the current wire behaviour so that changing
+  it is deliberate, not incidental.
+- **`decision=model_bad_action` is an invented token**, for the same reason: the sanctioned
+  `fail_closed_bad_action` promises the peer was refused, and here the peer is given an
+  affirmative response anyway. A rejected action (e.g. a status outside 100-599) is dropped with
+  a warning by `execute_actions()` and the request falls through to the fallback; this is why
+  the executor is lenient about status/body shapes, see `http_common/CLAUDE.md`.
+- The `send_http_response` action and `http_request` event descriptions tell the model to
+  always answer and to honor the client's `Accept` header (a matching `Content-Type`; 404 for
+  an image/binary it cannot produce), and the `request_filter` param is recommended so
+  favicon/preflight noise never reaches the model.
 - A status or header hyper cannot represent → 500 / dropped header, never a panic.
+
+**Where the tags live.** `decision=fail_closed_llm_*` and `decision=refused_body_too_large` are
+emitted by `src/server/http_common/handler.rs`, which is shared with ipp/openapi/…; the
+`model_*` and `refused_by_filter` / `protocol_error` tags are emitted at HTTP's own call sites
+in `mod.rs`, because `build_response` cannot tell which protocol it is answering for. Two
+consequences worth knowing: the h2c-upgraded path is served by
+`src/server/http2/h2_server.rs` and carries whatever tags **that** protocol emits, not these;
+and `build_error_response`'s tag reaches `netget.log` through `error!` but its status-stream
+line (`✗ LLM error for …`) has no `decision=`, so the dashboard shows the failure untagged.
 
 ## Architecture
 
@@ -157,6 +186,10 @@ problems are logged at `error!` and pushed to the status stream as
 - `tests/server/http/failure_semantics_test.rs` — 3 scenarios: 500 on backend failure,
   no internal detail in the failure body, and 413 (with no LLM call) for a body over the
   size cap.
+- `tests/server/http/decision_tag_test.rs` — 2 scenarios: a backend failure is tagged
+  `decision=fail_closed_llm_error` (and not as model silence), and a model that answers with
+  no action reaches the peer as an empty `200` tagged
+  `decision=model_silent fallback=blank_200` — the fail-open, pinned.
 - `tests/server/http/e2e_scheduled_tasks_test.rs` — scheduled-task coverage.
 - `tests/http_request_filter_test.rs` — pure filter unit tests.
 

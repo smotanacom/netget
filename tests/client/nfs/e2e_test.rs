@@ -12,9 +12,7 @@ mod nfs_client_tests {
     /// Test NFS client can mount and read from NFS server
     /// LLM calls: 4 (server startup, server file list, client mount, client read)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_nfs_client_mount_and_read() -> E2EResult<()> {
         // Start an NFS server with a simple filesystem
         let server_config = NetGetConfig::new(
@@ -67,9 +65,7 @@ mod nfs_client_tests {
     /// Test NFS client can list directory contents
     /// LLM calls: 3 (server startup, client mount, client listdir)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_nfs_client_list_directory() -> E2EResult<()> {
         // Start an NFS server with multiple files
         let server_config = NetGetConfig::new(
@@ -115,9 +111,7 @@ mod nfs_client_tests {
     /// Test NFS client can write to a file
     /// LLM calls: 4 (server startup, client mount, client write, client verify)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_nfs_client_write_file() -> E2EResult<()> {
         // Start an NFS server that accepts writes
         let server_config = NetGetConfig::new(
@@ -168,9 +162,7 @@ mod nfs_client_tests {
     /// Test NFS client can create directories
     /// LLM calls: 3 (server startup, client mount, client mkdir)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_nfs_client_create_directory() -> E2EResult<()> {
         // Start an NFS server
         let server_config = NetGetConfig::new(

@@ -237,7 +237,10 @@ assert!(output_str.contains("IPSec") || output_str.contains("IKE") || output_str
 
 **Workaround**: Tests explicitly use "via ipsec" and validate stack name.
 
-**Future fix**: Improve keyword matching in `src/protocol/base_stack.rs`.
+**Future fix**: Improve the base-stack documentation the model chooses from —
+`generate_base_stack_documentation` in `src/llm/actions/common.rs`. (There is no
+src/protocol/base_stack.rs; name resolution itself is `ServerRegistry::resolve` in
+`src/protocol/server_registry.rs`, and it is not what is going wrong here.)
 
 ### No IKE Negotiation Testing
 
@@ -406,5 +409,4 @@ async fn test_ipsec_nat_t() {
 - [RFC 2409 - IKEv1](https://datatracker.ietf.org/doc/html/rfc2409)
 - [RFC 4301 - IPSec Architecture](https://datatracker.ietf.org/doc/html/rfc4301)
 - [RFC 4303 - ESP](https://datatracker.ietf.org/doc/html/rfc4303)
-- [IPSEC_RESEARCH.md](../../../IPSEC_RESEARCH.md) - Why full implementation is infeasible
 - [NetGet IPSec Implementation](../../../src/server/ipsec/CLAUDE.md)

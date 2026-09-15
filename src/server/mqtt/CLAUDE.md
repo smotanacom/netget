@@ -165,22 +165,60 @@ Two cases, both pure transport bookkeeping with no semantics to decide:
 
 ## Failure behaviour
 
-A protocol that stays silent leaves the client blocked until its own timeout, so every
-event that owes a mandatory reply has a default:
+MQTT stays on the wire on every path: it has a real refusal vocabulary (CONNACK return codes
+1-5, SUBACK 0x80) and, where it has none, closing the connection is the spec's own channel for
+a broker error. Nothing derived from an error is ever interpolated into a packet — MQTT 3.1.1
+has no free-text field to put one in.
 
-| Event | If the handler produces no reply | Rationale |
-|---|---|---|
-| `mqtt_connect` | CONNACK, return code 0 (accept), logged at WARN | CONNACK is mandatory (3.2); refusing on an LLM outage would make the server useless as a honeypot |
-| `mqtt_publish` QoS 1 / 2 | PUBACK / PUBREC echoing `packet_id` | otherwise the client republishes forever |
-| `mqtt_subscribe` | SUBACK granting the QoS each filter asked for, logged at WARN | SUBACK is mandatory (3.8.4) |
-| `mqtt_unsubscribe` | UNSUBACK echoing `packet_id` | mandatory (3.10.4) |
+The distinction that matters here is **"the handler ran and declined to decide" versus "the
+handler could not run"**, `LlmOutcome::Silent` versus `LlmOutcome::Failed` in `mod.rs`. They
+were one outcome once, and the permissive `Silent` defaults were applied to both: an LLM outage
+accepted every CONNECT (return code 0, credentials and all) and granted every SUBSCRIBE. Both
+now log a distinct `decision=` token, and `run_llm` is the single place the four outcomes are
+classified.
 
-"Produces no reply" is checked per **packet type**, not "wrote anything": a handler that
-forwards a PUBLISH but forgets the PUBACK still gets the PUBACK default.
+| Event | Outcome | On the wire | Log |
+|---|---|---|---|
+| any | handler produced the required packet | that packet | INFO `decision=model_answer` |
+| any | handler produced `close_this_connection` / `close_connection` | connection closed | INFO `decision=model_reject` |
+| `mqtt_connect` | handler ran, no `mqtt_connack` | **CONNACK 0 — accepted** | WARN `decision=model_silent actions=<n>` |
+| `mqtt_connect` | backend failed | CONNACK 3 (server unavailable), then close (3.2.2.3) | ERROR `decision=fail_closed_llm_error` / `fail_closed_llm_overloaded` |
+| `mqtt_subscribe` | handler ran, no `mqtt_suback` | SUBACK granting the QoS each filter asked for | WARN `decision=model_silent actions=<n>` |
+| `mqtt_subscribe` | backend failed | SUBACK 0x80 on every filter (3.9.3) | ERROR `decision=fail_closed_llm_*` |
+| `mqtt_publish` QoS 1/2 | handler ran, no ack | PUBACK / PUBREC echoing `packet_id` | WARN `decision=model_silent actions=<n>` |
+| `mqtt_publish` QoS 1/2 | backend failed | **nothing** — connection closed | ERROR `decision=fail_closed_llm_*` |
+| `mqtt_publish` QoS 0 | handler ran, no action at all | nothing owed | WARN `decision=model_silent actions=0` |
+| `mqtt_unsubscribe` | handler ran, no `mqtt_unsuback` | UNSUBACK echoing `packet_id` | WARN `decision=model_silent actions=<n>` |
+| `mqtt_unsubscribe` | backend failed | **nothing** — connection closed | ERROR `decision=fail_closed_llm_*` |
+| any | malformed packet, second CONNECT, QoS 3, empty SUBSCRIBE, oversize packet | connection closed, no reply | WARN `decision=protocol_error` |
 
-Errors that close the connection: a malformed CONNECT, a second CONNECT on one connection
-(3.1.0-2), QoS 3, a SUBSCRIBE with no filter, a malformed packet, and any packet larger
-than `max_packet_size`.
+PUBLISH and UNSUBSCRIBE close rather than acknowledge on a backend failure because PUBACK and
+UNSUBACK are a bare packet identifier with no failure code: sending one would tell the client
+its message was taken or its subscriptions were removed. Closing leaves QoS 1/2 redelivery to
+do its job.
+
+"Produced no reply" is checked per **packet type**, not "wrote anything": a handler that
+forwards a PUBLISH but forgets the PUBACK still gets the PUBACK default, and logs
+`decision=model_silent actions=1` rather than `actions=0` — which is how you tell a handler
+with nothing to say from one that did something else and omitted the mandatory packet.
+
+`decision=protocol_error` is the one non-model token: those refusals are decided by the codec
+before any handler is consulted.
+
+### The one fail-open left, deliberately narrowed and **not** fixed in the tagging pass
+
+`mqtt_connect` + `decision=model_silent` sends **CONNACK 0, an accepted session**. A model that
+is asked about a CONNECT carrying a username and password and answers with nothing gets that
+client admitted. That is the OAuth2 shape the root `CLAUDE.md` describes, narrowed to the case
+where the handler demonstrably ran — a backend failure refuses (CONNACK 3) and an explicit
+refusal is `mqtt_connack` with return code 1-5, so the three are now three different log lines.
+
+It is deliberate as far as it goes: the broker is a honeypot, CONNACK is mandatory, and a
+handler that ran and said nothing is "no opinion" rather than "no answer". But the wire *can*
+carry the refusal here (return code 5, "not authorized", or 3), so unlike the deliberately
+silent protocols there is no wire-shaped excuse — the only thing standing between this and the
+OAuth2 defect is that `Silent` and `Failed` are distinct. Anyone hardening this should change
+the CONNECT `Silent` arm, not the tag.
 
 ## Limits
 

@@ -135,7 +135,9 @@ the second report zero calls.
 
 ## Testing Strategy
 
-See `tests/client/torrent_tracker/CLAUDE.md` for E2E testing details.
+There is no test-side CLAUDE.md. The suite is two files:
+`tests/client/torrent_tracker/command_channel_test.rs` and
+`tests/client/torrent_tracker/followup_chain_test.rs`.
 
 ## Example LLM Prompts
 

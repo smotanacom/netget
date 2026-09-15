@@ -603,11 +603,24 @@ async fn test_maven_cli_download() -> E2EResult<()> {
         "  <packaging>jar</packaging>\n",
         "</project>\n"
     );
-    const JAR_BODY: &str = "netget-maven-test-jar-payload";
+    // A **real JAR**, not a text placeholder: a zip built by Python's `zipfile`, which
+    // NetGet does not own, containing a manifest and one resource. This is what lets the
+    // last step below ask Maven to *unpack* the artifact — a repository whose artifacts
+    // have only ever been fetched and checksummed has not been shown to be usable, and
+    // that was the one thing standing between this protocol and `Beta`.
+    let jar_dir = tempfile::tempdir()?;
+    let jar_path = build_real_jar(jar_dir.path())?;
+    let jar_bytes = fs::read(&jar_path)?;
+    assert_eq!(
+        &jar_bytes[..2],
+        b"PK",
+        "the fixture must be a real zip, or `dependency:unpack` proves nothing"
+    );
+    let jar_base64 = base64_of(&jar_path)?;
 
     let pom_sha1 = external_sha1(POM_BODY.as_bytes())
         .ok_or("`shasum -a 1` is required to compute the checksums Maven verifies")?;
-    let jar_sha1 = external_sha1(JAR_BODY.as_bytes())
+    let jar_sha1 = external_sha1(&jar_bytes)
         .ok_or("`shasum -a 1` is required to compute the checksums Maven verifies")?;
 
     // ONE rule that branches on the event, not several rules on the same event: rules
@@ -628,11 +641,17 @@ async fn test_maven_cli_download() -> E2EResult<()> {
                 .respond_with_actions_from_event(move |e| {
                     let extension = e["extension"].as_str().unwrap_or("");
                     let is_checksum = e["is_checksum"].as_bool().unwrap_or(false);
-                    let (content_type, body) = match (extension, is_checksum) {
-                        ("pom", false) => ("application/xml", POM_BODY.to_string()),
-                        ("pom", true) => ("text/plain", pom_sha1.clone()),
-                        ("jar", false) => ("application/java-archive", JAR_BODY.to_string()),
-                        ("jar", true) => ("text/plain", jar_sha1.clone()),
+                    // The JAR goes out as `body_base64` because it is binary; everything
+                    // else is UTF-8 text and goes out as `body`.
+                    let (content_type, key, body) = match (extension, is_checksum) {
+                        ("pom", false) => ("application/xml", "body", POM_BODY.to_string()),
+                        ("pom", true) => ("text/plain", "body", pom_sha1.clone()),
+                        ("jar", false) => (
+                            "application/java-archive",
+                            "body_base64",
+                            jar_base64.clone(),
+                        ),
+                        ("jar", true) => ("text/plain", "body", jar_sha1.clone()),
                         _ => {
                             return serde_json::json!([{
                                 "type": "send_maven_error",
@@ -641,12 +660,12 @@ async fn test_maven_cli_download() -> E2EResult<()> {
                             }])
                         }
                     };
-                    serde_json::json!([{
-                        "type": "send_maven_artifact",
-                        "status": 200,
-                        "content_type": content_type,
-                        "body": body
-                    }])
+                    let mut action = serde_json::Map::new();
+                    action.insert("type".into(), "send_maven_artifact".into());
+                    action.insert("status".into(), 200.into());
+                    action.insert("content_type".into(), content_type.into());
+                    action.insert(key.into(), body.into());
+                    serde_json::Value::Array(vec![serde_json::Value::Object(action)])
                 })
                 .expect_at_least(2)
                 .and()
@@ -715,7 +734,7 @@ async fn test_maven_cli_download() -> E2EResult<()> {
     );
     assert_eq!(
         fs::read(&jar)?,
-        JAR_BODY.as_bytes(),
+        jar_bytes,
         "the JAR Maven stored is not the one NetGet served"
     );
     assert_eq!(
@@ -725,11 +744,122 @@ async fn test_maven_cli_download() -> E2EResult<()> {
     );
     println!("mvn resolved, checksum-verified and stored the artifact NetGet served");
 
+    // And Maven can *use* it. `dependency:unpack` opens the stored archive with Maven's
+    // own unarchiver and writes its entries out, so a JAR that is not a real zip fails
+    // here even though it downloaded and checksum-verified perfectly.
+    //
+    // This is the step that separates "a real client fetched bytes from this repository"
+    // from "a real client used an artifact from this repository", and it is why the
+    // fixture above is a genuine zip rather than the text placeholder it used to be.
+    let unpacked = work.path().join("unpacked");
+    let output = tokio::process::Command::new("mvn")
+        .arg("-B")
+        .arg("-s")
+        .arg(&settings)
+        .arg(format!("-Dmaven.repo.local={}", head_repo.display()))
+        .arg(format!("-Dmaven.repo.local.tail={}", tail_repo.display()))
+        .arg("dependency:unpack")
+        .arg("-Dartifact=com.netget.test:maven-test:1.0.0")
+        .arg(format!("-DoutputDirectory={}", unpacked.display()))
+        // Outside a project, `dependency:unpack` writes its marker directory relative to
+        // the working directory under a literal, unexpanded `${project.basedir}` name.
+        // Both of these keep that inside the tempdir instead of the repository root.
+        .arg(format!(
+            "-Dmdep.markersDirectory={}",
+            work.path().join("markers").display()
+        ))
+        .current_dir(work.path())
+        .output()
+        .await?;
+    let unpack_stdout = String::from_utf8_lossy(&output.stdout);
+    let unpack_stderr = String::from_utf8_lossy(&output.stderr);
+    for line in unpack_stdout
+        .lines()
+        .filter(|l| l.contains("Downloading from"))
+    {
+        assert!(
+            line.contains("127.0.0.1"),
+            "Maven reached outside localhost: {line}"
+        );
+    }
+    assert!(
+        output.status.success(),
+        "mvn dependency:unpack failed on the artifact NetGet served — the JAR is not a \
+         usable archive.\nstdout:\n{unpack_stdout}\nstderr:\n{unpack_stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(unpacked.join("com/netget/test/greeting.txt"))?,
+        GREETING,
+        "Maven unpacked the archive but the resource inside it is not what NetGet served"
+    );
+    println!("mvn unpacked the archive: a real client used an artifact from this repository");
+
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
     server.stop().await?;
     println!("=== Test passed ===\n");
     Ok(())
+}
+
+/// The resource inside the fixture JAR, asserted after Maven unpacks it.
+const GREETING: &str = "hello from a real jar\n";
+
+/// Build a genuine JAR — a zip with a manifest and one resource — using Python's
+/// `zipfile`, an archiver NetGet does not own.
+///
+/// The point is not the manifest; it is that the bytes are a *real* archive, so
+/// `mvn dependency:unpack` exercises Maven's unarchiver against what NetGet served.
+/// With a text placeholder the download and the checksum both pass and nothing is ever
+/// opened, which is precisely the gap that kept this protocol at `Experimental`.
+fn build_real_jar(dir: &std::path::Path) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let path = dir.join("maven-test-1.0.0.jar");
+    let script = format!(
+        "import sys, zipfile\n\
+         z = zipfile.ZipFile(sys.argv[1], 'w', zipfile.ZIP_DEFLATED)\n\
+         z.writestr('META-INF/MANIFEST.MF', 'Manifest-Version: 1.0\\nCreated-By: netget-test\\n')\n\
+         z.writestr('com/netget/test/greeting.txt', {greeting})\n\
+         z.close()\n",
+        greeting = serde_json::to_string(GREETING).unwrap(),
+    );
+    let out = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(&script)
+        .arg(&path)
+        .output()
+        .map_err(|e| {
+            format!(
+                "python3 is not available ({e}): it builds the real JAR this test serves, and \
+                 without a real archive `mvn dependency:unpack` would prove nothing. Install \
+                 it with `brew install python3` or `apt-get install -y python3`."
+            )
+        })?;
+    if !out.status.success() {
+        return Err(format!(
+            "python3 could not build the fixture JAR: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+        .into());
+    }
+    Ok(path)
+}
+
+/// Base64 of a file, via Python rather than a crate, so the encoder is not this
+/// codebase either.
+fn base64_of(path: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
+    let out = std::process::Command::new("python3")
+        .arg("-c")
+        .arg("import sys,base64;sys.stdout.write(base64.b64encode(open(sys.argv[1],'rb').read()).decode())")
+        .arg(path)
+        .output()?;
+    if !out.status.success() {
+        return Err(format!(
+            "python3 could not base64 the fixture JAR: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+        .into());
+    }
+    Ok(String::from_utf8(out.stdout)?)
 }
 
 /// SHA-1 via `shasum -a 1`, an implementation NetGet does not own, so the checksum

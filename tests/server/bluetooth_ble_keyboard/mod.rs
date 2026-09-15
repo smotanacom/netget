@@ -2,6 +2,7 @@
 
 #![cfg(all(test, feature = "bluetooth-ble-keyboard"))]
 
+mod decision_tag_test;
 mod e2e_test;
 /// The HID report-descriptor walker, shared with the mouse, gamepad and remote suites via
 /// `#[path]`. It lives here rather than in `tests/helpers/` so that it stays inside the BLE

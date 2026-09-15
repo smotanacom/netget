@@ -161,7 +161,6 @@ async fn test_elasticsearch_client_index_and_search() -> E2EResult<()> {
     let mut client = start_netget_client(client_config).await?;
 
     // Give client time to connect and perform operations
-    tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify client output
     client.wait_for_any(&["Elasticsearch"], 30).await;
@@ -300,8 +299,6 @@ async fn test_elasticsearch_client_bulk_operations() -> E2EResult<()> {
         });
 
     let mut client = start_netget_client(client_config).await?;
-
-    tokio::time::sleep(Duration::from_secs(2)).await;
 
     println!("✅ Elasticsearch bulk operations completed");
 
@@ -474,8 +471,6 @@ async fn test_elasticsearch_client_document_lifecycle() -> E2EResult<()> {
         });
 
     let mut client = start_netget_client(client_config).await?;
-
-    tokio::time::sleep(Duration::from_secs(3)).await;
 
     println!("✅ Elasticsearch document lifecycle completed");
 

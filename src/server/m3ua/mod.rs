@@ -87,6 +87,46 @@ use actions::{
 /// has to compile in order to produce the refusal.
 const IPPROTO_SCTP: i32 = 132;
 
+/// How long to wait for a peer's first message after the association comes up.
+///
+/// RFC 4666 has the ASP send ASPUP as soon as the association is established — the SG says
+/// nothing first, and nothing legitimate precedes it. A peer that has connected and sent
+/// nothing is not mid-handshake; it is holding an association slot on no request at all.
+const FIRST_MESSAGE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* message once one has arrived.
+///
+/// Fifteen minutes, and it is long on purpose: a signalling link with no traffic is the normal
+/// case, not a suspicious one, so this must not be a traffic timer. The protocol's own answer
+/// to "is this quiet link still alive" is BEAT (RFC 4666 section 3.5.5), which exists precisely
+/// so an idle-but-live ASP can prove it and which deployments configure at tens of seconds —
+/// so fifteen minutes is on the order of thirty missed beats. A peer that sends neither
+/// traffic nor a single BEAT for that long is indistinguishable from one that has gone away,
+/// and over TCP (this server's transport here) there is no SCTP heartbeat underneath to tell
+/// the difference.
+const IDLE_BETWEEN_MESSAGES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Concurrent associations this server admits.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// An M3UA ERR carrying error code `Refused - Management Blocking`
+/// ([`codec::ERR_REFUSED_MANAGEMENT_BLOCKING`], 0x0d) — which is what that code is for, and
+/// which this server already sends elsewhere when it declines an ASP. ERR is a Management-class
+/// message either end may send unsolicited at any time, so unlike most protocols here there is
+/// a *correct* thing to say to a peer that has not spoken yet.
+///
+/// Encoded by hand rather than through [`codec::Message::encode`] because a `const` cannot call
+/// it: version 1, reserved 0, class MGMT(0), type ERR(0), length 16; then parameter tag
+/// `TAG_ERROR_CODE` (0x000c), parameter length 8, value 0x0000000d.
+const CONNECTION_CAP_REFUSAL: &[u8] = &[
+    0x01, 0x00, 0x00, 0x00, // version, reserved, class MGMT, type ERR
+    0x00, 0x00, 0x00, 0x10, // message length: 16
+    0x00, 0x0c, 0x00, 0x08, // parameter: Error Code, length 8
+    0x00, 0x00, 0x00, 0x0d, // Refused - Management Blocking
+];
+
 /// M3UA server: an SGP that ASPs connect to.
 pub struct M3uaServer;
 
@@ -282,10 +322,19 @@ impl M3uaServer {
         let protocol = Arc::new(M3uaProtocol::new());
         let task_registrar = app_state.clone();
 
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "M3UA",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         Log::new(Some(&status_tx)).info(format!(
@@ -311,6 +360,9 @@ impl M3uaServer {
                         let protocol_clone = protocol.clone();
 
                         tokio::spawn(async move {
+                            // Held for the life of the association, so the cap counts live
+                            // associations rather than accepts.
+                            let _permit = permit;
                             if let Err(e) = run_session(
                                 stream,
                                 connection_id,
@@ -479,8 +531,25 @@ impl M3uaSession {
             self.state.as_str()
         );
 
+        let mut received_one = false;
+
         loop {
-            let (incoming, bytes_in) = read_message(reader).await;
+            // The deadline wraps `read_message` and nothing else. Everything that can
+            // legitimately take minutes — the LLM round-trip that decides whether an ASP may
+            // come up, and a `manual` rule parking that decision for a human
+            // (`src/state/intercepts.rs`, 300s by default) — happens below, once a whole
+            // message has been read. So neither sits inside a read deadline. What is bounded is
+            // a peer holding the association while sending nothing, and a peer that announces a
+            // message length and stalls part-way through delivering it.
+            let read_timeout = if received_one {
+                IDLE_BETWEEN_MESSAGES_TIMEOUT
+            } else {
+                FIRST_MESSAGE_READ_TIMEOUT
+            };
+            let (incoming, bytes_in) = read_message(reader, read_timeout).await;
+            if !matches!(incoming, Incoming::Eof) {
+                received_one = true;
+            }
             if bytes_in > 0 {
                 self.app_state
                     .update_connection_stats(
@@ -1240,9 +1309,23 @@ async fn operator_wants_dynamic(state: &AppState, server_id: ServerId, event_id:
 /// buffer size, and `length - HEADER_LEN` cannot underflow.
 ///
 /// The second element is the number of octets consumed, for the connection's inbound counters.
-async fn read_message(reader: &mut ReadHalf<TcpStream>) -> (Incoming, usize) {
+async fn read_message(
+    reader: &mut ReadHalf<TcpStream>,
+    read_timeout: std::time::Duration,
+) -> (Incoming, usize) {
     let mut header = [0u8; codec::HEADER_LEN];
-    match reader.read_exact(&mut header).await {
+    let header_read = match tokio::time::timeout(read_timeout, reader.read_exact(&mut header)).await
+    {
+        Ok(read) => read,
+        Err(_) => {
+            debug!(
+                "M3UA peer sent nothing for {}s; closing idle association",
+                read_timeout.as_secs()
+            );
+            return (Incoming::Eof, 0);
+        }
+    };
+    match header_read {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return (Incoming::Eof, 0),
         Err(e) => {
@@ -1260,9 +1343,25 @@ async fn read_message(reader: &mut ReadHalf<TcpStream>) -> (Incoming, usize) {
     let mut full = vec![0u8; total];
     full[..codec::HEADER_LEN].copy_from_slice(&header);
     if total > codec::HEADER_LEN {
-        if let Err(e) = reader.read_exact(&mut full[codec::HEADER_LEN..]).await {
-            debug!("M3UA truncated message body: {e}");
-            return (Incoming::Eof, codec::HEADER_LEN);
+        match tokio::time::timeout(
+            read_timeout,
+            reader.read_exact(&mut full[codec::HEADER_LEN..]),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                debug!("M3UA truncated message body: {e}");
+                return (Incoming::Eof, codec::HEADER_LEN);
+            }
+            Err(_) => {
+                debug!(
+                    "M3UA peer announced {total} octets and stalled for {}s without \
+                     delivering them; closing",
+                    read_timeout.as_secs()
+                );
+                return (Incoming::Eof, codec::HEADER_LEN);
+            }
         }
     }
 
@@ -1272,8 +1371,9 @@ async fn read_message(reader: &mut ReadHalf<TcpStream>) -> (Incoming, usize) {
     let slack = codec::alignment_slack(parsed.length);
     if slack > 0 {
         let mut padding = [0u8; 3];
-        if reader.read_exact(&mut padding[..slack]).await.is_err() {
-            return (Incoming::Eof, total);
+        match tokio::time::timeout(read_timeout, reader.read_exact(&mut padding[..slack])).await {
+            Ok(Ok(_)) => {}
+            _ => return (Incoming::Eof, total),
         }
     }
 

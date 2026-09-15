@@ -47,7 +47,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Role, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::actions::protocol_trait::ActionResult;
@@ -667,9 +667,12 @@ impl WebSocketServer {
         let subprotocol = match decision {
             HandshakeDecision::Accept { subprotocol } => subprotocol,
             HandshakeDecision::Reject { status, reason } => {
+                // The tag on the fail-closed refusals is written by `run_handshake_decision`,
+                // which is the only place that knows *why* the upgrade was refused; this line
+                // covers the one case it does not reach, an explicit `reject_websocket`.
                 Log::new(Some(&status_tx)).info(format!(
-                    "WebSocket upgrade rejected by handler ({}): {}",
-                    status, reason
+                    "WebSocket upgrade from {} rejected by handler ({}): {}",
+                    peer_addr, status, reason
                 ));
                 let _ = socket
                     .write_all(&build_error_response(status, &reason, &[]))
@@ -793,8 +796,19 @@ impl WebSocketServer {
         {
             Ok(r) => r,
             Err(e) => {
-                Log::new(Some(status_tx))
-                    .error(format!("WebSocket upgrade refused: handler error ({})", e));
+                // The 503 reason is a fixed string; the backend's error text stays here. The
+                // two categories are kept apart in the log because the wire cannot carry the
+                // distinction — an HTTP error body is all a pre-upgrade client ever sees.
+                let tag = match crate::utils::wire_failure::WireFailure::classify(&e) {
+                    crate::utils::wire_failure::WireFailure::Overloaded => {
+                        "fail_closed_llm_overloaded"
+                    }
+                    crate::utils::wire_failure::WireFailure::Unavailable => "fail_closed_llm_error",
+                };
+                Log::new(Some(status_tx)).error(format!(
+                    "WebSocket upgrade from {} refused decision={}: handler error ({})",
+                    peer_addr, tag, e
+                ));
                 return HandshakeDecision::Reject {
                     status: 503,
                     reason: "The upgrade handler failed, so the connection was not opened"
@@ -807,29 +821,41 @@ impl WebSocketServer {
             let _ = status_tx.send(msg);
         }
 
-        for r in result.protocol_results {
+        for r in &result.protocol_results {
             if let ActionResult::Custom { name, data } = r {
                 match name.as_str() {
                     "accept_websocket" => {
-                        return HandshakeDecision::Accept {
-                            subprotocol: data
-                                .get("subprotocol")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string()),
-                        }
+                        let subprotocol = data
+                            .get("subprotocol")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        Log::new(Some(status_tx)).info(format!(
+                            "WebSocket upgrade from {} accepted decision=model_answer{}",
+                            peer_addr,
+                            subprotocol
+                                .as_ref()
+                                .map(|s| format!(" (subprotocol {s})"))
+                                .unwrap_or_default()
+                        ));
+                        return HandshakeDecision::Accept { subprotocol };
                     }
                     "reject_websocket" => {
+                        let status = data
+                            .get("status_code")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(403) as u16;
+                        Log::new(Some(status_tx)).info(format!(
+                            "WebSocket upgrade from {} refused decision=model_reject ({})",
+                            peer_addr, status
+                        ));
                         return HandshakeDecision::Reject {
-                            status: data
-                                .get("status_code")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(403) as u16,
+                            status,
                             reason: data
                                 .get("reason")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("Upgrade refused")
                                 .to_string(),
-                        }
+                        };
                     }
                     _ => {}
                 }
@@ -837,11 +863,19 @@ impl WebSocketServer {
         }
 
         // Structurally distinct from the explicit rejection above: this is the fail-closed
-        // path, and it says so in the log rather than quietly behaving like an approval.
+        // path, and it says so in the log rather than quietly behaving like an approval. The
+        // two tags separate a handler that said nothing at all from one whose answer this
+        // protocol could not use — the second is a prompt or an executor problem, the first
+        // is an absent decision.
+        let tag = if result.raw_actions.is_empty() {
+            "fail_closed_no_action"
+        } else {
+            "fail_closed_bad_action"
+        };
         Log::new(Some(status_tx)).error(format!(
-            "WebSocket upgrade refused for {}: handler returned neither accept_websocket nor \
-             reject_websocket",
-            peer_addr
+            "WebSocket upgrade from {} refused decision={}: handler returned neither \
+             accept_websocket nor reject_websocket",
+            peer_addr, tag
         ));
         HandshakeDecision::Reject {
             status: 503,
@@ -919,8 +953,15 @@ impl WebSocketServer {
             Err(e) => {
                 // Not fatal: nothing has been promised to the client yet, so the connection
                 // stays up and the first real message gets its own chance.
+                //
+                // `llm_error_notice_only` rather than `fail_closed_*`: the upgrade was already
+                // decided by `websocket_handshake`, this event only offers the server a chance
+                // to speak first, and nothing was refused or closed. Tagging it fail-closed
+                // would put a line in front of every `grep decision=fail_closed` that denied
+                // nothing.
                 Log::new(Some(&ctx.status_tx)).warn(format!(
-                    "WebSocket connection-opened handler failed on {}: {}",
+                    "WebSocket connection-opened handler failed on {} \
+                     decision=llm_error_notice_only: {}",
                     ctx.connection_id, e
                 ));
             }
@@ -1088,6 +1129,38 @@ impl WebSocketServer {
                         }
                     }
 
+                    // One `decision=` line per message. The silent case is the one that used
+                    // to vanish entirely: a handler that returns nothing sends no frame, and
+                    // this connection simply goes quiet — indistinguishable, in the log, from
+                    // a handler that deliberately answered with nothing.
+                    let log = Log::new(Some(&ctx.status_tx));
+                    let subject =
+                        format!("WebSocket {} {}", ctx.connection_id, event.event_type.id);
+                    if result.raw_actions.is_empty() {
+                        log.warn(format!(
+                            "{} decision=model_silent: no action, so no frame was sent",
+                            subject
+                        ));
+                    } else if !result.failures.is_empty() && result.protocol_results.is_empty() {
+                        log.error(format!(
+                            "{} decision=fail_closed_bad_action: {}",
+                            subject,
+                            result
+                                .failures
+                                .iter()
+                                .map(|f| format!("{}: {}", f.action, f.error))
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        ));
+                    } else if should_close {
+                        log.info(format!(
+                            "{} decision=model_reject: the handler closed the connection",
+                            subject
+                        ));
+                    } else {
+                        log.info(format!("{} decision=model_answer", subject));
+                    }
+
                     if should_wait {
                         let mut data = ctx.data.lock().await;
                         data.pending = Some(next);
@@ -1108,19 +1181,23 @@ impl WebSocketServer {
                 Err(e) => {
                     // Do not reset to Idle and write nothing: the peer would wait for a reply
                     // that is never coming. 1011 is the RFC's "the server hit an unexpected
-                    // condition", which is exactly what happened.
-                    Log::new(Some(&ctx.status_tx)).warn(format!(
-                        "WebSocket {}: handler failed, closing with 1011 ({})",
-                        ctx.connection_id, e
+                    // condition"; 1013 ("try again later") is the one the RFC gives for a
+                    // temporarily saturated server, so an overloaded backend tells a client to
+                    // back off rather than to record a permanent fault. The reason string is a
+                    // fixed literal in both cases — a close reason is peer-visible, and the
+                    // backend's error text belongs in the line below it, not on the wire.
+                    let overloaded = crate::llm::is_overload_error(&e);
+                    let (code, tag) = if overloaded {
+                        (1013u16, "fail_closed_llm_overloaded")
+                    } else {
+                        (1011u16, "fail_closed_llm_error")
+                    };
+                    Log::new(Some(&ctx.status_tx)).error(format!(
+                        "WebSocket {} {} decision={}: handler failed, closing with {} ({})",
+                        ctx.connection_id, event.event_type.id, tag, code, e
                     ));
-                    if crate::llm::is_overload_error(&e) {
-                        warn!(
-                            "WebSocket {} closed: LLM capacity exhausted",
-                            ctx.connection_id
-                        );
-                    }
                     let _ = ctx.out_tx.send(WsOut::Close {
-                        code: 1011,
+                        code,
                         reason: "handler failed".to_string(),
                     });
                     let mut data = ctx.data.lock().await;
@@ -1154,10 +1231,14 @@ impl WebSocketServer {
                 }
             }
             Err(e) => {
-                debug!(
-                    "WebSocket close handler failed on {}: {}",
+                // `llm_error_notice_only`: `websocket_close` fires because the peer has
+                // already closed, so there is nothing left to refuse and nothing to send.
+                // Raised from DEBUG to WARN — a backend failure that the operator can only
+                // see by turning debug logging on is a backend failure nobody sees.
+                Log::new(Some(&ctx.status_tx)).warn(format!(
+                    "WebSocket close handler failed on {} decision=llm_error_notice_only: {}",
                     ctx.connection_id, e
-                );
+                ));
             }
         }
     }

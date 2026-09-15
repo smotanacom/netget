@@ -227,6 +227,41 @@ impl ProtocolMetadata {
     }
 }
 
+/// What a server puts on the wire when the model cannot or will not answer.
+///
+/// **This replaces a prose list, and the prose list was wrong in both directions.** The root
+/// `CLAUDE.md` names ~20 "deliberately silent" protocols; auditing them found NDP logging its
+/// own *transmit* failure as `decision=model_silent` (so `grep decision=fail_closed_` found
+/// nothing for a real outage), and several BLE profiles on the list by family membership rather
+/// than by anyone deciding. A paragraph cannot be checked; a declaration can.
+///
+/// The distinction is not a style choice. It follows from one question: **is every reply this
+/// protocol can send a positive assertion?** If so, inventing one on failure is worse than
+/// saying nothing — `openvpn`'s only pre-TLS server message is
+/// `P_CONTROL_HARD_RESET_SERVER_V2`, and sending it *is* admitting the peer, so "fixing the
+/// silence" there would turn a backend outage into an authentication bypass. ARP would write a
+/// fabricated MAC into a stranger's neighbour cache. If instead the protocol has an error
+/// vocabulary — an HTTP status, a RESP `-LOADING`, a Modbus exception — silence just makes the
+/// peer wait out its own timeout, and answering is strictly better.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureMode {
+    /// The protocol answers, in its own error vocabulary, with a
+    /// [`crate::utils::wire_failure`] *category* — never the error text.
+    ///
+    /// Keep the two categories distinct where the protocol can express them (503 vs 500, RESP
+    /// `LOADING` vs `ERR`, MySQL 1205 vs 1105): a client that can tell "overloaded" from
+    /// "broken" backs off instead of recording a permanent fault.
+    Answers,
+
+    /// The protocol writes **nothing**, because every frame it could send would assert
+    /// something it does not know to be true.
+    ///
+    /// A protocol declaring this still owes the log the distinction the wire cannot carry:
+    /// `decision=model_reject` / `model_silent` / `fail_closed_llm_error`, as `src/server/radius/`
+    /// does. Silence on the wire is not silence in the log.
+    DeliberatelySilent,
+}
+
 /// Enhanced protocol metadata with detailed implementation information
 #[derive(Debug, Clone)]
 pub struct ProtocolMetadataV2 {
@@ -280,6 +315,15 @@ pub struct ProtocolMetadataV2 {
     /// waiting ten seconds for a human's manual answer — was evicted and shown
     /// as closed while its socket was perfectly alive.
     pub connectionless: bool,
+
+    /// What this server puts on the wire when the model cannot or will not answer.
+    ///
+    /// Defaults to [`FailureMode::Answers`], which is the right default: a protocol that has an
+    /// error vocabulary and stays silent leaves its peer to wait out a timeout, and that is the
+    /// failure the August 2026 sweep found in 64 of 135 servers. Declaring
+    /// [`FailureMode::DeliberatelySilent`] is an assertion that every frame this protocol could
+    /// send would be a claim it cannot support — say why in `notes`.
+    pub failure_mode: FailureMode,
 }
 
 impl ProtocolMetadataV2 {
@@ -313,6 +357,7 @@ pub struct ProtocolMetadataV2Builder {
     e2e_testing: &'static str,
     notes: Option<&'static str>,
     connectionless: bool,
+    failure_mode: FailureMode,
 }
 
 impl Default for ProtocolMetadataV2Builder {
@@ -331,6 +376,7 @@ impl ProtocolMetadataV2Builder {
             e2e_testing: "",
             notes: None,
             connectionless: false,
+            failure_mode: FailureMode::Answers,
         }
     }
 
@@ -364,6 +410,13 @@ impl ProtocolMetadataV2Builder {
         self
     }
 
+    /// Declare that this protocol writes nothing when the model cannot answer — see
+    /// [`FailureMode::DeliberatelySilent`]. Put the reason in `notes`.
+    pub const fn deliberately_silent(mut self) -> Self {
+        self.failure_mode = FailureMode::DeliberatelySilent;
+        self
+    }
+
     /// Mark the protocol connectionless — see [`ProtocolMetadataV2::connectionless`].
     pub const fn connectionless(mut self) -> Self {
         self.connectionless = true;
@@ -379,6 +432,7 @@ impl ProtocolMetadataV2Builder {
             e2e_testing: self.e2e_testing,
             notes: self.notes,
             connectionless: self.connectionless,
+            failure_mode: self.failure_mode,
         }
     }
 }

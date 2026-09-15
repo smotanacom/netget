@@ -199,9 +199,18 @@ async fn test_ssh_connection_attempt() -> E2EResult<()> {
             ]))
             .expect_calls(1)
             .and()
-        // Note: SSH authentication without scripts is not tested here
-        // The ssh2 client library has timing/compatibility issues with russh server
-        // For authentication testing, see test_ssh_python_auth_script which uses scripts
+        // No `ssh_auth` rule on purpose: this test is about the handshake, and an auth
+        // attempt with no handler must be refused. `test_ssh_python_auth_script` and
+        // `test_sftp_basic_operations` cover the granting paths.
+        //
+        // This comment used to read "the ssh2 client library has timing/compatibility
+        // issues with russh server", and that claim propagated into
+        // `src/server/ssh/actions.rs` and `src/server/ssh/CLAUDE.md` as the reason SSH
+        // could not be Beta — for months after it stopped being true. libssh2 completes
+        // a full session against this server; what it could not do was complete one while
+        // it was blocking the runtime the in-process mock needed (see `ssh_password_auth`
+        // and `sftp_session`, both of which run it under `spawn_blocking`). A stale note
+        // about a test is the cheapest way to hold a rating down.
     });
 
     // Start the server
@@ -220,31 +229,26 @@ async fn test_ssh_connection_attempt() -> E2EResult<()> {
             sess.set_tcp_stream(tcp_stream);
             sess.set_timeout(5000);
 
-            // Try handshake
-            match sess.handshake() {
-                Ok(_) => {
-                    println!("✓ SSH handshake completed!");
+            // Unconditional. Every arm here used to `println!` and continue, so a total
+            // failure and a clean handshake were the same outcome — and the printed note
+            // was then quoted elsewhere as evidence that libssh2 cannot talk to this
+            // server.
+            sess.handshake()
+                .expect("libssh2 must complete the SSH transport handshake against this server");
+            println!("libssh2 completed the handshake");
 
-                    // Try to authenticate (will likely fail, but shows protocol is working)
-                    match sess.userauth_password("testuser", "testpass") {
-                        Ok(_) => {
-                            println!("✓ Authentication succeeded (unexpected!)");
-                        }
-                        Err(e) => {
-                            println!("  Authentication failed (expected): {}", e);
-                            println!("  ✓ Server is handling SSH protocol");
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("Note: SSH handshake failed: {}", e);
-                    println!("  Full SSH implementation is complex and may not be complete");
-                }
-            }
+            assert!(
+                sess.userauth_password("testuser", "testpass").is_err(),
+                "no handler grants this login, so auth must be refused — a server that \
+                 accepts an unhandled login is the fail-open defect, not a passing test"
+            );
+            assert!(
+                !sess.authenticated(),
+                "the session must not report itself authenticated after a refused login"
+            );
+            println!("libssh2 saw the login refused, which is the fail-closed answer");
         }
-        Err(e) => {
-            println!("Note: Connection failed: {}", e);
-        }
+        Err(e) => panic!("TCP connect to the SSH server failed: {e}"),
     }
 
     // Verify mock expectations

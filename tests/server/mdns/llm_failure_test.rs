@@ -14,7 +14,14 @@
 //! So the responder comes up advertising nothing. What must *not* happen, and used to, is
 //! swallowing the failure: `if let Ok(..)` discarded the error entirely, so the daemon ran and
 //! said nothing about why it had no services. This test asserts both halves - the responder
-//! starts, and the failure is reported at ERROR on the status channel.
+//! starts, and the failure is reported at ERROR on the status channel with
+//! `decision=fail_closed_llm_error`.
+//!
+//! The wire half of that pair cannot be a `recv()` that times out: this server binds no socket
+//! of its own (`mdns-sd` owns them and exposes none), and the only thing it could put on the
+//! link is an announcement. So "nothing reached the wire" is asserted as "no service was ever
+//! registered with the daemon" - if nothing is registered there is nothing to announce - which
+//! is the strongest statement available without a second host on the link.
 
 #![cfg(feature = "mdns")]
 
@@ -60,6 +67,33 @@ async fn test_mdns_stays_silent_but_reports_the_failure() -> E2EResult<()> {
     assert!(
         !server.output_contains("register_mdns_service").await,
         "no service may be registered when the handler never produced one"
+    );
+    assert!(
+        !server.output_contains("mDNS registered service").await,
+        "nothing may be announced on the LLM-failure path"
+    );
+
+    // The wire carries nothing on any of the three ways this server can end up advertising
+    // nothing, so the log is the only place they can be told apart. `fail_closed_llm_error`
+    // is the backend one; `model_silent` (handler ran, asked for no services) and
+    // `operator_config` (startup parameters, no model call) are the others.
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+    let lines = server.get_output().await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("decision=fail_closed_llm_error")),
+        "a backend failure must be logged with decision=fail_closed_llm_error — silence on \
+         the wire is correct here, so an untagged log line leaves an outage and a handler \
+         that chose to advertise nothing identical. Output was:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("decision=model_silent")),
+        "the handler never ran, so this is not the model's silence. Output was:\n{}",
+        lines.join("\n")
     );
 
     // Wait for the exchange the mocks describe, rather than trusting a fixed

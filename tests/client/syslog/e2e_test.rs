@@ -12,9 +12,7 @@ mod syslog_client_tests {
     /// Test Syslog client connection to a local syslog server (UDP)
     /// LLM calls: 2 (server startup, client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_syslog_client_udp_connect() -> E2EResult<()> {
         // Start a UDP server listening on an available port (acting as syslog receiver)
         let server_config = NetGetConfig::new(
@@ -67,9 +65,7 @@ mod syslog_client_tests {
     /// Test Syslog client connection to a local syslog server (TCP)
     /// LLM calls: 2 (server startup, client connection)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_syslog_client_tcp_connect() -> E2EResult<()> {
         // Start a TCP server listening on an available port (acting as syslog receiver)
         let server_config = NetGetConfig::new("Listen on port {AVAILABLE_PORT} via TCP. Accept connections and log all incoming syslog messages.");
@@ -120,9 +116,7 @@ mod syslog_client_tests {
     /// Test Syslog client can send custom messages via LLM prompts
     /// LLM calls: 1 (client startup)
     #[tokio::test]
-    #[ignore] // No .with_mock() configured: requires --use-ollama. Under default
-              // strict-mock CI mode the LLM call 500s immediately and the client
-              // never connects.
+    #[ignore = "No .with_mock() configured: requires --use-ollama; the LLM call is refused under strict-mock mode"]
     async fn test_syslog_client_custom_messages() -> E2EResult<()> {
         // Start a UDP server
         let server_config =

@@ -242,3 +242,27 @@ client. See `tests/server/kafka/CLAUDE.md`.
 - [kafka-protocol Rust Crate](https://docs.rs/kafka-protocol/) — `Cargo.toml` pins 0.14
 - [Kafka Error Codes](https://kafka.apache.org/protocol.html#protocol_error_codes)
 - Testing notes: `tests/server/kafka/CLAUDE.md`
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/kafka/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_REQUEST_READ_TIMEOUT` | 30s | Kafka is client-speaks-first with no broker greeting, and every real client opens with `ApiVersions` — `librdkafka`, the Java client and `kcat` all send it inside the connect path. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 600s | Not a guess: it is `connections.max.idle.ms`, the setting real Kafka ships with exactly this job at exactly this default. A producer between batches or a consumer between long polls is legitimately silent for minutes, and copying the broker's own number is the one choice no real client can be surprised by. |
+| `MAX_CONNECTIONS` | 256 | Each connection may buffer up to `MAX_REQUEST_BYTES` (100 MiB). Refusal: **a plain close**, which is what a real broker does. Every Kafka response is `(size)(correlation_id)(body)` and the correlation id belongs to the request; a refused peer has sent none. Brokers hitting `max.connections` close without a word for the same reason. |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. Both the size-prefix read and the announced-body read are bounded, so a peer that declares a request size and then stalls is closed too. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

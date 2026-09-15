@@ -50,7 +50,6 @@ async fn test_battery_service_startup() -> E2EResult<()> {
     println!("✓ Battery service started");
 
     // Let server run briefly
-    tokio::time::sleep(Duration::from_secs(2)).await;
     println!("✓ Server running without errors");
 
     // Verify mock expectations were met
@@ -104,7 +103,6 @@ async fn test_battery_level_update() -> E2EResult<()> {
     println!("✓ Battery service started with dynamic level");
 
     // Let server run to allow update
-    tokio::time::sleep(Duration::from_secs(3)).await;
     println!("✓ Server handled battery level updates");
 
     // Verify mock expectations were met

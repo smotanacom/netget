@@ -266,3 +266,43 @@ Other devices discover services by:
 - RFC 6763 - DNS-Based Service Discovery
 - mdns-sd documentation: https://docs.rs/mdns-sd
 - Apple Bonjour: https://developer.apple.com/bonjour/
+
+## Failure behaviour
+
+**mDNS is deliberately silent, and stays that way.** It is on the root `CLAUDE.md`
+deliberately-silent list and belongs there twice over. There is no peer waiting: the only LLM
+call this server makes is the `mdns_server_startup` event asking *which services to advertise*,
+not a reply to a querier. And the only thing mDNS lets a server say is an announcement — a
+positive assertion that a name maps to an address — which is multicast to the whole link and
+cached by every listener for its TTL. A fabricated PTR/SRV/A set on backend failure would
+advertise a service that does not exist to every machine on the subnet and keep it there after
+the backend recovered: the `udp` argument one step worse, because the damage outlives the
+outage and reaches hosts that never asked. There is no error frame to send instead.
+
+So the wire says nothing on **every** failure path, which is exactly why the log has to carry
+the distinction:
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Services came from `startup_params` (`services` / `service_type`) | those announcements | INFO `decision=operator_config` |
+| Handler produced `register_mdns_service` and the daemon accepted ≥1 | those announcements | INFO `decision=model_answer` |
+| Handler produced services and the daemon rejected **all** of them | **nothing** | ERROR `decision=fail_closed_bad_action` |
+| Handler ran and asked for no services | **nothing** | WARN `decision=model_silent` |
+| Backend failed (`call_llm` → `Err`) | **nothing** | ERROR `decision=fail_closed_llm_error category=overloaded\|unavailable` |
+
+`decision=operator_config` is an mDNS-specific token: the service list came from startup
+parameters and no model was ever asked, so none of the model-shaped tokens fit. It matters
+because "advertising nothing" is the shape of both a healthy configured server with a rejected
+service and an outage.
+
+There is no `decision=model_reject`, and that is a real gap rather than an omission: mDNS
+declares no refusal action, so a handler that deliberately wants to advertise nothing and a
+handler that had nothing to say produce the identical answer. Both log `model_silent`.
+
+`.connectionless()` is declared and correct — an mDNS responder answers a query and forgets
+the querier — and must not be removed; see the 10-second idle sweep note in the root
+`CLAUDE.md`.
+
+Covered by `tests/server/mdns/llm_failure_test.rs`, which asserts the tag *and* that nothing
+was registered (with nothing registered there is nothing to announce, which is the available
+stand-in for "no datagram left the host" on a protocol that binds no socket of its own).

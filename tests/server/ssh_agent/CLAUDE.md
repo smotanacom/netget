@@ -18,8 +18,8 @@ keys and performs signing operations for SSH clients.
 
 ### What Works
 
-- ✅ Unit tests for message parsing (5 tests in `test.rs`)
-- ✅ E2E tests with mocks (4 tests in `e2e_test.rs`)
+- ✅ Unit tests for message parsing (6 tests in `test.rs`)
+- ✅ E2E tests with mocks (5 tests in `e2e_test.rs`)
 - ✅ Unix socket connection handling
 - ✅ Mock LLM responses for all operations
 
@@ -189,7 +189,7 @@ including:
 
 ### Phase 1: Test Helper Updates (Required first)
 
-1. Add Unix socket support to `tests/helpers.rs`
+1. Add Unix socket support to `tests/helpers/mod.rs`
 2. Implement `{SOCKET_PATH}` placeholder
 3. Add socket file cleanup logic
 

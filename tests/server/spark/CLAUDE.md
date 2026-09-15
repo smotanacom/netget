@@ -35,3 +35,17 @@ Suite total ~8 LLM calls, under the ~10 budget. Localhost only; never contacts e
 ./cargo-isolated.sh test --no-default-features --features spark \
     --test server -- server::spark::e2e_test --test-threads=100
 ```
+
+## The `decision=` tag
+
+`llm_failure_test.rs` asserts more than the 5xx: it requires a log line naming
+`/api/v1/applications` and carrying `decision=fail_closed_`, and requires that **no** line
+carries `decision=model_`. The status alone cannot carry this, because `send_spark_error` lets
+the model choose a 500 or a 503 of its own — so without the tag a backend outage and a model
+that decided to answer 500 are the same event in the log.
+
+Spark's other two tagged outcomes are `decision=model_answer` / `decision=model_reject` (split
+on whether the model's chosen status is < 400) and `decision=model_silent` (the model answered
+with no `spark_response`). The two no-LLM paths, `/api/v1/version` and the 404, log
+`decision=static_answer` / `decision=unknown_endpoint` at DEBUG, so they stay in `netget.log`
+and off the status stream the harness reads.

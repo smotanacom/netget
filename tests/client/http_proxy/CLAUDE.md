@@ -42,7 +42,7 @@ behavior. Tests validate HTTP CONNECT tunneling and data transmission through pr
 ### Dependencies
 
 - NetGet binary compiled with `--features http_proxy`
-- Helper functions from `tests/helpers.rs`:
+- Helper functions from `tests/helpers/mod.rs`:
     - `start_netget_server()`: Spawn server instances
     - `start_netget_client()`: Spawn client instances
     - `NetGetConfig`: Configure test instances
@@ -197,4 +197,4 @@ RUST_LOG=debug ./cargo-isolated.sh test --no-default-features \
 
 - RFC 7231: HTTP CONNECT method
 - Squid proxy documentation
-- `tests/helpers.rs`: Test infrastructure
+- `tests/helpers/mod.rs`: Test infrastructure

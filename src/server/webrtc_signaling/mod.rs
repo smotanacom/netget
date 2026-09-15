@@ -496,7 +496,14 @@ impl WebRtcSignalingServer {
                                     .await
                                     {
                                         Ok(result) => {
-                                            if Self::apply_results(result, &out_tx, &status_tx) {
+                                            let subject = format!(
+                                                "WebRTC signaling peer '{}' \
+                                                 webrtc_signaling_peer_connected",
+                                                new_peer_id
+                                            );
+                                            if Self::apply_results(
+                                                result, &subject, &out_tx, &status_tx,
+                                            ) {
                                                 break;
                                             }
                                         }
@@ -508,10 +515,26 @@ impl WebRtcSignalingServer {
                                             // that wait ended at the peer's own timeout. Say so
                                             // in the protocol's own vocabulary instead - and
                                             // never invent the reply the model did not give.
+                                            //
+                                            // The tag is NOT `fail_closed_*`, and that is
+                                            // deliberate: registration completed and the
+                                            // `registered` frame went out *before* this call,
+                                            // so the peer keeps every capability it had. The
+                                            // backend failing denied it nothing. Calling that
+                                            // fail-closed would put a line that refused
+                                            // nothing in front of every
+                                            // `grep decision=fail_closed`, and would hide the
+                                            // real property: this peer was admitted without
+                                            // the model ever being consulted.
                                             Log::new(Some(&status_tx)).error(format!(
-                                                "WebRTC signaling peer '{}': LLM call failed \
-                                                 ({}) - sent error frame",
-                                                new_peer_id, e
+                                                "WebRTC signaling peer '{}' \
+                                                 webrtc_signaling_peer_connected \
+                                                 decision=llm_error_peer_admitted \
+                                                 category={}: LLM call failed ({}) - sent \
+                                                 error frame, registration stands",
+                                                new_peer_id,
+                                                Self::failure_category(&e),
+                                                e
                                             ));
                                             let _ = Self::reply(
                                                 &out_tx,
@@ -528,7 +551,15 @@ impl WebRtcSignalingServer {
                                     }
                                 }
                                 Err(e) => {
-                                    warn!("Failed to register peer {}: {}", new_peer_id, e);
+                                    // The protocol refused this registration — an empty or
+                                    // over-long id, a duplicate, or a full registry. No model
+                                    // was consulted, so this is neither a model decision nor a
+                                    // backend failure; `protocol_error` says which.
+                                    Log::new(Some(&status_tx)).warn(format!(
+                                        "WebRTC signaling refused registration of '{}' from {} \
+                                         decision=protocol_error: {}",
+                                        new_peer_id, remote_addr, e
+                                    ));
                                     let _ = Self::reply(
                                         &out_tx,
                                         &SignalingMessage::Error {
@@ -665,9 +696,15 @@ impl WebRtcSignalingServer {
                                     // suffer and could abort a negotiation that succeeded.
                                     // The operator is who needs to know, so say it loudly
                                     // there.
+                                    // `llm_error_notice_only`: nothing was pending on this
+                                    // call. The relay was decided in Rust and already
+                                    // reported to the sender, and the event is declared
+                                    // `.with_no_actions()`, so the failure refused nothing
+                                    // and withheld nothing the model could have sent.
                                     Log::new(Some(&status)).error(format!(
-                                        "WebRTC signaling {}: LLM call failed ({}) - message \
-                                         was already relayed, no frame sent",
+                                        "WebRTC signaling {} webrtc_signaling_message_received \
+                                         decision=llm_error_notice_only: LLM call failed ({}) - \
+                                         message was already relayed, no frame sent",
                                         observed, e
                                     ));
                                 }
@@ -720,8 +757,11 @@ impl WebRtcSignalingServer {
                 // vocabulary. `webrtc_signaling_peer_disconnected` is declared
                 // `.with_no_actions()` for the same reason. Log it loudly and carry on with
                 // the cleanup below - the connection must still be torn down.
+                // `llm_error_notice_only` for the same reason as the relay path: the socket is
+                // already gone, the event is `.with_no_actions()`, and nothing was refused.
                 Log::new(Some(&status_tx)).error(format!(
-                    "WebRTC signaling peer '{}': LLM call failed on disconnect ({}) - peer \
+                    "WebRTC signaling peer '{}' webrtc_signaling_peer_disconnected \
+                     decision=llm_error_notice_only: LLM call failed on disconnect ({}) - peer \
                      already gone, nothing sent",
                     pid, e
                 ));
@@ -741,6 +781,18 @@ impl WebRtcSignalingServer {
         let _ = writer.await;
 
         Ok(())
+    }
+
+    /// `"overloaded"` or `"unavailable"` for a backend failure.
+    ///
+    /// Signaling has one error frame and it carries no code, so the wire cannot tell a
+    /// saturated backend from a dead one. The log can, and this is where it does — the same
+    /// `category=` split `radius` uses next to its own decision token.
+    fn failure_category(e: &anyhow::Error) -> &'static str {
+        match crate::utils::wire_failure::WireFailure::classify(e) {
+            crate::utils::wire_failure::WireFailure::Overloaded => "overloaded",
+            crate::utils::wire_failure::WireFailure::Unavailable => "unavailable",
+        }
     }
 
     fn reply(out_tx: &mpsc::UnboundedSender<Message>, message: &SignalingMessage) -> Result<()> {
@@ -784,8 +836,12 @@ impl WebRtcSignalingServer {
     /// Execute whatever the LLM returned for a signaling event.
     ///
     /// Returns true if the connection should be closed.
+    ///
+    /// `subject` names the peer and event the answer belongs to, so the `decision=` line this
+    /// emits identifies a request rather than floating free.
     fn apply_results(
         result: crate::llm::actions::executor::ExecutionResult,
+        subject: &str,
         out_tx: &mpsc::UnboundedSender<Message>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> bool {
@@ -795,13 +851,17 @@ impl WebRtcSignalingServer {
         }
 
         let mut close = false;
+        let mut sent = 0usize;
+        let mut undecodable = 0usize;
         for protocol_result in result.protocol_results {
             match protocol_result {
                 crate::llm::ActionResult::Output(bytes) => match String::from_utf8(bytes) {
                     Ok(text) => {
                         let _ = out_tx.send(Message::Text(text));
+                        sent += 1;
                     }
                     Err(e) => {
+                        undecodable += 1;
                         error!("Signaling action produced non-UTF-8 output: {}", e);
                     }
                 },
@@ -809,6 +869,50 @@ impl WebRtcSignalingServer {
                 _ => {}
             }
         }
+
+        // Exactly one `decision=` line per answered event. Without it, a model that told this
+        // peer nothing and a model that could not be reached looked identical: neither put a
+        // frame on the wire, and neither said anything in the log.
+        if undecodable > 0 && sent == 0 && !close {
+            log.error(format!(
+                "{} decision=fail_closed_bad_action: the answer's output was not valid UTF-8, \
+                 so no signaling frame could be sent",
+                subject
+            ));
+        } else if close {
+            log.info(format!(
+                "{} decision=model_reject: the model disconnected the peer",
+                subject
+            ));
+        } else if sent > 0 {
+            log.info(format!(
+                "{} decision=model_answer: {} signaling frame(s) sent",
+                subject, sent
+            ));
+        } else if result.raw_actions.is_empty() {
+            log.warn(format!(
+                "{} decision=model_silent: no action, so nothing was sent to the peer",
+                subject
+            ));
+        } else if !result.failures.is_empty() {
+            log.error(format!(
+                "{} decision=fail_closed_bad_action: {}",
+                subject,
+                result
+                    .failures
+                    .iter()
+                    .map(|f| format!("{}: {}", f.action, f.error))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        } else {
+            // Actions ran and none of them addressed this peer — `show_message` and friends.
+            log.warn(format!(
+                "{} decision=model_silent: the answer produced no signaling frame",
+                subject
+            ));
+        }
+
         close
     }
 }

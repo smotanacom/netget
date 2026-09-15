@@ -168,3 +168,27 @@ unproven.
 e2e cases (`e2e_test.rs`, no longer `#[ignore]`d) plus a zero-LLM peer-injection
 case (`peer_inject_test.rs`) that asserts `send_to_peer` writes a success tuple to
 a raw socket, the counters move, and `close_connection` sends EOF.
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/svn/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_COMMAND_READ_TIMEOUT` | 30s | `svnserve` speaks first: the greeting goes out and a real `svn` client answers with its capabilities immediately — it has nothing to decide and nobody to ask. |
+| `IDLE_BETWEEN_COMMANDS_TIMEOUT` | 180s | ra_svn after the greeting is strictly request/response, so seconds of silence normally means the client is gone. The exception, and the reason this is minutes, is that `svn` prompts for credentials on the user's terminal *mid-session*: a human typing a password is a legitimate multi-minute pause with the connection live and nothing on the wire. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **ra_svn's own `( failure ( ( 210003 … ) ) )` tuple** — apr-err 210003, the code this file already uses for "at capacity" rather than "your request was wrong". A client reading it where it expected a greeting reports malformed data, which is a real limit of speaking before the greeting; what it buys is an operator, a packet capture and a `nc` session that can all see the reason in the bytes. |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

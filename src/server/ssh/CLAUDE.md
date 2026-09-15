@@ -6,31 +6,54 @@ SSH server built on russh, offering an interactive shell and a read-only SFTP su
 handler — script, static or LLM — decides who may log in, what the shell prints, and what the
 SFTP tree contains. Nothing is read from or written to the real filesystem.
 
-**Status**: Experimental
+**Status**: Beta
 **Port**: 22 (privileged — `privilege_requirement` is `PrivilegedPort(22)`)
 **Feature**: `ssh` (`russh`, `russh-keys`, `russh-sftp`, `ssh2` for testing)
 **Files**: `mod.rs` (accept loop, russh handler, shell), `sftp_handler.rs` (SFTP), `actions.rs`
 
-### Why Experimental, not Beta
+### Why Beta
 
 `Beta` means "human reviewed, **works against real clients**", evidenced by a test in which a
-third-party implementation completed a real exchange. There is no such test here.
+third-party implementation completed a real exchange. `test_sftp_basic_operations` is that
+test: **libssh2** — reached through the `ssh2` crate, which is a binding to the C library and
+shares no line of code with russh — completes the transport handshake, authenticates with a
+password, opens the SFTP subsystem, and does `opendir`/`readdir`, `open`+`read` and `lstat`,
+with the file's bytes and its declared size asserted exactly. It is not `#[ignore]`d and has no
+skip gate. `test_ssh_python_auth_script`, `test_ssh_script_fallback_to_llm` and all three
+`llm_failure_test.rs` cases drive libssh2 auth as well, on the granting and the fail-closed
+paths.
 
-`tests/server/ssh/` does now exist and is substantial — banner, version exchange, concurrent
-connections, script-vs-LLM routing, SFTP, and `llm_failure_test.rs` for the fail-closed paths —
-but every one of those drives the server through a bare `TcpStream`. The one third-party client
-that was tried, `ssh2`, does not complete a session: `test.rs` records that it "has
-timing/compatibility issues with russh server". So NetGet is still only checking NetGet.
+**russh still would not count**, and that part of the earlier reasoning stands: it is the
+library this server is built on, so using it as the peer is the circular case
+`tests/server/websocket/e2e_test.rs` describes.
 
-**russh would not close the gap either.** It is the library this server is built on, so using it
-as the peer is the circular case `tests/server/websocket/e2e_test.rs` describes — it would prove
-russh round-trips through itself. (The code briefly claimed `Beta` on exactly that reasoning,
-while its own `e2e_testing` field said "no automated test exists" three lines below. Both the
-rating and the contradiction are gone.)
+**Two tests in `test.rs` prove nothing on their own, and one of them was quoted as evidence for
+years.** `test_ssh_version_exchange` and `test_ssh_connection_attempt` wrap ssh2 in
+`match … { Ok => assert, Err => println! }`, so they pass whether or not the client succeeds.
+That is the same class as a skip-when-missing gate: a green test that asserts nothing. The
+"timing/compatibility issues with russh server" note that held this protocol at Experimental
+described *those* two, not `test_sftp_basic_operations`.
 
-Raise to `Beta` when a real SSH client — openssh's `ssh`/`sftp`, or a working `ssh2` — completes
-auth and a channel exchange in a test that is neither `#[ignore]`d nor skipped when the binary
-is absent.
+**What the earlier demotion got wrong is worth keeping.** This file and `actions.rs` both said
+libssh2 "does not complete a session", citing a comment in `tests/server/ssh/test.rs` about
+"timing/compatibility issues with russh server". That comment described a *test* bug — libssh2
+is blocking, and running it on the Tokio runtime that the in-process mock model also needs
+deadlocks the two — which was fixed by moving every libssh2 call onto `spawn_blocking`. The
+comment outlived the fix and was quoted twice as the reason for the rating. **Check what a
+test drives, not what the server links**: the demotion looked at russh in `src/` and never
+noticed `ssh2::Session` in `tests/`.
+
+### Still unproven
+
+- **openssh's own `ssh` and `sftp` binaries** have only ever been driven by hand. They are on
+  this machine and in CI, so an automated test is cheap — and they are the client most users
+  would point at this server, so until it exists Beta rests on libssh2 alone.
+- **An interactive shell through a third-party client.** The libssh2 tests cover exec and
+  SFTP; nothing drives a PTY session.
+
+What would settle the shell gap either way: openssh's `ssh`/`sftp`, or `ssh2` again, completing
+auth **and a shell/exec channel exchange** in a test that is neither `#[ignore]`d nor skipped
+when the binary is absent — the same shape `test_sftp_basic_operations` already has for SFTP.
 
 ### Fail-closed
 
@@ -182,16 +205,22 @@ invented by the handler and kept in its own memory (`set_memory` / `append_memor
 
 ## Testing
 
-**There is no E2E test.** Verify by hand:
+The suite is `tests/server/ssh/test.rs` (banner, version exchange, concurrent connects,
+script-vs-LLM auth routing, and one SFTP round trip) and `tests/server/ssh/llm_failure_test.rs`
+(the fail-closed paths: auth, shell command, exec). Nothing in either file is `#[ignore]`d.
+
+`test_sftp_basic_operations` is the one that uses a third-party client end to end: `ssh2`
+(libssh2 bindings) handshakes, authenticates with a password, opens the SFTP subsystem and
+completes `readdir` / `open` + `read` / `stat`, with unconditional assertions. The other ssh2
+tests are lower-level — `test_ssh_version_exchange` notes that ssh2 has timing and
+compatibility trouble against this russh server outside that path.
+
+Verify the interactive paths by hand, which no test covers:
 
 ```
 ssh -p 2222 -o StrictHostKeyChecking=no admin@localhost
 sftp -P 2222 -o StrictHostKeyChecking=no admin@localhost
 ```
-
-An automated test would need `tests/server/ssh/e2e_test.rs` with mocks covering `ssh_auth`,
-`ssh_banner`, `ssh_shell_command` and at least one `sftp_operation` round trip. That directory
-is outside this module's ownership.
 
 ## Example prompts
 

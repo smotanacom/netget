@@ -101,6 +101,56 @@ success-shaped empty result:
 HTTP status is always 200 — Snowflake reports application-level failures in the
 JSON `success` flag, not the HTTP status.
 
+## Failure behaviour
+
+Every reply this server sends is HTTP `200` — Snowflake reports application failures in the
+JSON `success` flag — so **the HTTP status carries no information at all**, and the
+`success:false` envelope a model chose via `snowflake_error` is byte-identical in shape to the
+one the server falls back to. The `decision=` token on the status stream and in `netget.log`
+is the only place those come apart.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Login — model returned `snowflake_login_success` with a non-empty `token` | `success:true` + session token | INFO `decision=model_answer` |
+| Login — model returned `snowflake_error` | `success:false` + the model's code/message | INFO `decision=model_reject` |
+| Login — `snowflake_login_success` with an empty `token` | `success:false`, code `390100` | ERROR `decision=fail_closed_bad_action` |
+| Login — no usable action | `success:false`, code `390100` | WARN `decision=model_silent` |
+| Login — `call_llm` failed | `success:false`, code `390100`, `WireFailure` category text | ERROR `decision=fail_closed_llm_error` / `..._llm_overloaded` |
+| Query — model returned `snowflake_query_response` | `success:true` + rowset | INFO `decision=model_answer` |
+| Query — model returned `snowflake_error` | `success:false` + the model's code | INFO `decision=model_reject` |
+| Query — no usable action | `success:false`, code `000603` | WARN `decision=model_silent` |
+| Query — `call_llm` failed | `success:false`, `000603` (or `000629` on overload) | ERROR `decision=fail_closed_llm_error` / `..._llm_overloaded` |
+| Session — model returned `snowflake_session_response` | `success:true` | INFO `decision=model_answer` |
+| Session — model returned `snowflake_error` | `success:false` | INFO `decision=model_reject` |
+| Session `token_renew` — no usable action | `success:false`, code `000603` | WARN `decision=model_silent` |
+| **Session `logout` — no usable action** | **`success:true`** | WARN `decision=default_logout_ack` |
+| Session — `call_llm` failed | `success:false`, code `000603` | ERROR `decision=fail_closed_llm_error` / `..._llm_overloaded` |
+| Unrouted path | `success:false`, code `390318`, no LLM call | DEBUG `decision=unknown_endpoint` |
+
+### `decision=default_logout_ack` — the one affirmative default, named as one
+
+`handle_session` answers `success:true` for a **logout** the model did not answer. That is an
+affirmative reply produced on a no-answer path, so tagging it `fail_closed_*` would be a lie:
+`grep decision=fail_closed` is how an operator finds requests that were refused, and this one
+was not. The token is deliberately its own word, at WARN, so it shows up when you look for it.
+
+Why it is nonetheless defensible: this server keeps **no session state**, so there is nothing a
+logout could fail to do and nothing the ack grants. A `token_renew` in the same position does
+fail closed, because its success would hand out a credential. If a session store is ever added,
+this arm becomes a real fail-open and must change with it.
+
+`decision=unknown_endpoint` is the other invented token: a 390318 decided by the router before
+any model call.
+
+### Authentication is not checked, and the log says so too
+
+Repeating the section above because it is the thing most likely to be misread from a
+`decision=model_answer` line: `has_auth_token` is `true` for **any** `Authorization: Snowflake
+Token="..."` header, including one this server never issued, and no signature is verified
+anywhere. A `decision=model_answer` on a query therefore records that the *model* chose to
+answer given a boolean — not that the requester was authenticated. The query log line carries
+`auth=<bool>` so the value the model was shown is visible next to its decision.
+
 ## Architecture
 
 - One hyper `service_fn` per connection (mirrors `oauth2`), routed by method+path.

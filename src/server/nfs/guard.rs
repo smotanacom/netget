@@ -53,7 +53,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex};
 
 use crate::logging::emit::Log;
 
@@ -76,7 +76,39 @@ pub const FRAGMENT_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Most connections screened at once. Each admitted record costs `nfsserve` up to
 /// [`MAX_RECORD_BYTES`], so this is what turns "bounded per connection" into "bounded".
-pub const MAX_CONCURRENT_CONNECTIONS: usize = 256;
+///
+/// This is where `crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS` came from: it was the
+/// only connection cap in the tree, and the only one anyone had argued for. It now *is* that
+/// constant, so the two can no longer drift apart.
+pub const MAX_CONCURRENT_CONNECTIONS: usize =
+    crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// How long to wait for a peer's first RPC record after it has connected.
+///
+/// ONC RPC over TCP is client-speaks-first: the record marker and the call are the first thing
+/// on the wire and the server says nothing before them. A real client sends NULL or MOUNT
+/// immediately. A peer that has connected and sent nothing has made no call at all, which is
+/// the state an unauthenticated flood lives in — and until now nothing bounded it, as
+/// `src/server/nfs/CLAUDE.md` said in as many words.
+const FIRST_RECORD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* record once one has been answered.
+///
+/// Fifteen minutes, and long on purpose: a mounted NFS filesystem with no I/O is genuinely
+/// silent for long stretches, and that is the normal state of a mount rather than a symptom.
+/// The Linux client reconnects its TCP transport transparently, so a reaped idle connection
+/// costs a mount nothing observable. Crucially this bound is **not** armed while the backend is
+/// answering — see `awaiting_reply` below, and note that in this server one `lookup` is one LLM
+/// round-trip, which may be parked for a human for minutes.
+const IDLE_BETWEEN_RECORDS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// A peer over [`MAX_CONCURRENT_CONNECTIONS`] gets a plain close.
+///
+/// Every refusal this screen can express is an accepted RPC reply carrying the *call's own*
+/// xid — that is what makes [`Refusal`] answerable in NFS's own vocabulary at all. A peer being
+/// turned away at accept has sent no call and therefore no xid, so there is nothing well-formed
+/// to write. The refusal is logged with `decision=fail_closed_connection_cap` instead.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
 
 /// Deepest path a MOUNT `dirpath` may have.
 ///
@@ -223,29 +255,28 @@ pub async fn serve_screened(
     server_id: crate::state::ServerId,
     status_tx: mpsc::UnboundedSender<String>,
 ) {
-    let slots = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+    // The hand-rolled semaphore this loop used to keep is now the shared helper every other
+    // accept loop in the tree calls, so the cap, the refusal and the log line are one
+    // implementation rather than this one plus thirty-one absences.
+    let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONCURRENT_CONNECTIONS);
     loop {
-        let (client, peer) = match listener.accept().await {
-            Ok(v) => v,
+        let (client, peer_addr, permit) = match crate::server::accept_bounded::accept_bounded(
+            &listener,
+            &limiter,
+            CONNECTION_CAP_REFUSAL,
+            "NFS",
+            Some(&status_tx),
+        )
+        .await
+        {
+            Ok(triple) => triple,
             Err(e) => {
                 Log::new(Some(&status_tx)).error(format!("NFS accept failed: {}", e));
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
         };
-
-        let permit = match Arc::clone(&slots).try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => {
-                Log::new(Some(&status_tx)).warn(format!(
-                    "NFS connection from {} refused decision=fail_closed_connection_cap \
-                     (limit {} concurrent)",
-                    peer, MAX_CONCURRENT_CONNECTIONS
-                ));
-                drop(client);
-                continue;
-            }
-        };
+        let peer = peer_addr;
 
         let status_tx = status_tx.clone();
         let handle = tokio::spawn(async move {
@@ -296,7 +327,17 @@ async fn screen_connection(
     // uses. The lock is held only for one `write_all`.
     let to_peer = Arc::new(Mutex::new(to_peer));
 
+    // True from the moment a record reaches the backend until the backend answers it.
+    //
+    // This is what keeps the idle bound below from evicting a live call. In this server one
+    // `lookup` is one LLM round-trip and may be parked for a human at the dashboard
+    // (`src/state/intercepts.rs`, 300s by default); throughout that the peer is silent because
+    // it is *waiting on us*, which is not the same thing as an idle connection, and closing it
+    // would be exactly the live-transfer eviction this project learned about from TFTP.
+    let awaiting_reply = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     let downstream_out = Arc::clone(&to_peer);
+    let downstream_awaiting = Arc::clone(&awaiting_reply);
     let downstream = tokio::spawn(async move {
         let mut buf = vec![0u8; RELAY_CHUNK_BYTES];
         loop {
@@ -307,6 +348,10 @@ async fn screen_connection(
                     if out.write_all(&buf[..n]).await.is_err() {
                         break;
                     }
+                    drop(out);
+                    // Answered: the peer now owes us the next record, so the idle bound means
+                    // something again.
+                    downstream_awaiting.store(false, std::sync::atomic::Ordering::SeqCst);
                 }
             }
         }
@@ -318,12 +363,40 @@ async fn screen_connection(
     let mut record_xid: u32 = 0;
     let mut buf = vec![0u8; RELAY_CHUNK_BYTES];
 
+    let mut seen_record = false;
+
     let outcome: Option<Refusal> = loop {
         let mut marker = [0u8; 4];
-        if from_peer.read_exact(&mut marker).await.is_err() {
-            // A closed or reset connection between records is ordinary.
-            break None;
+        // Bounded in time as well as in size. The deadline re-arms rather than closing while a
+        // reply is outstanding, so only genuine silence from the peer ends the connection.
+        let marker_bound = if seen_record {
+            IDLE_BETWEEN_RECORDS_TIMEOUT
+        } else {
+            FIRST_RECORD_READ_TIMEOUT
+        };
+        let marker_read = loop {
+            match tokio::time::timeout(marker_bound, from_peer.read_exact(&mut marker)).await {
+                Ok(read) => break Some(read),
+                Err(_) => {
+                    if awaiting_reply.load(std::sync::atomic::Ordering::SeqCst) {
+                        continue;
+                    }
+                    log.info(format!(
+                        "NFS peer {} sent nothing for {}s; closing idle connection",
+                        peer,
+                        marker_bound.as_secs()
+                    ));
+                    break None;
+                }
+            }
+        };
+        match marker_read {
+            Some(Ok(_)) => {}
+            // A closed or reset connection between records is ordinary; so is the idle close
+            // above, which has already logged its reason.
+            Some(Err(_)) | None => break None,
         }
+        seen_record = true;
         let marker = u32::from_be_bytes(marker);
 
         let at_start = screen.at_record_start();
@@ -349,6 +422,10 @@ async fn screen_connection(
             }
         };
 
+        // From here the peer is waiting on the backend, so the idle deadline above must not
+        // count the wait. Set before the write, so there is no window in which a reply could
+        // be in flight while the connection still looks idle.
+        awaiting_reply.store(true, std::sync::atomic::Ordering::SeqCst);
         if to_backend.write_all(&marker.to_be_bytes()).await.is_err() {
             break None;
         }

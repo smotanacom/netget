@@ -21,7 +21,7 @@ async fn test_backend_type() {
 }
 
 #[tokio::test]
-#[ignore] // Requires model file
+#[ignore = "Requires model file"]
 async fn test_embedded_backend() {
     use netget::llm::embedded_inference::EmbeddedLLMBackend;
 

@@ -119,6 +119,9 @@ impl Protocol for IsisProtocol {
         ProtocolMetadataV2::builder()
             .connectionless()
             .state(DevelopmentState::Experimental)
+            // Deliberately silent: An IS-IS PDU asserts adjacency and topology; a fabricated
+            // one is injected into a real routing domain.
+            .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::PacketCapture)
             .implementation("Layer 2 IS-IS with pcap (ISO/IEC 10589, RFC 1195)")
             .llm_control("Optional: whether to engage with an IS-IS speaker (answer a Hello, form an adjacency, act as a honeypot) is a policy decision. With no operator policy (no instruction, no handler) the server observes passively and does NOT respond, with no LLM round-trip per PDU. When the operator opts in, the LLM decides the Hello/LSP responses")

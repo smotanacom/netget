@@ -450,3 +450,27 @@ See `tests/server/torrent_peer/CLAUDE.md` for comprehensive testing documentatio
 - [BEP 10: Extension Protocol](http://www.bittorrent.org/beps/bep_0010.html)
 - [BitTorrent Peer Wire Protocol](https://wiki.theory.org/BitTorrentSpecification#Peer_wire_protocol_.28TCP.29)
 - [Piece Picking Algorithms](https://www.bittorrent.org/bittorrentecon.pdf)
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/torrent_peer/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `HANDSHAKE_READ_TIMEOUT` | 30s | BEP 3 has the initiating peer send its 68-byte handshake immediately — it is the first thing on the wire and nothing precedes it — so a peer that has connected and sent nothing is not mid-handshake, it is holding a socket. |
+| `IDLE_AFTER_HANDSHAKE_TIMEOUT` | 180s | The peer wire protocol's own answer: the keep-alive is a zero-length message sent roughly every two minutes precisely so an idle-but-live peer can be told from a dead one, and mainline clients drop a connection quiet for about that long. Three minutes gives a conforming peer a full missed keep-alive of slack. |
+| `MAX_CONNECTIONS` | 256 | Real swarms are far smaller — mainline clients cap global peers in the low hundreds. Refusal: **a plain close.** BEP 3 has no busy, error or free-text message of any kind, and the one refusal it does define (`CHOKE_FRAME`) is legal only *after* a handshake this peer has not sent. Any bytes here would be read as the first 5 of the 68 handshake bytes, so a client would report a malformed handshake rather than a full server — strictly worse than silence. |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

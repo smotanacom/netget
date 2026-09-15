@@ -84,10 +84,19 @@ impl PostgresqlServer {
         let task_registrar = app_state.clone();
 
         // Spawn the accept loop
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "PostgreSQL",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, addr, permit)) => {
                         console_debug!(status_tx, "PostgreSQL connection from {}", addr);
 
                         let connection_id =
@@ -102,7 +111,11 @@ impl PostgresqlServer {
                             server_id: server.server_id,
                             remote_addr: addr,
                             describe_cache: Arc::new(TokioMutex::new(Vec::new())),
+                            activity: Arc::new(
+                                crate::server::accept_bounded::ConnectionActivity::new(),
+                            ),
                         });
+                        let activity = Arc::clone(&handler_factory.activity);
 
                         // Track the connection
                         if let Some(server_id) = server.server_id {
@@ -134,6 +147,38 @@ impl PostgresqlServer {
                         let conn_server_id = server.server_id;
                         let conn_status_tx = status_tx.clone();
                         let conn_handle = tokio::spawn(async move {
+                            // Held for the life of the session, so the cap counts live
+                            // connections rather than accepts.
+                            let _permit = permit;
+
+                            // First-byte bound, enforced before pgwire sees the socket.
+                            //
+                            // `process_socket` takes a concrete `TcpStream` and owns every read
+                            // after that, so there is no reader of ours to wrap — but `peek`
+                            // waits for data *without consuming it*, so the StartupMessage is
+                            // still there for pgwire afterwards. That makes a real
+                            // "connected and said nothing" bound possible with no proxy and no
+                            // change to the crate's framing.
+                            match tokio::time::timeout(
+                                FIRST_BYTE_READ_TIMEOUT,
+                                stream.peek(&mut [0u8; 1]),
+                            )
+                            .await
+                            {
+                                Ok(Ok(0)) | Ok(Err(_)) => return,
+                                Ok(Ok(_)) => {}
+                                Err(_) => {
+                                    console_debug!(
+                                        conn_status_tx,
+                                        "PostgreSQL connection {} sent nothing for {}s; \
+                                         closing before startup",
+                                        connection_id,
+                                        FIRST_BYTE_READ_TIMEOUT.as_secs()
+                                    );
+                                    return;
+                                }
+                            }
+
                             // `process_socket` runs in a task of its own so a **panic** inside
                             // pgwire is contained rather than lost.
                             //
@@ -156,7 +201,37 @@ impl PostgresqlServer {
                             let inner = tokio::spawn(async move {
                                 process_socket(stream, None, handler_factory).await
                             });
-                            match inner.await {
+
+                            // Idle bound. pgwire's loop is not ours, so this watches the
+                            // handler's own `ConnectionActivity` instead — and that type
+                            // refuses to report a connection idle while work is in flight, so
+                            // a statement waiting on the model, or parked for a human at the
+                            // dashboard, can never be closed from under itself however long it
+                            // takes. Only genuine silence counts.
+                            //
+                            // The connection is dropped rather than sent a FATAL 57P05: pgwire
+                            // owns the socket and exposes no way to write into it from here.
+                            let abort_handle = inner.abort_handle();
+                            let watchdog_activity = Arc::clone(&activity);
+                            let watchdog_status = conn_status_tx.clone();
+                            let watchdog = tokio::spawn(async move {
+                                crate::server::accept_bounded::watch_idle(
+                                    watchdog_activity,
+                                    IDLE_SESSION_TIMEOUT,
+                                )
+                                .await;
+                                console_debug!(
+                                    watchdog_status,
+                                    "PostgreSQL connection {} idle for {}s; closing",
+                                    connection_id,
+                                    IDLE_SESSION_TIMEOUT.as_secs()
+                                );
+                                abort_handle.abort();
+                            });
+
+                            let joined = inner.await;
+                            watchdog.abort();
+                            match joined {
                                 Ok(Ok(())) => {}
                                 Ok(Err(e)) => {
                                     error!("PostgreSQL connection error: {:?}", e);
@@ -235,11 +310,15 @@ struct PostgresqlHandlerFactory {
     /// Shared between the simple and extended handlers so a Describe resolved by one is
     /// visible to the Execute served by the other.
     describe_cache: DescribeCache,
+    /// Read by the idle watchdog in the accept loop. pgwire owns the socket, so this is the
+    /// only view NetGet has of whether the connection is doing anything.
+    activity: Arc<crate::server::accept_bounded::ConnectionActivity>,
 }
 
 impl PostgresqlHandlerFactory {
     fn handler(&self) -> PostgresqlHandler {
         PostgresqlHandler {
+            activity: Arc::clone(&self.activity),
             connection_id: self.connection_id,
             llm_client: self.llm_client.clone(),
             app_state: self.app_state.clone(),
@@ -284,6 +363,8 @@ pub struct PostgresqlHandler {
     protocol: Arc<PostgresqlProtocol>,
     /// Describe -> Execute correlation for the extended query protocol
     describe_cache: DescribeCache,
+    /// See [`PostgresqlHandlerFactory::activity`].
+    activity: Arc<crate::server::accept_bounded::ConnectionActivity>,
 }
 
 /// The outcome of resolving one SQL statement through the LLM/handler pipeline.
@@ -316,6 +397,47 @@ struct PgColumn {
 
 /// Cap on described-but-not-executed statements held per connection.
 const MAX_PENDING_DESCRIBES: usize = 64;
+
+/// How long to wait for the peer's first byte after it connects.
+///
+/// PostgreSQL is client-speaks-first: the StartupMessage (or an SSLRequest) is the first thing
+/// on the wire and the server says nothing before it, so a peer that has connected and sent
+/// nothing has begun nothing. This is enforced with `TcpStream::peek` *before* the socket is
+/// handed to pgwire — peek waits for data without consuming it, so the startup packet pgwire
+/// then reads is untouched. Sixty seconds matches `pgwire`'s own internal `STARTUP_TIMEOUT`,
+/// which bounds the startup *exchange*; this bounds the silence before it begins, which pgwire
+/// does not.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a connection may do nothing at all once startup is over.
+///
+/// Real PostgreSQL's equivalent is `idle_session_timeout`, which ships disabled — so unlike
+/// Kafka there is no upstream default to copy, and the number has to be argued. Ten minutes,
+/// for the same reason MySQL's is: this server holds no session state a reconnect would lose
+/// (no tables, no temporary tables, no open transaction — the model answers every statement),
+/// so a pooled connection reaped here costs `tokio-postgres`, SQLAlchemy or pgbouncer one
+/// transparent reconnect. It is also far above the default 300s a `manual` rule may park a
+/// statement for, and — more importantly — a park cannot trip it at all, because
+/// [`ConnectionActivity`] counts work in flight and a busy connection is never idle.
+const IDLE_SESSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Concurrent connections this server admits.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// A v3 ErrorResponse carrying SQLSTATE **53300 `too_many_connections`** — the state real
+/// PostgreSQL uses for "sorry, too many clients already", and the one this file already maps
+/// backend overload onto, so a driver classifies both as transient and backs off rather than
+/// recording a permanent fault. Sending it before the StartupMessage is a small liberty (a real
+/// server refuses after reading startup), and libpq-family clients handle it: they write
+/// startup, then read, and an ErrorResponse is a legal thing to find there.
+///
+/// Laid out by hand: `'E'`, a 4-byte big-endian length covering itself and everything after
+/// it, then NUL-terminated fields `S`everity, `V` (non-localised severity), `C`ode and
+/// `M`essage, then a final NUL ending the field list. 4 + 7 + 7 + 7 + 22 + 1 = 48 = 0x30.
+const CONNECTION_CAP_REFUSAL: &[u8] =
+    b"E\x00\x00\x000SFATAL\x00VFATAL\x00C53300\x00Mtoo many connections\x00\x00";
 
 /// A connection-scoped cache shared by the simple and extended handlers.
 type DescribeCache = Arc<TokioMutex<Vec<(String, PgOutcome)>>>;
@@ -355,6 +477,11 @@ impl PostgresqlHandler {
     /// Run one statement through the handler pipeline and translate the resulting action into
     /// wire-level output. Returns `Err` for `postgresql_error_response` and for LLM failures.
     async fn resolve(&self, sql: &str) -> PgWireResult<PgOutcome> {
+        // Everything from here to the end of this call is the peer *waiting on us* — the LLM
+        // round-trip, and a `manual` rule parking the statement for a human. The idle watchdog
+        // must not count any of it, so the connection is marked busy for the whole of it and
+        // the guard's `Drop` clears the mark on every exit path, including the `?`-shaped ones.
+        let _busy = self.activity.busy();
         debug!("PostgreSQL query: {}", sql);
         let _ = self
             .status_tx

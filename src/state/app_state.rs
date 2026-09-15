@@ -763,6 +763,47 @@ impl AppState {
         tasks.push(handle);
     }
 
+    /// Spawn a task the server owns and register it, in one call.
+    ///
+    /// **Prefer this over `tokio::spawn` + `register_server_task` for per-connection tasks.**
+    /// A measurement on 15 September 2026 found 301 `tokio::spawn` calls across
+    /// `src/server/*/mod.rs` against 159 `register_server_task` calls, in 102 protocols — and
+    /// the unregistered ones are almost entirely the per-connection tasks, because the accept
+    /// loop is the handle a protocol remembers to register and the connection it just accepted
+    /// is the one it forgets. The consequence is the one the root `CLAUDE.md` records:
+    /// `stop_server` releases the listening socket and **in-flight connections keep running**,
+    /// still answering, still costing LLM budget, on a server the operator has stopped.
+    ///
+    /// Two properties make this safe to call per connection, both inherited from
+    /// [`Self::register_server_task`]: finished handles are pruned on every registration, so
+    /// the vector cannot grow without bound however many connections arrive; and a task
+    /// spawned against an already-removed server is aborted immediately rather than leaking
+    /// past its owner, which closes the accept-then-stop race.
+    ///
+    /// Returns an [`tokio::task::AbortHandle`] for the rare caller that needs to cancel the
+    /// task itself before the server stops; most callers discard it.
+    pub async fn spawn_server_task<F>(&self, id: ServerId, future: F) -> tokio::task::AbortHandle
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let handle = tokio::spawn(future);
+        let abort = handle.abort_handle();
+        self.register_server_task(id, handle).await;
+        abort
+    }
+
+    /// The client-side twin of [`Self::spawn_server_task`]. Same reasoning: a client that
+    /// spawns a task per request should not have to remember two calls.
+    pub async fn spawn_client_task<F>(&self, id: ClientId, future: F) -> tokio::task::AbortHandle
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let handle = tokio::spawn(future);
+        let abort = handle.abort_handle();
+        self.register_client_task(id, handle).await;
+        abort
+    }
+
     /// Register a handle to the *running* instance of a server, so protocol actions
     /// can reach its live state.
     ///

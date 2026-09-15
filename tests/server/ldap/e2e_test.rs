@@ -8,7 +8,6 @@ mod e2e_ldap {
     use crate::server::helpers::{start_netget_server, E2EResult, NetGetConfig};
     use ldap3::{LdapConnAsync, Scope, SearchEntry};
     use std::time::Duration;
-    use tokio::time::sleep;
 
     /// Test basic LDAP bind (authentication)
     #[tokio::test]
@@ -49,7 +48,7 @@ mod e2e_ldap {
         let server = start_netget_server(server_config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via LDAP (async)
         let ldap_url = format!("ldap://127.0.0.1:{}", server.port);
@@ -123,7 +122,7 @@ mod e2e_ldap {
         let server = start_netget_server(server_config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via LDAP (async)
         let ldap_url = format!("ldap://127.0.0.1:{}", server.port);
@@ -231,7 +230,7 @@ mod e2e_ldap {
         let server = start_netget_server(server_config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via LDAP (async)
         let ldap_url = format!("ldap://127.0.0.1:{}", server.port);
@@ -346,7 +345,7 @@ mod e2e_ldap {
         let server = start_netget_server(server_config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via LDAP (async)
         let ldap_url = format!("ldap://127.0.0.1:{}", server.port);
@@ -440,7 +439,7 @@ mod e2e_ldap {
         let server = start_netget_server(server_config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via LDAP (async)
         let ldap_url = format!("ldap://127.0.0.1:{}", server.port);
@@ -530,7 +529,7 @@ mod e2e_ldap {
         let server = start_netget_server(server_config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via LDAP (async)
         let ldap_url = format!("ldap://127.0.0.1:{}", server.port);
@@ -616,7 +615,7 @@ mod e2e_ldap {
         let server = start_netget_server(server_config).await?;
 
         // Wait for server to be ready
-        sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Connect via LDAP (async)
         let ldap_url = format!("ldap://127.0.0.1:{}", server.port);

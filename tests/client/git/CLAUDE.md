@@ -247,7 +247,7 @@ tempfile = "3.x"  # For temporary directories
 
 - [git2-rs Documentation](https://docs.rs/git2/)
 - [GitHub API Rate Limits](https://docs.github.com/en/rest/overview/resources-in-the-rest-api#rate-limiting)
-- [NetGet Test Infrastructure](../../../TEST_INFRASTRUCTURE_FIXES.md)
+- [NetGet Test Infrastructure](../../README.md)
 
 ## `command_channel_test.rs` — injected actions
 

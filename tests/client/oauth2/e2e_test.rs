@@ -61,7 +61,7 @@ async fn test_oauth2_client_initialization() {
 }
 
 #[tokio::test]
-#[ignore] // Requires Ollama to be running
+#[ignore = "Requires Ollama to be running"]
 async fn test_oauth2_password_flow() {
     // Skip if mcp feature (which provides axum) is not enabled
     #[cfg(not(feature = "mcp"))]
@@ -115,7 +115,7 @@ async fn test_oauth2_password_flow() {
 }
 
 #[tokio::test]
-#[ignore] // Requires Ollama to be running
+#[ignore = "Requires Ollama to be running"]
 async fn test_oauth2_client_credentials_flow() {
     #[cfg(not(feature = "mcp"))]
     {
@@ -170,7 +170,7 @@ async fn test_oauth2_client_credentials_flow() {
 }
 
 #[tokio::test]
-#[ignore] // Requires Ollama to be running
+#[ignore = "Requires Ollama to be running"]
 async fn test_oauth2_token_refresh() {
     #[cfg(not(feature = "mcp"))]
     {
@@ -226,7 +226,7 @@ async fn test_oauth2_token_refresh() {
 }
 
 #[tokio::test]
-#[ignore] // Requires Ollama to be running
+#[ignore = "Requires Ollama to be running"]
 async fn test_oauth2_error_handling() {
     #[cfg(not(feature = "mcp"))]
     {

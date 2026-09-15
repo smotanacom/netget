@@ -106,7 +106,6 @@ When receiving BOOTREQUEST:
     let mut client = start_netget_client(client_config).await?;
 
     // Give client time to connect and exchange data
-    tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Verify client output shows connection
     client.wait_for_any(&["connected"], 30).await;
@@ -177,7 +176,6 @@ async fn test_bootp_broadcast_discovery() -> E2EResult<()> {
     let mut client = start_netget_client(client_config).await?;
 
     // Give client time to start and send broadcast request
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Verify client started
     client.wait_for_any(&["BOOTP", "connected"], 30).await;
@@ -242,7 +240,6 @@ async fn test_bootp_no_server() -> E2EResult<()> {
     let mut client = start_netget_client(client_config).await?;
 
     // Give client time to start and send request (no reply expected)
-    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Verify client started
     client.wait_for_any(&["BOOTP", "connected"], 30).await;

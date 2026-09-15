@@ -226,7 +226,7 @@ Tests use `client.get_output().await` to inspect:
 
 ## References
 
-- Test helpers: `tests/helpers.rs`
+- Test helpers: `tests/helpers/mod.rs`
 - Implementation: `src/client/pypi/CLAUDE.md`
 - PyPI JSON API: https://warehouse.pypa.io/api-reference/json.html
 

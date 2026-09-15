@@ -141,7 +141,7 @@ async fn start_socks5_proxy_no_auth() -> u16 {
 }
 
 #[tokio::test]
-#[ignore] // Requires Ollama running
+#[ignore = "Requires Ollama running"]
 async fn test_socks5_client_no_auth_basic() {
     // Start echo server
     let echo_port = start_echo_server().await;
@@ -213,7 +213,7 @@ async fn test_socks5_client_no_auth_basic() {
 }
 
 #[tokio::test]
-#[ignore] // Requires Ollama running
+#[ignore = "Requires Ollama running"]
 async fn test_socks5_client_connection_failure() {
     // Don't start proxy server - test connection failure
 
@@ -268,7 +268,7 @@ async fn test_socks5_client_connection_failure() {
 }
 
 #[tokio::test]
-#[ignore] // Requires Ollama running
+#[ignore = "Requires Ollama running"]
 async fn test_socks5_client_missing_target_addr() {
     let app_state = Arc::new(AppState::new());
     let (status_tx, _status_rx) = mpsc::unbounded_channel();

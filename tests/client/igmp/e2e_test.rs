@@ -71,7 +71,6 @@ mod igmp_client_tests {
         let client = start_netget_client(client_config).await?;
 
         // Give client time to start and join the group
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client shows it's ready
         client.wait_for_any(&["IGMP"], 30).await;
@@ -92,7 +91,6 @@ mod igmp_client_tests {
         println!("✅ Sent multicast packet to {}", dest);
 
         // Give client time to receive and process
-        tokio::time::sleep(Duration::from_secs(1)).await;
 
         // Verify mock expectations were met
         // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -153,7 +151,7 @@ mod igmp_client_tests {
         let client = start_netget_client(client_config).await?;
 
         // Give client time to process
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        client.wait_for_mocks(30).await;
 
         // Verify client processed the instructions
         assert_eq!(client.protocol, "igmp", "Client should be IGMP protocol");

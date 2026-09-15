@@ -1295,6 +1295,9 @@ impl Protocol for OspfProtocol {
 
         ProtocolMetadataV2::builder()
                 .state(DevelopmentState::Experimental)
+                // Deliberately silent: An OSPF Hello or LSA asserts adjacency and link state;
+                // there is no error packet in the protocol.
+                .deliberately_silent()
                 // Raw socket on IP protocol 89 - CAP_NET_RAW is sufficient, full root is not
                 // required, so declaring Root would refuse to start on a capability-only process.
                 .privilege_requirement(PrivilegeRequirement::RawSockets)

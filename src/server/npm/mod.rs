@@ -239,6 +239,12 @@ async fn handle_npm_request_inner(
 
     // Only handle GET requests
     if method != Method::GET {
+        // Refused by this server before any model call: no event is raised, so this is
+        // neither the model's answer nor a backend failure and carries its own token.
+        Log::new(Some(&status_tx)).warn(format!(
+            "NPM {} {} decision=protocol_error (only GET is served)",
+            method, path
+        ));
         let response = json!({
             "error": "Method not allowed"
         });
@@ -282,7 +288,13 @@ async fn handle_npm_request_inner(
 
     // Verify server exists
     if app_state.get_instruction(server_id).await.is_none() {
-        error!("Server {} not found", server_id);
+        // Nothing to ask: the server row is gone, so the request is failed rather than
+        // answered from a default. `fail_closed_server_missing` is npm-specific because it
+        // is not a model outcome at all — it is netget's own state having disappeared.
+        Log::new(Some(&status_tx)).error(format!(
+            "NPM {} {} decision=fail_closed_server_missing (server {} not found)",
+            method, path, server_id
+        ));
         let response = json!({
             "error": "Server not found"
         });
@@ -300,7 +312,10 @@ async fn handle_npm_request_inner(
         "NPM_LIST_REQUEST" => &actions::NPM_LIST_REQUEST,
         "NPM_SEARCH_REQUEST" => &actions::NPM_SEARCH_REQUEST,
         _ => {
-            error!("Unknown NPM event type: {}", event_type);
+            error!(
+                "Unknown NPM event type: {} decision=protocol_error",
+                event_type
+            );
             let error_response = json!({
                 "error": format!("Internal error: unknown event type '{}'", event_type)
             });
@@ -342,10 +357,50 @@ async fn handle_npm_request_inner(
             // `for` loop with an unconditional `return` inside it, so it examined only
             // the first result and returned a 500 if that happened to be something
             // like `show_message`. It also tripped clippy's `never_loop`.
+            let failures = execution_result.failures.len();
             for result in execution_result.protocol_results {
                 if let Some(response) = process_npm_action_result(result, &status_tx).await {
+                    // `npm_error` is the model deliberately refusing this package — a real
+                    // answer, and a different thing from netget having failed to get one.
+                    // Anything 2xx/3xx is the model having answered.
+                    let decision = if response.status().is_client_error()
+                        || response.status().is_server_error()
+                    {
+                        "model_reject"
+                    } else {
+                        "model_answer"
+                    };
+                    Log::new(Some(&status_tx)).info(format!(
+                        "NPM {} {} -> {} decision={}",
+                        method,
+                        path,
+                        response.status().as_u16(),
+                        decision
+                    ));
                     return Ok(response);
                 }
+            }
+
+            // Nothing usable came back. npm acts on a 200 — it unpacks whatever body it is
+            // given — so a synthesised or empty packument here would be worse than an error:
+            // this path must never produce one. The model answering with nothing and the
+            // model answering with something the executor refused end in the same 500, so
+            // the token is the only place they differ.
+            let msg = format!(
+                "NPM {} {} -> 500 decision={} ({} failed action(s))",
+                method,
+                path,
+                if failures == 0 {
+                    "model_silent"
+                } else {
+                    "fail_closed_bad_action"
+                },
+                failures
+            );
+            if failures == 0 {
+                Log::new(Some(&status_tx)).warn(msg);
+            } else {
+                Log::new(Some(&status_tx)).error(msg);
             }
 
             // No NPM actions found, return error
@@ -361,9 +416,23 @@ async fn handle_npm_request_inner(
         Err(e) => {
             // Non-fatal: a wire fallback (JSON error response) is still delivered and the
             // HTTP connection continues.
-            Log::new(Some(&status_tx)).warn(format!("NPM LLM call failed: {}", e));
+            // A 500 and never a 200: npm treats a 200 as a real packument or tarball and
+            // acts on it, so a backend outage must not be able to synthesise one. The peer
+            // gets the category; the error goes only to the log, next to the token.
+            let failure = crate::utils::WireFailure::classify(&e);
+            Log::new(Some(&status_tx)).error(format!(
+                "NPM {} {} -> 500 decision={}: {}",
+                method,
+                path,
+                if failure.is_overloaded() {
+                    "fail_closed_llm_overloaded"
+                } else {
+                    "fail_closed_llm_error"
+                },
+                e
+            ));
             let error_response = json!({
-                "error": crate::utils::WireFailure::classify(&e).text()
+                "error": failure.text()
             });
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -388,7 +457,10 @@ fn npm_server_error(
     status_tx: &mpsc::UnboundedSender<String>,
     reason: &str,
 ) -> Response<Full<Bytes>> {
-    Log::new(Some(status_tx)).error(format!("NPM: could not build a response — {}", reason));
+    Log::new(Some(status_tx)).error(format!(
+        "NPM -> 500 decision=fail_closed_bad_action: could not build a response — {}",
+        reason
+    ));
     Response::builder()
         .status(StatusCode::INTERNAL_SERVER_ERROR)
         .header("Content-Type", "application/json")
