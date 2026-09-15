@@ -1166,6 +1166,10 @@ sha1 = "0.10"  # For info_hash calculation
 feed-rs = "2"
 async-nats = "0.50.0"
 async-stomp = "0.6.3"
+# Property-based round-trip tests for the hand-written codecs (tests/codec_property_test.rs).
+# `std` only: no forking, no persistence file, so a failing case is reported by the test
+# binary rather than written into the source tree.
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
 
 [build-dependencies]
 # Protocol buffer compiler for etcd gRPC service
