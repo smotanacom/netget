@@ -96,6 +96,12 @@ fn idle_timeout_for(session: &ZookeeperSession) -> std::time::Duration {
 }
 use tracing::{debug, error, info, trace, warn};
 
+/// ZooKeeper's `SystemError` (-1): "this did not work", as the protocol defines it.
+///
+/// Used wherever a reply's `error_code` is absent. Code 0 is `Ok`, so defaulting to 0 tells a
+/// client that a create or a setData it never confirmed actually happened.
+const ZK_SYSTEM_ERROR: i64 = -1;
+
 /// ZooKeeper server implementation
 pub struct ZookeeperServer {
     llm_client: OllamaClient,
@@ -683,8 +689,17 @@ impl ZookeeperServer {
                                 // rather than 0: xid 0 is never a valid reply to a real
                                 // request (negative xids are reserved for pings and watch
                                 // notifications) and leaves the client waiting forever.
-                                let error_code =
-                                    data.get("error_code").and_then(|v| v.as_i64()).unwrap_or(0);
+                                // ZooKeeper error code 0 is `Ok`. Defaulting to it means a
+                                // model that produced a reply without deciding an outcome
+                                // tells the client the operation succeeded - and for a
+                                // create or a setData, the client then proceeds as though a
+                                // znode exists. -1 is `SystemError`, the code the protocol
+                                // defines for "this did not work", which is the honest
+                                // answer for a reply nobody finished describing.
+                                let error_code = data
+                                    .get("error_code")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(ZK_SYSTEM_ERROR);
                                 let response = Self::custom_reply_body(&data, request_info.xid);
                                 let sent = Self::write_frame(
                                     write_half,
@@ -799,7 +814,13 @@ impl ZookeeperServer {
             .map(|v| v as i32)
             .unwrap_or(default_xid);
         let zxid = data.get("zxid").and_then(|v| v.as_i64()).unwrap_or(0);
-        let error_code = data.get("error_code").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        // Same reasoning as the reply path above: absent means failure, not success. The cast
+        // is range-checked too - an out-of-range code narrowed by `as i32` could land on 0.
+        let error_code = data
+            .get("error_code")
+            .and_then(|v| v.as_i64())
+            .and_then(|v| i32::try_from(v).ok())
+            .unwrap_or(ZK_SYSTEM_ERROR as i32);
         let body = data
             .get("body_hex")
             .and_then(|v| v.as_str())

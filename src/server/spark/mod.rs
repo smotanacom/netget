@@ -26,7 +26,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::sync::mpsc;
-use tracing::{error, trace};
+use tracing::{error, trace, warn};
 
 use crate::llm::ollama_client::OllamaClient;
 use crate::llm::ActionResult;
@@ -288,8 +288,29 @@ async fn handle_spark_request_inner(
             for result in execution_result.protocol_results {
                 if let ActionResult::Custom { name, data } = result {
                     if name == "spark_response" {
-                        let status =
-                            data.get("status").and_then(|v| v.as_u64()).unwrap_or(200) as u16;
+                        // Two defects in one expression, and they compound. `unwrap_or(200)`
+                        // makes an omitted status a success, so a model that produced a
+                        // `spark_response` without deciding one tells the client the job
+                        // succeeded. And `as u16` narrows without a range check, so
+                        // `65736 as u16 == 200` turns a nonsense status into that same
+                        // success - the LDAP `result_code as u8` shape.
+                        //
+                        // 500 is the honest default: a response the model did not finish
+                        // describing is a server-side failure, not an "OK". Out-of-range is
+                        // logged and refused rather than truncated, because truncation turns
+                        // an obvious error into a believable answer.
+                        let status = match data.get("status").and_then(|v| v.as_u64()) {
+                            Some(raw) => u16::try_from(raw)
+                                .ok()
+                                .filter(|s| (100..=599).contains(s))
+                                .unwrap_or_else(|| {
+                                    warn!(
+                                        "Spark: ignoring out-of-range status {raw},                                          answering 500"
+                                    );
+                                    500
+                                }),
+                            None => 500,
+                        };
                         let body = data
                             .get("body")
                             .and_then(|v| v.as_str())

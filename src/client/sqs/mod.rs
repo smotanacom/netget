@@ -25,6 +25,28 @@ use crate::state::client_handles::{ClientCommand, ClientSendOutcome};
 use crate::state::{AccessLogOwner, ClientId, ClientStatus};
 use crate::utils::truncate::truncate_for_log;
 
+/// Turn the address the operator actually named into an endpoint the AWS SDK will use.
+///
+/// Without this, an `SqsClient` whose `remote_addr` is set and whose `endpoint_url` startup
+/// parameter is not lets `aws_sdk_sqs` resolve its own default — `https://sqs.<region>.amazonaws.com`
+/// — and sign the request with whatever ambient credentials the machine has. A client the
+/// operator pointed at localhost then issued **real queue operations against real AWS**.
+///
+/// That is not hypothetical: it is exactly the DynamoDB defect this repository already fixed,
+/// in the next AWS client along. `tests/vendor_default_fallback_test.rs` is the ratchet that
+/// found it, and exists so there is not a third.
+fn endpoint_url_from_remote_addr(remote_addr: &str) -> Option<String> {
+    let trimmed = remote_addr.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("http://{trimmed}"))
+    }
+}
+
 /// SQS client that connects to an AWS SQS queue
 pub struct SqsClient;
 
@@ -42,7 +64,7 @@ const MAX_FOLLOWUP_DEPTH: u8 = 4;
 impl SqsClient {
     /// Connect to an SQS queue with integrated LLM actions
     pub async fn connect_with_llm_actions(
-        _remote_addr: String,
+        remote_addr: String,
         llm_client: OllamaClient,
         app_state: Arc<AppState>,
         status_tx: mpsc::UnboundedSender<String>,
@@ -67,6 +89,10 @@ impl SqsClient {
             .map(|p| p.get_optional_string("endpoint_url"))
             .transpose()?
             .flatten();
+
+        // An explicit `endpoint_url` wins; otherwise the address the operator named decides.
+        // The parameter used to be `_remote_addr` and was read nowhere, so neither did.
+        let endpoint_url = endpoint_url.or_else(|| endpoint_url_from_remote_addr(&remote_addr));
 
         let access_key_id = startup_params
             .as_ref()

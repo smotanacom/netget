@@ -86,6 +86,12 @@ use std::path::{Path, PathBuf};
 ///
 /// **`zookeeper` `error_code` → `0`** (two sites). ZooKeeper `Ok` is 0, and `mod.rs` computes
 /// `is_error` from it, so an omitted error code turns a refusal into a successful reply.
+// Fixed 15 Sep 2026 and removed from this list rather than re-pointed at their new lines:
+// `spark`'s `status` (which was also an unchecked `as u16`, so 65736 became 200) and
+// `zookeeper`'s two `error_code` sites now default to failure - 500 and `SystemError` (-1) -
+// because a reply the model did not finish describing is not a success. They were caught by
+// this ratchet firing on merged code whose lines had shifted, which is the shrink-only half
+// doing its job in both directions at once.
 const AFFIRMATIVE_DEFAULT_BASELINE: &[&str] = &[
     "server:couchdb:mod.rs:341:status=200",
     "server:dynamo:mod.rs:316:status=200",
@@ -101,11 +107,8 @@ const AFFIRMATIVE_DEFAULT_BASELINE: &[&str] = &[
     "server:mqtt:actions.rs:229:return_code=0",
     "server:s3:actions.rs:609:status_code=200",
     "server:s3:mod.rs:627:status_code=200",
-    "server:spark:mod.rs:282:status=200",
     "server:sqs:mod.rs:303:status=200",
     "server:yarn:mod.rs:342:status=200",
-    "server:zookeeper:mod.rs:592:error_code=0",
-    "server:zookeeper:mod.rs:707:error_code=0",
 ];
 
 /// Key-name segments that mean "this field *is* the verdict".

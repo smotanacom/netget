@@ -76,8 +76,13 @@ use std::path::{Path, PathBuf};
 /// fix that landed earlier — but an empty target still reaches the real service. `openai` faced
 /// the identical choice and took the other exit, refusing with a message naming both the
 /// vendor URL and a localhost example; that is the shape to copy if these are ever changed.
+// `A:sqs:target dropped` was fixed on 15 Sep 2026 rather than re-baselined. It was the
+// DynamoDB defect verbatim, in the next AWS client along: `_remote_addr` was read nowhere, so
+// without an explicit `endpoint_url` the SDK resolved `https://sqs.<region>.amazonaws.com` and
+// signed with whatever ambient credentials the machine had - a client the operator pointed at
+// localhost issuing real queue operations against real AWS. This ratchet is the reason there
+// will not be a third.
 const VENDOR_FALLBACK_BASELINE: &[&str] = &[
-    "A:sqs:target dropped",
     "B:npm:registry.npmjs.org",
     "B:pypi:pypi.org",
 ];
