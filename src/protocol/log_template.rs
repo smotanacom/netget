@@ -145,7 +145,22 @@ fn render_template(template: &str, data: &Value) -> String {
         let full_match = &cap[0];
         let placeholder = &cap[1];
 
-        let replacement = render_placeholder(placeholder, data);
+        // The template is written by the protocol and is trusted. The *value* substituted into
+        // it is not: it comes from the model's action or from the wire, and this renderer is
+        // what puts it on a log line.
+        //
+        // A control character in it forges a log entry. `\r\nERROR forged` turns one line into
+        // two, and the second is indistinguishable from something NetGet wrote — which is the
+        // whole point of impersonating a device. LLDP, CDP and HSRP each fixed this locally in
+        // their own fields; this is the one place that covers all 140 servers, including the
+        // ones nobody has looked at yet.
+        //
+        // `line_field` substitutes a space rather than deleting, for the reason
+        // `utils::sanitize` documents: deleting joins the two sides into one word, which reads
+        // as a single legitimate value and is its own small lie. The JSON placeholder forms
+        // escape control characters already, so this is a no-op for them.
+        let replacement =
+            crate::utils::sanitize::line_field(&render_placeholder(placeholder, data));
         result = result.replace(full_match, &replacement);
     }
 
