@@ -67,6 +67,18 @@ async fn test_stun_answers_static_response_when_llm_fails() -> E2EResult<()> {
              exact defect this test exists to catch"
         })??;
 
+    // The pcap oracle. Wireshark's `stun` dissector checks the two things this file's
+    // hand-indexed assertions cannot: that the 16-bit Message Length equals the bytes
+    // that follow the header, and that each attribute is padded to a 4-byte boundary.
+    // Attribute padding is the classic STUN encoder bug — XOR-MAPPED-ADDRESS for IPv4
+    // happens to be a multiple of four, so it hides until the first odd-length
+    // attribute — and this reply is built on the fail-closed path, with no model
+    // involved and nothing else reading it.
+    crate::helpers::pcap_oracle::PcapOracle::udp("stun")
+        .to_server(&request)
+        .from_server(&buf[..n])
+        .assert_clean();
+
     assert!(n >= 20, "response shorter than a STUN header: {n} bytes");
 
     let message_type = u16::from_be_bytes([buf[0], buf[1]]);

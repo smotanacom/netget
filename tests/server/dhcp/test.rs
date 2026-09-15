@@ -225,6 +225,20 @@ async fn exchange(
         .unwrap_or_else(|_| panic!("no reply to {} within 10s", what))
         .unwrap_or_else(|e| panic!("socket error awaiting reply to {}: {}", what, e));
 
+    // The pcap oracle. `src/server/dhcp/CLAUDE.md` records that no real DHCP client
+    // can be pointed at this server — dhclient and ipconfig bind UDP/68, need root and
+    // cannot target an ephemeral loopback port — so the only independent reading of
+    // RFC 2131 in this suite is `DhcpMessage::decode` below, which is an in-test
+    // decoder written by the same hand as the test. Wireshark's `dhcp` dissector is
+    // the genuinely independent one: it checks the magic cookie, walks the option list
+    // by code-and-length to the End option, and reports an option whose length runs
+    // past the datagram. That is the closest this protocol can get to a third-party
+    // peer, and it costs a line.
+    crate::helpers::pcap_oracle::PcapOracle::udp("dhcp")
+        .to_server(packet)
+        .from_server(&buffer[..n])
+        .assert_clean();
+
     DhcpMessage::decode(&buffer[..n])
         .unwrap_or_else(|e| panic!("reply to {} is not a valid DHCP message: {}", what, e))
 }

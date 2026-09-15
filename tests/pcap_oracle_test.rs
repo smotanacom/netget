@@ -26,7 +26,7 @@ use pcap_oracle::PcapOracle;
 /// by field, which is the only way a hand-written packet stays reviewable.
 fn h(s: &str) -> Vec<u8> {
     let clean: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    assert!(clean.len() % 2 == 0, "odd-length hex literal");
+    assert!(clean.len().is_multiple_of(2), "odd-length hex literal");
     (0..clean.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&clean[i..i + 2], 16).expect("hex"))
@@ -161,7 +161,9 @@ fn lldp_frame() -> Vec<u8> {
 
 #[test]
 fn a_well_formed_lldp_frame_passes() {
-    PcapOracle::ethernet("lldp").frame(&lldp_frame()).assert_clean();
+    PcapOracle::ethernet("lldp")
+        .frame(&lldp_frame())
+        .assert_clean();
 }
 
 #[test]
@@ -177,10 +179,6 @@ fn a_truncated_lldp_frame_is_rejected() {
     );
 }
 
-/// An 802.3 frame whose length field holds an EtherType instead of a length —
-/// the exact shape Programme 2 found in CDP by reading bytes by hand. tshark
-/// raises **no expert info**; it simply hands the payload to the generic `data`
-/// dissector. Without the `frame.protocols` check the oracle would pass this.
 /// The 16-bit one's-complement checksum CDP shares with IP. Computed here rather
 /// than pasted as a literal so the frame below stays correct when it is edited —
 /// a hardcoded checksum is the `Example drifts from const` defect in miniature.
@@ -209,6 +207,10 @@ fn cdp_payload() -> Vec<u8> {
     payload
 }
 
+/// An 802.3 frame whose length field holds an EtherType instead of a length —
+/// the exact shape Programme 2 found in CDP by reading bytes by hand. tshark
+/// raises **no expert info**; it simply hands the payload to the generic `data`
+/// dissector. Without the `frame.protocols` check the oracle would pass this.
 #[test]
 fn a_cdp_frame_with_an_ethertype_where_the_length_belongs_is_rejected() {
     let payload = cdp_payload();
@@ -327,12 +329,53 @@ fn an_allowed_expert_message_is_demoted() {
     // The malformation is forgiven, but the dissector-fallback check is a separate
     // mechanism and is unaffected — which is the point of having two.
     assert!(
-        !report
-            .failures
-            .iter()
-            .any(|f| f.contains("Expert Info")),
+        !report.failures.iter().any(|f| f.contains("Expert Info")),
         "an allowed message must not appear as a failure: {:?}",
         report.failures
+    );
+}
+
+#[test]
+fn peer_input_is_context_forgives_the_request_and_still_judges_the_reply() {
+    // The escape hatch for tunnelling protocols, where tshark recurses into a payload
+    // the *test* invented. It must forgive the request and change nothing about the
+    // reply, or it is a way to switch the oracle off one call site at a time.
+    let clean = PcapOracle::udp("dns")
+        .peer_input_is_context()
+        .to_server(&dns_query()[..6]) // a truncated query: judged, this would fail
+        .from_server(&dns_reply())
+        .check()
+        .expect("tshark must run");
+    assert!(
+        clean.is_clean(),
+        "a malformed request must be forgiven when it is declared context: {clean:#?}"
+    );
+
+    let still_fails = PcapOracle::udp("dns")
+        .peer_input_is_context()
+        .to_server(&dns_query())
+        .from_server(&dns_reply()[..20])
+        .check()
+        .expect("tshark must run");
+    assert!(
+        !still_fails.is_clean(),
+        "the reply is what the oracle is for and must still be judged: {still_fails:#?}"
+    );
+}
+
+#[test]
+fn framing_a_protocol_the_wrong_way_is_refused_rather_than_answered() {
+    // `PcapOracle::tcp("ntp")` would build a TCP stream, tshark would decline to apply
+    // the NTP dissector to it, and the oracle would report a framing defect in a
+    // server that has none. That is worse than no check, so it is an error rather
+    // than a verdict.
+    let err = PcapOracle::tcp("ntp")
+        .from_server(&[0u8; 48])
+        .check()
+        .expect_err("framing NTP as TCP must be refused");
+    assert!(
+        err.contains("wireshark.rs"),
+        "the refusal must point at the table that decides this, got: {err}"
     );
 }
 

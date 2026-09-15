@@ -134,9 +134,7 @@ async fn test_http_failure_response_is_well_formed_on_the_wire() -> E2EResult<()
     let mut response = Vec::new();
     tokio::time::timeout(Duration::from_secs(20), stream.read_to_end(&mut response))
         .await
-        .map_err(|_| {
-            "the HTTP server neither answered nor closed within 20s on LLM failure"
-        })??;
+        .map_err(|_| "the HTTP server neither answered nor closed within 20s on LLM failure")??;
 
     assert!(
         response.starts_with(b"HTTP/1.1 500 "),

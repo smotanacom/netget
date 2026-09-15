@@ -117,6 +117,18 @@ mod e2e_bgp {
         if length > 19 {
             stream.read_exact(&mut full[19..]).await?;
         }
+
+        // The pcap oracle. This function checks the marker and that the length is in
+        // range; nothing here checks that the *body* agrees with the length, and the
+        // suite's assertions read individual fields by offset. Wireshark's `bgp`
+        // dissector walks an OPEN's optional-parameter list and an UPDATE's
+        // withdrawn-routes, path-attribute and NLRI lengths — three nested length
+        // fields that must sum to the message length exactly, which is where a
+        // hand-rolled encoder goes wrong.
+        crate::helpers::pcap_oracle::PcapOracle::tcp("bgp")
+            .from_server(&full)
+            .assert_clean();
+
         Ok((header[18], full))
     }
 

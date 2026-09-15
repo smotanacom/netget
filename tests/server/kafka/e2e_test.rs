@@ -106,6 +106,25 @@ async fn roundtrip<B: Encodable, R: Decodable>(
     let request = encode_request(api_key, api_version, correlation_id, body);
     send_frame(stream, &request).await?;
     let response = read_frame(stream).await?;
+
+    // The pcap oracle. `kafka-protocol` is an independent codec, but it is told which
+    // api key and version to decode at — `decode_response` is handed them by the
+    // caller — so it cannot notice a response header written at the wrong version, or
+    // a size prefix that disagrees with the frame. Wireshark's `kafka` dissector
+    // derives all of that from the request it saw on the same stream, which is why
+    // both directions go in here, size prefixes included.
+    {
+        let framed = |b: &[u8]| {
+            let mut v = (b.len() as u32).to_be_bytes().to_vec();
+            v.extend_from_slice(b);
+            v
+        };
+        crate::helpers::pcap_oracle::PcapOracle::tcp("kafka")
+            .to_server(&framed(&request))
+            .from_server(&framed(&response))
+            .assert_clean();
+    }
+
     let (echoed, decoded) = decode_response::<R>(api_key, api_version, &response);
     assert_eq!(
         echoed, correlation_id,

@@ -298,6 +298,32 @@ async fn exchange(socket: &UdpSocket, server: SocketAddr, out: &[u8]) -> Vec<u8>
         .expect("timed out waiting for a GTP reply")
         .expect("failed to receive a GTP reply");
     buf.truncate(n);
+
+    // The pcap oracle. Wireshark's `gtp` dissector reads the flags byte — version,
+    // protocol type, and the three optional-field bits that decide whether a sequence
+    // number, N-PDU number and extension header type follow — and then checks the
+    // 16-bit Length against what actually follows the fixed header. Those bits are
+    // exactly the kind of thing this suite's hand-written helpers index past rather
+    // than verify.
+    //
+    // The capture is framed on GTP-C's own port. `wire_for("gtp")` warns that the two
+    // planes are different protocols on different ports; both are named `gtp` in the
+    // decode-as table and the dissector reads the version out of the header, so one
+    // port serves for the oracle even though it would not for a live capture.
+    //
+    // `peer_input_is_context` is required here and the reason is worth keeping: GTP-U
+    // tunnels arbitrary user traffic, and tshark recurses into it. This suite's G-PDU
+    // fixture carries an inner IPv4/UDP packet addressed to port 53 with a one-byte
+    // body, so the DNS dissector is handed one byte and reports a malformed packet —
+    // a true statement about the test's own fixture and nothing at all about the
+    // server. The reply, which is what the oracle is here for, is judged in full.
+    crate::helpers::pcap_oracle::PcapOracle::udp("gtp")
+        .port(2123)
+        .peer_input_is_context()
+        .to_server(out)
+        .from_server(&buf)
+        .assert_clean();
+
     buf
 }
 

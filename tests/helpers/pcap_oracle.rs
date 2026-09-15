@@ -254,6 +254,10 @@ pub struct PcapOracle {
     allowed: Vec<String>,
     require_dissector: bool,
     close_stream: bool,
+    /// When set, the client's packets are in the capture only so the dissector has a
+    /// request to key on; nothing about them is judged. See
+    /// [`PcapOracle::peer_input_is_context`].
+    peer_input_is_context: bool,
     /// Extra dissector names accepted in `frame.protocols`, for the handful of
     /// cases where the chain names a sub-dissector rather than the `-d` target.
     extra_names: Vec<String>,
@@ -294,6 +298,7 @@ impl PcapOracle {
             allowed: Vec::new(),
             require_dissector: true,
             close_stream: true,
+            peer_input_is_context: false,
             extra_names: Vec::new(),
         }
     }
@@ -306,12 +311,19 @@ impl PcapOracle {
     }
 
     /// Bytes the test wrote to NetGet.
+    //
+    // `wrong_self_convention` reads `to_`/`from_` as conversions. Here they name a
+    // *direction on the wire*, which is the whole vocabulary of this builder and reads
+    // correctly at every call site; renaming them to satisfy the lint would make the
+    // API worse.
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_server(mut self, bytes: &[u8]) -> Self {
         self.chunks.push((Dir::ToServer, bytes.to_vec()));
         self
     }
 
     /// Bytes NetGet wrote back.
+    #[allow(clippy::wrong_self_convention)]
     pub fn from_server(mut self, bytes: &[u8]) -> Self {
         self.chunks.push((Dir::FromServer, bytes.to_vec()));
         self
@@ -345,6 +357,25 @@ impl PcapOracle {
         self
     }
 
+    /// Judge only the bytes NetGet emitted; treat the client's packets purely as
+    /// context for the dissector.
+    ///
+    /// The request is normally worth judging too — it is free, and a stateful
+    /// dissector needs it in the capture anyway. But for a **tunnelling** protocol the
+    /// request carries a payload the *test* invented, and tshark recurses into it: a
+    /// GTP-U G-PDU whose inner UDP destination port is 53 is handed to the DNS
+    /// dissector, which then reports the one-byte fixture payload as a malformed DNS
+    /// message. That is a true statement about the test's own bytes and says nothing
+    /// about the server, so failing on it would be exactly the false positive that
+    /// gets an oracle ignored.
+    ///
+    /// Use this only where the peer's payload is arbitrary user traffic. It does not
+    /// weaken the check on NetGet's own direction, which is what the oracle is for.
+    pub fn peer_input_is_context(mut self) -> Self {
+        self.peer_input_is_context = true;
+        self
+    }
+
     /// Do not synthesise the FIN exchange. The default is to send one, because
     /// dissectors that desegment to the end of the stream (`whois`) produce
     /// nothing without it.
@@ -372,8 +403,10 @@ impl PcapOracle {
         let mut msg = format!(
             "\n\n=== pcap oracle rejected `{protocol}`'s frames ===\n\
              tshark decode-as: {}\n",
-            report.decode_as.as_deref().unwrap_or("(none — no dissector \
-                 registered for this protocol in src/tui/wireshark.rs)")
+            report.decode_as.as_deref().unwrap_or(
+                "(none — no dissector \
+                 registered for this protocol in src/tui/wireshark.rs)"
+            )
         );
         for f in &report.failures {
             msg.push_str(&format!("  ✗ {f}\n"));
@@ -410,8 +443,7 @@ impl PcapOracle {
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
         let path = dir.path().join("oracle.pcap");
         {
-            let mut f =
-                std::fs::File::create(&path).map_err(|e| format!("create pcap: {e}"))?;
+            let mut f = std::fs::File::create(&path).map_err(|e| format!("create pcap: {e}"))?;
             f.write_all(&pcap).map_err(|e| format!("write pcap: {e}"))?;
         }
 
@@ -449,9 +481,7 @@ impl PcapOracle {
             "_ws.expert.message",
         ]);
 
-        let out = cmd
-            .output()
-            .map_err(|e| format!("running tshark: {e}"))?;
+        let out = cmd.output().map_err(|e| format!("running tshark: {e}"))?;
         if !out.status.success() {
             return Err(format!(
                 "tshark exited {:?}: {}",
@@ -494,7 +524,10 @@ impl PcapOracle {
                 number,
                 protocols,
                 experts,
-                dir: dirs.get((number as usize).saturating_sub(1)).copied().flatten(),
+                dir: dirs
+                    .get((number as usize).saturating_sub(1))
+                    .copied()
+                    .flatten(),
             });
         }
 
@@ -502,6 +535,9 @@ impl PcapOracle {
 
         // 1. Expert info at Warn or above.
         for p in &packets {
+            if self.peer_input_is_context && p.dir == Some(Dir::ToServer) {
+                continue;
+            }
             for (sev, msg) in &p.experts {
                 if *sev < SEV_WARN {
                     continue;
@@ -524,6 +560,9 @@ impl PcapOracle {
             let names = self.expected_names();
             if !names.is_empty() {
                 for want_dir in [Dir::ToServer, Dir::FromServer] {
+                    if self.peer_input_is_context && want_dir == Dir::ToServer {
+                        continue;
+                    }
                     let carried = self
                         .chunks
                         .iter()
@@ -698,19 +737,29 @@ impl PcapOracle {
                 };
 
                 let emit = |dir: Dir,
-                                flags: u8,
-                                data: &[u8],
-                                seq: &mut [u32; 2],
-                                frames: &mut Vec<(Vec<u8>, Option<Dir>)>,
-                                tag: Option<Dir>,
-                                port: u16| {
+                            flags: u8,
+                            data: &[u8],
+                            seq: &mut [u32; 2],
+                            frames: &mut Vec<(Vec<u8>, Option<Dir>)>,
+                            tag: Option<Dir>,
+                            port: u16| {
                     let (src, dst, smac, dmac, sp, dp) = match dir {
-                        Dir::ToServer => {
-                            (CLIENT_IP, SERVER_IP, CLIENT_MAC, SERVER_MAC, CLIENT_PORT, port)
-                        }
-                        Dir::FromServer => {
-                            (SERVER_IP, CLIENT_IP, SERVER_MAC, CLIENT_MAC, port, CLIENT_PORT)
-                        }
+                        Dir::ToServer => (
+                            CLIENT_IP,
+                            SERVER_IP,
+                            CLIENT_MAC,
+                            SERVER_MAC,
+                            CLIENT_PORT,
+                            port,
+                        ),
+                        Dir::FromServer => (
+                            SERVER_IP,
+                            CLIENT_IP,
+                            SERVER_MAC,
+                            CLIENT_MAC,
+                            port,
+                            CLIENT_PORT,
+                        ),
                     };
                     let me = idx(dir);
                     let peer = 1 - me;
@@ -730,9 +779,33 @@ impl PcapOracle {
                 const PSH_ACK: u8 = 0x18;
                 const FIN_ACK: u8 = 0x11;
 
-                emit(Dir::ToServer, SYN, &[], &mut seq, &mut frames, None, self.port);
-                emit(Dir::FromServer, SYN_ACK, &[], &mut seq, &mut frames, None, self.port);
-                emit(Dir::ToServer, ACK, &[], &mut seq, &mut frames, None, self.port);
+                emit(
+                    Dir::ToServer,
+                    SYN,
+                    &[],
+                    &mut seq,
+                    &mut frames,
+                    None,
+                    self.port,
+                );
+                emit(
+                    Dir::FromServer,
+                    SYN_ACK,
+                    &[],
+                    &mut seq,
+                    &mut frames,
+                    None,
+                    self.port,
+                );
+                emit(
+                    Dir::ToServer,
+                    ACK,
+                    &[],
+                    &mut seq,
+                    &mut frames,
+                    None,
+                    self.port,
+                );
 
                 for (dir, bytes) in &merged {
                     emit(
