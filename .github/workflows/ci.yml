@@ -236,6 +236,18 @@ jobs:
             --test connectionless_audit_test \
             -- --test-threads=100 --nocapture
 
+      # The generated evidence table. It reads source only, so it needs no build and
+      # no binaries — but it is here because this is the job that is about ratings.
+      # Advisory: a Beta whose peer this scan cannot find may be over-rated OR may be
+      # driving its client in a way a static read cannot see, and the script says so
+      # rather than guessing.
+      - name: Beta evidence table
+        continue-on-error: true
+        run: |
+          echo "::notice::Generated from source. CLAUDE.md's hand-maintained list has been wrong three times."
+          python3 scripts/beta_evidence_table.py --all
+          python3 scripts/beta_evidence_table.py --experimental-with-evidence
+
       # The real-client evidence itself. These are the tests every Beta rating that
       # names a binary rests on, and this is the only job with those binaries, so it
       # is the only place they can run. Each one fails (never skips) when its client
