@@ -8,3 +8,6 @@ mod real_client_test;
 
 #[cfg(all(test, feature = "memcached"))]
 mod peer_inject_test;
+
+#[cfg(all(test, feature = "memcached"))]
+mod connection_bounds_test;
