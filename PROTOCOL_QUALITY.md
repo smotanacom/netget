@@ -57,7 +57,7 @@ These are one file each and change the failure mode for all 140 servers. Do thes
 are cheaper than any per-protocol sweep and several of the sweeps below become ratchets only
 once these exist.
 
-- [ ] **A logging panic hook, installed in every mode.** `std::panic::set_hook` that writes the
+- [x] **A logging panic hook, installed in every mode.** `std::panic::set_hook` that writes the
   panic message, the thread and a backtrace at ERROR through `tracing`, then chains to the
   default hook. *Why:* `tokio::spawn` swallows panics, and Programme 2 found three families
   (`block_on` in USB, `blocking_lock` in SMB, `.unwrap()` inside spawned client tasks) where the
@@ -65,13 +65,13 @@ once these exist.
   hook only restores the terminal; `--mcp` has none. *Verify:* a test that panics inside a
   spawned connection task and asserts the message reaches `netget.log`. *Effort:* S.
 
-- [ ] **`overflow-checks = true` in `[profile.release]`.** *Why:* STOMP's `content-length:
+- [x] **`overflow-checks = true` in `[profile.release]`.** *Why:* STOMP's `content-length:
   18446744073709551615` panicked in every test build and wrapped harmlessly where it shipped —
   backwards from where you want to find it. With the panic hook above, an overflow in production
   becomes a logged task death instead of a silent wrong answer. Measure the cost on a hot path
   (`tuntap`, `rawip`) before and after; expect <2%. *Effort:* S.
 
-- [ ] **`log_template.rs` strips control characters from every interpolated value.** *Why:*
+- [x] **`log_template.rs` strips control characters from every interpolated value.** *Why:*
   LLDP, CDP and HSRP each fixed injection into their own log lines locally; the shared template
   renderer is the one place that protects all 140 at once, including the ones nobody has looked
   at. A forged newline in a log line is a forged log entry. *Verify:* a test renders a template
@@ -83,7 +83,7 @@ once these exist.
   filter outside `src/utils/`. *Effort:* M (mechanical, but each site needs the right variant —
   `line_field` vs `strip_controls` is a correctness choice, not style).
 
-- [ ] **Per-connection tasks tracked and aborted on `stop_server`.** A `JoinSet` on the server's
+- [x] **Per-connection tasks tracked and aborted on `stop_server`.** A `JoinSet` on the server's
   entry in `AppState`, every `tokio::spawn` for a connection registered into it, aborted by
   `remove_server`. *Why:* `CLAUDE.md` records that `stop_server` does not cancel in-flight
   connections. A stopped server that keeps answering is worse than one that refuses to start.
@@ -183,7 +183,7 @@ declare, whether or not anyone has looked at it.
   `connectionless` sweep and the peer-handle removal paths are the kind of thing that leaks one
   entry per connection and is invisible until production. *Effort:* M for the harness.
 
-- [ ] **Stop releases the port, every protocol.** A generic test: start on port 0, read the
+- [x] **Stop releases the port, every protocol.** *(the generic test exists; TCP is converted, ~101 protocols still to adopt `spawn_server_task` — see Done)* A generic test: start on port 0, read the
   bound port, stop, bind that port again within 1s. *Why:* `register_server_task` is
   "required for `stop_server` to actually release the socket" and adoption has never been
   measured. *Effort:* S — one parametrised test over the registry.
@@ -361,4 +361,30 @@ only number in this repository that says whether the model can drive the thing a
 
 ## Done
 
-Move items here with the date and the commit or PR that verified them.
+**15 September 2026 — Tier 0, first four.**
+
+- **Logging panic hook** (`src/panic_log.rs`, `tests/panic_is_logged_test.rs`). Installed from
+  `init_logging`, which every entry point calls, and chains to whatever hook it replaced so the
+  dashboard's terminal-restore hook still runs. `payload_of` handles the `String` arm as well as
+  `&'static str`, because `panic!("{}", x)` produces a `String` — a hook that downcasts only to
+  `&str` reports every *formatted* panic, which is most real ones, as unreadable.
+- **`overflow-checks = true` in release.** Cargo's default is the opposite of what a server
+  wants.
+- **Control-character stripping in `log_template.rs`** (`tests/log_template_injection_test.rs`).
+  Applied at the substitution point, so every placeholder form — plain, nested, `json()`,
+  `hex()`, `preview()` — is covered by one change.
+- **`AppState::spawn_server_task` / `spawn_client_task`**, with TCP converted as the reference
+  (`tests/stop_server_stops_connections_test.rs`). The registry was already correct; protocols
+  simply were not calling it for connections.
+
+  **The new test caught a defect in that conversion before it landed**, and the shape is worth
+  keeping. Two of three converted sites ended `});` rather than `}).await`, which *constructs*
+  the future and never polls it — so the TCP reader task would never have run and every TCP
+  server would have accepted connections and then ignored them. It compiled, because an
+  unawaited future is a warning rather than an error, and the existing suite stayed green
+  because those tests do not depend on the accept loop spawning the reader. Only an assertion
+  from the **peer's** side distinguishes a live connection from an aborted one.
+
+  **Still open:** ~101 protocols have not adopted `spawn_server_task` (301 `tokio::spawn` vs 159
+  `register_server_task`, measured 15 Sep). TCP is the reference; the sweep is a follow-up,
+  deliberately not run while other agents hold most `src/server/*/mod.rs` files.
