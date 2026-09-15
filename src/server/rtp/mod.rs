@@ -15,17 +15,26 @@
 //! shape `src/server/tuntap/` established:
 //!
 //! ```text
-//!   datagram ─▶ GATE 1  a deterministic handler answers  ── yes ──▶ no model call, always runs
+//!   datagram ─▶ GATE 1  run the handler; did it ANSWER?  ── yes ──▶ no model call, always runs
 //!              │        (script / static / manual rule)
 //!              └─▶ GATE 2  a rolling per-minute budget   ── over ──▶ dropped,
 //!                          (`llm_max_per_minute`, 30)                decision=fail_closed_rate_limited
 //! ```
 //!
 //! Gate 1 is why the budget is safe to set low: script and static handlers are the intended way
-//! to run RTP at rate and are never charged. Gate 2 is a *ceiling*, not a smoothing filter — a
-//! sliding window rather than a leaky bucket, so "never more than N in any minute" is literally
-//! true. Setting `llm_max_per_minute` to 0 forbids model consultation outright, which is the
-//! right configuration for a server driven entirely by handlers.
+//! to run RTP at rate and are never charged. **The exemption is decided by the handler's answer,
+//! not by its presence in the routing table** — a `Script` rule whose language is unknown, whose
+//! interpreter is missing, or whose code throws answers `FallbackToLlm`, and such a datagram is
+//! charged like any unclaimed one. Deciding this from configuration was a live defect in this
+//! file: `call_llm` dispatches the handler itself, so a declining script reached the model with
+//! the budget already skipped, at wire rate, with `llm_max_per_minute` inert. See
+//! `tests/handler_result_decides_the_bound_test.rs` and
+//! `tests/server/rtp/script_fallback_budget_test.rs`.
+//!
+//! Gate 2 is a *ceiling*, not a smoothing filter — a sliding window rather than a leaky bucket,
+//! so "never more than N in any minute" is literally true. Setting `llm_max_per_minute` to 0
+//! forbids model consultation outright, which is the right configuration for a server driven
+//! entirely by handlers.
 
 pub mod actions;
 pub mod media;
@@ -42,6 +51,8 @@ use tokio::sync::mpsc;
 use tracing::{error, trace};
 
 use crate::llm::action_helper::call_llm;
+use crate::llm::actions::protocol_trait::Protocol;
+use crate::llm::event_handler_executor::EventHandlerResult;
 use crate::llm::ollama_client::OllamaClient;
 use crate::logging::emit::Log;
 use crate::protocol::{Event, StartupParams};
@@ -310,24 +321,32 @@ impl RtpServer {
         }
     }
 
-    /// True if a deterministic rule (script, static or manual) will answer this event.
+    /// What the *configuration* says would answer this event. **Diagnostics only.**
     ///
-    /// Such a rule costs no model call, so it must not be charged to the budget — script and
-    /// static handlers are the intended way to run RTP at rate. Same shape as
-    /// `tuntap::a_rule_answers`.
-    async fn a_rule_answers(
+    /// This must never decide whether the budget applies, and it used to. A `Script` rule
+    /// reads as "answers in-process, costs no model call" right up until
+    /// `execute_script_handler` returns `FallbackToLlm` — `python3` not installed, an unknown
+    /// language name, or a script that threw — and by then the gate had been skipped on the
+    /// strength of the rule merely *existing*. `call_llm` then dispatched the same handler
+    /// itself, watched it decline, and consulted the model uncharged. On a 50 pps stream that
+    /// is 50 uncounted consultations a second with `llm_max_per_minute` inert, and each one
+    /// can authorize up to 30 seconds of outbound media.
+    ///
+    /// [`Self::handle_datagram`] therefore runs the handler and branches on its **answer**,
+    /// the way `tuntap::handle_frame` does. What is left for this function is the one thing
+    /// the answer cannot express: that a rule was configured and did *not* answer, which in
+    /// the log is otherwise indistinguishable from no rule at all.
+    pub async fn configured_handler_kind(
         state: &AppState,
         server_id: crate::state::ServerId,
         event_type_id: &str,
-    ) -> bool {
-        match state.get_event_handler_config(server_id).await {
-            Some(config) => matches!(
-                config.find_handler(event_type_id),
-                Some(EventHandlerType::Script { .. })
-                    | Some(EventHandlerType::Static { .. })
-                    | Some(EventHandlerType::Manual { .. })
-            ),
-            None => false,
+    ) -> Option<&'static str> {
+        let config = state.get_event_handler_config(server_id).await?;
+        match config.find_handler(event_type_id)? {
+            EventHandlerType::Script { .. } => Some("script"),
+            EventHandlerType::Static { .. } => Some("static"),
+            EventHandlerType::Manual { .. } => Some("manual"),
+            EventHandlerType::Llm { .. } => Some("llm"),
         }
     }
 
@@ -395,92 +414,160 @@ impl RtpServer {
 
         let event_id = event.event_type.id.clone();
 
-        // Gate 1: a deterministic rule answers, and costs no model call — never charged.
-        // Gate 2: everything else is charged to the rolling per-minute budget. Without this,
-        // a 50 pps stream is 50 LLM calls a second, and each consultation can authorize up to
-        // 30 seconds of outbound media, so a spoofed source address turns the server into an
-        // amplifier. Over budget the datagram is dropped and nothing goes on the wire, which is
-        // the same silence every other RTP failure produces — hence the `decision=` tag.
-        if !Self::a_rule_answers(state, server_id, &event_id).await {
-            let refused = {
-                let mut b = budget.lock().expect("RTP budget mutex poisoned");
-                if b.try_take() {
-                    None
-                } else {
-                    let report_now = b.note_refusal().is_some();
-                    Some((b.max_per_minute(), report_now))
-                }
-            };
-            if let Some((max, report_now)) = refused {
-                let line = format!(
-                    "RTP {} from {} decision=fail_closed_rate_limited; no media sent (already \
-                     used the {} model consultation(s) this minute allows — raise \
-                     llm_max_per_minute, or answer this event with a script/static handler, \
-                     which is never charged)",
-                    event_id, peer_addr, max
-                );
-                if report_now {
-                    Log::new(Some(status_tx)).warn(line);
-                } else {
-                    trace!("{line}");
-                }
-                return;
-            }
-            // Admitted: report anything that was dropped while the window was full, so the
-            // count is not lost just because the flood stopped.
-            let suppressed = {
-                let mut b = budget.lock().expect("RTP budget mutex poisoned");
-                b.take_suppressed()
-            };
-            if suppressed > 1 {
-                Log::new(Some(status_tx)).warn(format!(
-                    "RTP dropped {} further datagram(s) over the model budget before this one",
-                    suppressed - 1
-                ));
-            }
-        }
+        // Gate 1: a deterministic rule answers in-process and is never charged — but the
+        // exemption belongs to a rule that *answered*, not to one that was merely configured.
+        // Inspecting `find_handler` and skipping gate 2 on a `Script` match was the hole:
+        // `execute_script_handler` returns `FallbackToLlm` when the language name is unknown,
+        // when the interpreter is missing, or when the script throws, and `call_llm` — which
+        // dispatches the handler again itself — then reached the model with the budget already
+        // bypassed. So the handler runs here and its answer decides.
+        //
+        // Gate 2: everything the handler did not answer is charged to the rolling per-minute
+        // budget. Without it a 50 pps stream is 50 LLM calls a second, and each consultation
+        // can authorize up to 30 seconds of outbound media, so a spoofed source address turns
+        // the server into an amplifier. Over budget the datagram is dropped and nothing goes on
+        // the wire, which is the same silence every other RTP failure produces — hence the
+        // `decision=` tag.
+        let handler_outcome = crate::llm::event_handler_executor::try_execute_event_handler(
+            state,
+            server_id,
+            Some(connection_id),
+            &event_id,
+            &event.event_type.description,
+            Some(event.data.clone()),
+            Some(protocol),
+        )
+        .await;
 
-        match call_llm(llm, state, server_id, Some(connection_id), &event, protocol).await {
-            Ok(result) => {
-                if result.raw_actions.is_empty() {
-                    // The model answered, and its answer was "stream nothing". For RTP that is a
-                    // legitimate answer — a receiver owes its sender no media — but on the wire it
-                    // is byte-identical to a backend outage, so the two must be separable here.
-                    Log::new(Some(status_tx)).info(format!(
-                        "RTP {} from {} decision=model_sent_nothing (no media requested)",
-                        event_id, peer_addr
-                    ));
-                }
-                for action in &result.raw_actions {
-                    Self::execute_send_action(
-                        action, peer_addr, socket, status_tx, state, server_id,
+        let (result, answered_by) = match handler_outcome {
+            Ok(EventHandlerResult::Handled(r)) => {
+                // `call_llm` is not reached on this path, so the two things it does for every
+                // event regardless of who answers are done here: the pipe tap, which must fire
+                // even when a handler answers, and the access-log entry the dashboard's request
+                // pane reads. Skipping them would make a handler-answered datagram invisible.
+                crate::pipe::dispatch_pipes(state, server_id, &event).await;
+                state
+                    .record_access_log(
+                        crate::state::AccessLogOwner::Server(server_id.as_u32()),
+                        protocol.protocol_name(),
+                        Some(connection_id.as_u32()),
+                        &event_id,
+                        event.data.clone(),
+                        r.access_log_actions(),
                     )
                     .await;
-                }
+                (r, "handler")
             }
             Err(e) => {
-                // Fail closed: RTP is a one-way media transport with no error frame and no
-                // request/response turn, so we emit nothing on the wire rather than falling
-                // through to some default stream (which would fabricate media the model never
-                // authorized) or inventing an RTCP BYE for a session we never joined. The peer is
-                // not blocked on us; the operator is the one who needs to know, so the whole
-                // error goes to the log and the status stream and nothing goes to the socket.
-                //
-                // `decision=` mirrors `src/server/radius/`: an operator greps `fail_closed_` to
-                // find every datagram the model did not actually answer, and the overloaded /
-                // errored split is kept even though RTP has no way to express it on the wire.
-                // There is no `model_reject` counterpart — RTP has no accept/deny semantics, so
-                // a model declining to stream is exactly the `model_sent_nothing` case above.
-                let decision = if crate::utils::WireFailure::classify(&e).is_overloaded() {
-                    "fail_closed_backend_overloaded"
-                } else {
-                    "fail_closed_backend_error"
-                };
+                // A manual rule that timed out or was dismissed, or a handler that failed
+                // hard. RTP has no error frame, so this is the same silence as a backend
+                // failure and is separated from it only by its tag.
                 Log::new(Some(status_tx)).error(format!(
-                    "RTP {} from {} decision={}; no media sent: {}",
-                    event_id, peer_addr, decision, e
+                    "RTP {} from {} decision=fail_closed_handler_error; no media sent: {}",
+                    event_id, peer_addr, e
                 ));
+                return;
             }
+            Ok(EventHandlerResult::FallbackToLlm { .. }) => {
+                let refused = {
+                    let mut b = budget.lock().expect("RTP budget mutex poisoned");
+                    if b.try_take() {
+                        None
+                    } else {
+                        let report_now = b.note_refusal().is_some();
+                        Some((b.max_per_minute(), report_now))
+                    }
+                };
+                if let Some((max, report_now)) = refused {
+                    // A configured rule that declined is the case an operator will otherwise
+                    // misread: the routing table says "a handler answers this" and the charge
+                    // says otherwise. Name it.
+                    let why = match Self::configured_handler_kind(state, server_id, &event_id).await
+                    {
+                        Some(kind @ ("script" | "static" | "manual")) => format!(
+                            " (the {kind} rule for this event did not answer — an unknown \
+                                 language, a missing interpreter or a failing script falls \
+                                 through to the model, which is charged)"
+                        ),
+                        _ => String::new(),
+                    };
+                    let line = format!(
+                        "RTP {} from {} decision=fail_closed_rate_limited; no media sent \
+                         (already used the {} model consultation(s) this minute allows — raise \
+                         llm_max_per_minute, or answer this event with a script/static handler, \
+                         which is never charged){}",
+                        event_id, peer_addr, max, why
+                    );
+                    if report_now {
+                        Log::new(Some(status_tx)).warn(line);
+                    } else {
+                        trace!("{line}");
+                    }
+                    return;
+                }
+                // Admitted: report anything that was dropped while the window was full, so the
+                // count is not lost just because the flood stopped.
+                let suppressed = {
+                    let mut b = budget.lock().expect("RTP budget mutex poisoned");
+                    b.take_suppressed()
+                };
+                if suppressed > 1 {
+                    Log::new(Some(status_tx)).warn(format!(
+                        "RTP dropped {} further datagram(s) over the model budget before this one",
+                        suppressed - 1
+                    ));
+                }
+
+                // `call_llm` dispatches the handlers again before reaching the model. For a
+                // handler that has just said it cannot answer that is a second no-op (an
+                // unknown or missing language) or a second failing script run — wasteful, not
+                // harmful, and the alternative is a second entry point into `src/llm/` whose
+                // two copies would drift. The *answering* path never gets here, so nothing that
+                // answered is ever run twice: no script that produced actions runs again, and
+                // no manual rule parks twice.
+                match call_llm(llm, state, server_id, Some(connection_id), &event, protocol).await {
+                    Ok(r) => (r, "model"),
+                    Err(e) => {
+                        // Fail closed: RTP is a one-way media transport with no error frame and
+                        // no request/response turn, so we emit nothing on the wire rather than
+                        // falling through to some default stream (which would fabricate media
+                        // the model never authorized) or inventing an RTCP BYE for a session we
+                        // never joined. The peer is not blocked on us; the operator is the one
+                        // who needs to know, so the whole error goes to the log and the status
+                        // stream and nothing goes to the socket.
+                        //
+                        // `decision=` mirrors `src/server/radius/`: an operator greps
+                        // `fail_closed_` to find every datagram the model did not actually
+                        // answer, and the overloaded / errored split is kept even though RTP
+                        // has no way to express it on the wire. There is no `model_reject`
+                        // counterpart — RTP has no accept/deny semantics, so a model declining
+                        // to stream is exactly the `*_sent_nothing` case below.
+                        let decision = if crate::utils::WireFailure::classify(&e).is_overloaded() {
+                            "fail_closed_backend_overloaded"
+                        } else {
+                            "fail_closed_backend_error"
+                        };
+                        Log::new(Some(status_tx)).error(format!(
+                            "RTP {} from {} decision={}; no media sent: {}",
+                            event_id, peer_addr, decision, e
+                        ));
+                        return;
+                    }
+                }
+            }
+        };
+
+        if result.raw_actions.is_empty() {
+            // Whoever answered, answered "stream nothing". For RTP that is legitimate — a
+            // receiver owes its sender no media — but on the wire it is byte-identical to a
+            // backend outage, so the two must be separable here.
+            Log::new(Some(status_tx)).info(format!(
+                "RTP {} from {} decision={}_sent_nothing (no media requested)",
+                event_id, peer_addr, answered_by
+            ));
+        }
+        for action in &result.raw_actions {
+            Self::execute_send_action(action, peer_addr, socket, status_tx, state, server_id).await;
         }
     }
 
