@@ -8081,7 +8081,7 @@ dependencies = [
 
 [[package]]
 name = "netget"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes 0.8.4",
  "anyhow",
