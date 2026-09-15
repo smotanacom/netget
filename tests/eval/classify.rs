@@ -123,6 +123,102 @@ fn names_in(value: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
+/// Distinctive string values from an action's declared `example` that the model
+/// reproduced verbatim and that the operator never asked for.
+///
+/// This is the shape the `{{event.xid}}` placeholder defect had, wearing better
+/// clothes. A placeholder at least *looks* wrong when it reaches the wire; an
+/// example full of plausible prose does not, so the model reuses it and the
+/// operator's actual instruction loses. Measured: told "serve a menu whose first
+/// item is labelled Welcome to NetGet", the model emitted all four items of
+/// `send_gopher_menu`'s example — "Welcome to the gopher hole", "About this
+/// server", "Files", "Search the archive" — and none of the requested label.
+///
+/// The second half of the test is what keeps it honest: a value the operator's
+/// own instruction contains is not evidence of copying, so anything appearing in
+/// the instruction is excluded.
+fn copied_example_values(protocol: &str, instruction: &str, log: &[String]) -> Vec<String> {
+    let server = match netget::protocol::server_registry::registry().get(protocol) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let examples: std::collections::BTreeMap<String, serde_json::Value> = server
+        .get_sync_actions()
+        .into_iter()
+        .map(|a| (a.name, a.example))
+        .collect();
+    if examples.is_empty() {
+        return Vec::new();
+    }
+
+    let instruction_lc = instruction.to_lowercase();
+    let mut hits = Vec::new();
+
+    for line in log.iter().filter(|l| l.contains(EXECUTING_ACTION)) {
+        let stripped = strip_ansi(line);
+        let action = match first_json_value(&stripped) {
+            Some(v) => v,
+            None => continue,
+        };
+        let name = match action.get("type").and_then(|t| t.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let example = match examples.get(name) {
+            Some(e) => e,
+            None => continue,
+        };
+
+        let rendered = action.to_string().to_lowercase();
+        for value in string_leaves(example) {
+            // Short values are coincidence, not copying: "GET", "127.0.0.1" and
+            // "text/html" are simply the right answer.
+            if value.chars().count() < 10 {
+                continue;
+            }
+            let value_lc = value.to_lowercase();
+            if rendered.contains(&value_lc) && !instruction_lc.contains(&value_lc) {
+                hits.push(format!("{}: {:?}", name, value));
+            }
+        }
+    }
+    hits.dedup();
+    hits
+}
+
+/// Every string leaf in a JSON value.
+fn string_leaves(value: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|i| walk(i, out)),
+            _ => {}
+        }
+    }
+    walk(value, &mut out);
+    out
+}
+
+/// The first complete JSON value in a string, whatever surrounds it.
+fn first_json_value(text: &str) -> Option<serde_json::Value> {
+    let candidates = text
+        .char_indices()
+        .filter(|(_, c)| *c == '{' || *c == '[')
+        .map(|(i, _)| i)
+        .take(8);
+    for start in candidates {
+        if let Some(Ok(v)) = serde_json::Deserializer::from_str(&text[start..])
+            .into_iter::<serde_json::Value>()
+            .next()
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
 /// Every distinct mode the classifier can report, with the prose that belongs
 /// in the results file next to it.
 pub const MODE_GLOSSARY: &[(&str, &str)] = &[
@@ -179,6 +275,15 @@ pub const MODE_GLOSSARY: &[(&str, &str)] = &[
     (
         "no_wire_response",
         "The model acted but the client got nothing back within the timeout.",
+    ),
+    (
+        "copied_example_content",
+        "The model reproduced text out of the action's own `example` and dropped what \
+         the operator asked for. Same defect as a `{{…}}` placeholder in an example, but \
+         invisible on the wire because the copied text looks plausible. An `example` is \
+         the strongest prompt a protocol has: whatever it contains is what a small model \
+         will send. Make the values obviously stand-ins, or generic enough that copying \
+         them is visibly wrong.",
     ),
     (
         "wrong_content",
@@ -287,7 +392,13 @@ fn response_blocks(log: &[String]) -> Vec<String> {
 ///
 /// `check_error` is what the expectation itself complained about; it is the
 /// fallback detail when nothing in the log names a specific mistake.
-pub fn classify(log: &[String], probe: &ProbeOutcome, check_error: &str) -> Diagnosis {
+pub fn classify(
+    protocol: &str,
+    instruction: &str,
+    log: &[String],
+    probe: &ProbeOutcome,
+    check_error: &str,
+) -> Diagnosis {
     let evidence = model_output(log);
 
     // A harness-level regex mistake must never be scored against the model.
@@ -449,7 +560,24 @@ pub fn classify(log: &[String], probe: &ProbeOutcome, check_error: &str) -> Diag
         );
     }
 
-    // 9. Everything worked mechanically and the answer was simply wrong.
+    // 9. The actions ran and the content came out of the action's own example
+    //    rather than out of the operator's instruction. Checked before the
+    //    generic bucket because it names a fixable description; without it this
+    //    lands in `wrong_content` and reads as "the model is not very good".
+    let copied = copied_example_values(protocol, instruction, log);
+    if !copied.is_empty() {
+        return Diagnosis::new(
+            "copied_example_content",
+            format!(
+                "the model reproduced its own action's example ({}) instead of what the \
+                 instruction asked for",
+                copied.join("; ")
+            ),
+            evidence,
+        );
+    }
+
+    // 10. Everything worked mechanically and the answer was simply wrong.
     Diagnosis::new(
         "wrong_content",
         format!("valid actions executed, but {}", check_error),

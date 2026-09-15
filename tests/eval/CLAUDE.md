@@ -104,6 +104,43 @@ Each of these cost a debugging pass and every one presented as a model failure.
   `Expect` returns `HARNESS: …` and is classified as `harness_error`, not as a
   miss.
 
+## The two findings the first sweep produced
+
+Both are about *prompts*, which is what this harness exists to measure, and
+neither is visible to a mocked test.
+
+1. **`valid_actions_rejected_as_unparseable`, 29 of the first 30 runs.** The
+   model named the right action with the right parameters and netget threw the
+   reply away, because `ActionResponse::from_str` (`src/llm/actions/mod.rs`)
+   strips a *leading* ``` fence and nothing trailing, then requires
+   `serde_json::from_str` to consume the whole string — with no fallback before
+   it bails with `Invalid JSON`. Small models append an explanation after the
+   JSON constantly. Every failed run is therefore also asked a counterfactual —
+   *would the first JSON value in this reply have executed?* — and the report
+   carries both numbers. Without that, one defect hides every description
+   problem behind a flat 0%.
+
+   Related: `generate_with_format`'s `format` argument has exactly one caller
+   (`conversation.rs:1642`) and it always passes `None`, so Ollama's
+   JSON-constrained output mode is never used. That is deliberate per its own
+   comment (some models do not support it), which is why the parser is the
+   better fix — it also covers the Bridge and OpenAI backends.
+
+2. **`copied_example_content`.** Told "serve a menu whose first item is labelled
+   Welcome to NetGet", the model emitted all four items of `send_gopher_menu`'s
+   declared `example` — "Welcome to the gopher hole", "About this server",
+   "Files", "Search the archive" — and none of the requested label. This is the
+   `{{event.xid}}` placeholder defect wearing better clothes: a placeholder at
+   least looks wrong on the wire, whereas an example full of plausible prose
+   does not, so it wins against the operator's own instruction.
+
+   `classify.rs` names this automatically by reading the protocol's declared
+   examples out of the registry and looking for their distinctive string values
+   in the executed action — **excluding anything the instruction itself
+   contains**, since a value the operator asked for is not evidence of copying.
+   An `example` is the strongest prompt a protocol has; whatever it contains is
+   what a small model will send.
+
 ## Adding a protocol
 
 1. A function in `suites.rs` returning 3–5 `EvalCase`s, `#[cfg(feature = "…")]`.

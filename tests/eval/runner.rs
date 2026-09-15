@@ -404,7 +404,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
                 detail,
                 evidence,
                 recovered_actions,
-            } = classify(&log, &outcome, &why);
+            } = classify(case.protocol, case.instruction, &log, &outcome, &why);
             RunRecord {
                 run,
                 verdict: "fail",
