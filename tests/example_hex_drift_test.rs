@@ -91,8 +91,12 @@ fn strip_comments(src: &str) -> String {
         let c = b[i];
         if in_string {
             if c == '\\' && i + 1 < b.len() {
+                // Blank both halves, but keep a newline: Rust's line continuation (a `\`
+                // at end of line inside a literal) is an escape whose second character IS
+                // the newline, and swallowing it silently shifted every line number below
+                // it — nine of them in `ipp/actions.rs` alone.
                 out.push(' ');
-                out.push(' ');
+                out.push(if b[i + 1] == '\n' { '\n' } else { ' ' });
                 i += 2;
                 continue;
             }
@@ -102,6 +106,21 @@ fn strip_comments(src: &str) -> String {
             out.push(c);
             i += 1;
             continue;
+        }
+        // A char literal may *be* a quote (`'\"'`), and reading it as the start of a
+        // string inverts the quote parity for the rest of the file. Lifetimes (`'a`) are
+        // left alone, which is why the closing `'` has to be where a char literal puts it.
+        if c == '\'' {
+            let simple = i + 2 < b.len() && b[i + 2] == '\'';
+            let escaped = i + 3 < b.len() && b[i + 1] == '\\' && b[i + 3] == '\'';
+            if simple || escaped {
+                let n = if simple { 3 } else { 4 };
+                for k in 0..n {
+                    out.push(if b[i + k] == '\n' { '\n' } else { ' ' });
+                }
+                i += n;
+                continue;
+            }
         }
         if c == '"' {
             in_string = true;

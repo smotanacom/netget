@@ -210,14 +210,73 @@ fn is_affirmative(key: &str, literal: &str) -> bool {
 // Source scanning
 // ---------------------------------------------------------------------------
 
+/// Remove `//` comments **without** cutting inside a string literal.
+///
+/// The obvious line-wise `split("//")` version is wrong, and wrong in the silent direction: any
+/// line carrying a URL is truncated at the `//` in its own literal, so everything after it —
+/// including the `.unwrap_or(…)` this scan is looking for — disappears. That cost `tests/
+/// vendor_default_fallback_test.rs` a whole limb before it was noticed there. It changes
+/// nothing in this file's findings today, but the next site to land on such a line would have
+/// been invisible.
 fn strip_comments(src: &str) -> String {
-    src.lines()
-        .map(|l| match l.find("//") {
-            Some(i) => &l[..i],
-            None => l,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let b: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0usize;
+    let mut in_string = false;
+    while i < b.len() {
+        let c = b[i];
+        if in_string {
+            // An escape can hide a closing quote; blank both halves so the literal's own
+            // length is preserved and `\"` cannot end the string.
+            if c == '\\' && i + 1 < b.len() {
+                // Blank both halves, but keep a newline: Rust's line continuation (a `\`
+                // at end of line inside a literal) is an escape whose second character IS
+                // the newline, and swallowing it silently shifted every line number below
+                // it — nine of them in `ipp/actions.rs` alone.
+                out.push(' ');
+                out.push(if b[i + 1] == '\n' { '\n' } else { ' ' });
+                i += 2;
+                continue;
+            }
+            if c == '"' {
+                in_string = false;
+            }
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        // A char literal may *be* a quote (`'\"'`), and reading it as the start of a
+        // string inverts the quote parity for the rest of the file. Lifetimes (`'a`) are
+        // left alone, which is why the closing `'` has to be where a char literal puts it.
+        if c == '\'' {
+            let simple = i + 2 < b.len() && b[i + 2] == '\'';
+            let escaped = i + 3 < b.len() && b[i + 1] == '\\' && b[i + 3] == '\'';
+            if simple || escaped {
+                let n = if simple { 3 } else { 4 };
+                for k in 0..n {
+                    out.push(if b[i + k] == '\n' { '\n' } else { ' ' });
+                }
+                i += n;
+                continue;
+            }
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '/' && i + 1 < b.len() && b[i + 1] == '/' {
+            while i < b.len() && b[i] != '\n' {
+                out.push(' ');
+                i += 1;
+            }
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
 }
 
 fn is_ident_char(c: char) -> bool {
@@ -597,5 +656,57 @@ fn the_rule_flags_the_historical_defects_and_not_their_neighbours() {
         ),
         vec![("status".to_string(), "200".to_string())],
         "only a literal in `.get(\"k\")` position counts as a lookup"
+    );
+}
+
+/// The comment stripper must preserve line numbering exactly, and quote parity with it.
+///
+/// Both halves of this were real bugs found while writing these ratchets, and both were silent.
+/// A line-wise `split("//")` truncates any line carrying a URL at the `//` in its own literal,
+/// hiding everything after it. Replacing it with a string-aware scanner then introduced the
+/// opposite fault: a Rust *line continuation* is a `\` whose escaped character is the newline,
+/// so blanking the pair swallowed the line break — nine of them before `ipp/actions.rs`'s first
+/// finding, which moved every reported line number up by nine while the findings themselves
+/// were unchanged. A baseline keyed on line numbers turns that into a confusing false failure.
+#[test]
+fn the_comment_stripper_preserves_lines_and_quote_parity() {
+    fn lines(s: &str) -> usize {
+        s.matches('\n').count()
+    }
+
+    // A comment is removed…
+    assert!(!strip_comments("let x = 1; // secret").contains("secret"));
+    // …but a `//` inside a literal is not a comment, and what follows it must survive.
+    let url_line = "let u = \"https://example.com\"; let s = d.get(\"status\").unwrap_or(200);";
+    assert!(
+        strip_comments(url_line).contains("get(\"status\")"),
+        "the `//` in a URL must not truncate the rest of the line"
+    );
+
+    // Line count is preserved through every construct that can consume characters.
+    for src in [
+        "a\nb\nc\n",
+        "let s = \"multi \\\n    line\"; // c\nnext\n",
+        "// comment\n// comment\ncode\n",
+        "let c = '\"'; let d = \"then\";\nnext\n",
+        "let e = '\\n'; let f = \"then\";\nnext\n",
+    ] {
+        assert_eq!(
+            lines(&strip_comments(src)),
+            lines(src),
+            "line count changed for {src:?}"
+        );
+    }
+
+    // A char literal that *is* a quote must not open a string; if it did, every `//` after it
+    // would stop being recognised as a comment for the rest of the file.
+    assert!(
+        !strip_comments("let q = '\"'; // hidden\nlet r = 1;").contains("hidden"),
+        "a `'\\\"'` char literal must not invert quote parity"
+    );
+    // A lifetime is not a char literal and must be left intact.
+    assert!(
+        strip_comments("fn f<'a>(x: &'a str) {}").contains("'a"),
+        "lifetimes must survive the char-literal skip"
     );
 }
