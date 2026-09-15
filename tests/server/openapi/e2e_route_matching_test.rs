@@ -195,6 +195,11 @@ async fn test_openapi_route_matching_comprehensive() -> E2EResult<()> {
 /// Test llm_on_invalid configuration
 #[tokio::test]
 #[cfg(feature = "openapi")]
+#[ignore = "llm_on_invalid can only be switched on by the configure_error_handling action, \
+            which has to run after the server exists — a second model turn this one-prompt \
+            harness cannot drive. `spec` is openapi's only startup parameter, so the flag \
+            cannot be set at startup either. Un-ignoring it needs a mock that answers a \
+            second user turn (or an injected async action), not a change here."]
 async fn test_openapi_llm_on_invalid_override() -> E2EResult<()> {
     let spec_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/server/openapi/test_spec.yaml");
