@@ -449,9 +449,30 @@ pub async fn run_suite(cases: &[EvalCase]) -> E2EResult<Vec<CaseResult>> {
         live_model()
     );
 
+    let model = live_model();
     let mut results = Vec::new();
-    for case in selected {
+    for (done, case) in selected.iter().enumerate() {
         results.push(run_case(case, runs).await);
+
+        // Publish after every case, not only at the end.
+        //
+        // A full sweep is ~48 cases at several minutes each, because a reply
+        // netget cannot parse costs two model calls rather than one. Writing the
+        // artefacts only on completion means a run that is interrupted — or that
+        // someone simply cannot wait out — leaves nothing at all, and a partial
+        // measurement is worth far more than no measurement. Every write is a
+        // complete, self-consistent report of the cases finished so far.
+        let partial = super::report::build(&model, runs, results.clone());
+        if let Err(e) = super::report::write(&partial) {
+            eprintln!("⚠ could not write interim results: {}", e);
+        }
+        println!(
+            "   … {}/{} cases done, {}/{} runs passed so far",
+            done + 1,
+            selected.len(),
+            partial.totals.runs_passed,
+            partial.totals.runs_total
+        );
     }
     Ok(results)
 }
