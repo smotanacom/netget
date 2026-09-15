@@ -334,6 +334,9 @@ impl TftpServer {
                     execution_result.raw_actions.len()
                 ));
 
+                let decision = Self::classify_outcome(&execution_result);
+                Self::log_decision(&log, decision, "RRQ", peer_addr, &execution_result);
+
                 // Process protocol results (DATA or ERROR packets)
                 for protocol_result in execution_result.protocol_results {
                     match protocol_result {
@@ -543,6 +546,15 @@ impl TftpServer {
                                 .await
                                 {
                                     Ok(execution_result) => {
+                                        let decision = Self::classify_outcome(&execution_result);
+                                        Self::log_decision(
+                                            &log,
+                                            decision,
+                                            "ACK continuation",
+                                            peer_addr,
+                                            &execution_result,
+                                        );
+
                                         // Exactly one continuation may be spawned per answer.
                                         // The model can legitimately return several actions,
                                         // and spawning a reader per packet would put two or
@@ -846,6 +858,9 @@ impl TftpServer {
                     log.info(message);
                 }
 
+                let decision = Self::classify_outcome(&execution_result);
+                Self::log_decision(&log, decision, "WRQ", peer_addr, &execution_result);
+
                 // Process protocol results (should be ACK block 0 or ERROR)
                 for protocol_result in execution_result.protocol_results {
                     match protocol_result {
@@ -1030,6 +1045,15 @@ impl TftpServer {
                     .await
                     {
                         Ok(execution_result) => {
+                            let decision = Self::classify_outcome(&execution_result);
+                            Self::log_decision(
+                                &log,
+                                decision,
+                                "DATA block",
+                                peer_addr,
+                                &execution_result,
+                            );
+
                             // Process ACK packets
                             let mut aborted = false;
                             for protocol_result in execution_result.protocol_results {
@@ -1133,6 +1157,79 @@ impl TftpServer {
         }
     }
 
+    /// What the handler produced for one TFTP event, as a stable `decision=` token.
+    ///
+    /// Must be computed **before** `protocol_results` is consumed, because every call site
+    /// moves them into a `for` loop.
+    ///
+    /// TFTP is not one of the deliberately-silent protocols: it has a real ERROR frame
+    /// (opcode 5), so a model that refuses says so on the wire and a model that says nothing
+    /// reaches the client as **no packet at all**. Those two used to leave the same trace in
+    /// the log, and the second one additionally leaves the transfer registered until the
+    /// client's own retransmit timeout expires.
+    fn classify_outcome(result: &crate::llm::ExecutionResult) -> &'static str {
+        let outputs: Vec<Vec<u8>> = result
+            .protocol_results
+            .iter()
+            .flat_map(|r| r.get_all_output())
+            .collect();
+
+        if outputs
+            .iter()
+            .any(|p| Self::packet_opcode(p) == Some(OP_ERROR))
+        {
+            "model_reject"
+        } else if !outputs.is_empty() {
+            "model_answer"
+        } else if !result.failures.is_empty() {
+            "fail_closed_bad_action"
+        } else {
+            "model_silent"
+        }
+    }
+
+    /// Emit the `decision=` line for one TFTP event at the level its token deserves.
+    ///
+    /// `stage` names which of the four LLM call sites produced it (`RRQ`, `WRQ`,
+    /// `ACK continuation`, `DATA block`), so a grep tells an operator *where* a transfer
+    /// stopped as well as why.
+    fn log_decision(
+        log: &Log<'_>,
+        decision: &str,
+        stage: &str,
+        peer_addr: SocketAddr,
+        result: &crate::llm::ExecutionResult,
+    ) {
+        match decision {
+            "model_answer" => log.info(format!(
+                "TFTP {} from {} decision=model_answer",
+                stage, peer_addr
+            )),
+            "model_reject" => log.info(format!(
+                "TFTP {} from {} decision=model_reject (handler answered with an ERROR packet)",
+                stage, peer_addr
+            )),
+            "fail_closed_bad_action" => {
+                let detail = result
+                    .failures
+                    .iter()
+                    .map(|f| format!("{}: {}", f.action, f.error))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                log.error(format!(
+                    "TFTP {} from {} decision=fail_closed_bad_action ({}); nothing was sent and \
+                     the transfer is left for the client to time out",
+                    stage, peer_addr, detail
+                ))
+            }
+            _ => log.warn(format!(
+                "TFTP {} from {} decision=model_silent; nothing was sent and the transfer is \
+                 left for the client to time out",
+                stage, peer_addr
+            )),
+        }
+    }
+
     /// The opcode of a packet the handler produced, or `None` if it is too short to have one.
     ///
     /// Every action this protocol defines yields at least four bytes, so `None` means an
@@ -1198,11 +1295,18 @@ impl TftpServer {
         transfers: &Arc<Mutex<HashMap<TransferId, TftpTransfer>>>,
     ) {
         let log = Log::new(Some(&status_tx));
-        // Non-fatal: the LLM failed but the client still gets an ERROR packet
-        // (wire fallback) and the transfer is torn down cleanly, so this is WARN.
-        log.warn(format!(
-            "TFTP LLM error during {} for {}: {} - sending ERROR and ending transfer",
-            stage, peer_addr, err
+        // The backend failed. The client still gets an ERROR packet (a category, never the
+        // error text — see `llm_failure_error_packet`) and the transfer is torn down cleanly,
+        // but this is the outcome an operator greps for, so it is tagged and logged at ERROR.
+        // The two categories are kept apart because one is retryable and one is not.
+        let decision = if crate::utils::WireFailure::classify(err).is_overloaded() {
+            "fail_closed_llm_overloaded"
+        } else {
+            "fail_closed_llm_error"
+        };
+        log.error(format!(
+            "TFTP {} from {} decision={}: {} - sending ERROR and ending transfer",
+            stage, peer_addr, decision, err
         ));
 
         let packet = Self::llm_failure_error_packet(err);

@@ -368,19 +368,50 @@ When scripting enabled:
 - [NTP Stratum Levels](https://www.ntp.org/reflib/book/ch11/)
 - [ntpd-rs (Rust NTP daemon)](https://github.com/pendulum-project/ntpd-rs)
 
-## Failure behaviour: Kiss-o'-Death
+## Failure behaviour
 
-When `call_llm` returns `Err`, the request is answered with a **Kiss-o'-Death packet**
-(RFC 5905 §7.4) rather than dropped: LI 3 (unsynchronized), stratum 0, and a four-character
-kiss code in the reference identifier — `RATE` when `crate::llm::is_overload_error` says the
-failure was capacity exhaustion, `INIT` otherwise. `actions::build_kod_packet` builds it and
-the client's transmit timestamp is echoed as the origin timestamp, without which the reply is
-discarded as unrelated.
+**This section previously described a Kiss-o'-Death failure path. The code does not do that,
+and has not for some time.** `actions::build_kod_packet` exists, compiles and is correct —
+and is called by nothing: `grep -rn build_kod_packet src/` finds the definition and this
+file's old claim, no call site. What `mod.rs` actually does on `call_llm` returning `Err` is
+send the **mechanical static time response** — LI 0, stratum 2, LOCL, true current time — and
+`tests/server/ntp/llm_failure_test.rs` asserts exactly that, down to
+`assert_eq!(buf[1], 2, "… not a Kiss-o'-Death (stratum 0)")`. The doc and the test have
+contradicted each other in this directory; the test is the one that runs.
 
-`chrony`, `ntpd` and `ntpdate` recognise a KoD, refuse to take time from it, and stop polling.
-That matters twice: silence looks like a merely slow server so the client keeps retrying, and a
-KoD can never be mistaken for a time sample, so an outage cannot hand anyone a fabricated clock
-reading. Note this makes the "No Kiss-of-Death" limitation above only half true — KoD is not
-available to the *model*, but the server emits one on its own failure path.
+### The honest name for the LLM-failure path is not "fail closed"
 
-Covered by `tests/server/ntp/llm_failure_test.rs`, which decodes all 48 bytes by hand.
+A stratum-2 reply is a **positive assertion**: the client takes it as a usable time sample and
+sets its clock. So on backend failure the peer gets an affirmative answer, which is why that
+path is tagged `decision=static_default_llm_error` and **not** `decision=fail_closed_*` —
+`grep decision=fail_closed` will not find an NTP backend outage, deliberately, because the
+server did not deny anything.
+
+The argument for the behaviour is that the mechanical answer is the server's *own clock*, so
+it cannot be a lie in the operator's favour: an operator who opted into the model in order to
+skew the time simply gets the truth instead. That is a real argument and the behaviour is
+left as it is. It is not the same as failing closed, and the log must not pretend otherwise.
+If it is ever revisited, `build_kod_packet` is the alternative already sitting in
+`actions.rs`, and a KoD is the one reply NTP defines that is not a time sample.
+
+### Every terminal outcome
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| No operator policy at all (`operator_wants_dynamic` false) — no model call is made | mechanical stratum-2 time response | INFO `decision=static_default` |
+| Model answered with `send_ntp_time_response` / `send_ntp_response` | that packet | INFO `NTP request from <peer> decision=model_answer` |
+| Model answered `ignore_request` | **nothing** | INFO `decision=model_reject` |
+| Model answered with no usable action | **nothing**; the client keeps polling | WARN `decision=model_silent` |
+| Executor refused the model's action (bad hex, short packet, unknown action) | **nothing** | ERROR `decision=fail_closed_bad_action` naming the action and the reason |
+| Backend failed or was saturated | mechanical stratum-2 time response — **an affirmative answer**, see above | ERROR `decision=static_default_llm_error category=overloaded\|unavailable` with the full error |
+| The server's own static action failed to encode | nothing | ERROR/WARN `decision=fail_closed_action_error` |
+
+Both static sends carry the token on their own line too
+(`NTP static time response to <peer> (48 bytes) decision=…`), so the two are never conflated.
+
+The error text never reaches the wire: an NTP reply is 48 fixed binary bytes with no free-text
+field, so there is nothing to leak into. `WireFailure::classify` is used only to put
+`category=overloaded` / `category=unavailable` in the log.
+
+Covered by `tests/server/ntp/llm_failure_test.rs` (decodes all 48 bytes by hand) and
+`tests/server/ntp/decision_tag_test.rs` (asserts the tag on the failure path).

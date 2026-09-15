@@ -214,6 +214,90 @@ where
     }
 }
 
+/// The RFC 959 reply code at the head of a control-connection write, when there is one.
+///
+/// For the log only. FTP has a rich enough vocabulary that the *code* is the outcome, so the
+/// `decision=` line names what the peer actually received — which is how an operator sees
+/// that a PASS was answered 530 and not 230.
+#[cfg(feature = "ftp")]
+fn reply_code_of(data: &[u8]) -> Option<u16> {
+    let head = data.get(..3)?;
+    if head.iter().all(u8::is_ascii_digit) {
+        std::str::from_utf8(head).ok()?.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// How a single `ftp_command` event ended, as a stable `decision=` token plus the detail the
+/// log line carries.
+///
+/// Computed **before** `protocol_results` is consumed, because the command loop moves them
+/// into a `for` and the `CloseConnection` arm returns straight out of it.
+///
+/// The three non-answer outcomes are the point. A model that refuses (`close_connection`), a
+/// model that answered with nothing, and a model whose action the executor refused all leave
+/// the *same* thing on the wire today — nothing at all — so the log is the only place they
+/// can be told apart, and only the first of the three is a decision anybody made.
+#[cfg(feature = "ftp")]
+fn classify_ftp_outcome(result: &crate::llm::ExecutionResult) -> (&'static str, String) {
+    let codes: Vec<String> = result
+        .protocol_results
+        .iter()
+        .flat_map(|r| r.get_all_output())
+        .map(|d| match reply_code_of(&d) {
+            Some(code) => code.to_string(),
+            None => "non-numeric".to_string(),
+        })
+        .collect();
+
+    if !codes.is_empty() {
+        return ("model_answer", format!("reply {}", codes.join(",")));
+    }
+
+    // Only a top-level `CloseConnection` is honoured by the command loop, so only a top-level
+    // one is reported here.
+    if result
+        .protocol_results
+        .iter()
+        .any(|r| matches!(r, ActionResult::CloseConnection))
+    {
+        return (
+            "model_reject",
+            "close_connection: control connection closed with no reply".to_string(),
+        );
+    }
+
+    // `wait_for_more` also writes nothing, but it is a decision the model made and declared,
+    // not an absence of one. Folding it into `model_silent` would be the exact conflation this
+    // tagging exists to prevent.
+    if result
+        .protocol_results
+        .iter()
+        .any(|r| matches!(r, ActionResult::WaitForMore))
+    {
+        return (
+            "model_wait_for_more",
+            "wait_for_more: no reply until the client sends another line".to_string(),
+        );
+    }
+
+    if !result.failures.is_empty() {
+        let detail = result
+            .failures
+            .iter()
+            .map(|f| format!("{}: {}", f.action, f.error))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return ("fail_closed_bad_action", detail);
+    }
+
+    (
+        "model_silent",
+        "no usable action; nothing was written and the client is left waiting".to_string(),
+    )
+}
+
 #[cfg(feature = "ftp")]
 struct FtpSession;
 
@@ -351,6 +435,33 @@ impl FtpSession {
         .await
         {
             Ok(execution_result) => {
+                let (decision, detail) = classify_ftp_outcome(&execution_result);
+                let log = Log::new(Some(status_tx));
+                match decision {
+                    "model_answer" => log.info(format!(
+                        "FTP greeting on connection {connection_id} decision=model_answer \
+                         ({detail})"
+                    )),
+                    "model_reject" => log.info(format!(
+                        "FTP greeting on connection {connection_id} decision=model_reject \
+                         ({detail})"
+                    )),
+                    "model_wait_for_more" => log.info(format!(
+                        "FTP greeting on connection {connection_id} \
+                         decision=model_wait_for_more ({detail})"
+                    )),
+                    "fail_closed_bad_action" => log.error(format!(
+                        "FTP greeting on connection {connection_id} \
+                         decision=fail_closed_bad_action ({detail}); the client is waiting for a \
+                         220 that will never arrive"
+                    )),
+                    _ => log.warn(format!(
+                        "FTP greeting on connection {connection_id} decision=model_silent \
+                         ({detail}); an FTP client may send no command until it has read a \
+                         greeting"
+                    )),
+                }
+
                 for protocol_result in execution_result.protocol_results {
                     if let ActionResult::Output(data) = protocol_result {
                         Self::write_out(write_half, &data, app_state, server_id, connection_id)
@@ -364,9 +475,16 @@ impl FtpSession {
                 // a command until it has read one. RFC 959 defines 421 as the greeting a
                 // server sends when it is declining the session, and it closes afterwards -
                 // which is the same shape SMTP uses, for the same reason.
-                let notice = crate::utils::WireFailure::classify(&e).prefixed_text();
-                Log::new(Some(status_tx)).warn(format!(
-                    "FTP greeting handler failed on connection {connection_id}, refused with 421 ({notice}): {e}"
+                let failure = crate::utils::WireFailure::classify(&e);
+                let notice = failure.prefixed_text();
+                let decision = if failure.is_overloaded() {
+                    "fail_closed_llm_overloaded"
+                } else {
+                    "fail_closed_llm_error"
+                };
+                Log::new(Some(status_tx)).error(format!(
+                    "FTP greeting on connection {connection_id} decision={decision}, refused \
+                     with 421 ({notice}): {e}"
                 ));
                 let reply =
                     format!("421 Service not available, closing control connection ({notice})\r\n");
@@ -418,8 +536,9 @@ impl FtpSession {
                     // "line too long" code, but 500 is the syntax-error reply and the
                     // connection is closed so the peer cannot keep feeding the buffer.
                     log.warn(format!(
-                        "FTP command line from connection {connection_id} exceeded \
-                         {MAX_COMMAND_LINE} bytes without a newline; closing"
+                        "FTP command line from connection {connection_id} \
+                         decision=refused_line_too_long: exceeded {MAX_COMMAND_LINE} bytes \
+                         without a newline; answered 500 and closing"
                     ));
                     let _ = Self::write_out(
                         write_half,
@@ -468,6 +587,31 @@ impl FtpSession {
             .await
             {
                 Ok(execution_result) => {
+                    let (decision, detail) = classify_ftp_outcome(&execution_result);
+                    match decision {
+                        "model_answer" => log.info(format!(
+                            "FTP {command:?} on connection {connection_id} \
+                             decision=model_answer ({detail})"
+                        )),
+                        "model_reject" => log.info(format!(
+                            "FTP {command:?} on connection {connection_id} \
+                             decision=model_reject ({detail})"
+                        )),
+                        "model_wait_for_more" => log.info(format!(
+                            "FTP {command:?} on connection {connection_id} \
+                             decision=model_wait_for_more ({detail})"
+                        )),
+                        "fail_closed_bad_action" => log.error(format!(
+                            "FTP {command:?} on connection {connection_id} \
+                             decision=fail_closed_bad_action ({detail}); nothing was written and \
+                             the client is left waiting"
+                        )),
+                        _ => log.warn(format!(
+                            "FTP {command:?} on connection {connection_id} \
+                             decision=model_silent ({detail})"
+                        )),
+                    }
+
                     for protocol_result in execution_result.protocol_results {
                         match protocol_result {
                             ActionResult::Output(data) => {
@@ -498,10 +642,16 @@ impl FtpSession {
                     // path uses — never the error text. `prefixed_text()` returns
                     // `&'static str`, so nothing derived from `e` can reach the wire; `e`
                     // itself goes to the log, which is where an operator looks.
-                    let notice = crate::utils::WireFailure::classify(&e).prefixed_text();
-                    log.warn(format!(
-                        "FTP handler failed for command {command:?}, refused with 421 \
-                         ({notice}): {e}"
+                    let failure = crate::utils::WireFailure::classify(&e);
+                    let notice = failure.prefixed_text();
+                    let decision = if failure.is_overloaded() {
+                        "fail_closed_llm_overloaded"
+                    } else {
+                        "fail_closed_llm_error"
+                    };
+                    log.error(format!(
+                        "FTP {command:?} on connection {connection_id} decision={decision}, \
+                         refused with 421 ({notice}): {e}"
                     ));
                     let reply = format!(
                         "421 Service not available, closing control connection ({notice})\r\n"
