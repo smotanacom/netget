@@ -8,7 +8,6 @@ mod e2e_ldap {
     use crate::server::helpers::{start_netget_server, E2EResult, NetGetConfig};
     use ldap3::{LdapConnAsync, Scope, SearchEntry};
     use std::time::Duration;
-    use tokio::time::sleep;
 
     /// Test basic LDAP bind (authentication)
     #[tokio::test]
