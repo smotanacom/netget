@@ -498,88 +498,95 @@ impl BluetoothClient {
             let peripheral_clone = peripheral.clone();
 
             // Spawn task to handle notification stream
-            tokio::spawn(async move {
-                match peripheral_clone.notifications().await {
-                    Ok(mut notification_stream) => {
-                        use futures::StreamExt;
-                        while let Some(notification) = notification_stream.next().await {
-                            let client_data = client_data_clone.clone();
-                            let app_state = app_state_clone.clone();
-                            let status_tx = status_tx_clone.clone();
-                            let llm_client = llm_client_clone.clone();
+            // Tracked, not detached: stop_client must abort this task too.
+            let task_owner = app_state.clone();
+            task_owner
+                .spawn_client_task(client_id, async move {
+                    match peripheral_clone.notifications().await {
+                        Ok(mut notification_stream) => {
+                            use futures::StreamExt;
+                            while let Some(notification) = notification_stream.next().await {
+                                let client_data = client_data_clone.clone();
+                                let app_state = app_state_clone.clone();
+                                let status_tx = status_tx_clone.clone();
+                                let llm_client = llm_client_clone.clone();
 
-                            trace!(
-                                "Bluetooth notification received from {:?}",
-                                notification.uuid
-                            );
+                                trace!(
+                                    "Bluetooth notification received from {:?}",
+                                    notification.uuid
+                                );
 
-                            // Call LLM with notification
-                            let protocol = Arc::new(BluetoothClientProtocol::new());
-                            let event = Event::new(
-                                &BLUETOOTH_NOTIFICATION_RECEIVED_EVENT,
-                                serde_json::json!({
-                                    "service_uuid": "unknown", // btleplug doesn't provide service UUID in notification
-                                    "characteristic_uuid": notification.uuid.to_string(),
-                                    "value_hex": hex::encode(&notification.value),
-                                }),
-                            );
+                                // Call LLM with notification
+                                let protocol = Arc::new(BluetoothClientProtocol::new());
+                                let event = Event::new(
+                                    &BLUETOOTH_NOTIFICATION_RECEIVED_EVENT,
+                                    serde_json::json!({
+                                        "service_uuid": "unknown", // btleplug doesn't provide service UUID in notification
+                                        "characteristic_uuid": notification.uuid.to_string(),
+                                        "value_hex": hex::encode(&notification.value),
+                                    }),
+                                );
 
-                            // Copy the memory out before the call: the command loop shares this
-                            // mutex, and a guard held across an LLM round-trip (which a `*` manual
-                            // rule can park for minutes) would stall every injected command.
-                            let memory_snapshot = client_data.lock().await.memory.clone();
-                            if let Some(instruction) =
-                                app_state.get_instruction_for_client(client_id).await
-                            {
-                                match call_llm_for_client(
-                                    &llm_client,
-                                    &app_state,
-                                    client_id.to_string(),
-                                    &instruction,
-                                    &memory_snapshot,
-                                    Some(&event),
-                                    protocol.as_ref(),
-                                    &status_tx,
-                                )
-                                .await
+                                // Copy the memory out before the call: the command loop shares this
+                                // mutex, and a guard held across an LLM round-trip (which a `*` manual
+                                // rule can park for minutes) would stall every injected command.
+                                let memory_snapshot = client_data.lock().await.memory.clone();
+                                if let Some(instruction) =
+                                    app_state.get_instruction_for_client(client_id).await
                                 {
-                                    Ok(ClientLlmResult {
-                                        actions,
-                                        memory_updates,
-                                    }) => {
-                                        // Update memory
-                                        if let Some(mem) = memory_updates {
-                                            client_data.lock().await.memory = mem;
-                                        }
+                                    match call_llm_for_client(
+                                        &llm_client,
+                                        &app_state,
+                                        client_id.to_string(),
+                                        &instruction,
+                                        &memory_snapshot,
+                                        Some(&event),
+                                        protocol.as_ref(),
+                                        &status_tx,
+                                    )
+                                    .await
+                                    {
+                                        Ok(ClientLlmResult {
+                                            actions,
+                                            memory_updates,
+                                        }) => {
+                                            // Update memory
+                                            if let Some(mem) = memory_updates {
+                                                client_data.lock().await.memory = mem;
+                                            }
 
-                                        // Execute actions
-                                        for action in actions {
-                                            if let Err(e) = Self::execute_llm_action(
-                                                action,
-                                                &client_data,
-                                                &app_state,
-                                                &status_tx,
-                                                &llm_client,
-                                                client_id,
-                                            )
-                                            .await
-                                            {
-                                                error!("Error executing Bluetooth action: {}", e);
+                                            // Execute actions
+                                            for action in actions {
+                                                if let Err(e) = Self::execute_llm_action(
+                                                    action,
+                                                    &client_data,
+                                                    &app_state,
+                                                    &status_tx,
+                                                    &llm_client,
+                                                    client_id,
+                                                )
+                                                .await
+                                                {
+                                                    error!(
+                                                        "Error executing Bluetooth action: {}",
+                                                        e
+                                                    );
+                                                }
                                             }
                                         }
-                                    }
-                                    Err(e) => {
-                                        error!("LLM error for Bluetooth notification: {}", e);
+                                        Err(e) => {
+                                            error!("LLM error for Bluetooth notification: {}", e);
+                                        }
                                     }
                                 }
                             }
                         }
+                        Err(e) => {
+                            error!("Failed to get notification stream: {}", e);
+                        }
                     }
-                    Err(e) => {
-                        error!("Failed to get notification stream: {}", e);
-                    }
-                }
-            });
+                })
+                .await;
 
             // Call LLM with connected event
             let protocol = Arc::new(BluetoothClientProtocol::new());

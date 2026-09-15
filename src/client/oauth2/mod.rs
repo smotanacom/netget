@@ -787,39 +787,43 @@ impl OAuth2Client {
                 let app_state_clone = app_state.clone();
                 let llm_client_clone = llm_client.clone();
                 let status_tx_clone = status_tx.clone();
-                tokio::spawn(async move {
-                    for _ in 0..60 {
-                        // Poll for up to 5 minutes
-                        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                // Tracked, not detached: stop_client must abort this task too.
+                let task_owner = app_state.clone();
+                task_owner
+                    .spawn_client_task(client_id, async move {
+                        for _ in 0..60 {
+                            // Poll for up to 5 minutes
+                            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
 
-                        if let Err(e) = Self::poll_device_code(
-                            client_id,
-                            app_state_clone.clone(),
-                            llm_client_clone.clone(),
-                            status_tx_clone.clone(),
-                            // The polling task is nobody's injected command: report its
-                            // token event inline, in its own task.
-                            Dispatch::Inline,
-                        )
-                        .await
-                        {
-                            error!("Device code polling error: {}", e);
-                            break;
-                        }
-
-                        // Check if token was obtained
-                        let has_token = app_state_clone
-                            .with_client_mut(client_id, |client| {
-                                client.get_protocol_field("access_token").is_some()
-                            })
+                            if let Err(e) = Self::poll_device_code(
+                                client_id,
+                                app_state_clone.clone(),
+                                llm_client_clone.clone(),
+                                status_tx_clone.clone(),
+                                // The polling task is nobody's injected command: report its
+                                // token event inline, in its own task.
+                                Dispatch::Inline,
+                            )
                             .await
-                            .unwrap_or(false);
+                            {
+                                error!("Device code polling error: {}", e);
+                                break;
+                            }
 
-                        if has_token {
-                            break;
+                            // Check if token was obtained
+                            let has_token = app_state_clone
+                                .with_client_mut(client_id, |client| {
+                                    client.get_protocol_field("access_token").is_some()
+                                })
+                                .await
+                                .unwrap_or(false);
+
+                            if has_token {
+                                break;
+                            }
                         }
-                    }
-                });
+                    })
+                    .await;
             }
             Err(e) => {
                 Self::handle_oauth_error(

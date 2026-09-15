@@ -402,7 +402,8 @@ async fn run_session(
         peer_asn4_shared.clone(),
         shutdown.clone(),
         status_tx.clone(),
-    );
+    )
+    .await;
 
     let mut session = BgpSession {
         connection_id,
@@ -424,7 +425,7 @@ async fn run_session(
         started: crate::utils::clock::Instant::now(),
     };
 
-    let mut timer_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut timer_task: Option<tokio::task::AbortHandle> = None;
     let result = session.run(&mut reader, &shutdown, &mut timer_task).await;
 
     // Every exit path of the session passes through here, so the peer handle is removed exactly
@@ -453,7 +454,7 @@ impl BgpSession {
         &mut self,
         reader: &mut tokio::io::ReadHalf<tokio::net::TcpStream>,
         shutdown: &Arc<Shutdown>,
-        timer_task: &mut Option<tokio::task::JoinHandle<()>>,
+        timer_task: &mut Option<tokio::task::AbortHandle>,
     ) -> Result<()> {
         debug!("BGP session {} in Connect state", self.connection_id);
 
@@ -542,7 +543,7 @@ impl BgpSession {
         &mut self,
         msg: BgpMessage,
         shutdown: &Arc<Shutdown>,
-        timer_task: &mut Option<tokio::task::JoinHandle<()>>,
+        timer_task: &mut Option<tokio::task::AbortHandle>,
     ) -> Result<bool> {
         match (self.state.clone(), msg) {
             (BgpSessionState::Connect, BgpMessage::Open(open)) => {
@@ -627,7 +628,7 @@ impl BgpSession {
         &mut self,
         open: netgauze_bgp_pkt::open::BgpOpenMessage,
         shutdown: &Arc<Shutdown>,
-        timer_task: &mut Option<tokio::task::JoinHandle<()>>,
+        timer_task: &mut Option<tokio::task::AbortHandle>,
     ) -> Result<bool> {
         // Version, hold time bounds and BGP Identifier validity are checked by the decoder;
         // reaching here means they passed. What is left is what only we can judge.
@@ -724,7 +725,7 @@ impl BgpSession {
                 // from the config instead would make NetGet keep a schedule its peer never
                 // agreed to.
                 self.hold_time = negotiate_hold(hold_time, peer_hold);
-                self.after_open_sent(shutdown, timer_task);
+                self.after_open_sent(shutdown, timer_task).await;
                 Ok(true)
             }
             SendOutcome::Nothing => {
@@ -747,7 +748,7 @@ impl BgpSession {
                 ))?;
                 self.send(bytes);
                 self.hold_time = negotiate_hold(self.config.hold_time, peer_hold);
-                self.after_open_sent(shutdown, timer_task);
+                self.after_open_sent(shutdown, timer_task).await;
                 Ok(true)
             }
         }
@@ -756,25 +757,30 @@ impl BgpSession {
     /// RFC 4271 section 8.2.2: having sent OPEN and received the peer's, send a KEEPALIVE and
     /// enter OpenConfirm. Start the timers here, because from this point the peer is entitled
     /// to expect keepalives at the negotiated cadence.
-    fn after_open_sent(
+    async fn after_open_sent(
         &mut self,
         shutdown: &Arc<Shutdown>,
-        timer_task: &mut Option<tokio::task::JoinHandle<()>>,
+        timer_task: &mut Option<tokio::task::AbortHandle>,
     ) {
         self.send(wire::encode_keepalive());
         self.state = BgpSessionState::OpenConfirm;
         debug!("BGP session {} -> OpenConfirm", self.connection_id);
 
         if self.hold_time > 0 && timer_task.is_none() {
-            *timer_task = Some(spawn_timers(
-                self.hold_time,
-                self.out_tx.clone(),
-                self.last_received.clone(),
-                self.started,
-                shutdown.clone(),
-                self.status_tx.clone(),
-                self.connection_id,
-            ));
+            *timer_task = Some(
+                spawn_timers(
+                    self.hold_time,
+                    self.out_tx.clone(),
+                    self.last_received.clone(),
+                    self.started,
+                    shutdown.clone(),
+                    self.status_tx.clone(),
+                    self.connection_id,
+                    self.app_state.clone(),
+                    self.server_id,
+                )
+                .await,
+            );
         }
     }
 
@@ -1142,7 +1148,7 @@ impl SendOutcome {
 /// silent held the socket forever.
 #[cfg(feature = "bgp")]
 #[allow(clippy::too_many_arguments)]
-fn spawn_timers(
+async fn spawn_timers(
     hold_time: u16,
     out_tx: mpsc::UnboundedSender<Vec<u8>>,
     last_received: Arc<AtomicU64>,
@@ -1150,35 +1156,46 @@ fn spawn_timers(
     shutdown: Arc<Shutdown>,
     status_tx: mpsc::UnboundedSender<String>,
     connection_id: crate::server::connection::ConnectionId,
-) -> tokio::task::JoinHandle<()> {
+    app_state: Arc<AppState>,
+    server_id: crate::state::ServerId,
+) -> tokio::task::AbortHandle {
     // RFC 4271 section 10: KeepaliveTime is a third of the negotiated HoldTime.
     let interval = std::time::Duration::from_secs(u64::from(hold_time).div_ceil(3).max(1));
-    tokio::spawn(async move {
-        let keepalive = wire::encode_keepalive();
-        loop {
-            tokio::time::sleep(interval).await;
+    // Tracked, not detached. `CLAUDE.md` records this exact task as the reason
+    // "register every task you spawn, not just the top one" is a rule: aborting the read
+    // loop does not abort what it spawned, so the keepalive timer kept writing to the
+    // socket — and kept it open — after the server was stopped.
+    let task_owner = app_state.clone();
+    task_owner
+        .spawn_server_task(server_id, async move {
+            let keepalive = wire::encode_keepalive();
+            loop {
+                tokio::time::sleep(interval).await;
 
-            let elapsed = started.elapsed().as_secs();
-            let last = last_received.load(Ordering::Relaxed);
-            if elapsed.saturating_sub(last) >= u64::from(hold_time) {
-                Log::new(Some(&status_tx)).warn(format!(
-                    "BGP hold timer expired on {} after {}s of silence",
-                    connection_id,
-                    elapsed.saturating_sub(last)
-                ));
-                if let Ok(bytes) = wire::encode_notification(wire::ERR_HOLD_TIMER_EXPIRED, 0, &[]) {
-                    let _ = out_tx.send(bytes);
+                let elapsed = started.elapsed().as_secs();
+                let last = last_received.load(Ordering::Relaxed);
+                if elapsed.saturating_sub(last) >= u64::from(hold_time) {
+                    Log::new(Some(&status_tx)).warn(format!(
+                        "BGP hold timer expired on {} after {}s of silence",
+                        connection_id,
+                        elapsed.saturating_sub(last)
+                    ));
+                    if let Ok(bytes) =
+                        wire::encode_notification(wire::ERR_HOLD_TIMER_EXPIRED, 0, &[])
+                    {
+                        let _ = out_tx.send(bytes);
+                    }
+                    shutdown.set();
+                    return;
                 }
-                shutdown.set();
-                return;
-            }
 
-            if out_tx.send(keepalive.clone()).is_err() {
-                return;
+                if out_tx.send(keepalive.clone()).is_err() {
+                    return;
+                }
+                trace!("BGP KEEPALIVE sent on {}", connection_id);
             }
-            trace!("BGP KEEPALIVE sent on {}", connection_id);
-        }
-    })
+        })
+        .await
 }
 
 /// `with_deadline` gave up before `fut` finished.
@@ -1258,7 +1275,7 @@ async fn read_message(
 /// speaks again.
 #[cfg(feature = "bgp")]
 #[allow(clippy::too_many_arguments)]
-fn spawn_peer_command_task(
+async fn spawn_peer_command_task(
     mut command_rx: mpsc::Receiver<crate::state::client_handles::ClientCommand>,
     protocol: Arc<BgpProtocol>,
     app_state: Arc<AppState>,
@@ -1268,66 +1285,70 @@ fn spawn_peer_command_task(
     peer_asn4: Arc<AtomicBool>,
     shutdown: Arc<Shutdown>,
     status_tx: mpsc::UnboundedSender<String>,
-) -> tokio::task::JoinHandle<()> {
+) -> tokio::task::AbortHandle {
     use crate::llm::actions::protocol_trait::Protocol;
     use crate::state::client_handles::ClientSendOutcome;
     use crate::state::AccessLogOwner;
 
-    tokio::spawn(async move {
-        while let Some(command) = command_rx.recv().await {
-            let action = command.action.clone();
-            let outcome = execute_injected_action(
-                &action,
-                protocol.as_ref(),
-                &app_state,
-                server_id,
-                &out_tx,
-                peer_asn4.load(Ordering::Relaxed),
-                &shutdown,
-            )
-            .await;
-
-            let outcome_json = match &outcome {
-                Ok(outcome) => serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null),
-                Err(e) => serde_json::json!({"error": e.to_string()}),
-            };
-            app_state
-                .record_access_log(
-                    AccessLogOwner::Server(server_id.as_u32()),
-                    protocol.protocol_name(),
-                    Some(connection_id.as_u32()),
-                    "injected_action",
-                    action,
-                    vec![outcome_json],
+    // Tracked, not detached: stop_server must abort this task too.
+    let task_owner = app_state.clone();
+    task_owner
+        .spawn_server_task(server_id, async move {
+            while let Some(command) = command_rx.recv().await {
+                let action = command.action.clone();
+                let outcome = execute_injected_action(
+                    &action,
+                    protocol.as_ref(),
+                    &app_state,
+                    server_id,
+                    &out_tx,
+                    peer_asn4.load(Ordering::Relaxed),
+                    &shutdown,
                 )
                 .await;
 
-            match &outcome {
-                Err(e) => warn!(
-                    "BGP injected action on server #{} connection {} failed: {}",
-                    server_id.as_u32(),
-                    connection_id,
-                    e
-                ),
-                Ok(ClientSendOutcome::Disconnected) => {
-                    app_state
-                        .remove_peer_handle(server_id, connection_id.as_u32())
-                        .await;
-                    app_state
-                        .close_connection_on_server(server_id, connection_id)
-                        .await;
+                let outcome_json = match &outcome {
+                    Ok(outcome) => serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null),
+                    Err(e) => serde_json::json!({"error": e.to_string()}),
+                };
+                app_state
+                    .record_access_log(
+                        AccessLogOwner::Server(server_id.as_u32()),
+                        protocol.protocol_name(),
+                        Some(connection_id.as_u32()),
+                        "injected_action",
+                        action,
+                        vec![outcome_json],
+                    )
+                    .await;
+
+                match &outcome {
+                    Err(e) => warn!(
+                        "BGP injected action on server #{} connection {} failed: {}",
+                        server_id.as_u32(),
+                        connection_id,
+                        e
+                    ),
+                    Ok(ClientSendOutcome::Disconnected) => {
+                        app_state
+                            .remove_peer_handle(server_id, connection_id.as_u32())
+                            .await;
+                        app_state
+                            .close_connection_on_server(server_id, connection_id)
+                            .await;
+                    }
+                    Ok(_) => {}
                 }
-                Ok(_) => {}
+                let _ = status_tx.send("__UPDATE_UI__".to_string());
+                let _ = command.reply_tx.send(outcome);
             }
-            let _ = status_tx.send("__UPDATE_UI__".to_string());
-            let _ = command.reply_tx.send(outcome);
-        }
-        debug!(
-            "BGP peer command task for server #{} connection {} ended",
-            server_id.as_u32(),
-            connection_id
-        );
-    })
+            debug!(
+                "BGP peer command task for server #{} connection {} ended",
+                server_id.as_u32(),
+                connection_id
+            );
+        })
+        .await
 }
 
 /// Execute one injected action and queue whatever it encodes to.

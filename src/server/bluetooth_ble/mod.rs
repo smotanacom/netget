@@ -481,18 +481,22 @@ impl BluetoothBle {
         let server_data_clone = server_data.clone();
         let protocol_clone = protocol.clone();
 
-        tokio::spawn(async move {
-            Self::event_loop(
-                event_rx,
-                server_id,
-                llm_client_clone,
-                app_state_clone,
-                status_tx_clone,
-                server_data_clone,
-                protocol_clone,
-            )
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = app_state.clone();
+        task_owner
+            .spawn_server_task(server_id, async move {
+                Self::event_loop(
+                    event_rx,
+                    server_id,
+                    llm_client_clone,
+                    app_state_clone,
+                    status_tx_clone,
+                    server_data_clone,
+                    protocol_clone,
+                )
+                .await;
+            })
             .await;
-        });
 
         // BLE speaks to a radio, not a socket, so there is no endpoint to report.
         //
