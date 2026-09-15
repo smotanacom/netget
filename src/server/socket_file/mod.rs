@@ -221,19 +221,23 @@ impl SocketFileServer {
                             let connections_clone = connections.clone();
                             let write_half_for_conn = write_half_arc.clone();
                             let protocol_clone = protocol.clone();
-                            tokio::spawn(async move {
-                                Self::send_banner(
-                                    connection_id,
-                                    server_id,
-                                    llm_client_clone,
-                                    app_state_clone,
-                                    status_tx_clone,
-                                    connections_clone,
-                                    write_half_for_conn,
-                                    protocol_clone,
-                                )
+                            // Tracked, not detached: stop_server must abort this task too.
+                            let task_owner = app_state.clone();
+                            task_owner
+                                .spawn_server_task(server_id, async move {
+                                    Self::send_banner(
+                                        connection_id,
+                                        server_id,
+                                        llm_client_clone,
+                                        app_state_clone,
+                                        status_tx_clone,
+                                        connections_clone,
+                                        write_half_for_conn,
+                                        protocol_clone,
+                                    )
+                                    .await;
+                                })
                                 .await;
-                            });
                         }
 
                         // Spawn reader task
@@ -242,103 +246,115 @@ impl SocketFileServer {
                         let status_tx_clone = status_tx.clone();
                         let connections_clone = connections.clone();
                         let protocol_clone = protocol.clone();
-                        tokio::spawn(async move {
-                            let mut buffer = vec![0u8; 8192];
-                            let mut read_half = read_half;
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let mut buffer = vec![0u8; 8192];
+                                let mut read_half = read_half;
 
-                            loop {
-                                match read_half.read(&mut buffer).await {
-                                    Ok(0) => {
-                                        // Connection closed
-                                        connections_clone.lock().await.remove(&connection_id);
-                                        app_state_clone
-                                            .close_connection_on_server(server_id, connection_id)
-                                            .await;
-                                        Log::new(Some(&status_tx_clone)).info(format!(
-                                            "Socket file connection {connection_id} closed"
-                                        ));
-                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                                        break;
-                                    }
-                                    Ok(n) => {
-                                        let data = Bytes::copy_from_slice(&buffer[..n]);
-
-                                        // Feeds the dashboard rail's counters and refreshes
-                                        // `last_activity`; this protocol never called it, so a
-                                        // live connection read 0B/0B in the tree forever.
-                                        app_state_clone
-                                            .update_connection_stats(
-                                                server_id,
-                                                connection_id,
-                                                Some(n as u64),
-                                                None,
-                                                Some(1),
-                                                None,
-                                            )
-                                            .await;
-
-                                        // Data summary + full payload are FileOnly: the
-                                        // socket_file_data_received event template renders the
-                                        // equivalent lines to the TUI, so streaming the payload
-                                        // here too would duplicate it and load the unbounded
-                                        // status channel.
-                                        let log = Log::new(Some(&status_tx_clone));
-                                        if data.iter().all(|&b| {
-                                            b.is_ascii_graphic() || b.is_ascii_whitespace()
-                                        }) {
-                                            let data_str = String::from_utf8_lossy(&data);
-                                            let preview =
-                                                crate::utils::truncate_for_log(&data_str, 100);
-                                            log.debug(format!(
-                                                "Socket file received {} bytes on {}: {}",
-                                                n, connection_id, preview
+                                loop {
+                                    match read_half.read(&mut buffer).await {
+                                        Ok(0) => {
+                                            // Connection closed
+                                            connections_clone.lock().await.remove(&connection_id);
+                                            app_state_clone
+                                                .close_connection_on_server(
+                                                    server_id,
+                                                    connection_id,
+                                                )
+                                                .await;
+                                            Log::new(Some(&status_tx_clone)).info(format!(
+                                                "Socket file connection {connection_id} closed"
                                             ));
-                                            log.trace(format!(
-                                                "Socket file data (text): {:?}",
-                                                data_str
-                                            ));
-                                        } else {
-                                            log.debug(format!(
+                                            let _ =
+                                                status_tx_clone.send("__UPDATE_UI__".to_string());
+                                            break;
+                                        }
+                                        Ok(n) => {
+                                            let data = Bytes::copy_from_slice(&buffer[..n]);
+
+                                            // Feeds the dashboard rail's counters and refreshes
+                                            // `last_activity`; this protocol never called it, so a
+                                            // live connection read 0B/0B in the tree forever.
+                                            app_state_clone
+                                                .update_connection_stats(
+                                                    server_id,
+                                                    connection_id,
+                                                    Some(n as u64),
+                                                    None,
+                                                    Some(1),
+                                                    None,
+                                                )
+                                                .await;
+
+                                            // Data summary + full payload are FileOnly: the
+                                            // socket_file_data_received event template renders the
+                                            // equivalent lines to the TUI, so streaming the payload
+                                            // here too would duplicate it and load the unbounded
+                                            // status channel.
+                                            let log = Log::new(Some(&status_tx_clone));
+                                            if data.iter().all(|&b| {
+                                                b.is_ascii_graphic() || b.is_ascii_whitespace()
+                                            }) {
+                                                let data_str = String::from_utf8_lossy(&data);
+                                                let preview =
+                                                    crate::utils::truncate_for_log(&data_str, 100);
+                                                log.debug(format!(
+                                                    "Socket file received {} bytes on {}: {}",
+                                                    n, connection_id, preview
+                                                ));
+                                                log.trace(format!(
+                                                    "Socket file data (text): {:?}",
+                                                    data_str
+                                                ));
+                                            } else {
+                                                log.debug(format!(
                                                 "Socket file received {} bytes on {} (binary data)",
                                                 n, connection_id
                                             ));
-                                            log.trace(format!(
-                                                "Socket file data (hex): {}",
-                                                hex::encode(&data)
-                                            ));
-                                        }
+                                                log.trace(format!(
+                                                    "Socket file data (hex): {}",
+                                                    hex::encode(&data)
+                                                ));
+                                            }
 
-                                        // Handle data in separate task
-                                        let llm_clone = llm_client_clone.clone();
-                                        let state_clone = app_state_clone.clone();
-                                        let status_clone = status_tx_clone.clone();
-                                        let conns_clone = connections_clone.clone();
-                                        let protocol_clone = protocol_clone.clone();
-                                        tokio::spawn(async move {
-                                            Self::handle_data_with_actions(
-                                                connection_id,
-                                                server_id,
-                                                data,
-                                                llm_clone,
-                                                state_clone,
-                                                status_clone,
-                                                conns_clone,
-                                                protocol_clone,
-                                            )
-                                            .await;
-                                        });
-                                    }
-                                    Err(e) => {
-                                        Log::new(Some(&status_tx_clone)).error(format!(
-                                            "Read error on socket file connection {}: {}",
-                                            connection_id, e
-                                        ));
-                                        connections_clone.lock().await.remove(&connection_id);
-                                        break;
+                                            // Handle data in separate task
+                                            let llm_clone = llm_client_clone.clone();
+                                            let state_clone = app_state_clone.clone();
+                                            let status_clone = status_tx_clone.clone();
+                                            let conns_clone = connections_clone.clone();
+                                            let protocol_clone = protocol_clone.clone();
+                                            // Tracked, not detached: stop_server must abort this task too.
+                                            let task_owner = app_state_clone.clone();
+                                            task_owner
+                                                .spawn_server_task(server_id, async move {
+                                                    Self::handle_data_with_actions(
+                                                        connection_id,
+                                                        server_id,
+                                                        data,
+                                                        llm_clone,
+                                                        state_clone,
+                                                        status_clone,
+                                                        conns_clone,
+                                                        protocol_clone,
+                                                    )
+                                                    .await;
+                                                })
+                                                .await;
+                                        }
+                                        Err(e) => {
+                                            Log::new(Some(&status_tx_clone)).error(format!(
+                                                "Read error on socket file connection {}: {}",
+                                                connection_id, e
+                                            ));
+                                            connections_clone.lock().await.remove(&connection_id);
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

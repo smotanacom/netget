@@ -159,12 +159,16 @@ impl SshServer {
                             let app_state_clone = app_state.clone();
                             let status_tx_clone = status_tx.clone();
 
-                            tokio::spawn(async move {
-                                app_state_clone
-                                    .add_connection_to_server(server_id_val, conn_state)
-                                    .await;
-                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                            });
+                            // Tracked, not detached: stop_server must abort this task too.
+                            let task_owner = app_state.clone();
+                            task_owner
+                                .spawn_server_task(server_id_val, async move {
+                                    app_state_clone
+                                        .add_connection_to_server(server_id_val, conn_state)
+                                        .await;
+                                    let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                })
+                                .await;
                         }
 
                         // Create handler for this connection
@@ -183,38 +187,53 @@ impl SshServer {
 
                         // Spawn connection handler
                         let app_state_close = app_state.clone();
-                        tokio::spawn(async move {
-                            Log::new(Some(&status_tx_clone))
-                                .debug(format!("SSH: Starting SSH protocol for {}", peer_addr));
-
-                            match russh::server::run_stream(config_clone, tcp_stream, handler).await
+                        // Tracked, not detached: stop_server must abort this task too. SSH's
+                        // `server_id` is an `Option`, so the untracked spawn stays as the
+                        // fallback for a caller with no server to own the connection.
+                        let task_owner = app_state.clone();
+                        let ssh_connection = async move {
                             {
-                                Ok(_) => {
-                                    Log::new(Some(&status_tx_clone))
-                                        .info(format!("SSH: Connection closed: {}", peer_addr));
-                                }
-                                Err(e) => {
-                                    Log::new(Some(&status_tx_clone)).error(format!(
-                                        "SSH: Connection error from {}: {}",
-                                        peer_addr, e
-                                    ));
-                                }
-                            }
+                                Log::new(Some(&status_tx_clone))
+                                    .debug(format!("SSH: Starting SSH protocol for {}", peer_addr));
 
-                            // Mark the connection closed in AppState. Without this the entry
-                            // added above stays `Active` for the life of the server: the rail
-                            // showed every SSH session that had ever connected as still live,
-                            // and a connection-scoped scheduled task on a session that ended
-                            // hours ago was never cleaned up. SSH is connection-oriented, so
-                            // the 10-second idle sweep does not run over it and cannot
-                            // compensate — this is the only place the entry can be retired.
-                            if let Some(server_id_val) = server_id {
-                                app_state_close
-                                    .close_connection_on_server(server_id_val, connection_id)
-                                    .await;
-                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                match russh::server::run_stream(config_clone, tcp_stream, handler)
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        Log::new(Some(&status_tx_clone))
+                                            .info(format!("SSH: Connection closed: {}", peer_addr));
+                                    }
+                                    Err(e) => {
+                                        Log::new(Some(&status_tx_clone)).error(format!(
+                                            "SSH: Connection error from {}: {}",
+                                            peer_addr, e
+                                        ));
+                                    }
+                                }
+
+                                // Mark the connection closed in AppState. Without this the entry
+                                // added above stays `Active` for the life of the server: the rail
+                                // showed every SSH session that had ever connected as still live,
+                                // and a connection-scoped scheduled task on a session that ended
+                                // hours ago was never cleaned up. SSH is connection-oriented, so
+                                // the 10-second idle sweep does not run over it and cannot
+                                // compensate — this is the only place the entry can be retired.
+                                if let Some(server_id_val) = server_id {
+                                    app_state_close
+                                        .close_connection_on_server(server_id_val, connection_id)
+                                        .await;
+                                    let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                }
                             }
-                        });
+                        };
+                        match server_id {
+                            Some(sid) => {
+                                task_owner.spawn_server_task(sid, ssh_connection).await;
+                            }
+                            None => {
+                                tokio::spawn(ssh_connection);
+                            }
+                        }
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("SSH: Accept error: {}", e));

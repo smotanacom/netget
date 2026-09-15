@@ -168,58 +168,62 @@ impl SmtpServer {
                         let protocol_clone = protocol.clone();
                         let tls_acceptor_clone = tls_acceptor.clone();
 
-                        tokio::spawn(async move {
-                            // Optionally perform TLS handshake
-                            if let Some(ref acceptor) = tls_acceptor_clone {
-                                match acceptor.accept(stream).await {
-                                    Ok(tls_stream) => {
-                                        Log::new(Some(&status_clone)).debug(format!(
-                                            "TLS handshake completed for connection {}",
-                                            connection_id
-                                        ));
-                                        if let Err(e) = SmtpSession::handle_session(
-                                            tls_stream,
-                                            connection_id,
-                                            remote_addr,
-                                            local_addr_conn,
-                                            server_id,
-                                            llm_clone,
-                                            state_clone,
-                                            status_clone.clone(),
-                                            protocol_clone,
-                                        )
-                                        .await
-                                        {
-                                            Log::new(Some(&status_clone))
-                                                .error(format!("SMTP session error: {}", e));
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Optionally perform TLS handshake
+                                if let Some(ref acceptor) = tls_acceptor_clone {
+                                    match acceptor.accept(stream).await {
+                                        Ok(tls_stream) => {
+                                            Log::new(Some(&status_clone)).debug(format!(
+                                                "TLS handshake completed for connection {}",
+                                                connection_id
+                                            ));
+                                            if let Err(e) = SmtpSession::handle_session(
+                                                tls_stream,
+                                                connection_id,
+                                                remote_addr,
+                                                local_addr_conn,
+                                                server_id,
+                                                llm_clone,
+                                                state_clone,
+                                                status_clone.clone(),
+                                                protocol_clone,
+                                            )
+                                            .await
+                                            {
+                                                Log::new(Some(&status_clone))
+                                                    .error(format!("SMTP session error: {}", e));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            Log::new(Some(&status_clone)).error(format!(
+                                                "TLS handshake failed for connection {}: {}",
+                                                connection_id, e
+                                            ));
                                         }
                                     }
-                                    Err(e) => {
-                                        Log::new(Some(&status_clone)).error(format!(
-                                            "TLS handshake failed for connection {}: {}",
-                                            connection_id, e
-                                        ));
+                                } else {
+                                    if let Err(e) = SmtpSession::handle_session(
+                                        stream,
+                                        connection_id,
+                                        remote_addr,
+                                        local_addr_conn,
+                                        server_id,
+                                        llm_clone,
+                                        state_clone,
+                                        status_clone.clone(),
+                                        protocol_clone,
+                                    )
+                                    .await
+                                    {
+                                        Log::new(Some(&status_clone))
+                                            .error(format!("SMTP session error: {}", e));
                                     }
-                                }
-                            } else {
-                                if let Err(e) = SmtpSession::handle_session(
-                                    stream,
-                                    connection_id,
-                                    remote_addr,
-                                    local_addr_conn,
-                                    server_id,
-                                    llm_clone,
-                                    state_clone,
-                                    status_clone.clone(),
-                                    protocol_clone,
-                                )
-                                .await
-                                {
-                                    Log::new(Some(&status_clone))
-                                        .error(format!("SMTP session error: {}", e));
-                                }
-                            };
-                        });
+                                };
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("Failed to accept SMTP connection: {}", e);

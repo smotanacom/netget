@@ -750,24 +750,28 @@ impl WebRtcServer {
                         let app_state = Arc::clone(&app_state);
                         let status_tx = status_tx.clone();
                         let llm_client = llm_client.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_signalling(
-                                stream,
-                                remote_addr,
-                                server_data,
-                                app_state,
-                                status_tx,
-                                llm_client,
-                                server_id,
-                            )
-                            .await
-                            {
-                                debug!(
-                                    "WebRTC signalling connection from {} ended: {}",
-                                    remote_addr, e
-                                );
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_signalling(
+                                    stream,
+                                    remote_addr,
+                                    server_data,
+                                    app_state,
+                                    status_tx,
+                                    llm_client,
+                                    server_id,
+                                )
+                                .await
+                                {
+                                    debug!(
+                                        "WebRTC signalling connection from {} ended: {}",
+                                        remote_addr, e
+                                    );
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("WebRTC signalling accept failed: {}", e);

@@ -181,23 +181,27 @@ impl ZookeeperServer {
                         let server_id_opt = server.server_id;
 
                         // Spawn connection handler
-                        tokio::spawn(async move {
-                            // Held for the life of the connection, so the cap counts live
-                            // sessions rather than accepts.
-                            let _permit = permit;
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                server_clone,
-                                status_tx_conn,
-                                connection_id,
-                                app_state_conn,
-                                server_id_opt,
-                            )
-                            .await
-                            {
-                                error!("ZooKeeper connection error: {}", e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // sessions rather than accepts.
+                                let _permit = permit;
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    server_clone,
+                                    status_tx_conn,
+                                    connection_id,
+                                    app_state_conn,
+                                    server_id_opt,
+                                )
+                                .await
+                                {
+                                    error!("ZooKeeper connection error: {}", e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         // A persistent accept error (EMFILE, ENFILE, socket torn down) recurs
@@ -279,7 +283,8 @@ impl ZookeeperServer {
                 connection_id,
                 write_half.clone(),
                 status_tx.clone(),
-            );
+            )
+            .await;
         }
         let _ = status_tx.send("__UPDATE_UI__".to_string());
 
@@ -316,7 +321,7 @@ impl ZookeeperServer {
     /// to the shared write half. An injected reply that names no `xid` is sent with xid -1,
     /// the only xid a real ZooKeeper server ever originates (watch notifications): nothing
     /// else can be correlated to a request the operator cannot see.
-    fn spawn_peer_command_task<W>(
+    async fn spawn_peer_command_task<W>(
         mut command_rx: mpsc::Receiver<crate::state::client_handles::ClientCommand>,
         app_state: Arc<AppState>,
         server_id: crate::state::ServerId,
@@ -330,60 +335,66 @@ impl ZookeeperServer {
         use crate::state::AccessLogOwner;
 
         let protocol: Arc<ZookeeperProtocol> = Arc::new(ZookeeperProtocol::new());
-        tokio::spawn(async move {
-            while let Some(command) = command_rx.recv().await {
-                let action = command.action.clone();
-                let outcome = Self::execute_injected_action(
-                    protocol.as_ref(),
-                    &app_state,
-                    server_id,
-                    connection_id,
-                    &write_half,
-                    &action,
-                )
-                .await;
-
-                let outcome_json = match &outcome {
-                    Ok(outcome) => serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null),
-                    Err(e) => serde_json::json!({"error": e.to_string()}),
-                };
-                app_state
-                    .record_access_log(
-                        AccessLogOwner::Server(server_id.as_u32()),
-                        "zookeeper",
-                        Some(connection_id.as_u32()),
-                        "injected_action",
-                        action,
-                        vec![outcome_json],
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = app_state.clone();
+        task_owner
+            .spawn_server_task(server_id, async move {
+                while let Some(command) = command_rx.recv().await {
+                    let action = command.action.clone();
+                    let outcome = Self::execute_injected_action(
+                        protocol.as_ref(),
+                        &app_state,
+                        server_id,
+                        connection_id,
+                        &write_half,
+                        &action,
                     )
                     .await;
 
-                match &outcome {
-                    Err(e) => warn!(
-                        "injected action on ZooKeeper server #{} connection {} failed: {}",
-                        server_id.as_u32(),
-                        connection_id,
-                        e
-                    ),
-                    Ok(ClientSendOutcome::Disconnected) => {
-                        app_state
-                            .remove_peer_handle(server_id, connection_id.as_u32())
-                            .await;
-                        app_state
-                            .close_connection_on_server(server_id, connection_id)
-                            .await;
+                    let outcome_json = match &outcome {
+                        Ok(outcome) => {
+                            serde_json::to_value(outcome).unwrap_or(serde_json::Value::Null)
+                        }
+                        Err(e) => serde_json::json!({"error": e.to_string()}),
+                    };
+                    app_state
+                        .record_access_log(
+                            AccessLogOwner::Server(server_id.as_u32()),
+                            "zookeeper",
+                            Some(connection_id.as_u32()),
+                            "injected_action",
+                            action,
+                            vec![outcome_json],
+                        )
+                        .await;
+
+                    match &outcome {
+                        Err(e) => warn!(
+                            "injected action on ZooKeeper server #{} connection {} failed: {}",
+                            server_id.as_u32(),
+                            connection_id,
+                            e
+                        ),
+                        Ok(ClientSendOutcome::Disconnected) => {
+                            app_state
+                                .remove_peer_handle(server_id, connection_id.as_u32())
+                                .await;
+                            app_state
+                                .close_connection_on_server(server_id, connection_id)
+                                .await;
+                        }
+                        Ok(_) => {}
                     }
-                    Ok(_) => {}
+                    let _ = status_tx.send("__UPDATE_UI__".to_string());
+                    let _ = command.reply_tx.send(outcome);
                 }
-                let _ = status_tx.send("__UPDATE_UI__".to_string());
-                let _ = command.reply_tx.send(outcome);
-            }
-            debug!(
-                "peer command task for ZooKeeper server #{} connection {} ended",
-                server_id.as_u32(),
-                connection_id
-            );
-        });
+                debug!(
+                    "peer command task for ZooKeeper server #{} connection {} ended",
+                    server_id.as_u32(),
+                    connection_id
+                );
+            })
+            .await;
     }
 
     async fn execute_injected_action<W>(

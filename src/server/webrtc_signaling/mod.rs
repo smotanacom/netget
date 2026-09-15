@@ -269,25 +269,29 @@ impl WebRtcSignalingServer {
                         let llm_client_clone = llm_client.clone();
                         let protocol_clone = Arc::clone(&protocol);
 
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                remote_addr,
-                                server_data_clone,
-                                app_state_clone,
-                                status_tx_clone,
-                                llm_client_clone,
-                                server_id,
-                                protocol_clone,
-                            )
-                            .await
-                            {
-                                error!(
-                                    "Error handling signaling connection from {}: {}",
-                                    remote_addr, e
-                                );
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    remote_addr,
+                                    server_data_clone,
+                                    app_state_clone,
+                                    status_tx_clone,
+                                    llm_client_clone,
+                                    server_id,
+                                    protocol_clone,
+                                )
+                                .await
+                                {
+                                    error!(
+                                        "Error handling signaling connection from {}: {}",
+                                        remote_addr, e
+                                    );
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("Error accepting signaling connection: {}", e);
@@ -681,34 +685,44 @@ impl WebRtcSignalingServer {
                             let proto = protocol.clone();
                             let status = status_tx.clone();
                             let observed = format!("{} {} -> {}", kind, from, to);
-                            tokio::spawn(async move {
-                                if let Err(e) =
-                                    call_llm(&llm, &state, server_id, None, &event, proto.as_ref())
-                                        .await
-                                {
-                                    // Deliberately silent on the wire, and that is the only
-                                    // correct answer here: `webrtc_signaling_message_received`
-                                    // is declared `.with_no_actions()` and fires *after* the
-                                    // relay has already been decided and already reported to
-                                    // the sender. The model cannot speak to the peer on the
-                                    // success path either, so an error frame on this path
-                                    // would announce a failure the peer's signaling did not
-                                    // suffer and could abort a negotiation that succeeded.
-                                    // The operator is who needs to know, so say it loudly
-                                    // there.
-                                    // `llm_error_notice_only`: nothing was pending on this
-                                    // call. The relay was decided in Rust and already
-                                    // reported to the sender, and the event is declared
-                                    // `.with_no_actions()`, so the failure refused nothing
-                                    // and withheld nothing the model could have sent.
-                                    Log::new(Some(&status)).error(format!(
+                            // Tracked, not detached: stop_server must abort this task too.
+                            let task_owner = app_state.clone();
+                            task_owner
+                                .spawn_server_task(server_id, async move {
+                                    if let Err(e) = call_llm(
+                                        &llm,
+                                        &state,
+                                        server_id,
+                                        None,
+                                        &event,
+                                        proto.as_ref(),
+                                    )
+                                    .await
+                                    {
+                                        // Deliberately silent on the wire, and that is the only
+                                        // correct answer here: `webrtc_signaling_message_received`
+                                        // is declared `.with_no_actions()` and fires *after* the
+                                        // relay has already been decided and already reported to
+                                        // the sender. The model cannot speak to the peer on the
+                                        // success path either, so an error frame on this path
+                                        // would announce a failure the peer's signaling did not
+                                        // suffer and could abort a negotiation that succeeded.
+                                        // The operator is who needs to know, so say it loudly
+                                        // there.
+                                        // `llm_error_notice_only`: nothing was pending on this
+                                        // call. The relay was decided in Rust and already
+                                        // reported to the sender, and the event is declared
+                                        // `.with_no_actions()`, so the failure refused nothing
+                                        // and withheld nothing the model could have sent.
+                                        Log::new(Some(&status)).error(format!(
                                         "WebRTC signaling {} webrtc_signaling_message_received \
                                          decision=llm_error_notice_only: LLM call failed ({}) - \
                                          message was already relayed, no frame sent",
                                         observed, e
                                     ));
-                                }
-                            });
+                                    }
+                                })
+                                .await;
                         }
                         other => {
                             debug!("Ignoring signaling message: {:?}", other);

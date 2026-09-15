@@ -138,47 +138,53 @@ impl ImapServer {
                         let protocol_clone = protocol.clone();
                         let write_half_for_session = write_half_arc.clone();
 
-                        tokio::spawn(async move {
-                            let mut session = ImapSession {
-                                reader: BufReader::new(read_half),
-                                writer: write_half_for_session,
-                                connection_id,
-                                server_id,
-                                remote_addr,
-                                llm_client: llm_clone,
-                                app_state: state_clone.clone(),
-                                status_tx: status_clone.clone(),
-                                protocol: protocol_clone,
-                            };
-
-                            // Handle IMAP session
-                            if let Err(e) = session.handle().await {
-                                error!("IMAP session error for {}: {}", connection_id, e);
-                                Log::new(Some(&status_clone))
-                                    .error(format!("IMAP session {} error: {}", connection_id, e));
-                            }
-
-                            // Every exit path of `handle()` - EOF, read error, refused
-                            // greeting, LOGOUT - lands here, so this single cleanup removes the
-                            // peer handle no matter how the session ended (idempotent with the
-                            // peer task's own removal on an injected close).
-                            state_clone
-                                .remove_peer_handle(server_id, connection_id.as_u32())
-                                .await;
-
-                            // Mark connection as closed
-                            state_clone
-                                .update_connection_status(
-                                    server_id,
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let mut session = ImapSession {
+                                    reader: BufReader::new(read_half),
+                                    writer: write_half_for_session,
                                     connection_id,
-                                    ConnectionStatus::Closed,
-                                )
-                                .await;
+                                    server_id,
+                                    remote_addr,
+                                    llm_client: llm_clone,
+                                    app_state: state_clone.clone(),
+                                    status_tx: status_clone.clone(),
+                                    protocol: protocol_clone,
+                                };
 
-                            info!("IMAP connection {} closed", connection_id);
-                            let _ = status_clone
-                                .send(format!("✗ IMAP connection {} closed", connection_id));
-                        });
+                                // Handle IMAP session
+                                if let Err(e) = session.handle().await {
+                                    error!("IMAP session error for {}: {}", connection_id, e);
+                                    Log::new(Some(&status_clone)).error(format!(
+                                        "IMAP session {} error: {}",
+                                        connection_id, e
+                                    ));
+                                }
+
+                                // Every exit path of `handle()` - EOF, read error, refused
+                                // greeting, LOGOUT - lands here, so this single cleanup removes the
+                                // peer handle no matter how the session ended (idempotent with the
+                                // peer task's own removal on an injected close).
+                                state_clone
+                                    .remove_peer_handle(server_id, connection_id.as_u32())
+                                    .await;
+
+                                // Mark connection as closed
+                                state_clone
+                                    .update_connection_status(
+                                        server_id,
+                                        connection_id,
+                                        ConnectionStatus::Closed,
+                                    )
+                                    .await;
+
+                                info!("IMAP connection {} closed", connection_id);
+                                let _ = status_clone
+                                    .send(format!("✗ IMAP connection {} closed", connection_id));
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

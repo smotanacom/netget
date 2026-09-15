@@ -359,37 +359,41 @@ impl M3uaServer {
                         let status_clone = status_tx.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
-                            // Held for the life of the association, so the cap counts live
-                            // associations rather than accepts.
-                            let _permit = permit;
-                            if let Err(e) = run_session(
-                                stream,
-                                connection_id,
-                                server_id,
-                                remote_addr,
-                                llm_clone,
-                                state_clone.clone(),
-                                status_clone.clone(),
-                                protocol_clone,
-                                config,
-                            )
-                            .await
-                            {
-                                Log::new(Some(&status_clone))
-                                    .error(format!("M3UA association error: {}", e));
-                            }
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the association, so the cap counts live
+                                // associations rather than accepts.
+                                let _permit = permit;
+                                if let Err(e) = run_session(
+                                    stream,
+                                    connection_id,
+                                    server_id,
+                                    remote_addr,
+                                    llm_clone,
+                                    state_clone.clone(),
+                                    status_clone.clone(),
+                                    protocol_clone,
+                                    config,
+                                )
+                                .await
+                                {
+                                    Log::new(Some(&status_clone))
+                                        .error(format!("M3UA association error: {}", e));
+                                }
 
-                            state_clone
-                                .remove_peer_handle(server_id, connection_id.as_u32())
-                                .await;
-                            state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            Log::new(Some(&status_clone))
-                                .info(format!("M3UA association {} closed", connection_id));
-                            let _ = status_clone.send("__UPDATE_UI__".to_string());
-                        });
+                                state_clone
+                                    .remove_peer_handle(server_id, connection_id.as_u32())
+                                    .await;
+                                state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                Log::new(Some(&status_clone))
+                                    .info(format!("M3UA association {} closed", connection_id));
+                                let _ = status_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

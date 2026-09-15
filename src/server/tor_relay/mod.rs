@@ -192,27 +192,31 @@ impl TorRelayServer {
                         let protocol_clone = protocol.clone();
                         let circuit_mgr_clone = circuit_manager.clone();
 
-                        tokio::spawn(async move {
-                            // Held for the life of the connection, so the cap counts live
-                            // peers rather than accepts.
-                            let _permit = permit;
-                            if let Err(e) = handle_tor_relay_connection(
-                                stream,
-                                connection_id,
-                                server_id,
-                                remote_addr,
-                                acceptor_clone,
-                                llm_clone,
-                                state_clone,
-                                status_clone,
-                                protocol_clone,
-                                circuit_mgr_clone,
-                            )
-                            .await
-                            {
-                                error!("Tor Relay connection error: {}", e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // peers rather than accepts.
+                                let _permit = permit;
+                                if let Err(e) = handle_tor_relay_connection(
+                                    stream,
+                                    connection_id,
+                                    server_id,
+                                    remote_addr,
+                                    acceptor_clone,
+                                    llm_clone,
+                                    state_clone,
+                                    status_clone,
+                                    protocol_clone,
+                                    circuit_mgr_clone,
+                                )
+                                .await
+                                {
+                                    error!("Tor Relay connection error: {}", e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))
@@ -1364,88 +1368,92 @@ impl TorRelaySession {
         let circuit_mgr = self.circuit_manager.clone();
         let status_tx = self.status_tx.clone();
 
-        tokio::spawn(async move {
-            let mut buffer = vec![0u8; 498]; // Max relay cell data size
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = self.app_state.clone();
+        task_owner
+            .spawn_server_task(self.server_id, async move {
+                let mut buffer = vec![0u8; 498]; // Max relay cell data size
 
-            loop {
-                let bytes_read = {
-                    let mut conn = connection.lock().await;
-                    match conn.read(&mut buffer).await {
-                        Ok(0) => {
-                            // EOF - connection closed
-                            debug!("Stream {} EOF from target", stream_id.as_u16());
-                            break;
+                loop {
+                    let bytes_read = {
+                        let mut conn = connection.lock().await;
+                        match conn.read(&mut buffer).await {
+                            Ok(0) => {
+                                // EOF - connection closed
+                                debug!("Stream {} EOF from target", stream_id.as_u16());
+                                break;
+                            }
+                            Ok(n) => n,
+                            Err(e) => {
+                                error!("Failed to read from stream {}: {}", stream_id.as_u16(), e);
+                                break;
+                            }
                         }
-                        Ok(n) => n,
-                        Err(e) => {
-                            error!("Failed to read from stream {}: {}", stream_id.as_u16(), e);
-                            break;
-                        }
+                    };
+
+                    // Build DATA relay cell
+                    let mut data_cell = build_relay_cell(
+                        circuit_id.as_u32(),
+                        stream_id.as_u16(),
+                        relay_command::DATA,
+                        &buffer[..bytes_read],
+                    );
+
+                    // Encrypt relay cell payload
+                    if let Err(e) = circuit_mgr
+                        .encrypt_relay_cell(circuit_id, &mut data_cell[5..514])
+                        .await
+                    {
+                        error!(
+                            "Failed to encrypt DATA cell for stream {}: {}",
+                            stream_id.as_u16(),
+                            e
+                        );
+                        break;
                     }
-                };
 
-                // Build DATA relay cell
-                let mut data_cell = build_relay_cell(
+                    // Track bytes sent to client
+                    let _ = circuit_mgr.record_sent(circuit_id, 509).await;
+
+                    // Send encrypted cell through channel
+                    if let Err(e) = outgoing_tx.send(data_cell) {
+                        error!(
+                            "Failed to send DATA cell for stream {}: {}",
+                            stream_id.as_u16(),
+                            e
+                        );
+                        break;
+                    }
+
+                    trace!(
+                        "Forwarded {} bytes from stream {} back to client",
+                        bytes_read,
+                        stream_id.as_u16()
+                    );
+                }
+
+                // Send END cell when stream closes
+                let mut end_cell = build_relay_cell(
                     circuit_id.as_u32(),
                     stream_id.as_u16(),
-                    relay_command::DATA,
-                    &buffer[..bytes_read],
+                    relay_command::END,
+                    &[end_reason::DONE],
                 );
 
-                // Encrypt relay cell payload
-                if let Err(e) = circuit_mgr
-                    .encrypt_relay_cell(circuit_id, &mut data_cell[5..514])
+                // Encrypt END cell
+                if let Ok(_) = circuit_mgr
+                    .encrypt_relay_cell(circuit_id, &mut end_cell[5..514])
                     .await
                 {
-                    error!(
-                        "Failed to encrypt DATA cell for stream {}: {}",
-                        stream_id.as_u16(),
-                        e
-                    );
-                    break;
+                    let _ = circuit_mgr.record_sent(circuit_id, 509).await;
+                    let _ = outgoing_tx.send(end_cell);
                 }
 
-                // Track bytes sent to client
-                let _ = circuit_mgr.record_sent(circuit_id, 509).await;
-
-                // Send encrypted cell through channel
-                if let Err(e) = outgoing_tx.send(data_cell) {
-                    error!(
-                        "Failed to send DATA cell for stream {}: {}",
-                        stream_id.as_u16(),
-                        e
-                    );
-                    break;
-                }
-
-                trace!(
-                    "Forwarded {} bytes from stream {} back to client",
-                    bytes_read,
-                    stream_id.as_u16()
-                );
-            }
-
-            // Send END cell when stream closes
-            let mut end_cell = build_relay_cell(
-                circuit_id.as_u32(),
-                stream_id.as_u16(),
-                relay_command::END,
-                &[end_reason::DONE],
-            );
-
-            // Encrypt END cell
-            if let Ok(_) = circuit_mgr
-                .encrypt_relay_cell(circuit_id, &mut end_cell[5..514])
-                .await
-            {
-                let _ = circuit_mgr.record_sent(circuit_id, 509).await;
-                let _ = outgoing_tx.send(end_cell);
-            }
-
-            // Close stream
-            let _ = circuit_mgr.close_stream(circuit_id, stream_id).await;
-            Log::new(Some(&status_tx)).debug(format!("Stream {} closed", stream_id.as_u16()));
-        });
+                // Close stream
+                let _ = circuit_mgr.close_stream(circuit_id, stream_id).await;
+                Log::new(Some(&status_tx)).debug(format!("Stream {} closed", stream_id.as_u16()));
+            })
+            .await;
 
         Ok(())
     }

@@ -152,314 +152,345 @@ impl TlsServer {
                         let connections_clone = connections.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
-                            // Held for the life of the connection, so the cap counts live
-                            // peers rather than accepts.
-                            let _permit = permit;
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // peers rather than accepts.
+                                let _permit = permit;
 
-                            // Perform TLS handshake, bounded. This awaits the peer's
-                            // ClientHello and the rest of its side of the handshake; nothing in
-                            // it involves the model, so the deadline may cover the whole of it.
-                            let handshake = tokio::time::timeout(
-                                FIRST_RECORD_READ_TIMEOUT,
-                                acceptor.accept(stream),
-                            );
-                            let tls_stream = match handshake.await {
-                                Err(_) => {
-                                    Log::new(Some(&status_tx_clone)).warn(format!(
-                                        "TLS handshake with {} produced nothing within {}s; \
+                                // Perform TLS handshake, bounded. This awaits the peer's
+                                // ClientHello and the rest of its side of the handshake; nothing in
+                                // it involves the model, so the deadline may cover the whole of it.
+                                let handshake = tokio::time::timeout(
+                                    FIRST_RECORD_READ_TIMEOUT,
+                                    acceptor.accept(stream),
+                                );
+                                let tls_stream = match handshake.await {
+                                    Err(_) => {
+                                        Log::new(Some(&status_tx_clone)).warn(format!(
+                                            "TLS handshake with {} produced nothing within {}s; \
                                          closing",
-                                        remote_addr,
-                                        FIRST_RECORD_READ_TIMEOUT.as_secs()
-                                    ));
-                                    return;
-                                }
-                                Ok(Ok(stream)) => stream,
-                                Ok(Err(e)) => {
-                                    // Handshake failure ends this connection but is a
-                                    // client-side condition, not a server error: WARN.
-                                    Log::new(Some(&status_tx_clone)).warn(format!(
-                                        "TLS handshake failed with {}: {}",
-                                        remote_addr, e
-                                    ));
-                                    return;
-                                }
-                            };
+                                            remote_addr,
+                                            FIRST_RECORD_READ_TIMEOUT.as_secs()
+                                        ));
+                                        return;
+                                    }
+                                    Ok(Ok(stream)) => stream,
+                                    Ok(Err(e)) => {
+                                        // Handshake failure ends this connection but is a
+                                        // client-side condition, not a server error: WARN.
+                                        Log::new(Some(&status_tx_clone)).warn(format!(
+                                            "TLS handshake failed with {}: {}",
+                                            remote_addr, e
+                                        ));
+                                        return;
+                                    }
+                                };
 
-                            Log::new(Some(&status_tx_clone))
-                                .debug(format!("TLS handshake complete with {}", remote_addr));
+                                Log::new(Some(&status_tx_clone))
+                                    .debug(format!("TLS handshake complete with {}", remote_addr));
 
-                            info!(
-                                "Accepted TLS connection {} from {}",
-                                connection_id, remote_addr
-                            );
+                                info!(
+                                    "Accepted TLS connection {} from {}",
+                                    connection_id, remote_addr
+                                );
 
-                            // Split stream
-                            let (read_half, write_half) = tokio::io::split(tls_stream);
-                            let write_half_arc = Arc::new(Mutex::new(write_half));
+                                // Split stream
+                                let (read_half, write_half) = tokio::io::split(tls_stream);
+                                let write_half_arc = Arc::new(Mutex::new(write_half));
 
-                            // TLS is the one server here whose read loop runs *concurrently*
-                            // with the answer: `handle_data_with_actions` is spawned and the
-                            // loop goes straight back to reading. So a peer whose record is
-                            // parked for a human, or is waiting on the model, sits inside the
-                            // read deadline while that happens — and closing it there would be
-                            // exactly the live-transfer eviction this project learned about
-                            // from TFTP. This tracks work in flight so the read site can tell
-                            // "the peer is silent" from "the peer is waiting for us".
-                            let activity =
-                                Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+                                // TLS is the one server here whose read loop runs *concurrently*
+                                // with the answer: `handle_data_with_actions` is spawned and the
+                                // loop goes straight back to reading. So a peer whose record is
+                                // parked for a human, or is waiting on the model, sits inside the
+                                // read deadline while that happens — and closing it there would be
+                                // exactly the live-transfer eviction this project learned about
+                                // from TFTP. This tracks work in flight so the read site can tell
+                                // "the peer is silent" from "the peer is waiting for us".
+                                let activity = Arc::new(
+                                    crate::server::accept_bounded::ConnectionActivity::new(),
+                                );
 
-                            // Add connection to ServerInstance
-                            use crate::state::server::{
-                                ConnectionState as ServerConnectionState, ConnectionStatus,
-                                ProtocolConnectionInfo,
-                            };
-                            let now = crate::utils::clock::Instant::now();
-                            let conn_state = ServerConnectionState {
-                                id: connection_id,
-                                remote_addr,
-                                local_addr: local_addr_conn,
-                                bytes_sent: 0,
-                                bytes_received: 0,
-                                packets_sent: 0,
-                                packets_received: 0,
-                                last_activity: now,
-                                status: ConnectionStatus::Active,
-                                status_changed_at: now,
-                                protocol_info: ProtocolConnectionInfo::new(serde_json::json!({
-                                    "state": "Idle",
-                                    "tls_handshake": "complete"
-                                })),
-                            };
-                            app_state_clone
-                                .add_connection_to_server(server_id, conn_state)
-                                .await;
-                            let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-
-                            // Register the connection HERE, before either task is spawned.
-                            //
-                            // This used to be the first thing the banner task did, racing the
-                            // reader task spawned immediately after it, and
-                            // handle_data_with_actions returns silently when the connection
-                            // is not in the map. TLS loses that race almost every time: the
-                            // handshake reads from the socket, so application data sent right
-                            // behind the client's Finished is already buffered inside rustls
-                            // and the reader's first read() returns it without ever waiting on
-                            // the I/O driver. 15 of 16 clients that wrote at handshake
-                            // completion had their request dropped with no response and no log
-                            // line.
-                            connections_clone.lock().await.insert(
-                                connection_id,
-                                ConnectionData {
-                                    state: ConnectionState::Idle,
-                                    queued_data: Vec::new(),
-                                    write_half: write_half_arc.clone(),
-                                },
-                            );
-
-                            // Send the greeting banner, if this server was asked for one.
-                            if send_first {
-                                let llm_client_for_conn = llm_client_clone.clone();
-                                let app_state_for_conn = app_state_clone.clone();
-                                let status_tx_for_conn = status_tx_clone.clone();
-                                let connections_for_conn = connections_clone.clone();
-                                let write_half_for_conn = write_half_arc.clone();
-                                let protocol_for_conn = protocol_clone.clone();
-                                tokio::spawn(async move {
-                                    Self::send_banner(
-                                        connection_id,
-                                        server_id,
-                                        llm_client_for_conn,
-                                        app_state_for_conn,
-                                        status_tx_for_conn,
-                                        connections_for_conn,
-                                        write_half_for_conn,
-                                        protocol_for_conn,
-                                    )
+                                // Add connection to ServerInstance
+                                use crate::state::server::{
+                                    ConnectionState as ServerConnectionState, ConnectionStatus,
+                                    ProtocolConnectionInfo,
+                                };
+                                let now = crate::utils::clock::Instant::now();
+                                let conn_state = ServerConnectionState {
+                                    id: connection_id,
+                                    remote_addr,
+                                    local_addr: local_addr_conn,
+                                    bytes_sent: 0,
+                                    bytes_received: 0,
+                                    packets_sent: 0,
+                                    packets_received: 0,
+                                    last_activity: now,
+                                    status: ConnectionStatus::Active,
+                                    status_changed_at: now,
+                                    protocol_info: ProtocolConnectionInfo::new(serde_json::json!({
+                                        "state": "Idle",
+                                        "tls_handshake": "complete"
+                                    })),
+                                };
+                                app_state_clone
+                                    .add_connection_to_server(server_id, conn_state)
                                     .await;
-                                });
-                            }
+                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
 
-                            // Spawn reader task
-                            let llm_client_for_read = llm_client_clone.clone();
-                            let app_state_for_read = app_state_clone.clone();
-                            let status_tx_for_read = status_tx_clone.clone();
-                            let connections_for_read = connections_clone.clone();
-                            let protocol_for_read = protocol_clone.clone();
-                            let activity_for_read = Arc::clone(&activity);
-                            tokio::spawn(async move {
-                                let mut buffer = vec![0u8; 8192];
-                                let mut read_half = read_half;
-                                let mut seen_data = false;
+                                // Register the connection HERE, before either task is spawned.
+                                //
+                                // This used to be the first thing the banner task did, racing the
+                                // reader task spawned immediately after it, and
+                                // handle_data_with_actions returns silently when the connection
+                                // is not in the map. TLS loses that race almost every time: the
+                                // handshake reads from the socket, so application data sent right
+                                // behind the client's Finished is already buffered inside rustls
+                                // and the reader's first read() returns it without ever waiting on
+                                // the I/O driver. 15 of 16 clients that wrote at handshake
+                                // completion had their request dropped with no response and no log
+                                // line.
+                                connections_clone.lock().await.insert(
+                                    connection_id,
+                                    ConnectionData {
+                                        state: ConnectionState::Idle,
+                                        queued_data: Vec::new(),
+                                        write_half: write_half_arc.clone(),
+                                    },
+                                );
 
-                                loop {
-                                    let read_timeout = if seen_data {
-                                        IDLE_AFTER_DATA_TIMEOUT
-                                    } else {
-                                        FIRST_RECORD_READ_TIMEOUT
-                                    };
-                                    // Re-arm rather than close whenever the deadline expires
-                                    // while an answer is still being produced: a peer waiting
-                                    // on us is not idle.
-                                    let read = loop {
-                                        match tokio::time::timeout(
-                                            read_timeout,
-                                            read_half.read(&mut buffer),
-                                        )
-                                        .await
-                                        {
-                                            Ok(read) => break Some(read),
-                                            Err(_) => {
-                                                if activity_for_read.idle_for().is_none() {
-                                                    continue;
-                                                }
-                                                Log::new(Some(&status_tx_for_read)).info(format!(
+                                // Send the greeting banner, if this server was asked for one.
+                                if send_first {
+                                    let llm_client_for_conn = llm_client_clone.clone();
+                                    let app_state_for_conn = app_state_clone.clone();
+                                    let status_tx_for_conn = status_tx_clone.clone();
+                                    let connections_for_conn = connections_clone.clone();
+                                    let write_half_for_conn = write_half_arc.clone();
+                                    let protocol_for_conn = protocol_clone.clone();
+                                    // Tracked, not detached: stop_server must abort this task too.
+                                    let task_owner = app_state_clone.clone();
+                                    task_owner
+                                        .spawn_server_task(server_id, async move {
+                                            Self::send_banner(
+                                                connection_id,
+                                                server_id,
+                                                llm_client_for_conn,
+                                                app_state_for_conn,
+                                                status_tx_for_conn,
+                                                connections_for_conn,
+                                                write_half_for_conn,
+                                                protocol_for_conn,
+                                            )
+                                            .await;
+                                        })
+                                        .await;
+                                }
+
+                                // Spawn reader task
+                                let llm_client_for_read = llm_client_clone.clone();
+                                let app_state_for_read = app_state_clone.clone();
+                                let status_tx_for_read = status_tx_clone.clone();
+                                let connections_for_read = connections_clone.clone();
+                                let protocol_for_read = protocol_clone.clone();
+                                let activity_for_read = Arc::clone(&activity);
+                                // Tracked, not detached: stop_server must abort this task too.
+                                let task_owner = app_state_clone.clone();
+                                task_owner
+                                    .spawn_server_task(server_id, async move {
+                                        let mut buffer = vec![0u8; 8192];
+                                        let mut read_half = read_half;
+                                        let mut seen_data = false;
+
+                                        loop {
+                                            let read_timeout = if seen_data {
+                                                IDLE_AFTER_DATA_TIMEOUT
+                                            } else {
+                                                FIRST_RECORD_READ_TIMEOUT
+                                            };
+                                            // Re-arm rather than close whenever the deadline expires
+                                            // while an answer is still being produced: a peer waiting
+                                            // on us is not idle.
+                                            let read = loop {
+                                                match tokio::time::timeout(
+                                                    read_timeout,
+                                                    read_half.read(&mut buffer),
+                                                )
+                                                .await
+                                                {
+                                                    Ok(read) => break Some(read),
+                                                    Err(_) => {
+                                                        if activity_for_read.idle_for().is_none() {
+                                                            continue;
+                                                        }
+                                                        Log::new(Some(&status_tx_for_read)).info(
+                                                            format!(
                                                     "TLS connection {connection_id} sent nothing \
                                                      for {}s; closing idle connection",
                                                     read_timeout.as_secs()
-                                                ));
-                                                break None;
-                                            }
-                                        }
-                                    };
-                                    let Some(read) = read else {
-                                        connections_for_read.lock().await.remove(&connection_id);
-                                        app_state_for_read
-                                            .close_connection_on_server(server_id, connection_id)
-                                            .await;
-                                        let _ =
-                                            status_tx_for_read.send("__UPDATE_UI__".to_string());
-                                        break;
-                                    };
-                                    match read {
-                                        Ok(0) => {
-                                            // Connection closed
-                                            connections_for_read
-                                                .lock()
-                                                .await
-                                                .remove(&connection_id);
-                                            app_state_for_read
-                                                .close_connection_on_server(
-                                                    server_id,
-                                                    connection_id,
-                                                )
-                                                .await;
-                                            Log::new(Some(&status_tx_for_read)).info(format!(
-                                                "TLS connection {connection_id} closed"
-                                            ));
-                                            let _ = status_tx_for_read
-                                                .send("__UPDATE_UI__".to_string());
-                                            break;
-                                        }
-                                        Ok(n) => {
-                                            seen_data = true;
-                                            let data = Bytes::copy_from_slice(&buffer[..n]);
+                                                ),
+                                                        );
+                                                        break None;
+                                                    }
+                                                }
+                                            };
+                                            let Some(read) = read else {
+                                                connections_for_read
+                                                    .lock()
+                                                    .await
+                                                    .remove(&connection_id);
+                                                app_state_for_read
+                                                    .close_connection_on_server(
+                                                        server_id,
+                                                        connection_id,
+                                                    )
+                                                    .await;
+                                                let _ = status_tx_for_read
+                                                    .send("__UPDATE_UI__".to_string());
+                                                break;
+                                            };
+                                            match read {
+                                                Ok(0) => {
+                                                    // Connection closed
+                                                    connections_for_read
+                                                        .lock()
+                                                        .await
+                                                        .remove(&connection_id);
+                                                    app_state_for_read
+                                                        .close_connection_on_server(
+                                                            server_id,
+                                                            connection_id,
+                                                        )
+                                                        .await;
+                                                    Log::new(Some(&status_tx_for_read)).info(
+                                                        format!(
+                                                            "TLS connection {connection_id} closed"
+                                                        ),
+                                                    );
+                                                    let _ = status_tx_for_read
+                                                        .send("__UPDATE_UI__".to_string());
+                                                    break;
+                                                }
+                                                Ok(n) => {
+                                                    seen_data = true;
+                                                    let data = Bytes::copy_from_slice(&buffer[..n]);
 
-                                            // Keep the rail's down/up counters and
-                                            // `last_activity` moving. Nothing else updates
-                                            // them for TLS, so every connection was drawn
-                                            // with 0B in both directions however much it
-                                            // carried.
-                                            app_state_for_read
-                                                .update_connection_stats(
-                                                    server_id,
-                                                    connection_id,
-                                                    Some(n as u64),
-                                                    None,
-                                                    Some(1),
-                                                    None,
-                                                )
-                                                .await;
+                                                    // Keep the rail's down/up counters and
+                                                    // `last_activity` moving. Nothing else updates
+                                                    // them for TLS, so every connection was drawn
+                                                    // with 0B in both directions however much it
+                                                    // carried.
+                                                    app_state_for_read
+                                                        .update_connection_stats(
+                                                            server_id,
+                                                            connection_id,
+                                                            Some(n as u64),
+                                                            None,
+                                                            Some(1),
+                                                            None,
+                                                        )
+                                                        .await;
 
-                                            // Data summary + full payload are FileOnly: the
-                                            // tls_data_received event template renders the
-                                            // equivalent lines to the TUI, so streaming the
-                                            // payload here too would duplicate it and load the
-                                            // unbounded status channel.
-                                            let log = Log::new(Some(&status_tx_for_read));
-                                            if data.iter().all(|&b| {
-                                                b.is_ascii_graphic() || b.is_ascii_whitespace()
-                                            }) {
-                                                let data_str = String::from_utf8_lossy(&data);
-                                                let preview = if data_str.len() > 100 {
-                                                    format!("{}...", &data_str[..100])
-                                                } else {
-                                                    data_str.to_string()
-                                                };
-                                                log.debug(format!(
-                                                    "TLS received {} bytes on {}: {}",
-                                                    n, connection_id, preview
-                                                ));
-                                                log.trace(format!(
-                                                    "TLS data (text): {:?}",
-                                                    data_str
-                                                ));
-                                            } else {
-                                                log.debug(format!(
+                                                    // Data summary + full payload are FileOnly: the
+                                                    // tls_data_received event template renders the
+                                                    // equivalent lines to the TUI, so streaming the
+                                                    // payload here too would duplicate it and load the
+                                                    // unbounded status channel.
+                                                    let log = Log::new(Some(&status_tx_for_read));
+                                                    if data.iter().all(|&b| {
+                                                        b.is_ascii_graphic()
+                                                            || b.is_ascii_whitespace()
+                                                    }) {
+                                                        let data_str =
+                                                            String::from_utf8_lossy(&data);
+                                                        let preview = if data_str.len() > 100 {
+                                                            format!("{}...", &data_str[..100])
+                                                        } else {
+                                                            data_str.to_string()
+                                                        };
+                                                        log.debug(format!(
+                                                            "TLS received {} bytes on {}: {}",
+                                                            n, connection_id, preview
+                                                        ));
+                                                        log.trace(format!(
+                                                            "TLS data (text): {:?}",
+                                                            data_str
+                                                        ));
+                                                    } else {
+                                                        log.debug(format!(
                                                     "TLS received {} bytes on {} (binary data)",
                                                     n, connection_id
                                                 ));
-                                                log.trace(format!(
-                                                    "TLS data (hex): {}",
-                                                    hex::encode(&data)
-                                                ));
-                                            }
+                                                        log.trace(format!(
+                                                            "TLS data (hex): {}",
+                                                            hex::encode(&data)
+                                                        ));
+                                                    }
 
-                                            // Handle data in separate task
-                                            let llm_clone = llm_client_for_read.clone();
-                                            let state_clone = app_state_for_read.clone();
-                                            let status_clone = status_tx_for_read.clone();
-                                            let conns_clone = connections_for_read.clone();
-                                            let protocol_clone = protocol_for_read.clone();
-                                            // Marked busy *before* the task is spawned, so
-                                            // there is no window in which the read deadline
-                                            // could see the connection as idle while an answer
-                                            // is on its way.
-                                            activity_for_read.begin_work();
-                                            let activity_for_handler =
-                                                Arc::clone(&activity_for_read);
-                                            tokio::spawn(async move {
-                                                Self::handle_data_with_actions(
-                                                    connection_id,
-                                                    server_id,
-                                                    data,
-                                                    llm_clone,
-                                                    state_clone,
-                                                    status_clone,
-                                                    conns_clone,
-                                                    protocol_clone,
-                                                )
-                                                .await;
-                                                activity_for_handler.end_work();
-                                            });
+                                                    // Handle data in separate task
+                                                    let llm_clone = llm_client_for_read.clone();
+                                                    let state_clone = app_state_for_read.clone();
+                                                    let status_clone = status_tx_for_read.clone();
+                                                    let conns_clone = connections_for_read.clone();
+                                                    let protocol_clone = protocol_for_read.clone();
+                                                    // Marked busy *before* the task is spawned, so
+                                                    // there is no window in which the read deadline
+                                                    // could see the connection as idle while an answer
+                                                    // is on its way.
+                                                    activity_for_read.begin_work();
+                                                    let activity_for_handler =
+                                                        Arc::clone(&activity_for_read);
+                                                    // Tracked, not detached: stop_server must abort this task too.
+                                                    let task_owner = app_state_for_read.clone();
+                                                    task_owner
+                                                        .spawn_server_task(server_id, async move {
+                                                            Self::handle_data_with_actions(
+                                                                connection_id,
+                                                                server_id,
+                                                                data,
+                                                                llm_clone,
+                                                                state_clone,
+                                                                status_clone,
+                                                                conns_clone,
+                                                                protocol_clone,
+                                                            )
+                                                            .await;
+                                                            activity_for_handler.end_work();
+                                                        })
+                                                        .await;
+                                                }
+                                                Err(e) => {
+                                                    Log::new(Some(&status_tx_for_read)).error(
+                                                        format!(
+                                                            "Read error on {}: {}",
+                                                            connection_id, e
+                                                        ),
+                                                    );
+                                                    connections_for_read
+                                                        .lock()
+                                                        .await
+                                                        .remove(&connection_id);
+                                                    // Close it in AppState as well. Dropping only the
+                                                    // map entry left the connection drawn as Active
+                                                    // for the life of the server, and every later
+                                                    // stat update targeted a peer that was gone.
+                                                    app_state_for_read
+                                                        .close_connection_on_server(
+                                                            server_id,
+                                                            connection_id,
+                                                        )
+                                                        .await;
+                                                    let _ = status_tx_for_read
+                                                        .send("__UPDATE_UI__".to_string());
+                                                    break;
+                                                }
+                                            }
                                         }
-                                        Err(e) => {
-                                            Log::new(Some(&status_tx_for_read)).error(format!(
-                                                "Read error on {}: {}",
-                                                connection_id, e
-                                            ));
-                                            connections_for_read
-                                                .lock()
-                                                .await
-                                                .remove(&connection_id);
-                                            // Close it in AppState as well. Dropping only the
-                                            // map entry left the connection drawn as Active
-                                            // for the life of the server, and every later
-                                            // stat update targeted a peer that was gone.
-                                            app_state_for_read
-                                                .close_connection_on_server(
-                                                    server_id,
-                                                    connection_id,
-                                                )
-                                                .await;
-                                            let _ = status_tx_for_read
-                                                .send("__UPDATE_UI__".to_string());
-                                            break;
-                                        }
-                                    }
-                                }
-                            });
-                        });
+                                    })
+                                    .await;
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("Accept error: {}", e));

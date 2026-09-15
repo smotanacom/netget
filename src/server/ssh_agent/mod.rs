@@ -206,18 +206,22 @@ impl SshAgentServer {
                         let status_tx_clone = status_tx.clone();
                         let connections_clone = connections.clone();
                         let protocol_clone = protocol.clone();
-                        tokio::spawn(async move {
-                            Self::raise_connection_opened(
-                                connection_id,
-                                server_id,
-                                llm_client_clone,
-                                app_state_clone,
-                                status_tx_clone,
-                                connections_clone,
-                                protocol_clone,
-                            )
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                Self::raise_connection_opened(
+                                    connection_id,
+                                    server_id,
+                                    llm_client_clone,
+                                    app_state_clone,
+                                    status_tx_clone,
+                                    connections_clone,
+                                    protocol_clone,
+                                )
+                                .await;
+                            })
                             .await;
-                        });
 
                         // Spawn reader task
                         let llm_client_clone = llm_client.clone();
@@ -225,7 +229,9 @@ impl SshAgentServer {
                         let status_tx_clone = status_tx.clone();
                         let connections_clone = connections.clone();
                         let protocol_clone = protocol.clone();
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             let mut buffer = vec![0u8; 8192];
                             let mut read_half = read_half;
                             // Bytes received but not yet forming a complete message.
@@ -315,7 +321,7 @@ impl SshAgentServer {
                                     }
                                 }
                             }
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         error!("Failed to accept SSH Agent connection: {}", e);

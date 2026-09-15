@@ -126,22 +126,26 @@ impl MqttServer {
                         let app_state = accept_state.clone();
                         let status_tx = accept_status_tx.clone();
 
-                        tokio::spawn(async move {
-                            if let Err(e) = handle_mqtt_connection(
-                                socket,
-                                peer_addr,
-                                local_addr,
-                                llm_client,
-                                app_state,
-                                status_tx,
-                                server_id,
-                                max_packet_size,
-                            )
-                            .await
-                            {
-                                error!("MQTT connection error ({}): {}", peer_addr, e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = handle_mqtt_connection(
+                                    socket,
+                                    peer_addr,
+                                    local_addr,
+                                    llm_client,
+                                    app_state,
+                                    status_tx,
+                                    server_id,
+                                    max_packet_size,
+                                )
+                                .await
+                                {
+                                    error!("MQTT connection error ({}): {}", peer_addr, e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&accept_status_tx))

@@ -174,20 +174,24 @@ impl BitcoinServer {
                         let write_half_for_conn = write_half_arc.clone();
                         let protocol_clone = protocol.clone();
                         let magic_clone = magic;
-                        tokio::spawn(async move {
-                            Self::handle_connection_opened(
-                                connection_id,
-                                server_id,
-                                llm_client_clone,
-                                app_state_clone,
-                                status_tx_clone,
-                                connections_clone,
-                                write_half_for_conn,
-                                protocol_clone,
-                                magic_clone,
-                            )
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                Self::handle_connection_opened(
+                                    connection_id,
+                                    server_id,
+                                    llm_client_clone,
+                                    app_state_clone,
+                                    status_tx_clone,
+                                    connections_clone,
+                                    write_half_for_conn,
+                                    protocol_clone,
+                                    magic_clone,
+                                )
+                                .await;
+                            })
                             .await;
-                        });
 
                         // Spawn reader task
                         let llm_client_clone = llm_client.clone();
@@ -196,96 +200,106 @@ impl BitcoinServer {
                         let connections_clone = connections.clone();
                         let protocol_clone = protocol.clone();
                         let magic_clone = magic;
-                        tokio::spawn(async move {
-                            let mut buffer = vec![0u8; 8192];
-                            let mut read_half = read_half;
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let mut buffer = vec![0u8; 8192];
+                                let mut read_half = read_half;
 
-                            loop {
-                                match read_half.read(&mut buffer).await {
-                                    Ok(0) => {
-                                        // Connection closed
-                                        Self::teardown_connection(
-                                            &connections_clone,
-                                            &app_state_clone,
-                                            server_id,
-                                            connection_id,
-                                        )
-                                        .await;
-                                        Log::new(Some(&status_tx_clone)).info(format!(
-                                            "Bitcoin connection {} closed",
-                                            connection_id
-                                        ));
-                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                                        break;
-                                    }
-                                    Ok(n) => {
-                                        let data = &buffer[..n];
-                                        app_state_clone
-                                            .update_connection_stats(
+                                loop {
+                                    match read_half.read(&mut buffer).await {
+                                        Ok(0) => {
+                                            // Connection closed
+                                            Self::teardown_connection(
+                                                &connections_clone,
+                                                &app_state_clone,
                                                 server_id,
                                                 connection_id,
-                                                Some(n as u64),
-                                                None,
-                                                Some(1),
-                                                None,
                                             )
                                             .await;
+                                            Log::new(Some(&status_tx_clone)).info(format!(
+                                                "Bitcoin connection {} closed",
+                                                connection_id
+                                            ));
+                                            let _ =
+                                                status_tx_clone.send("__UPDATE_UI__".to_string());
+                                            break;
+                                        }
+                                        Ok(n) => {
+                                            let data = &buffer[..n];
+                                            app_state_clone
+                                                .update_connection_stats(
+                                                    server_id,
+                                                    connection_id,
+                                                    Some(n as u64),
+                                                    None,
+                                                    Some(1),
+                                                    None,
+                                                )
+                                                .await;
 
-                                        // Byte-count summary and full hex payload are
-                                        // FileOnly: the bitcoin_message_received event
-                                        // template reports the message to the TUI, so
-                                        // streaming raw bytes here would duplicate it and
-                                        // load the unbounded status channel.
-                                        let log = Log::new(Some(&status_tx_clone));
-                                        log.debug(format!(
-                                            "Bitcoin P2P received {} bytes on {}",
-                                            n, connection_id
-                                        ));
-                                        log.trace(format!(
-                                            "Bitcoin P2P data (hex): {}",
-                                            hex::encode(data)
-                                        ));
+                                            // Byte-count summary and full hex payload are
+                                            // FileOnly: the bitcoin_message_received event
+                                            // template reports the message to the TUI, so
+                                            // streaming raw bytes here would duplicate it and
+                                            // load the unbounded status channel.
+                                            let log = Log::new(Some(&status_tx_clone));
+                                            log.debug(format!(
+                                                "Bitcoin P2P received {} bytes on {}",
+                                                n, connection_id
+                                            ));
+                                            log.trace(format!(
+                                                "Bitcoin P2P data (hex): {}",
+                                                hex::encode(data)
+                                            ));
 
-                                        // Handle data in separate task
-                                        let llm_clone = llm_client_clone.clone();
-                                        let state_clone = app_state_clone.clone();
-                                        let status_clone = status_tx_clone.clone();
-                                        let conns_clone = connections_clone.clone();
-                                        let protocol_clone = protocol_clone.clone();
-                                        let data_vec = data.to_vec();
-                                        tokio::spawn(async move {
-                                            Self::handle_data_with_actions(
-                                                connection_id,
+                                            // Handle data in separate task
+                                            let llm_clone = llm_client_clone.clone();
+                                            let state_clone = app_state_clone.clone();
+                                            let status_clone = status_tx_clone.clone();
+                                            let conns_clone = connections_clone.clone();
+                                            let protocol_clone = protocol_clone.clone();
+                                            let data_vec = data.to_vec();
+                                            // Tracked, not detached: stop_server must abort this task too.
+                                            let task_owner = app_state_clone.clone();
+                                            task_owner
+                                                .spawn_server_task(server_id, async move {
+                                                    Self::handle_data_with_actions(
+                                                        connection_id,
+                                                        server_id,
+                                                        data_vec,
+                                                        llm_clone,
+                                                        state_clone,
+                                                        status_clone,
+                                                        conns_clone,
+                                                        protocol_clone,
+                                                        magic_clone,
+                                                    )
+                                                    .await;
+                                                })
+                                                .await;
+                                        }
+                                        Err(e) => {
+                                            Log::new(Some(&status_tx_clone)).error(format!(
+                                                "Read error on Bitcoin connection {}: {}",
+                                                connection_id, e
+                                            ));
+                                            Self::teardown_connection(
+                                                &connections_clone,
+                                                &app_state_clone,
                                                 server_id,
-                                                data_vec,
-                                                llm_clone,
-                                                state_clone,
-                                                status_clone,
-                                                conns_clone,
-                                                protocol_clone,
-                                                magic_clone,
+                                                connection_id,
                                             )
                                             .await;
-                                        });
-                                    }
-                                    Err(e) => {
-                                        Log::new(Some(&status_tx_clone)).error(format!(
-                                            "Read error on Bitcoin connection {}: {}",
-                                            connection_id, e
-                                        ));
-                                        Self::teardown_connection(
-                                            &connections_clone,
-                                            &app_state_clone,
-                                            server_id,
-                                            connection_id,
-                                        )
-                                        .await;
-                                        let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                                        break;
+                                            let _ =
+                                                status_tx_clone.send("__UPDATE_UI__".to_string());
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

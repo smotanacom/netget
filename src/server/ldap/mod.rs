@@ -120,33 +120,37 @@ impl LdapServer {
                         let status_clone = status_tx.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
-                            let mut session = LdapSession {
-                                stream,
-                                connection_id,
-                                server_id,
-                                llm_client: llm_clone.clone(),
-                                app_state: state_clone.clone(),
-                                status_tx: status_clone.clone(),
-                                protocol: protocol_clone.clone(),
-                                authenticated: false,
-                                bind_dn: None,
-                            };
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let mut session = LdapSession {
+                                    stream,
+                                    connection_id,
+                                    server_id,
+                                    llm_client: llm_clone.clone(),
+                                    app_state: state_clone.clone(),
+                                    status_tx: status_clone.clone(),
+                                    protocol: protocol_clone.clone(),
+                                    authenticated: false,
+                                    bind_dn: None,
+                                };
 
-                            // Handle LDAP session
-                            if let Err(e) = session.handle().await {
+                                // Handle LDAP session
+                                if let Err(e) = session.handle().await {
+                                    Log::new(Some(&status_clone))
+                                        .error(format!("LDAP session error: {}", e));
+                                }
+
+                                state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_clone.send("__UPDATE_UI__".to_string());
+
                                 Log::new(Some(&status_clone))
-                                    .error(format!("LDAP session error: {}", e));
-                            }
-
-                            state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            let _ = status_clone.send("__UPDATE_UI__".to_string());
-
-                            Log::new(Some(&status_clone))
-                                .info(format!("LDAP connection {} closed", connection_id));
-                        });
+                                    .info(format!("LDAP connection {} closed", connection_id));
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))
@@ -755,17 +759,21 @@ impl LdapSession {
         let protocol = self.protocol.clone();
         let server_id = self.server_id;
         let connection_id = self.connection_id;
-        tokio::spawn(async move {
-            let _ = call_llm(
-                &llm_client,
-                &app_state,
-                server_id,
-                Some(connection_id),
-                &event,
-                protocol.as_ref(),
-            )
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = app_state.clone();
+        task_owner
+            .spawn_server_task(server_id, async move {
+                let _ = call_llm(
+                    &llm_client,
+                    &app_state,
+                    server_id,
+                    Some(connection_id),
+                    &event,
+                    protocol.as_ref(),
+                )
+                .await;
+            })
             .await;
-        });
 
         Ok(SessionStep::Close)
     }
