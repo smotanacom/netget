@@ -1,24 +1,64 @@
 //! Real-client validation: drive the RTSP server with ffprobe (ffmpeg's prober).
 //!
-//! This is `#[ignore]` because it shells out to `ffprobe`, which is not installed on CI runners.
-//! Run manually where ffmpeg is present:
+//! ffprobe performs a real OPTIONS → DESCRIBE → SETUP → PLAY and reads RTP, then reports the
+//! stream. Success proves an independent client — ffmpeg's `libavformat`, which shares no code
+//! with anything in this repository — interoperates with the RTSP + RTP implementation. This is
+//! the whole of RTSP's real-client evidence.
+//!
+//! **This test is not `#[ignore]`d and it does not skip.** It used to be both: `#[ignore]`d for
+//! "run manually", which means nothing ever ran it, so the claim in `metadata()` rested on a
+//! test that had never executed on any machine that mattered. An `#[ignore]` is a skip gate with
+//! better manners — `CLAUDE.md` names it as one of the three ways evidence fails to execute. If
+//! `ffprobe` is absent the test **fails** and says how to install it.
 //!
 //! ```bash
 //! ./cargo-isolated.sh test --no-default-features --features rtsp,rtp \
-//!     --test server -- --ignored --test-threads=1 rtsp::ffprobe
+//!     --test server -- --test-threads=100 rtsp::ffprobe
 //! ```
-//!
-//! ffprobe performs a real OPTIONS → DESCRIBE → SETUP → PLAY and reads RTP, then reports the
-//! stream. Success proves an independent client interoperates with the RTSP + RTP implementation.
 
 #![cfg(all(feature = "rtsp", feature = "rtp"))]
 
 use crate::server::helpers::*;
 use std::time::Duration;
 
+/// Fail, never skip, when `ffprobe` is absent.
+fn require_ffprobe() -> Result<(), Box<dyn std::error::Error>> {
+    match std::process::Command::new("ffprobe")
+        .arg("-version")
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            println!(
+                "{}",
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or("ffprobe")
+            );
+            Ok(())
+        }
+        Ok(out) => Err(format!(
+            "`ffprobe -version` exited {}: this test's whole point is driving ffmpeg's own \
+             RTSP/RTP client against NetGet's server",
+            out.status
+        )
+        .into()),
+        Err(e) => Err(format!(
+            "ffprobe is not available ({e}): this test drives ffmpeg's `libavformat` — an RTSP \
+             and RTP implementation that shares no code with this repository — through a real \
+             OPTIONS/DESCRIBE/SETUP/PLAY, and it is the only independent evidence behind the \
+             RTSP server's maturity rating. Skipping would leave that rating resting on \
+             nothing, so this is a failure and not a skip. Install it with `brew install \
+             ffmpeg` (macOS) or `apt-get install -y ffmpeg` (Debian/Ubuntu)."
+        )
+        .into()),
+    }
+}
+
 #[tokio::test]
-#[ignore = "requires ffprobe (ffmpeg) installed; run manually"]
 async fn ffprobe_reads_rtsp_stream() -> E2EResult<()> {
+    require_ffprobe()?;
+
     let prompt = "listen on port 0 via rtsp\n\nOffer one PCMU audio stream; play a tone on PLAY.";
     let sdp = "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=NetGet\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n\
                m=audio 0 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\na=control:streamid=0\r\n";

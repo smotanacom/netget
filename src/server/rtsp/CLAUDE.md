@@ -1,6 +1,17 @@
 # RTSP Protocol Implementation
 
-RTSP (Real-Time Streaming Protocol, RFC 2326) control server over TCP. **Experimental.**
+RTSP (Real-Time Streaming Protocol, RFC 2326) control server over TCP. **Beta.**
+
+Beta rests on `tests/server/rtsp/ffprobe_test.rs::ffprobe_reads_rtsp_stream`: ffmpeg's
+`ffprobe` completes a real OPTIONS → DESCRIBE → SETUP → PLAY, reads RTP off the negotiated UDP
+port and reports `pcm_mulaw, 8000 Hz, mono`. `libavformat` shares no code with this repository,
+so that is an independent implementation completing a real session — not a codec and not a
+decoder hand-written inside the test. The test is **not** `#[ignore]`d and **fails** rather
+than skips when ffprobe is absent; it was `#[ignore]`d for "run manually" until September 2026,
+so it ran nowhere while `metadata()` cited it.
+
+Still unproven: TCP interleaved transport (not implemented at all), video, and any player
+other than ffmpeg.
 Feature `rtsp` implies `rtp` (`rtsp = ["rtp"]`) because PLAY reuses the RTP media engine.
 
 ## Role

@@ -1,6 +1,19 @@
 # Memcached Server (text protocol)
 
-TCP 11211. The model is the cache.
+TCP 11211. The model is the cache. **Beta.**
+
+Beta rests on libmemcached 1.0.18's C tools in
+`tests/server/memcached/real_client_test.rs` — `memcat` reads a model-invented value,
+`memstat` and `memping` accept our `STAT`/`END` and `VERSION` replies. They are a separate C
+implementation, invoked as subprocesses and never linked, and `memcat` is picky in exactly the
+right place: it reads the byte count out of the `VALUE` header and then reads that many bytes,
+so a wrong count surfaces as an empty or truncated result rather than as a pass. Neither test
+is `#[ignore]`d and both **fail** rather than skip when the binaries are absent — they printed
+`SKIPPED` and returned `Ok(())` until September 2026, a silent pass, which is what held this at
+Experimental.
+
+Still unproven: the binary protocol and the meta commands (`mg`/`ms`/`md`), neither of which is
+implemented, so no client has been pointed at them.
 
 Files: `protocol.rs` (pure parsing and reply framing), `actions.rs` (LLM vocabulary +
 executor), `mod.rs` (listener, per-connection loop).

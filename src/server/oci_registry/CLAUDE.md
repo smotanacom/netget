@@ -11,6 +11,18 @@ an unconditional dependency. Links no system library, so it is in `portable-base
 
 **PULL ONLY.** See [Push](#push-is-not-implemented).
 
+**Beta.** It rests on `crane` (google/go-containerregistry) in
+`tests/server/oci_registry/e2e_test.rs::test_oci_registry_against_crane`: `crane catalog`,
+`ls`, `manifest` (by tag and by the digest crane itself computed), `digest`, `config` and
+`blob` all succeed, and crane **re-hashes every manifest and blob it fetches** and errors out
+on a mismatch rather than warning — so its acceptance is the assertion. The test is not
+`#[ignore]`d and fails rather than skips when crane or `python3` is absent; it printed "crane
+not installed - skipping" and returned `Ok(())` until September 2026, so the claim rested on a
+test that passed vacuously wherever crane was missing.
+
+Still unproven, and named in `metadata().notes` too: docker, containerd, skopeo and oras, none
+of which has been pointed at this server.
+
 ## The design problem: content addressing without storage
 
 OCI is content-addressable. A manifest names its config and layer blobs by

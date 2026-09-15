@@ -138,8 +138,10 @@ calculator schema answers through a `*` static handler, and the client's LLM poi
 that.
 
 Needs `protoc` on PATH — the gRPC server compiles its `proto_schema` by shelling out to it on
-every code path. The test skips itself with a message when `protoc` is absent rather than
-failing, because CI does not install it and does not build the `grpc` feature either.
+every code path. The test **fails** with a message naming the install command when `protoc` is
+absent; it does not skip. A skip returns success on any runner without the binary, which is a
+silent pass. CI does not build the `grpc` feature, so this costs the blocking gate nothing; the
+`registry-audit` job installs `protobuf-compiler`.
 
 What it pins:
 

@@ -11,8 +11,10 @@
 //! never masks (§5.1) and that close frames carry a big-endian status code (§5.5).
 //!
 //! On top of that, `websocat` (a separately built, widely used binary) drives the same server
-//! end to end when it is installed, so the whole path is exercised by something that is not
-//! this test.
+//! end to end, so the whole path is exercised by something that is not this test. `websocat`
+//! 1.x is built on the `websocket` / `websocket-base` crates (rust-websocket) rather than on
+//! `tungstenite`, so it is a second, genuinely independent RFC 6455 implementation and not the
+//! circular-evidence case. That test **fails** when `websocat` is missing; it does not skip.
 //!
 //! # LLM call budget: 5
 //!
@@ -21,7 +23,7 @@
 //! - `test_websocket_subprotocol_and_rejection`: 4 (`open_server`, two `websocket_handshake`
 //!   decisions, one `websocket_connection_opened`)
 //! - `test_websocket_with_websocat`: 0 additional (reuses the static-handler server started
-//!   inside it — 1 `open_server`), skipped entirely when `websocat` is absent
+//!   inside it — 1 `open_server`)
 
 #![cfg(feature = "websocket")]
 
@@ -748,13 +750,31 @@ async fn test_websocket_subprotocol_and_rejection() -> E2EResult<()> {
 }
 
 /// Drive the same server with `websocat`, a separately built WebSocket implementation, so the
-/// evidence is not limited to code in this repository. Skipped when it is not installed.
+/// evidence is not limited to code in this repository.
+///
+/// **This test fails rather than skips when `websocat` is absent**, and that is the whole
+/// reason this protocol may be rated `Beta`. `websocat` 1.x is built on the `websocket` /
+/// `websocket-base` crates (rust-websocket), *not* on `tungstenite` — verified by reading the
+/// crate versions out of the installed binary — so it is a genuinely independent RFC 6455
+/// implementation rather than the circular-evidence case where the peer is the same crate the
+/// server frames with. A `SKIP: … is not installed` gate returns `Ok(())` on any runner
+/// without the binary, which is a silent pass, and the rating would then rest on nothing.
+/// `tests/server/npm/e2e_test.rs::test_npm_with_real_cli` is the shape copied here.
+///
+/// Install it with `brew install websocat`, `cargo install websocat`, or from
+/// <https://github.com/vi/websocat/releases>.
 #[tokio::test]
 async fn test_websocket_with_websocat() -> E2EResult<()> {
-    if which_websocat().is_none() {
-        eprintln!("skipping: websocat is not installed");
-        return Ok(());
-    }
+    let websocat = which_websocat().ok_or_else(|| -> Box<dyn std::error::Error> {
+        "websocat is not installed. This test drives a WebSocket implementation NetGet did not \
+         write (rust-websocket, not the tokio-tungstenite the server frames with) against the \
+         server, and it is the only independent evidence behind the WebSocket server's maturity \
+         rating. Skipping would leave that rating resting on nothing, so this is a failure and \
+         not a skip. Install it with `brew install websocat`, `cargo install websocat`, or from \
+         https://github.com/vi/websocat/releases."
+            .into()
+    })?;
+    println!("websocat: {}", websocat.display());
 
     let server = start_netget_server(echo_server_config(
         "Start a WebSocket server on port 0 that echoes every message back",

@@ -71,7 +71,7 @@ impl Protocol for RtspProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
         ProtocolMetadataV2::builder()
             .connectionless()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation(
                 "Manual RFC 2326 control server over TCP; SETUP allocates a real RTP UDP socket and \
                  PLAY streams G.711 via the shared rtp media engine",
@@ -81,8 +81,16 @@ impl Protocol for RtspProtocol {
                  by PLAY (tone/DTMF/silence)",
             )
             .e2e_testing(
-                "Byte-literal RTSP status/SDP assertions (mock LLM); end-to-end OPTIONS→DESCRIBE→\
-                 SETUP→PLAY with ffprobe/ffplay pulling real RTP",
+                "ffprobe (ffmpeg's libavformat, which shares no code with this repository) \
+                 completes a real OPTIONS→DESCRIBE→SETUP→PLAY, reads RTP off the negotiated \
+                 UDP port and reports pcm_mulaw/8000 Hz, in \
+                 tests/server/rtsp/ffprobe_test.rs::ffprobe_reads_rtsp_stream. That test is \
+                 NOT #[ignore]d and fails rather than skips when ffprobe is absent; until \
+                 September 2026 it was #[ignore]d for \"run manually\", so it ran nowhere \
+                 while this field cited it. Alongside it, byte-literal RTSP status and SDP \
+                 assertions against a mock model, and a parser test for a complete request \
+                 followed by non-UTF-8 bytes. Untested: TCP interleaved transport (not \
+                 implemented), video, and any player other than ffmpeg.",
             )
             .notes(
                 "TCP interleaved transport (RTP over the RTSP TCP channel) is NOT implemented — \

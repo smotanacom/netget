@@ -177,6 +177,43 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             protobuf-compiler libpcap-dev libdbus-1-dev libusb-1.0-0-dev libpcsclite-dev
 
+      # The third-party clients the real-client tests drive. Every one of these tests
+      # FAILS rather than skips when its binary is absent - that is what makes it
+      # evidence rather than a silent pass - so a maturity rating that rests on one of
+      # them can only be checked on a runner that has the binary. Add to this list
+      # whenever a protocol's evidence starts depending on a new binary.
+      #
+      #   curl              - gopher, hls
+      #   dnsutils (dig)    - dns
+      #   ffmpeg (ffprobe)  - rtsp
+      #   freeradius-utils  - radius (radclient)
+      #   libmemcached-tools- memcached (memcat/memstat/memping)
+      #   maven (mvn)       - maven
+      #   npm               - npm
+      #   openvpn           - openvpn
+      #   python3-pip       - pypi, and oci_registry's script handler
+      #   tor               - tor_relay
+      - name: Install the third-party clients the real-client tests drive
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            curl bind9-dnsutils ffmpeg freeradius-utils libmemcached-tools \
+            maven npm openvpn python3-pip tor
+
+      # Not in apt on ubuntu-22.04.
+      #   crane    - oci_registry
+      #   websocat - websocket (rust-websocket, deliberately NOT tungstenite)
+      - name: Install crane and websocat
+        run: |
+          set -eux
+          curl -fsSL -o /tmp/crane.tgz \
+            https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz
+          sudo tar -xzf /tmp/crane.tgz -C /usr/local/bin crane
+          sudo curl -fsSL -o /usr/local/bin/websocat \
+            https://github.com/vi/websocat/releases/download/v1.14.0/websocat.x86_64-unknown-linux-musl
+          sudo chmod +x /usr/local/bin/websocat
+          crane version
+          websocat --version
+
       # Each of these asserts something about EVERY registered protocol: that no event
       # is advertised without usable actions, that no response example is left as a
       # placeholder, that keyword resolution is unambiguous, that declared dependencies
@@ -198,6 +235,37 @@ jobs:
             --test protocol_startup_smoke_test \
             --test connectionless_audit_test \
             -- --test-threads=100 --nocapture
+
+      # The generated evidence table. It reads source only, so it needs no build and
+      # no binaries — but it is here because this is the job that is about ratings.
+      # Advisory: a Beta whose peer this scan cannot find may be over-rated OR may be
+      # driving its client in a way a static read cannot see, and the script says so
+      # rather than guessing.
+      - name: Beta evidence table
+        continue-on-error: true
+        run: |
+          echo "::notice::Generated from source. CLAUDE.md's hand-maintained list has been wrong three times."
+          python3 scripts/beta_evidence_table.py --all
+          python3 scripts/beta_evidence_table.py --experimental-with-evidence
+
+      # The real-client evidence itself. These are the tests every Beta rating that
+      # names a binary rests on, and this is the only job with those binaries, so it
+      # is the only place they can run. Each one fails (never skips) when its client
+      # is missing, so a green run here means the client really was driven.
+      - name: cargo test --all-features (real-client evidence)
+        continue-on-error: true
+        run: |
+          echo "::notice::Advisory only. These are the real-client tests behind the Beta ratings."
+          for filter in \
+            dns::dig_test gopher::e2e_test hls::curl_test kubernetes::e2e_test \
+            maven::e2e_test memcached::real_client_test npm::e2e_test \
+            oci_registry::e2e_test openvpn:: pypi::e2e_test \
+            radius::real_client_test rtsp::ffprobe_test websocket::e2e_test ; do
+            echo "::group::$filter"
+            cargo test --locked --all-features --test server -- \
+              --test-threads=100 --nocapture "$filter" || echo "::warning::$filter failed"
+            echo "::endgroup::"
+          done
 
   test:
     name: Test

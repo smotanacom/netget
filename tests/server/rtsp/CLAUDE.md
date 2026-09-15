@@ -15,15 +15,22 @@ port is advertised in SETUP's `Transport: client_port=`. Asserts:
 
 Mock: 1 startup + 4 method events = **5 calls.** Ends with `verify_mocks().await?`.
 
-## `ffprobe_test.rs` — `ffprobe_reads_rtsp_stream` (`#[ignore]`)
+## `ffprobe_test.rs` — `ffprobe_reads_rtsp_stream`
 
-Real-client validation. Shells out to `ffprobe -rtsp_transport udp`, which performs a genuine
-OPTIONS→DESCRIBE→SETUP→PLAY and reports `Audio: pcm_mulaw, 8000 Hz, mono`. `#[ignore]` because CI
-runners lack ffmpeg; run manually:
+Real-client validation, and the whole of RTSP's real-client evidence. Shells out to
+`ffprobe -rtsp_transport udp`, which performs a genuine OPTIONS→DESCRIBE→SETUP→PLAY, reads RTP
+off the negotiated UDP port and reports `Audio: pcm_mulaw, 8000 Hz, mono`. ffmpeg's
+`libavformat` shares no code with this repository, so this is an independent implementation
+completing a real session — not a codec and not a hand-written decoder.
+
+**Not `#[ignore]`d, and it does not skip.** It used to be `#[ignore]`d for "run manually", so it
+ran nowhere while `metadata()` cited it. An `#[ignore]` is a skip gate with better manners. If
+`ffprobe` is absent the test **fails** and names `brew install ffmpeg` /
+`apt-get install -y ffmpeg`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features rtsp,rtp \
-    --test server -- --ignored --test-threads=1 rtsp::ffprobe
+    --test server -- --test-threads=100 rtsp::ffprobe
 ```
 
 Localhost only.

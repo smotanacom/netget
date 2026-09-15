@@ -51,11 +51,17 @@ All tests treat NetGet as a black box:
 - Asserts the artifact Maven **stored**: the JAR and POM read back out of Maven's local
   repository must be byte-for-byte what NetGet served. Maven only writes them after
   verifying the checksums, which are computed by `shasum` rather than by NetGet
-- Asserts every `Downloading from` line names 127.0.0.1
+- Then runs `mvn dependency:unpack` and asserts the resource inside the unpacked
+  archive. **This is what the `Beta` rating rests on**: the JAR served is a genuine zip,
+  built by Python's `zipfile` and delivered through `send_maven_artifact`'s
+  `body_base64` field, so Maven's own unarchiver opens what NetGet served. A text
+  placeholder downloads and checksums perfectly and fails at this step, which is why the
+  fixture stopped being one
+- Asserts every `Downloading from` line names 127.0.0.1, on both invocations
 - **LLM Calls**: 1 (server startup); the artifact requests are all mock-handled
-- **Requirements**: `mvn` on PATH, `shasum`, and a `~/.m2/repository` that has cached
-  `maven-dependency-plugin` at least once. The test fails with an explicit message
-  naming any of these
+- **Requirements**: `mvn` on PATH, `shasum`, `python3` (it builds the fixture JAR), and
+  a `~/.m2/repository` that has cached `maven-dependency-plugin` at least once. The test
+  fails with an explicit message naming any of these
 
 **How it stays offline.** `dependency:get` needs `maven-dependency-plugin`, which a
 fresh `-Dmaven.repo.local` cannot resolve without Maven Central. Maven 3.9's *split
@@ -134,7 +140,8 @@ passed under any circumstances, and this file described it as merely optional.
 
 - Maven deploy (PUT requests) - read-only repository
 - SNAPSHOT versioning with timestamps
-- Binary JAR file serving (text used for simplicity)
+- GPG signatures
+- Any client other than `mvn` — Gradle and sbt have never been pointed at this server
 - Automatic checksum generation (LLM provides checksums)
 - Repository mirroring or proxying
 - Authentication/authorization
@@ -188,19 +195,19 @@ passed under any circumstances, and this file described it as merely optional.
 **Workaround**: Use -U flag (force update) or unique artifact coordinates per test
 **Status**: Acceptable - tests use unique coordinates
 
-### Issue 2: Binary JAR Files
+### Issue 2: Binary JAR Files — resolved in the real-CLI test only
 
-**Problem**: Tests use text content instead of actual JAR files
-**Rationale**: Simplifies LLM generation and test validation
-**Impact**: Still validates path parsing and HTTP serving, just not binary content
-**Status**: Acceptable for MVP testing
+`test_maven_cli_download` serves a **real zip**, built by Python's `zipfile`, over
+`body_base64`, and `mvn dependency:unpack` opens it. The three mocked suites still use
+text bodies, which is fine for what they check (path parsing and routing) and is not
+evidence of anything else.
 
-### Issue 3: Checksum Validation
+### Issue 3: Checksum Validation — resolved in the real-CLI test only
 
-**Problem**: Tests use fake checksums (abc123), not real SHA-1 hashes
-**Rationale**: LLM doesn't automatically calculate checksums
-**Impact**: Validates checksum file serving, not checksum accuracy
-**Status**: Acceptable - checksum generation is future enhancement
+`test_maven_cli_download` computes the `.sha1` companions with `shasum -a 1`, an
+implementation NetGet does not own, and Maven refuses the artifact on a mismatch. The
+three mocked suites still serve the literal `abc123`, which validates that a checksum
+file is routed and served, nothing more.
 
 ### Issue 4: Test Flakiness
 

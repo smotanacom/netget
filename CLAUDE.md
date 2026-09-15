@@ -117,8 +117,25 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   is *also* the definition of Beta, so the same evidence ruled Beta out and nobody noticed for
   months. It is now Experimental. When you demote for missing evidence, check which ratings that
   evidence actually supports rather than stepping down one notch by reflex.
-- **Beta** — human-reviewed, works against real clients (37 protocols as of September 13 2026;
-  re-derive, the count drifts every pass). `ollama` joined in September 2026: `ollama-rs` is
+- **Beta** — human-reviewed, works against real clients (45 protocols as of September 15 2026;
+  re-derive, the count drifts every pass).
+
+  **Do not read the rest of this section as the list. Generate it:**
+
+  ```bash
+  python3 scripts/beta_evidence_table.py            # every Beta, with its peer
+  python3 scripts/beta_evidence_table.py --all      # every protocol
+  python3 scripts/beta_evidence_table.py --experimental-with-evidence   # candidates
+  ```
+
+  For each protocol it prints, from source, the third-party binaries and crates the tests
+  actually drive, which of those the server itself also imports (circular), which are
+  `optional = true`, how many tests are `#[ignore]`d, and whether any test prints a skip
+  message and returns success anyway. It separates what a script can be sure of (no
+  independent peer, a skip-and-pass gate, every test ignored — `--check` fails on these)
+  from what needs a human (a shared peer, an optional dependency — both have accepted
+  exceptions, see `quic`/quinn below). The prose that follows is history and reasoning;
+  the table is the fact. `ollama` joined in September 2026: `ollama-rs` is
   pointed at NetGet's own Ollama server and deserialises our `/api/tags`, `/api/generate` and
   `/api/chat` envelopes for itself. It is an unconditional dependency rather than an
   `optional = true` one, so unlike `amqp`'s `lapin` the evidence actually runs where the gate
@@ -160,19 +177,20 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   The August 30 sweep of the rest turned up four more near-misses, and the reasons are worth
   keeping because each looks like evidence until you read it:
 
-  - **A real client behind a skip-when-missing gate is not evidence** — `oci_registry` (crane),
-    `maven` (mvn, and additionally `#[ignore]`d), `websocket`
-    (websocat). Each prints `SKIP: … is not installed` and returns `Ok(())`, so on a runner
-    without the binary it is a silent pass. `npm`'s real-CLI test is the shape to copy: it
+  - **A real client behind a skip-when-missing gate is not evidence** — this entry listed
+    `oci_registry` (crane), `maven` (mvn, and additionally `#[ignore]`d) and `websocket`
+    (websocat). Each printed `SKIP: … is not installed` and returned `Ok(())`, so on a runner
+    without the binary it was a silent pass. `npm`'s real-CLI test is the shape to copy: it
     **fails** when npm is absent, saying in as many words that skipping "would leave NPM's
-    maturity rating resting on nothing". Converting these to hard-fail is the cheap path
-    to promoting them, but it means the binary has to exist wherever the suite runs.
-    **`kubernetes` was the fourth entry here and has taken that path** (September 2026): its
-    gate now hard-fails, and with the gate closed the evidence stands on its own — real
-    `kubectl` completes `version`, `get pods`, `get nodes`, `-o json`, a 404 NotFound and
-    `delete`. It is Beta. The *client* stays Experimental and for the opposite reason: its
-    three e2e tests were `#[ignore]`d placeholders that printed a message and asserted
-    nothing, so deleting them left it with no coverage to misread.
+    maturity rating resting on nothing". `kubernetes` took that path in September 2026; **the
+    other three followed on September 15 2026 and are all Beta now**, along with `memcached`
+    and `rtsp`. The price is that the binary has to exist wherever the suite runs, so
+    `registry-audit` installs crane, websocat, ffmpeg, libmemcached-tools, maven, npm,
+    freeradius-utils, dig, curl, pip, openvpn and tor.
+
+    **An `#[ignore]` for "run manually" is the same gate with better manners** — nothing ever
+    runs it, so the rating rests on a test that has never executed. `rtsp`'s ffprobe test and
+    `hls`'s curl test were both in that state while `metadata()` cited them; both now run.
   - **`#[ignore]`d, however good the reason** — `bluetooth_ble` (btleplug is a real BLE central
     and the suite is verified passing by hand, but all three tests claim the machine's single
     adapter and are ignored so a 100-thread run does not deadlock on it) and `tor_relay`
@@ -204,24 +222,48 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   a generic HTTP client (`reqwest` proves an HTTP server answers, not that the protocol on top is
   right — `couchdb`, `openapi`, `spark`, `xmlrpc`, `yarn`,
   `jsonrpc`, `oauth2`, `saml_sp`, `proxy`, `http2`); anything with no independent peer at
-  all (`memcached`, `named_pipe`, `pty`, `socket_file`, `stdio`).
+  all (`named_pipe`, `pty`, `socket_file`, `stdio`).
 
-  **Two entries above were wrong in opposite directions, corrected September 2026.**
-  `ssh` was listed as Beta "driven by russh" — but **russh is the server's own
-  library**, so that is the circular-evidence case this file names elsewhere, not a
-  third-party peer. Its own `metadata()` carried two contradictory comments in one
-  block and an `e2e_testing` field three lines below still reading "no automated test
-  exists". The code is now `Experimental`, which is what `src/server/ssh/CLAUDE.md`
-  had said all along.
+  **`memcached` was on that second list and it had stopped being true.** libmemcached 1.0.18's
+  `memcat`, `memstat` and `memping` — a separate C implementation, run as subprocesses and
+  never linked — drive it in `tests/server/memcached/real_client_test.rs`. They sat behind a
+  skip gate, which is why the list said "no independent peer"; the two are different failures
+  and conflating them is how a protocol stays under-rated. `memcat` is picky in exactly the
+  right place: it reads the byte count out of the `VALUE` header and then reads that many
+  bytes, so a wrong count is an empty result rather than a pass. It is Beta.
+
+  **The generic-HTTP rule needs one qualification that cost a scan a false positive**: it rules
+  out a client for a protocol layered *on* HTTP, not for a protocol that *is* HTTP. `curl`
+  against `gopher://` is a real Gopher client; `curl` against an HLS playlist proves the
+  transport and nothing above it. `scripts/beta_evidence_table.py` derives the difference from
+  `stack_name()` — `ETH>IP>TCP>HTTP` is HTTP, `ETH>IP>TCP>HTTP>Maven` is not.
+
+  **`ssh` has now been wrong in BOTH directions inside six weeks, and the second error is
+  the more instructive.** It was first listed as Beta "driven by russh" — russh is the
+  server's own library, so that was the circular case, and the demotion to Experimental
+  was right about *that*. But the demotion then asserted that no third-party client
+  completes a session, and the tests never used russh: they use `ssh2`, a binding to the
+  **C libssh2**, which shares no line of code with it.
+  `tests/server/ssh/test.rs::test_sftp_basic_operations` completes the transport handshake,
+  password auth, the SFTP subsystem, `opendir`/`readdir`, `open`+`read` and `lstat`, with
+  the file's bytes and declared size asserted exactly — not `#[ignore]`d, no skip gate.
+  That is the exact bar `actions.rs`'s own comment set for promotion.
+
+  The false claim traced to **one stale comment** in that test file saying libssh2 "has
+  timing/compatibility issues with russh server". It described a *test* bug — libssh2 is
+  blocking, and running it on the Tokio runtime the in-process mock also needs deadlocks
+  the two — fixed long before by moving every libssh2 call onto `spawn_blocking`. The
+  comment outlived the fix and was quoted verbatim in `metadata()` and in
+  `src/server/ssh/CLAUDE.md` as the reason for the rating. `ssh` is Beta.
+
+  **Check what a test drives, not what the server links.** The demotion read `russh` in
+  `src/` and never looked for `ssh2::Session` in `tests/`. That is a two-minute grep, and
+  it is the one `scripts/beta_evidence_table.py` now does for every protocol.
 
   `radius` was listed as having **no independent peer at all**, which is the opposite
   error: `tests/server/radius/real_client_test.rs` drives FreeRADIUS `radclient`, and
   radclient verifies our Response Authenticator, so it checks the one thing that
-  matters. It stays Experimental for a *different* reason — the test **skips loudly
-  when radclient is absent**, and a skip-when-missing gate is a silent pass rather
-  than evidence. Converting it to hard-fail is one line and the shape `npm` uses, and
-  is all that stands between radius and Beta; it would make FreeRADIUS a requirement
-  wherever the suite runs, which is why it has not been done unilaterally.
+  matters. That test now hard-fails when radclient is absent, and `radius` is Beta.
 
   **`rss` was on that list for circular evidence and is now Beta**, by the fix the list itself
   prescribed. The server builds its XML with the `rss` crate's `ChannelBuilder` and the test

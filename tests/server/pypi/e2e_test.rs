@@ -219,12 +219,16 @@ Use scripting mode to handle all requests without LLM calls after initial setup.
     // from success, including the "success" arm, which said "! pip query completed but
     // may not have found package metadata". It cost 30 seconds and proved nothing.
     //
-    // It now asserts. It does **not** hard-fail when pip is absent, and that is a
-    // deliberate difference from npm's real-CLI test: `pip index versions` is an
-    // experimental pip subcommand, PyPI's maturity rating rests on nothing here, and
-    // making pip a suite-wide requirement is not worth an assertion this weak. What it
-    // must not do is claim to have tested something it skipped, so the skip is loud and
-    // the rating stays Experimental.
+    // It now asserts, and it **fails rather than skips when pip is absent**: a loud skip
+    // is still a silent pass on any runner without the binary, which is the shape that
+    // let four maturity claims outlive their evidence. `tests/server/npm/e2e_test.rs`
+    // is the precedent.
+    //
+    // Note what this does and does not buy. `pip index versions` is an experimental pip
+    // subcommand and the wheel this test serves is a stub, so pip proves that a real,
+    // independent PEP 503 client reached and parsed the project page — not that a real
+    // install succeeds. PyPI therefore stays `Experimental`; the hard fail exists so the
+    // suite cannot report having run this when it did not.
     println!("\n[Test 4] pip resolves hello-world from the served index");
 
     // Create a temporary directory for pip cache
@@ -276,8 +280,13 @@ Use scripting mode to handle all requests without LLM calls after initial setup.
             println!("✓ pip resolved hello-world from the NetGet index");
         }
         Ok(Ok(Err(e))) => {
-            // Loud, and it does not claim a pass: see the note above this step.
-            println!("SKIPPED: pip is not installed ({e}); this step asserted nothing");
+            // Fail, never skip: see the note above this step.
+            panic!(
+                "pip is not available ({e}): this step drives a real, independent PEP 503 \
+                 client against NetGet's index, and skipping it would report a pass for a \
+                 step that asserted nothing. Install Python 3 (`brew install python3`, or \
+                 `apt-get install -y python3-pip`) and re-run."
+            );
         }
         Ok(Err(e)) => {
             panic!("the pip task itself panicked, which is a test bug, not a missing pip: {e}");

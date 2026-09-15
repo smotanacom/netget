@@ -51,7 +51,7 @@ impl Protocol for MavenProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            .state(DevelopmentState::Beta)
             .implementation("hyper v1.0 HTTP server with Maven repository path parsing")
             .llm_control(
                 "Artifact availability, content generation (POM, JAR, checksums), version metadata",
@@ -69,9 +69,14 @@ impl Protocol for MavenProtocol {
                  existing ~/.m2 cache. Three further mocked suites cover POM/JAR/checksum/\
                  metadata routing, multi-version and classifier selection; \
                  llm_failure_test.rs asserts the fail-closed 500/503 and that no internal \
-                 error text reaches the wire. Still Experimental: the JAR served is a text \
-                 placeholder rather than a real archive, so no client has yet *used* an \
-                 artifact from this repository, only fetched and checksum-verified one",
+                 error text reaches the wire. The JAR served is a REAL archive - a zip built \
+                 by Python's zipfile, which NetGet does not own - and the same test then runs \
+                 `mvn dependency:unpack`, so Maven opens the artifact with its own unarchiver \
+                 and the test asserts the resource inside it. A client has therefore used an \
+                 artifact from this repository, not merely fetched and checksummed one; that \
+                 was the one gap this field named while the rating sat at Experimental. \
+                 Untested: deploy/PUT (not implemented), SNAPSHOT resolution, GPG signatures, \
+                 and any client other than mvn (Gradle and sbt are unproven)",
             )
             .build()
     }
