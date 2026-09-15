@@ -35,6 +35,16 @@ pub struct Diagnosis {
     pub detail: String,
     /// The lines that prove it — the model's actual output, verbatim.
     pub evidence: Vec<String>,
+    /// Action names netget *would* have executed if its response parser
+    /// tolerated text after the JSON. Empty unless that is the diagnosis.
+    ///
+    /// This exists because one defect otherwise hides every other finding. When
+    /// the model names the right action with the right parameters and the reply
+    /// is discarded whole, the pass rate says 0% and tells you nothing about the
+    /// description — which is the thing this harness was built to measure. So
+    /// the report carries two numbers: what happens today, and what would happen
+    /// if the first value in the reply were taken instead of the whole string.
+    pub recovered_actions: Vec<String>,
 }
 
 impl Diagnosis {
@@ -43,8 +53,63 @@ impl Diagnosis {
             mode,
             detail: detail.into(),
             evidence,
+            recovered_actions: Vec::new(),
         }
     }
+
+    fn with_recovered(mut self, recovered: Vec<String>) -> Self {
+        self.recovered_actions = recovered;
+        self
+    }
+}
+
+/// Take the first complete JSON value out of a string that may have anything
+/// around it, and name the actions in it.
+///
+/// This is deliberately the *minimum* leniency that would fix the observed
+/// failures: `serde_json`'s streaming deserializer reads one value and stops,
+/// where `from_str` insists the whole string be consumed. Nothing here guesses,
+/// repairs or reformats — if the model did not emit a complete JSON value, this
+/// returns nothing and the run is scored as a genuine miss.
+fn recover_action_names(text: &str) -> Vec<String> {
+    let start = match (text.find('{'), text.find('[')) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return Vec::new(),
+    };
+    let mut stream =
+        serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
+    let value = match stream.next() {
+        Some(Ok(v)) => v,
+        _ => return Vec::new(),
+    };
+
+    fn names_in(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    names_in(item, out);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                if let Some(name) = map.get("type").and_then(|t| t.as_str()) {
+                    out.push(name.to_string());
+                }
+                for key in ["actions", "tools"] {
+                    if let Some(nested) = map.get(key) {
+                        names_in(nested, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut names = Vec::new();
+    names_in(&value, &mut names);
+    names.dedup();
+    names
 }
 
 /// Every distinct mode the classifier can report, with the prose that belongs
@@ -244,12 +309,25 @@ pub fn classify(log: &[String], probe: &ProbeOutcome, check_error: &str) -> Diag
             .map(|l| truncate(l, 900))
             .collect();
         if !wrapped.is_empty() {
-            return Diagnosis::new(
-                "valid_actions_rejected_as_unparseable",
-                "the model produced the right action JSON and the reply was rejected \
-                 anyway, because text or a stray fence surrounds it",
-                wrapped,
-            );
+            let recovered: Vec<String> = wrapped
+                .iter()
+                .flat_map(|line| recover_action_names(line))
+                .collect();
+            let detail = if recovered.is_empty() {
+                "the reply contained action JSON and would not parse".to_string()
+            } else {
+                format!(
+                    "the model produced {} and the reply was discarded anyway, because \
+                     text or a stray fence surrounds the JSON",
+                    recovered
+                        .iter()
+                        .map(|n| format!("`{}`", n))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            return Diagnosis::new("valid_actions_rejected_as_unparseable", detail, wrapped)
+                .with_recovered(recovered);
         }
         return Diagnosis::new(
             "unparseable_response",

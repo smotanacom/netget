@@ -40,6 +40,13 @@ pub struct Totals {
     pub runs_total: usize,
     pub runs_passed: usize,
     pub pass_rate: f64,
+    /// Failed runs in which the model had in fact produced executable actions,
+    /// discarded only because text surrounded the JSON.
+    pub runs_recoverable: usize,
+    /// `(runs_passed + runs_recoverable) / runs_total` — the score this suite
+    /// would report if `ActionResponse::from_str` took the first JSON value in
+    /// the reply instead of requiring the whole reply to be one.
+    pub pass_rate_with_lenient_parse: f64,
 }
 
 #[derive(serde::Serialize)]
@@ -54,6 +61,7 @@ pub struct ProtocolSummary {
     pub pass_rate: Option<f64>,
     pub dominant_failures: Vec<String>,
     pub skipped_reason: Option<String>,
+    pub runs_recoverable: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -77,6 +85,7 @@ fn now_iso() -> String {
 pub fn build(model: &str, runs_per_case: usize, cases: Vec<CaseResult>) -> EvalReport {
     let runs_total: usize = cases.iter().map(|c| c.attempts).sum();
     let runs_passed: usize = cases.iter().map(|c| c.passes).sum();
+    let runs_recoverable: usize = cases.iter().map(|c| c.recoverable_runs).sum();
     let attempted = cases.iter().filter(|c| c.status == "attempted").count();
 
     let mut by_protocol: BTreeMap<String, Vec<&CaseResult>> = BTreeMap::new();
@@ -125,6 +134,7 @@ pub fn build(model: &str, runs_per_case: usize, cases: Vec<CaseResult>) -> EvalR
                     None
                 },
                 dominant_failures: dominant,
+                runs_recoverable: group.iter().map(|c| c.recoverable_runs).sum(),
                 skipped_reason: if attempted_here.is_empty() {
                     group.iter().find_map(|c| c.status_reason.clone())
                 } else {
@@ -177,6 +187,12 @@ pub fn build(model: &str, runs_per_case: usize, cases: Vec<CaseResult>) -> EvalR
             runs_passed,
             pass_rate: if runs_total > 0 {
                 runs_passed as f64 / runs_total as f64
+            } else {
+                0.0
+            },
+            runs_recoverable,
+            pass_rate_with_lenient_parse: if runs_total > 0 {
+                (runs_passed + runs_recoverable) as f64 / runs_total as f64
             } else {
                 0.0
             },
@@ -272,8 +288,11 @@ fn markdown(report: &EvalReport) -> String {
         report.protocols.iter().filter(|p| p.runs > 0).count()
     ));
 
-    out.push_str("| Protocol | Client | Evidence | Instructions | Fully passed | Runs | Passed | Rate | Dominant failure |\n");
-    out.push_str("|---|---|---|---|---:|---:|---:|---:|---|\n");
+    out.push_str(
+        "| Protocol | Client | Evidence | Instructions | Runs | Passed | Rate | \
+         Would pass with a lenient parse | Dominant failure |\n",
+    );
+    out.push_str("|---|---|---|---:|---:|---:|---:|---:|---|\n");
     for p in &report.protocols {
         if p.runs == 0 {
             out.push_str(&format!(
@@ -290,10 +309,12 @@ fn markdown(report: &EvalReport) -> String {
             p.client,
             p.independence,
             p.instructions,
-            p.instructions_fully_passed,
             p.runs,
             p.runs_passed,
             pct(p.pass_rate),
+            pct(Some(
+                (p.runs_passed + p.runs_recoverable) as f64 / p.runs as f64
+            )),
             if p.dominant_failures.is_empty() {
                 "—".to_string()
             } else {
@@ -306,6 +327,23 @@ fn markdown(report: &EvalReport) -> String {
         ));
     }
     out.push('\n');
+
+    if report.totals.runs_recoverable > 0 {
+        out.push_str(&format!(
+            "**Read the last two columns together.** In {} of the {} failed runs the model \
+             named the right action with the right parameters and netget threw the reply \
+             away, because `ActionResponse::from_str` (`src/llm/actions/mod.rs`) strips a \
+             *leading* ``` fence and nothing trailing, then requires `serde_json::from_str` \
+             to consume the whole string. Small models routinely append an explanation after \
+             the JSON. Taking the first value — `Deserializer::from_str(..).into_iter().next()` \
+             — would move this suite from {} to {} without touching a single action \
+             description.\n\n",
+            report.totals.runs_recoverable,
+            report.totals.runs_total - report.totals.runs_passed,
+            pct(Some(report.totals.pass_rate)),
+            pct(Some(report.totals.pass_rate_with_lenient_parse)),
+        ));
+    }
 
     out.push_str("## Per-instruction detail\n\n");
     out.push_str("| Case | Instruction | Passed | Failure mode |\n|---|---|---:|---|\n");

@@ -132,6 +132,10 @@ pub struct RunRecord {
     pub detail: Option<String>,
     /// The model's actual output, verbatim. The reason this file exists.
     pub model_output: Vec<String>,
+    /// Action names netget would have executed had its response parser taken the
+    /// first JSON value instead of requiring the whole reply to be one. Non-empty
+    /// only for `valid_actions_rejected_as_unparseable`.
+    pub recovered_actions: Vec<String>,
     pub client_command: String,
     pub client_output: String,
     pub client_exit: Option<i32>,
@@ -159,6 +163,10 @@ pub struct CaseResult {
     pub status_reason: Option<String>,
     /// The mode that accounts for most misses, if any.
     pub dominant_failure: Option<String>,
+    /// Failed runs in which the model had in fact produced executable actions,
+    /// discarded only because the reply had text around the JSON. `passes +
+    /// this` is what the score would be with a one-call fix to the parser.
+    pub recoverable_runs: usize,
     pub runs: Vec<RunRecord>,
 }
 
@@ -184,6 +192,7 @@ impl CaseResult {
             status,
             status_reason: Some(reason),
             dominant_failure: None,
+            recoverable_runs: 0,
             runs: Vec::new(),
         }
     }
@@ -214,6 +223,10 @@ pub async fn run_case(case: &EvalCase, runs: usize) -> CaseResult {
     let passes = records.iter().filter(|r| r.verdict == "pass").count();
     let attempts = records.len();
     let dominant = dominant_failure(&records);
+    let recoverable = records
+        .iter()
+        .filter(|r| r.verdict != "pass" && !r.recovered_actions.is_empty())
+        .count();
 
     println!(
         "{} {} — {}/{} ({}){}",
@@ -242,6 +255,7 @@ pub async fn run_case(case: &EvalCase, runs: usize) -> CaseResult {
         status: "attempted",
         status_reason: None,
         dominant_failure: dominant,
+        recoverable_runs: recoverable,
         runs: records,
     }
 }
@@ -318,6 +332,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
                     case.protocol, START_ATTEMPTS, start_error
                 )),
                 model_output: Vec::new(),
+                recovered_actions: Vec::new(),
                 client_command: probe_spec.describe(),
                 client_output: String::new(),
                 client_exit: None,
@@ -358,6 +373,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
                 failure_mode: Some("client_spawn_failed".to_string()),
                 detail: Some(e),
                 model_output: Vec::new(),
+                recovered_actions: Vec::new(),
                 client_command: probe_spec.describe(),
                 client_output: String::new(),
                 client_exit: None,
@@ -375,6 +391,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
             failure_mode: None,
             detail: None,
             model_output: super::classify::model_output(&log),
+            recovered_actions: Vec::new(),
             client_command: outcome.command.clone(),
             client_output: clip(&combined),
             client_exit: outcome.exit_code,
@@ -386,6 +403,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
                 mode,
                 detail,
                 evidence,
+                recovered_actions,
             } = classify(&log, &outcome, &why);
             RunRecord {
                 run,
@@ -393,6 +411,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
                 failure_mode: Some(mode.to_string()),
                 detail: Some(detail),
                 model_output: evidence,
+                recovered_actions,
                 client_command: outcome.command.clone(),
                 client_output: clip(&combined),
                 client_exit: outcome.exit_code,
