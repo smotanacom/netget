@@ -332,6 +332,13 @@ async fn test_all_protocols_llm_mode_startup() -> E2EResult<()> {
                     println!("  ✓ {} - started (no listening socket)", name);
                 }
                 passed += 1;
+                // The mock answered this protocol's startup; check it was not left
+                // unverified. The sweep sets no per-protocol expectation (a protocol that
+                // fails to start is counted, not asserted), so this catches a rule that
+                // over- or under-fired rather than one that never ran.
+                if let Err(e) = server.verify_mocks().await {
+                    println!("  ! {} - mock verification: {}", name, e);
+                }
                 // Stop the server
                 let _ = server.stop().await;
             }
@@ -436,6 +443,12 @@ async fn test_all_protocols_static_mode_startup() -> E2EResult<()> {
                     println!("  ✓ {} - started (no listening socket)", name);
                 }
                 passed += 1;
+                // See the llm_mode sweep above: the mock is checked rather than left
+                // configured-and-forgotten, but it is reported, not asserted, because the
+                // sweep's own pass criterion is the failure threshold below.
+                if let Err(e) = server.verify_mocks().await {
+                    println!("  ! {} - mock verification: {}", name, e);
+                }
                 let _ = server.stop().await;
             }
             Err(e) => {
@@ -799,6 +812,7 @@ async fn test_tcp_static_mode_example() -> E2EResult<()> {
         .with_mock(|mock| {
             mock.on_instruction_containing("Start a TCP server")
                 .respond_with_actions(static_mode_with_port_0.clone())
+                .expect_calls(1)
                 .and()
         });
 
@@ -823,6 +837,10 @@ async fn test_tcp_static_mode_example() -> E2EResult<()> {
         }
     }
 
+    // Without this the mock was configured and never checked, so nothing here asserted
+    // that the documented static-mode example is what actually started the server.
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
     server.stop().await?;
 
     println!("\n✓ TCP static mode test completed\n");
@@ -853,6 +871,7 @@ async fn test_http_static_mode_example() -> E2EResult<()> {
         .with_mock(|mock| {
             mock.on_instruction_containing("Start an HTTP server")
                 .respond_with_actions(static_mode_with_port_0.clone())
+                .expect_calls(1)
                 .and()
         });
 
@@ -874,6 +893,10 @@ async fn test_http_static_mode_example() -> E2EResult<()> {
     let body = response.text().await?;
     println!("✓ HTTP response body: {}", body);
 
+    // Without this the mock was configured and never checked, so nothing here asserted
+    // that the documented static-mode example is what actually started the server.
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
     server.stop().await?;
 
     println!("\n✓ HTTP static mode test completed\n");
@@ -931,12 +954,19 @@ async fn test_tcp_alternative_examples() -> E2EResult<()> {
                 .with_mock(|mock| {
                     mock.on_instruction_containing("Start a TCP server")
                         .respond_with_actions(llm_mode_with_port_0.clone())
+                        .expect_calls(1)
                         .and()
                         .on_event("tcp_connection_opened")
                         .respond_with_actions(json!({"type": "wait_for_more"}))
+                        .expect_at_least(1)
                         .and()
+                        // The point of the test: the alternative example the protocol
+                        // documents must be the answer the server is actually given.
+                        // Every assertion below is a println, so this count is the only
+                        // thing here that can fail.
                         .on_event("tcp_data_received")
                         .respond_with_actions(json!([alt_example.clone()]))
+                        .expect_at_least(1)
                         .and()
                 });
 
@@ -965,6 +995,8 @@ async fn test_tcp_alternative_examples() -> E2EResult<()> {
                 }
             }
 
+            server.wait_for_mocks(30).await;
+            server.verify_mocks().await?;
             server.stop().await?;
         }
     }
