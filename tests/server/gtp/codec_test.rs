@@ -353,11 +353,11 @@ fn test_tbcd_apn_and_address_encodings() {
 
     // APN labels: one length octet per dot-separated label, no root label.
     assert_eq!(
-        ng::encode_apn("internet"),
+        ng::encode_apn("internet").unwrap(),
         vec![0x08, b'i', b'n', b't', b'e', b'r', b'n', b'e', b't']
     );
     assert_eq!(
-        ng::encode_apn("test.apn.epc"),
+        ng::encode_apn("test.apn.epc").unwrap(),
         vec![0x04, b't', b'e', b's', b't', 0x03, b'a', b'p', b'n', 0x03, b'e', b'p', b'c']
     );
     assert_eq!(

@@ -222,6 +222,22 @@ which it means. That is the `send_tcp_data` lesson (`d70bb5b5`) applied up front
 after the fact, and `test_gtpv1_session_lifecycle_over_real_udp` asserts the decode by sending
 a hex payload and checking the literal octets that reach the wire.
 
+### `encode_apn` refuses an over-long label rather than cutting it
+
+`encode_apn` returns `Result<Vec<u8>, EncodeError>` and refuses any DNS label past
+[`MAX_APN_LABEL_LEN`] (63 octets, TS 23.003 §9.1). It used to write `bytes.len().min(63)`, so a
+64-character label reached the wire as its first 63 characters — and that is the worst shape a
+truncation can take: the result is a *valid* label naming a **different access point**, so
+nothing downstream, not `decode_apn` and not a real PGW, could tell it was not the one that was
+meant. The length prefix is one octet and the limit is a hard format rule, so there is no
+recovery later either. `netbios_ns::encode_name_field` faces the identical situation for its
+scope labels and bails; this is the same shape.
+
+Latent rather than reachable: nothing in `src/` calls `encode_apn` today — it exists for the
+encode half of the codec tests and for anything building a Create Session Request — so this was
+an unguarded `pub fn`, which is the class the codec property tests
+(`tests/codec_property_test.rs`) exist to find.
+
 ## Maturity: Experimental, and precisely why
 
 The transport **is** exercised — real UDP sockets, real datagrams, real replies, fourteen

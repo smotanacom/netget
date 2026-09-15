@@ -45,6 +45,12 @@ pub const V2_MAX_SEQUENCE: u32 = 0x00FF_FFFF;
 /// Past it `send_to` fails with `EMSGSIZE` and the peer hears nothing at all.
 pub const MAX_GPDU_PAYLOAD_LEN: usize = 65_495;
 
+/// Longest DNS label an APN may carry, in octets (TS 23.003 §9.1, RFC 1035 §2.3.4).
+///
+/// The length prefix is one octet and only its low six bits are a length, so this is a hard
+/// format limit rather than a policy: see [`encode_apn`] for why it is a refusal and not a cut.
+pub const MAX_APN_LABEL_LEN: usize = 63;
+
 // ===========================================================================
 // Message types
 // ===========================================================================
@@ -309,6 +315,35 @@ impl std::fmt::Display for DecodeError {
 }
 
 impl std::error::Error for DecodeError {}
+
+// ===========================================================================
+// Encode errors
+// ===========================================================================
+
+/// A value the encoder refuses to put on the wire.
+///
+/// The encode side faces the model rather than a hostile peer, and the rule is the same one
+/// [`encode_apn`] documents: refuse, never truncate. A shortened value is still a *valid*
+/// value, so nothing downstream can tell that it is not the one that was meant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EncodeError {
+    /// A DNS label inside an APN was longer than the one-octet length prefix can describe.
+    ApnLabelTooLong { label: String, len: usize },
+}
+
+impl std::fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EncodeError::ApnLabelTooLong { label, len } => write!(
+                f,
+                "APN label '{label}' is {len} octets, over the {MAX_APN_LABEL_LEN}-octet DNS \
+                 label limit (TS 23.003 §9.1)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {}
 
 /// Which GTP version a datagram announced in its first three bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -918,15 +953,27 @@ pub fn decode_tbcd(bytes: &[u8]) -> String {
 
 /// Encode an APN as DNS-style labels: one length octet per label, no trailing root label
 /// (TS 23.003 §9.1, TS 29.060 §7.7.30).
-pub fn encode_apn(apn: &str) -> Vec<u8> {
+///
+/// Refuses a label past [`MAX_APN_LABEL_LEN`] rather than shortening it. Truncating here would
+/// be worse than useless: `a…a` cut to 63 octets is a perfectly well-formed label naming a
+/// *different* access point, so nothing downstream — not the decoder, not the peer, not the
+/// operator reading a log — could tell that the APN it resolved was not the one asked for.
+/// The length prefix is one octet and the limit is a hard format rule, so there is no
+/// downstream recovery either.
+pub fn encode_apn(apn: &str) -> Result<Vec<u8>, EncodeError> {
     let mut out = Vec::with_capacity(apn.len() + 4);
     for label in apn.split('.').filter(|l| !l.is_empty()) {
         let bytes = label.as_bytes();
-        let len = bytes.len().min(63);
-        out.push(len as u8);
-        out.extend_from_slice(&bytes[..len]);
+        if bytes.len() > MAX_APN_LABEL_LEN {
+            return Err(EncodeError::ApnLabelTooLong {
+                label: crate::utils::truncate_for_log(label, 32),
+                len: bytes.len(),
+            });
+        }
+        out.push(bytes.len() as u8);
+        out.extend_from_slice(bytes);
     }
-    out
+    Ok(out)
 }
 
 /// Decode a labelled APN back to dotted form. Returns `None` if the labels do not tile the

@@ -1179,14 +1179,14 @@ mod gtp_props {
             labels in proptest::collection::vec("[a-z0-9-]{1,63}", 1..5),
         ) {
             let apn = labels.join(".");
-            prop_assert_eq!(decode_apn(&encode_apn(&apn)), Some(apn));
+            prop_assert_eq!(decode_apn(&encode_apn(&apn).unwrap()), Some(apn));
         }
 
         /// Property 4: APN encoding normalises away empty labels, idempotently.
         #[test]
         fn apn_normalisation_is_idempotent(raw in "[a-z0-9.-]{0,40}") {
-            let Some(once) = decode_apn(&encode_apn(&raw)) else { return Ok(()); };
-            prop_assert_eq!(decode_apn(&encode_apn(&once)), Some(once));
+            let Some(once) = decode_apn(&encode_apn(&raw).unwrap()) else { return Ok(()); };
+            prop_assert_eq!(decode_apn(&encode_apn(&once).unwrap()), Some(once));
         }
 
         /// Property 1: the GTPv2 F-TEID. `interface_type` is six bits on the wire and both
@@ -1238,18 +1238,22 @@ mod gtp_props {
     // FINDINGS
     // -------------------------------------------------------------------------------------
 
-    /// FINDING: `encode_apn` silently truncates a label past 63 octets rather than refusing.
-    /// Minimal counterexample: a single label of 64 `a`s, which reaches the wire as 63 and
-    /// names a different access point. The DNS label length is a hard format limit, so
-    /// truncation cannot be recovered from downstream.
+    /// `encode_apn` used to silently truncate a label past 63 octets rather than refusing.
+    /// Minimal counterexample: a single label of 64 `a`s, which reached the wire as 63 and
+    /// named a different access point — a perfectly valid-looking one, which is what makes
+    /// truncation worse than a refusal here. The DNS label length is a hard format limit, so
+    /// nothing downstream could have recovered the intended name.
     #[test]
-    #[ignore = "FINDING: encode_apn truncates a label longer than 63 octets"]
-    fn encode_apn_should_refuse_an_over_long_label() {
-        let apn = "a".repeat(64);
+    fn encode_apn_refuses_an_over_long_label() {
+        assert!(encode_apn(&"a".repeat(64)).is_err());
+        // Refused wherever in the name it sits, not just first.
+        assert!(encode_apn(&format!("internet.{}.epc", "a".repeat(64))).is_err());
+
+        // The boundary: 63 is legal and round-trips.
+        let legal = "a".repeat(63);
         assert_eq!(
-            decode_apn(&encode_apn(&apn)),
-            Some(apn),
-            "label was silently truncated on encode"
+            decode_apn(&encode_apn(&legal).unwrap()),
+            Some(legal.clone())
         );
     }
 }
