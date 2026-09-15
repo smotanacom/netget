@@ -187,4 +187,4 @@ black-box mode.
 - Main tests: `tests/client/cassandra/e2e_test.rs`
 - Test helpers: `tests/helpers/mod.rs`
 - Client implementation: `src/client/cassandra/`
-- Test infrastructure docs: `TEST_INFRASTRUCTURE_FIXES.md`
+- Test infrastructure docs: `tests/README.md`
