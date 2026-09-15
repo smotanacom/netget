@@ -45,6 +45,23 @@ async fn read_adu(stream: &mut TcpStream) -> (u16, u8, Vec<u8>) {
     );
 
     let pdu = read_exact_timeout(stream, length as usize - 1).await;
+
+    // The pcap oracle. tokio-modbus reads the PDU this test asserts on; Wireshark's
+    // `mbtcp` dissector reads the MBAP header around it, which is the part
+    // `src/server/modbus/codec.rs` writes by hand: protocol id, a length that must
+    // cover exactly the unit id plus the PDU, and the exception encoding. A length
+    // field that disagreed with the bytes actually written would still satisfy the
+    // assertions below, because `read_adu` believes the length field.
+    //
+    // The capture is deliberately server-side only: each call sees one complete ADU,
+    // and `mbtcp` classifies request from response by the port, which the oracle
+    // fabricates as 502 for exactly this reason.
+    let mut raw = header.clone();
+    raw.extend_from_slice(&pdu);
+    crate::helpers::pcap_oracle::PcapOracle::tcp("modbus")
+        .from_server(&raw)
+        .assert_clean();
+
     (transaction_id, unit_id, pdu)
 }
 

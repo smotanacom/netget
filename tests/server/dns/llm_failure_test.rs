@@ -13,6 +13,7 @@
 
 #![cfg(feature = "dns")]
 
+use crate::helpers::pcap_oracle::PcapOracle;
 use crate::server::helpers::{start_netget_server, E2EResult, NetGetConfig};
 use hickory_proto::op::{Message as DnsMessage, MessageType, ResponseCode};
 use hickory_proto::rr::{Name, RecordType};
@@ -77,6 +78,15 @@ async fn test_dns_answers_servfail_when_llm_fails() -> E2EResult<()> {
     assert_eq!(buf[1], (QUERY_ID & 0xFF) as u8, "transaction ID low byte");
     assert_eq!(buf[2] & 0x80, 0x80, "QR bit must mark this as a response");
     assert_eq!(buf[3] & 0x0F, 2, "RCODE must be 2 (SERVFAIL)");
+
+    // The pcap oracle. hickory parsing its own way through the bytes says the packet
+    // is self-consistent; Wireshark's DNS dissector is a second, unrelated reading of
+    // RFC 1035, and a SERVFAIL is exactly where a server is most likely to emit a
+    // header whose counts do not match the body it then writes.
+    PcapOracle::udp("dns")
+        .to_server(&query_bytes)
+        .from_server(&buf[..n])
+        .assert_clean();
 
     let response = DnsMessage::from_vec(&buf[..n])?;
     assert_eq!(response.id(), QUERY_ID, "transaction ID must be echoed");

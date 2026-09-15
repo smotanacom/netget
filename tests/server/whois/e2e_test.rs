@@ -16,6 +16,7 @@
 //!   `close_connection` or `whois(1)` blocks forever.
 #[cfg(all(test, feature = "whois"))]
 mod whois_e2e_test {
+    use crate::helpers::pcap_oracle::PcapOracle;
     use crate::helpers::{start_netget_server, E2EResult, NetGetConfig};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -39,6 +40,16 @@ mod whois_e2e_test {
             .await
             .expect("Timeout reading response")
             .expect("Failed to read response");
+
+        // The pcap oracle: Wireshark's own RFC 3912 dissector reads the exchange.
+        // whois(1) accepting the bytes proves a client tolerates them; this proves
+        // an independent decoder recognises the *shape* - the CRLF-terminated
+        // request and the free-form answer that follows it. Free by being wired
+        // into the shared helper, so every raw-socket test in this file gets it.
+        PcapOracle::tcp("whois")
+            .to_server(query_with_crlf.as_bytes())
+            .from_server(&response[..n])
+            .assert_clean();
 
         String::from_utf8_lossy(&response[..n]).to_string()
     }
