@@ -81,6 +81,9 @@ impl Protocol for BootpProtocol {
         ProtocolMetadataV2::builder()
             .connectionless()
             .state(DevelopmentState::Experimental)
+            // Deliberately silent: BOOTP has no error reply: a BOOTREPLY is an offer of an
+            // address and a claim to be the boot server.
+            .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(67))
             .implementation("dhcproto v0.12 for parsing (BOOTP format)")
             .llm_control("BOOTREQUEST→BOOTREPLY flow + boot file location")

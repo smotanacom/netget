@@ -102,6 +102,9 @@ impl Protocol for DataLinkProtocol {
             // access, and this repo does not count an ignored test as evidence for a rating.
             // See notes.
             .state(DevelopmentState::Experimental)
+            // Deliberately silent: A raw link-layer frame asserts whatever it contains; there
+            // is no error frame to send instead.
+            .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::PacketCapture)
             // Layer 2 capture has no sessions: each frame stands alone and this server
             // registers no connections at all. Declaring it keeps DataLink out of nothing it

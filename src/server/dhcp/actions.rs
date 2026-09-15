@@ -87,6 +87,9 @@ impl Protocol for DhcpProtocol {
             // a third-party implementation. Promoting again means decoding the replies with an
             // independent codec crate as well.
             .state(DevelopmentState::Experimental)
+            // Deliberately silent: Every DHCP server message is an offer, an acknowledgement
+            // or a refusal of a specific lease. A fabricated one reconfigures a real host.
+            .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(67))
             .implementation("dhcproto v0.12 for parsing and encoding")
             .llm_control("Discover→Offer, Request→Ack flow + lease options")

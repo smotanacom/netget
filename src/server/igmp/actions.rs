@@ -55,6 +55,9 @@ impl Protocol for IgmpProtocol {
         ProtocolMetadataV2::builder()
             .connectionless()
             .state(DevelopmentState::Experimental)
+            // Deliberately silent: IGMP messages assert multicast group membership state;
+            // there is no error message in the protocol.
+            .deliberately_silent()
             .privilege_requirement(PrivilegeRequirement::RawSockets)
             .implementation("Raw AF_INET/SOCK_RAW/IPPROTO_IGMP socket (libc + socket2)")
             .llm_control("Optional: which groups to report membership in is a policy decision (LLM); with no policy configured the server stays silent with no LLM call")

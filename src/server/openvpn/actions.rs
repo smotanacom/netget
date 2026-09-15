@@ -189,6 +189,10 @@ impl Protocol for OpenvpnProtocol {
             // there is no data channel. Promoting it for a handshake that ends
             // in a timeout would repeat the mistake wireguard was demoted for.
             .state(DevelopmentState::Experimental)
+            // Deliberately silent: The only pre-TLS server message is
+            // P_CONTROL_HARD_RESET_SERVER_V2, and sending it IS admitting the peer - answering
+            // on LLM failure would turn a backend outage into an authentication bypass.
+            .deliberately_silent()
             // No TUN device and no privileged port by default (1194 is
             // unprivileged), so nothing here needs elevation. Declaring Root, as
             // this protocol used to, made it unstartable for no benefit.
