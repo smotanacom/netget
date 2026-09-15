@@ -31,14 +31,18 @@ use netget::state::app_state::AppState;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-/// Start a real TCP server through the registry, on an OS-chosen port, with no model behind it.
+/// Start a real server through the registry, on an OS-chosen port, with no model behind it.
 ///
 /// The instruction is empty on purpose: `ServerForm::create` substitutes a default instruction
 /// when one is `None`, and any non-empty instruction makes `operator_wants_dynamic` true — so a
 /// server built carelessly here would consult the model and this test would be measuring the
 /// LLM path instead of the connection path. `CLAUDE.md` records two tests that documented
 /// "zero LLM calls" while doing the opposite.
-async fn start_tcp_server() -> (Arc<AppState>, netget::state::ServerId, u16) {
+///
+/// `registry_name` is the protocol's key in `server_registry`, so one body covers every protocol
+/// whose accept loop hands the connection to a task. That is the shape this file polices, and
+/// one protocol's worth of evidence for a ~140-protocol property is not much.
+async fn start_server(registry_name: &str) -> (Arc<AppState>, netget::state::ServerId, u16) {
     let state = Arc::new(AppState::new());
     let (status_tx, mut status_rx) = mpsc::unbounded_channel::<String>();
     // Drain, or the unbounded channel simply grows; nothing here asserts on status text.
@@ -50,14 +54,14 @@ async fn start_tcp_server() -> (Arc<AppState>, netget::state::ServerId, u16) {
         .add_server(netget::state::server::ServerInstance::new(
             netget::state::ServerId::new(0),
             0,
-            "TCP".to_string(),
+            registry_name.to_string(),
             String::new(),
         ))
         .await;
 
     let protocol = server_registry::registry()
-        .get("TCP")
-        .expect("the tcp feature is enabled for this test");
+        .get(registry_name)
+        .unwrap_or_else(|| panic!("{registry_name} must be compiled into this test build"));
 
     #[allow(deprecated)]
     let ctx = SpawnContext {
@@ -75,6 +79,58 @@ async fn start_tcp_server() -> (Arc<AppState>, netget::state::ServerId, u16) {
 
     let addr = protocol.spawn(ctx).await.expect("the server must start");
     (state, server_id, addr.port())
+}
+
+/// The whole contract for one protocol: connect, confirm the connection produced a task, stop,
+/// and assert the peer reads EOF.
+///
+/// Asserted from the peer's side for every protocol, for the reason the TCP test gives: internal
+/// bookkeeping can say a task was aborted while the socket stays open, and the peer is who was
+/// being lied to.
+async fn stopping_disconnects_a_peer_of(registry_name: &str, first_bytes: &[u8]) {
+    let (state, server_id, port) = start_server(registry_name).await;
+
+    let mut peer = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap_or_else(|e| panic!("connect to the running {registry_name} server: {e}"));
+    if !first_bytes.is_empty() {
+        peer.write_all(first_bytes)
+            .await
+            .expect("write to the peer");
+    }
+
+    // The connection must have produced a task before the stop, or this passes for the wrong
+    // reason: a peer that never connected also reads EOF.
+    let live = wait_until(Duration::from_secs(10), || async {
+        task_count(&state, server_id).await > 1
+    })
+    .await;
+    assert!(
+        live,
+        "{registry_name} registered no per-connection task (count={}), so there is nothing for \
+         stop to abort and the rest of this assertion would prove nothing",
+        task_count(&state, server_id).await
+    );
+
+    state.remove_server(server_id).await;
+
+    let mut buf = [0u8; 256];
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), peer.read(&mut buf)).await {
+            Ok(Ok(0)) => return,
+            // A banner or an error response written before the stop is fine; keep reading until
+            // the half-close arrives. What must not happen is the connection staying open.
+            Ok(Ok(_)) => continue,
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionReset => return,
+            Ok(Err(e)) => panic!("unexpected error reading from {registry_name} after stop: {e}"),
+            Err(_) => panic!(
+                "the {registry_name} connection was still open 10s after the server stopped. \
+                 The listener was released but the per-connection task was never registered, so \
+                 it is still running: still reading, still able to call the model, on a server \
+                 the operator stopped."
+            ),
+        }
+    }
 }
 
 /// How many background tasks the server currently owns.
@@ -106,7 +162,7 @@ where
 /// the peer is who was being lied to.
 #[tokio::test(flavor = "multi_thread")]
 async fn stopping_a_server_disconnects_a_live_peer() {
-    let (state, server_id, port) = start_tcp_server().await;
+    let (state, server_id, port) = start_server("TCP").await;
 
     let mut peer = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
@@ -158,7 +214,7 @@ async fn stopping_a_server_disconnects_a_live_peer() {
 /// everything" change needs this half asserted too.
 #[tokio::test(flavor = "multi_thread")]
 async fn per_connection_registration_does_not_accumulate_handles() {
-    let (state, server_id, port) = start_tcp_server().await;
+    let (state, server_id, port) = start_server("TCP").await;
 
     let held = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
@@ -205,7 +261,7 @@ async fn per_connection_registration_does_not_accumulate_handles() {
 /// one by breaking the other cannot land quietly.
 #[tokio::test(flavor = "multi_thread")]
 async fn stopping_a_server_releases_its_port() {
-    let (state, server_id, port) = start_tcp_server().await;
+    let (state, server_id, port) = start_server("TCP").await;
     state.remove_server(server_id).await;
 
     let rebound = wait_until(Duration::from_secs(10), || async {
@@ -220,4 +276,45 @@ async fn stopping_a_server_releases_its_port() {
         "port {port} was still bound 10s after the server was removed; the accept loop's \
          JoinHandle was dropped rather than aborted, and dropping only detaches a task"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The same contract, on protocols converted in the September 2026 sweep
+// ---------------------------------------------------------------------------
+//
+// TCP was the reference conversion, and one protocol proves only that the mechanism exists.
+// These three cover the shapes the rest of the tree is made of: a line-oriented reader netget
+// wrote (`telnet`), a request-then-reply session with its own read deadline (`whois`), and a
+// hyper connection whose task is `serve_connection` rather than any loop of ours (`http`).
+
+/// A telnet peer that has said nothing must still be disconnected by a stop.
+///
+/// Telnet is the case the dashboard cares about most: a peer parked on a manual question sits
+/// idle for minutes by design, which is exactly the state in which a detached reader is
+/// invisible — the operator sees a stopped instance and a live session at the same time.
+#[cfg(feature = "telnet")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_telnet_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("Telnet", b"").await;
+}
+
+/// WHOIS holds the connection open waiting for the first query line.
+///
+/// Its own `FIRST_QUERY_READ_TIMEOUT` is 30s, comfortably longer than this test's 10s deadline,
+/// so a pass here is the stop doing the work rather than the protocol timing the peer out.
+#[cfg(feature = "whois")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_whois_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("WHOIS", b"").await;
+}
+
+/// An HTTP connection with a request in flight must not survive the stop.
+///
+/// The task here is hyper's `serve_connection`, not a read loop netget wrote, so this is the
+/// evidence for the whole hyper-based family — around thirty protocols share the shape and were
+/// converted by the same mechanical edit.
+#[cfg(feature = "http")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_an_http_server_disconnects_a_live_peer() {
+    stopping_disconnects_a_peer_of("HTTP", b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n").await;
 }
