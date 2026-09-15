@@ -32,7 +32,7 @@ async fn test_postgresql_answers_error_response_when_llm_fails() -> E2EResult<()
     });
 
     let server = start_netget_server(server_config).await?;
-    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let (client, connection) = tokio_postgres::connect(
         &format!(

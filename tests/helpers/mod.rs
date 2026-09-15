@@ -21,7 +21,7 @@ pub mod usbip_client;
 pub use self::netget::NetGetConfig;
 pub use client::{start_netget_client, wait_for_client_startup};
 pub use common::{
-    get_available_port, retry, retry_with_backoff, wait_for_tcp_port, with_aws_sdk_timeout,
+    get_available_port, retry, retry_with_backoff, wait_for_server_listening, with_aws_sdk_timeout,
     with_cassandra_timeout, with_client_timeout, with_timeout, E2EResult,
 };
 pub use event_trigger::EventTrigger;

@@ -170,7 +170,7 @@ mod e2e_bgp {
         });
 
         let server = start_netget_server(config).await?;
-        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         let mut client = timeout(
             Duration::from_secs(5),
@@ -293,7 +293,7 @@ mod e2e_bgp {
         });
 
         let server = start_netget_server(config).await?;
-        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         let mut client = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
         // No capabilities at all: a two-octet-only speaker.
@@ -369,7 +369,7 @@ mod e2e_bgp {
         });
 
         let server = start_netget_server(config).await?;
-        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         let mut client = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
         let mut open = build_bgp_open(65000, 180, [192, 168, 1, 100], None);
@@ -433,7 +433,7 @@ mod e2e_bgp {
         });
 
         let server = start_netget_server(config).await?;
-        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         let mut client = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
         client
@@ -491,7 +491,7 @@ mod e2e_bgp {
         });
 
         let server = start_netget_server(config).await?;
-        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         let mut client = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
         // Propose the minimum hold time; the negotiated value is min(180, 3) = 3.
@@ -595,7 +595,7 @@ mod e2e_bgp {
         });
 
         let server = start_netget_server(config).await?;
-        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         let mut client = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
         client

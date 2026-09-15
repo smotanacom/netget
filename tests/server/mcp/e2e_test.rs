@@ -129,7 +129,7 @@ async fn test_mcp_initialize() -> E2EResult<()> {
     println!("Server started on port {}", server.port);
 
     // Wait for server to be ready
-    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     // Send initialize request
     println!("\n→ Sending MCP initialize request...");

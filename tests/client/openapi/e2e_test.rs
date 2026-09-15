@@ -57,7 +57,7 @@ mod openapi_client_tests {
         let server = start_netget_server(server_config).await?;
 
         // Give server time to start
-        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         println!("[TEST] Server started on port {}", server.port);
 
@@ -167,7 +167,7 @@ mod openapi_client_tests {
             });
 
         let server = start_netget_server(server_config).await?;
-        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         // Inject actual port into spec
         let openapi_spec = spec_template.replace("{port}", &server.port.to_string());

@@ -104,7 +104,7 @@ async fn call(port: u16, method: &str, frame: Vec<u8>) -> E2EResult<(String, usi
 #[tokio::test]
 async fn test_etcd_range_refuses_rather_than_claiming_the_key_is_absent() -> E2EResult<()> {
     let server = server_answering_with_nothing("etcd_range_request").await?;
-    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let (grpc_status, body_len) =
         call(server.port, "Range", key_request_frame("/config/database")).await?;
@@ -134,7 +134,7 @@ async fn test_etcd_range_refuses_rather_than_claiming_the_key_is_absent() -> E2E
 #[tokio::test]
 async fn test_etcd_delete_refuses_rather_than_reporting_a_commit() -> E2EResult<()> {
     let server = server_answering_with_nothing("etcd_delete_request").await?;
-    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let (grpc_status, body_len) = call(
         server.port,

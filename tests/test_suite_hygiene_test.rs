@@ -110,7 +110,7 @@ fn every_ignore_attribute_carries_a_reason() {
 /// alone was not generous at `--test-threads=100`.
 ///
 /// The helpers that replace one are `wait_for_mocks`, `wait_for_any`, `wait_for_log`,
-/// `wait_for_pattern`, `wait_for_regex` and `wait_for_tcp_port`.
+/// `wait_for_pattern`, `wait_for_regex` and `wait_for_server_listening`.
 ///
 /// **Two kinds of entry below are legitimate and are expected to stay:**
 ///
@@ -191,7 +191,7 @@ fn protocol_suites_do_not_wait_on_a_fixed_number_of_seconds() {
             None => problems.push(format!(
                 "{path}: {n} fixed second-scale sleep(s) in a file with none in the baseline. \
                  Wait on the condition — wait_for_mocks / wait_for_any / wait_for_log / \
-                 wait_for_tcp_port — or, if the sleep really is the thing under test, add it \
+                 wait_for_server_listening — or, if the sleep really is the thing under test, add it \
                  here with the reason."
             )),
             Some(&cap) if n > &cap => problems.push(format!(

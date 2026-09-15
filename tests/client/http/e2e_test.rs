@@ -48,7 +48,7 @@ mod http_client_tests {
         let server = start_netget_server(server_config).await?;
 
         // Give server time to fully bind and start listening
-        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         println!("[TEST] Server started on port {}", server.port);
 
@@ -173,7 +173,7 @@ mod http_client_tests {
         let server = start_netget_server(server_config).await?;
 
         // Give server time to fully bind and start listening
-        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+        crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
         println!("[TEST] Server started on port {}", server.port);
 

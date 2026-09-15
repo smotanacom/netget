@@ -37,7 +37,7 @@ async fn test_mysql_answers_error_packet_when_llm_fails() -> E2EResult<()> {
     });
 
     let server = start_netget_server(server_config).await?;
-    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let url = format!("mysql://root@127.0.0.1:{}/test", server.port);
     let pool = mysql_async::Pool::new(url.as_str());

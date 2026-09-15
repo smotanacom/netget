@@ -123,7 +123,7 @@ async fn test_smb_llm_allows_guest_auth() -> E2EResult<()> {
                     .and()
             })
     ).await?;
-    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
     let mut stream = TcpStream::connect(&addr)?;
@@ -218,7 +218,7 @@ async fn test_smb_llm_denies_user() -> E2EResult<()> {
                     .and()
             })
     ).await?;
-    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
     let mut stream = TcpStream::connect(&addr)?;
@@ -465,7 +465,7 @@ async fn test_smb_llm_connection_tracking() -> E2EResult<()> {
                 ])).expect_calls(1).and()
             })
     ).await?;
-    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
 
