@@ -62,22 +62,39 @@ enum Applied {
 /// wheel or sdist and far short of exhausting the process.
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Turn an operator- or model-supplied address into an index base URL.
+/// Turn an operator- or model-supplied address into an index base URL, **or refuse**.
 ///
-/// Adding the missing scheme rather than discarding the address is the whole point:
-/// the old behaviour turned "point this at my local index" into "talk to pypi.org",
-/// silently.
-fn resolve_index_url(remote_addr: &str, status_tx: &mpsc::UnboundedSender<String>) -> String {
+/// There is no default, and that is deliberate. A client that loses its target must fail
+/// rather than reach the real service: an address that merely failed to arrive is
+/// indistinguishable, further down, from one the caller deliberately omitted, so a fallback
+/// turns "I forgot to say where" into "talk to the public index" with nothing logged that an
+/// operator would read as a problem. It is the DynamoDB shape from the root `CLAUDE.md`,
+/// milder only because nothing here is signed with anybody's credentials. `openai`'s
+/// `api_base_for` faced the identical choice and refuses; this is the same exit.
+///
+/// Serving the public index is a legitimate thing to ask this client for — say so, with
+/// `remote_addr: "pypi.org"`, and it is honoured. Arriving there because nobody said otherwise
+/// is not.
+///
+/// A scheme is left as given; without one, `https://` is added rather than the address being
+/// discarded, which was an earlier incarnation of this same bug (`127.0.0.1:8080` silently
+/// became the public index).
+fn resolve_index_url(remote_addr: &str) -> Result<String> {
     let trimmed = remote_addr.trim().trim_end_matches('/');
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return trimmed.to_string();
+        return Ok(trimmed.to_string());
     }
+    // `"pypi"` is the protocol's own name, not an address — it reaches here when a caller fills
+    // `remote_addr` with the thing it is starting rather than the thing it is talking to.
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("pypi") {
-        Log::new(Some(status_tx))
-            .info("PyPI client: no index address given, defaulting to https://pypi.org");
-        return "https://pypi.org".to_string();
+        anyhow::bail!(
+            "PyPI client needs an index in remote_addr (for example \
+             http://127.0.0.1:8080 for a local devpi or bandersnatch mirror, or name the \
+             public index explicitly if that is what you want); refusing to reach the public \
+             Python package index by omission"
+        );
     }
-    format!("https://{trimmed}")
+    Ok(format!("https://{trimmed}"))
 }
 
 /// The one `reqwest::Client` this protocol uses, built once.
@@ -127,10 +144,11 @@ impl PypiClient {
         // for a value nothing read. `shared_http_client()` builds one on first use.
 
         // Parse the index URL. A scheme-less address used to be **discarded** and
-        // silently replaced with pypi.org, so an operator who typed `127.0.0.1:8080`
-        // had their requests sent to the public index with no warning. A host now
-        // gets the `https://` it was missing; only an empty address falls back.
-        let index_url = resolve_index_url(&remote_addr, &status_tx);
+        // silently replaced with the public index, so an operator who typed
+        // `127.0.0.1:8080` had their requests sent there with no warning. A host now
+        // gets the `https://` it was missing, and an address that is missing entirely
+        // is an error rather than a silent trip to the vendor.
+        let index_url = resolve_index_url(&remote_addr)?;
 
         // Store client data
         app_state

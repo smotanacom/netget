@@ -69,23 +69,24 @@ use std::path::{Path, PathBuf};
 /// before the builder. It is entered here so the ratchet can hold the line while that lands,
 /// and it must be the first entry removed.
 ///
-/// **`B:npm` and `B:pypi` — deliberate, documented, and still the class.** Each returns the
-/// public registry (`https://registry.npmjs.org`, `https://pypi.org`) when `remote_addr` is
-/// empty, logging an INFO as it does so. They are much milder than the AWS case — no
-/// credentials are signed and an address the operator *did* type always wins, which is itself a
-/// fix that landed earlier — but an empty target still reaches the real service. `openai` faced
-/// the identical choice and took the other exit, refusing with a message naming both the
-/// vendor URL and a localhost example; that is the shape to copy if these are ever changed.
+/// **Empty, and it must stay empty.**
 // `A:sqs:target dropped` was fixed on 15 Sep 2026 rather than re-baselined. It was the
 // DynamoDB defect verbatim, in the next AWS client along: `_remote_addr` was read nowhere, so
 // without an explicit `endpoint_url` the SDK resolved `https://sqs.<region>.amazonaws.com` and
 // signed with whatever ambient credentials the machine had - a client the operator pointed at
 // localhost issuing real queue operations against real AWS. This ratchet is the reason there
 // will not be a third.
-const VENDOR_FALLBACK_BASELINE: &[&str] = &[
-    "B:npm:registry.npmjs.org",
-    "B:pypi:pypi.org",
-];
+//
+// `B:npm` and `B:pypi` followed on 15 Sep 2026. Each returned the public registry
+// (registry.npmjs.org, pypi.org) when `remote_addr` was empty, logging an INFO as it did so.
+// They were much milder than the AWS case - no credentials are signed, and an address the
+// operator *did* type always won - but an empty target still reached the real service, which
+// is the whole class. `resolve_registry_url` and `resolve_index_url` now return `Result` and
+// refuse, naming a localhost example, exactly as `openai::api_base_for` does; serving the
+// public registry is still available by asking for it. Their startup-parameter descriptions
+// stopped promising a default at the same time, because a parameter that advertises one is
+// how the next person reintroduces it.
+const VENDOR_FALLBACK_BASELINE: &[&str] = &[];
 
 /// SDKs that resolve an endpoint of their own when none is configured.
 ///

@@ -31,7 +31,11 @@ Unlike TCP-based protocols, NPM client is **stateless HTTP-based**:
 
 ### Registry URL
 
-Default: `https://registry.npmjs.org`
+**There is no default.** The registry comes from `remote_addr` (or the `registry_url` startup
+parameter, which overrides it), and a client given neither refuses to start rather than
+reaching the public npm registry by omission — see `resolve_registry_url`. Naming the public
+registry explicitly (`"remote_addr": "registry.npmjs.org"`) still works and is the protocol's
+own startup example.
 
 Can be customized for:
 
@@ -420,6 +424,8 @@ timeout protects the caller either way.
 
 **Startup parameters.** `registry_url` is declared in `get_startup_parameters()` **and read**: `connect()` prefers it over `ctx.remote_addr`. It was declared and read by nothing for as long as this client has existed — `connect()` forwarded `ctx.remote_addr` and dropped `ctx.startup_params` on the floor — so the advertised knob did nothing when turned.
 
-**A scheme-less address is no longer discarded.** `remote_addr` without `http://`/`https://` used to be thrown away and silently replaced with `https://registry.npmjs.org`, so an operator who typed `127.0.0.1:8080` had their requests sent to the public registry with no warning — and this protocol's own startup example (`"remote_addr": "registry.npmjs.org"`) took exactly that branch. A host now gets the `https://` it was missing; only an empty address falls back, and it says so in the log.
+**A scheme-less address is no longer discarded, and a missing one no longer reaches the vendor.** `remote_addr` without `http://`/`https://` used to be thrown away and silently replaced with the public registry, so an operator who typed `127.0.0.1:8080` had their requests sent there with no warning — and this protocol's own startup example (`"remote_addr": "registry.npmjs.org"`) took exactly that branch. A host now gets the `https://` it was missing.
+
+An *empty* address used to fall back to the public registry with an INFO line, which is the class the root `CLAUDE.md` calls "a client that loses its target must fail, never fall back to the real service". It is milder than the DynamoDB case — nothing here is signed with anybody's credentials — and it is the same shape: an address that merely failed to arrive is indistinguishable, further down, from one the caller deliberately omitted. `resolve_registry_url` returns `Result` and refuses, naming a localhost example, exactly as `openai::api_base_for` does. The protocol's own name as an address (`"npm"`) refuses too: it reaches the resolver when a caller fills `remote_addr` with the thing it is starting rather than the thing it is talking to, and it used to become the public registry as well. `tests/client/npm/registry_target_test.rs` pins both refusals **and** that an explicitly named public registry is still honoured — a guard that refused everything would satisfy the first assertion alone.
 
 **One `reqwest::Client`, built once, off the runtime.** Every request used to build a fresh one, and `connect()` built a further one into `_http_client` and dropped it immediately. Building a client is blocking — rustls setup plus the platform root store, which on macOS reads the keychain through Security.framework — so this was the systemic defect `CLAUDE.md` records as having stalled a whole client runtime, paid per request.

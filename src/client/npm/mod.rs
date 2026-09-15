@@ -86,23 +86,39 @@ async fn shared_http_client() -> Result<reqwest::Client> {
 /// well past any real npm package and far short of exhausting the process.
 const MAX_TARBALL_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Turn an operator- or model-supplied address into a registry base URL.
+/// Turn an operator- or model-supplied address into a registry base URL, **or refuse**.
 ///
-/// Adding the missing scheme rather than discarding the address is the whole point:
-/// the old behaviour turned "point this at my local registry" into "talk to
-/// registry.npmjs.org", silently.
-fn resolve_registry_url(remote_addr: &str, status_tx: &mpsc::UnboundedSender<String>) -> String {
+/// There is no default, and that is deliberate. A client that loses its target must fail
+/// rather than reach the real service: an address that merely failed to arrive is
+/// indistinguishable, further down, from one the caller deliberately omitted, so a fallback
+/// turns "I forgot to say where" into "talk to the public registry" with nothing logged that
+/// an operator would read as a problem. It is the DynamoDB shape from the root `CLAUDE.md`,
+/// milder only because nothing here is signed with anybody's credentials. `openai`'s
+/// `api_base_for` faced the identical choice and refuses; this is the same exit.
+///
+/// Serving the public registry is a legitimate thing to ask this client for — say so, with
+/// `remote_addr: "registry.npmjs.org"`, and it is honoured. Arriving there because nobody said
+/// otherwise is not.
+///
+/// A scheme is left as given; without one, `https://` is added rather than the address being
+/// discarded, which was an earlier incarnation of this same bug (`127.0.0.1:8080` silently
+/// became the public registry).
+fn resolve_registry_url(remote_addr: &str) -> Result<String> {
     let trimmed = remote_addr.trim().trim_end_matches('/');
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return trimmed.to_string();
+        return Ok(trimmed.to_string());
     }
+    // `"npm"` is the protocol's own name, not an address — it reaches here when a caller fills
+    // `remote_addr` with the thing it is starting rather than the thing it is talking to.
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("npm") {
-        Log::new(Some(status_tx)).info(
-            "NPM client: no registry address given, defaulting to https://registry.npmjs.org",
+        anyhow::bail!(
+            "NPM client needs a registry in remote_addr (for example \
+             http://127.0.0.1:4873 for a local Verdaccio, or name the public registry \
+             explicitly if that is what you want); refusing to reach the public npm registry \
+             by omission"
         );
-        return "https://registry.npmjs.org".to_string();
     }
-    format!("https://{trimmed}")
+    Ok(format!("https://{trimmed}"))
 }
 
 /// NPM Registry client that queries packages
@@ -120,12 +136,12 @@ impl NpmClient {
         // For NPM, "connection" is logical - we're accessing a REST API.
         //
         // A scheme-less address used to be **discarded** and silently replaced with
-        // registry.npmjs.org, so an operator who typed `127.0.0.1:8080` had their
-        // requests sent to the public registry with no warning — and this protocol's
-        // own startup example (`"remote_addr": "registry.npmjs.org"`) takes exactly
-        // that branch. A host is now given the `https://` it was missing; only a
-        // genuinely empty address falls back, and it says so.
-        let registry_url = resolve_registry_url(&remote_addr, &status_tx);
+        // the public registry, so an operator who typed `127.0.0.1:8080` had their
+        // requests sent there with no warning — and this protocol's own startup
+        // example (`"remote_addr": "registry.npmjs.org"`) takes exactly that branch.
+        // A host is now given the `https://` it was missing, and an address that is
+        // missing entirely is an error rather than a silent trip to the vendor.
+        let registry_url = resolve_registry_url(&remote_addr)?;
 
         info!("NPM client {} initialized for {}", client_id, registry_url);
 

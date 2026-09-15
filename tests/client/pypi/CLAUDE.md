@@ -250,3 +250,29 @@ What it asserts, in order:
 5. An unknown verb comes back `Rejected`, not silently swallowed. And `search_packages` is pinned as the honest-`Executed` case: PyPI retired its search API, so the test asserts the stub saw **no new request at all** while the outcome still says what happened.
 6. `disconnect` returns `Disconnected`, the command loop exits, the handle is dropped and the
    client's status becomes `Disconnected`.
+
+## `index_target_test.rs` — where the traffic goes, and what is refused
+
+Five tests, **zero LLM calls** (a `*` rule answers the connected event with nothing) and
+**zero network traffic**: the PyPI client issues no request at connect, and every case removes
+its client before returning.
+
+`resolve_index_url` used to end in `return "https://pypi.org".to_string()` for an empty
+`remote_addr`, logging an INFO as it went — "a client that loses its target must fail, never
+fall back to the real service", milder than the DynamoDB case only because nothing here is
+signed. It now returns `Result` and refuses.
+
+Driven through `ClientForm::create`, so what is asserted is the `index_url` the client recorded
+for itself rather than a helper's return value:
+
+- a scheme-qualified address is used exactly as given (trailing `/` trimmed);
+- a bare host gets `https://` rather than being discarded;
+- **naming `pypi.org` explicitly is still honoured** — the control. A guard that refused
+  everything would pass the two refusal tests below and break the protocol's own startup
+  example;
+- an empty address refuses, and the error names `remote_addr`;
+- `"pypi"` — the protocol's own name — refuses too.
+
+Verified by restoring the fallback: the two refusal tests fail, the three others pass either
+way, which is what makes them controls rather than decoration.
+
