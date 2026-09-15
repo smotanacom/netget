@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NetGet: Describe a server. Get a server.</title>
-    <meta name="description" content="NetGet puts an LLM behind 50+ network protocols. Describe a mock server in plain English and it runs. Works standalone or as an MCP server for LLM agents.">
+    <meta name="description" content="NetGet puts an LLM behind 150+ network protocols. Describe a mock server in plain English and it runs. Works standalone or as an MCP server for LLM agents.">
 
     <meta property="og:title" content="NetGet: Describe a server. Get a server.">
-    <meta property="og:description" content="Put an LLM behind 50+ network protocols. Plain English in, mock servers out. MCP built in.">
+    <meta property="og:description" content="Put an LLM behind 150+ network protocols. Plain English in, mock servers out. MCP built in.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://netget.net/">
 
@@ -37,7 +37,7 @@
     <header class="hero hero-demo">
         <h1>Describe a server.<br><span class="accent">Get a server.</span></h1>
         <p class="hero-sub">
-            NetGet puts an LLM behind 50+ network protocols.<br>
+            NetGet puts an LLM behind 150+ network protocols.<br>
             What follows is not a video: it is NetGet, compiled to WebAssembly, running in this tab.
         </p>
     </header>
@@ -296,30 +296,34 @@
         <section class="section">
             <h2>Protocols</h2>
             <p class="section-sub">
-                Every protocol is a Cargo feature. Build with exactly what you need:
-                <code>--features tcp,http,dns</code>
+                167 protocol features. Each is a Cargo feature; build with exactly what you need:
+                <code>--features tcp,http,dns</code>. The <b class="in-web">highlighted</b> ones are compiled into the demo above.
             </p>
             <div class="proto-table">
-                <div class="proto-row"><span class="proto-cat">transport</span><span class="proto-list">tcp udp tftp socket_file datalink arp icmp igmp</span></div>
-                <div class="proto-row"><span class="proto-cat">web</span><span class="proto-list">http http2 http3 tls proxy http_proxy socks5 openapi rss</span></div>
-                <div class="proto-row"><span class="proto-cat">naming &amp; time</span><span class="proto-list">dns dot doh mdns dhcp bootp ntp whois</span></div>
-                <div class="proto-row"><span class="proto-cat">remote access</span><span class="proto-list">ssh ssh-agent telnet vnc</span></div>
-                <div class="proto-row"><span class="proto-cat">mail &amp; news</span><span class="proto-list">smtp imap pop3 nntp</span></div>
-                <div class="proto-row"><span class="proto-cat">chat &amp; voice</span><span class="proto-list">irc xmpp sip webrtc stun turn</span></div>
-                <div class="proto-row"><span class="proto-cat">queues</span><span class="proto-list">mqtt amqp kafka sqs zookeeper</span></div>
-                <div class="proto-row"><span class="proto-cat">databases</span><span class="proto-list">mysql postgresql mssql sqlite redis mongodb couchdb cassandra elasticsearch dynamodb etcd</span></div>
-                <div class="proto-row"><span class="proto-cat">files &amp; storage</span><span class="proto-list">ftp s3 nfs smb webdav ipp</span></div>
-                <div class="proto-row"><span class="proto-cat">auth</span><span class="proto-list">oauth2 openid openidconnect saml-idp saml-sp ldap</span></div>
-                <div class="proto-row"><span class="proto-cat">rpc</span><span class="proto-list">grpc jsonrpc xmlrpc mcp</span></div>
+                <div class="proto-row"><span class="proto-cat">transport</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">tcp</b> <b class="in-web" title="runs in the browser demo above">udp</b> <b class="in-web" title="runs in the browser demo above">tftp</b> quic <b class="in-web" title="runs in the browser demo above">tls</b> socket_file named_pipe pty stdio</span></div>
+                <div class="proto-row"><span class="proto-cat">link &amp; raw</span><span class="proto-list">datalink arp icmp igmp ndp rawip tuntap can lldp cdp stp eapol vrrp <b class="in-web" title="runs in the browser demo above">hsrp</b> <b class="in-web" title="runs in the browser demo above">wol</b></span></div>
+                <div class="proto-row"><span class="proto-cat">web</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">http</b> <b class="in-web" title="runs in the browser demo above">http2</b> http3 websocket proxy http_proxy socks5 <b class="in-web" title="runs in the browser demo above">openapi</b> <b class="in-web" title="runs in the browser demo above">rss</b> <b class="in-web" title="runs in the browser demo above">coap</b></span></div>
+                <div class="proto-row"><span class="proto-cat">naming &amp; time</span><span class="proto-list">dns dot doh mdns llmnr <b class="in-web" title="runs in the browser demo above">netbios-ns</b> <b class="in-web" title="runs in the browser demo above">ssdp</b> <b class="in-web" title="runs in the browser demo above">dhcp</b> <b class="in-web" title="runs in the browser demo above">dhcpv6</b> <b class="in-web" title="runs in the browser demo above">bootp</b> ntp <b class="in-web" title="runs in the browser demo above">whois</b></span></div>
+                <div class="proto-row"><span class="proto-cat">remote access</span><span class="proto-list">ssh ssh-agent <b class="in-web" title="runs in the browser demo above">telnet</b> <b class="in-web" title="runs in the browser demo above">vnc</b> <b class="in-web" title="runs in the browser demo above">rdp</b> <b class="in-web" title="runs in the browser demo above">reverse-shell</b></span></div>
+                <div class="proto-row"><span class="proto-cat">mail, news &amp; chat</span><span class="proto-list">smtp imap <b class="in-web" title="runs in the browser demo above">pop3</b> <b class="in-web" title="runs in the browser demo above">nntp</b> irc xmpp</span></div>
+                <div class="proto-row"><span class="proto-cat">media &amp; voice</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">sip</b> <b class="in-web" title="runs in the browser demo above">rtp</b> <b class="in-web" title="runs in the browser demo above">rtsp</b> <b class="in-web" title="runs in the browser demo above">hls</b> webrtc stun turn</span></div>
+                <div class="proto-row"><span class="proto-cat">queues</span><span class="proto-list">mqtt amqp <b class="in-web" title="runs in the browser demo above">kafka</b> <b class="in-web" title="runs in the browser demo above">nats</b> <b class="in-web" title="runs in the browser demo above">stomp</b> sqs zookeeper</span></div>
+                <div class="proto-row"><span class="proto-cat">databases</span><span class="proto-list">mysql postgresql mssql <b class="in-web" title="runs in the browser demo above">db2</b> <b class="in-web" title="runs in the browser demo above">snowflake</b> redis <b class="in-web" title="runs in the browser demo above">memcached</b> mongodb <b class="in-web" title="runs in the browser demo above">mongodb-server</b> couchdb cassandra <b class="in-web" title="runs in the browser demo above">elasticsearch</b> dynamo dynamodb etcd</span></div>
+                <div class="proto-row"><span class="proto-cat">files &amp; storage</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">ftp</b> s3 nfs <b class="in-web" title="runs in the browser demo above">smb</b> smb-client webdav ipp <b class="in-web" title="runs in the browser demo above">oci-registry</b></span></div>
+                <div class="proto-row"><span class="proto-cat">auth</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">oauth2</b> <b class="in-web" title="runs in the browser demo above">openid</b> <b class="in-web" title="runs in the browser demo above">openidconnect</b> <b class="in-web" title="runs in the browser demo above">saml</b> <b class="in-web" title="runs in the browser demo above">saml-idp</b> <b class="in-web" title="runs in the browser demo above">saml-sp</b> ldap <b class="in-web" title="runs in the browser demo above">radius</b></span></div>
+                <div class="proto-row"><span class="proto-cat">rpc &amp; agents</span><span class="proto-list">grpc <b class="in-web" title="runs in the browser demo above">jsonrpc</b> xmlrpc mcp <b class="in-web" title="runs in the browser demo above">modbus</b></span></div>
+                <div class="proto-row"><span class="proto-cat">clusters</span><span class="proto-list">kubernetes <b class="in-web" title="runs in the browser demo above">kubernetes-server</b> <b class="in-web" title="runs in the browser demo above">spark</b> <b class="in-web" title="runs in the browser demo above">yarn</b> <b class="in-web" title="runs in the browser demo above">dc</b></span></div>
                 <div class="proto-row"><span class="proto-cat">vpn &amp; tunnels</span><span class="proto-list">wireguard openvpn ipsec tor</span></div>
-                <div class="proto-row"><span class="proto-cat">routing</span><span class="proto-list">bgp ospf isis rip</span></div>
-                <div class="proto-row"><span class="proto-cat">vcs &amp; packages</span><span class="proto-list">git mercurial svn npm pypi maven</span></div>
-                <div class="proto-row"><span class="proto-cat">p2p</span><span class="proto-list">bitcoin torrent-tracker torrent-dht torrent-peer</span></div>
-                <div class="proto-row"><span class="proto-cat">hardware</span><span class="proto-list">usb usb-keyboard usb-mouse usb-serial usb-fido2 usb-smartcard bluetooth-ble nfc</span></div>
-                <div class="proto-row"><span class="proto-cat">observability</span><span class="proto-list">snmp syslog</span></div>
-                <div class="proto-row"><span class="proto-cat">llm backends</span><span class="proto-list">ollama openai embedded-llm</span></div>
+                <div class="proto-row"><span class="proto-cat">routing &amp; telecom</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">bgp</b> ospf isis rip m3ua <b class="in-web" title="runs in the browser demo above">gtp</b></span></div>
+                <div class="proto-row"><span class="proto-cat">vcs &amp; packages</span><span class="proto-list">git <b class="in-web" title="runs in the browser demo above">mercurial</b> <b class="in-web" title="runs in the browser demo above">svn</b> <b class="in-web" title="runs in the browser demo above">npm</b> <b class="in-web" title="runs in the browser demo above">pypi</b> <b class="in-web" title="runs in the browser demo above">maven</b></span></div>
+                <div class="proto-row"><span class="proto-cat">p2p</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">bitcoin</b> <b class="in-web" title="runs in the browser demo above">torrent-tracker</b> <b class="in-web" title="runs in the browser demo above">torrent-dht</b> <b class="in-web" title="runs in the browser demo above">torrent-peer</b></span></div>
+                <div class="proto-row"><span class="proto-cat">classic internet</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">finger</b> <b class="in-web" title="runs in the browser demo above">gopher</b> <b class="in-web" title="runs in the browser demo above">ident</b></span></div>
+                <div class="proto-row"><span class="proto-cat">observability</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">snmp</b> <b class="in-web" title="runs in the browser demo above">syslog</b></span></div>
+                <div class="proto-row"><span class="proto-cat">usb</span><span class="proto-list">usb usb-keyboard usb-mouse usb-serial usb-msc usb-fido2 usb-smartcard</span></div>
+                <div class="proto-row"><span class="proto-cat">bluetooth &amp; nfc</span><span class="proto-list">bluetooth-ble bluetooth-ble-client bluetooth-ble-beacon bluetooth-ble-battery bluetooth-ble-heart-rate bluetooth-ble-thermometer bluetooth-ble-environmental bluetooth-ble-weight-scale bluetooth-ble-cycling bluetooth-ble-running bluetooth-ble-proximity bluetooth-ble-keyboard bluetooth-ble-mouse bluetooth-ble-gamepad bluetooth-ble-presenter bluetooth-ble-remote bluetooth-ble-data-stream bluetooth-ble-file-transfer nfc nfc-client</span></div>
+                <div class="proto-row"><span class="proto-cat">llm backends</span><span class="proto-list"><b class="in-web" title="runs in the browser demo above">ollama</b> openai</span></div>
             </div>
-            <p class="caption">Most protocols run as server and client. Maturity varies, see the README for status.</p>
+            <p class="caption">Most protocols run as server and client. Maturity varies — see the README for status. This list is generated from Cargo.toml and a test keeps it current.</p>
         </section>
 
         <!-- Install -->
