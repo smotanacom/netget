@@ -608,7 +608,7 @@ mod coap_props {
         /// Property 1.
         #[test]
         fn message_round_trips(message in arb_message()) {
-            let bytes = message.encode();
+            let bytes = message.encode().unwrap();
             let decoded = CoapMessage::decode(&bytes);
             prop_assert!(decoded.is_ok(), "{:?} from {:02x?}", decoded, bytes);
             prop_assert_eq!(decoded.unwrap(), message);
@@ -633,7 +633,7 @@ mod coap_props {
                 options: options.clone(),
                 payload: Vec::new(),
             };
-            let decoded = CoapMessage::decode(&message.encode()).unwrap();
+            let decoded = CoapMessage::decode(&message.encode().unwrap()).unwrap();
             prop_assert_eq!(decoded.options, options);
         }
 
@@ -652,7 +652,7 @@ mod coap_props {
                 options: vec![(12, vec![0])],
                 payload,
             };
-            prop_assert!(message.encode().len() <= 4 + 8 + 4 + MAX_PAYLOAD_LEN);
+            prop_assert!(message.encode().unwrap().len() <= 4 + 8 + 4 + MAX_PAYLOAD_LEN);
         }
 
         /// Property 4: the response-code text form normalises and round-trips.
@@ -698,13 +698,13 @@ mod coap_props {
     // FINDINGS
     // -------------------------------------------------------------------------------------
 
-    /// FINDING: `encode` truncates an over-long token instead of refusing it. Minimal
-    /// counterexample: a 9-byte token, which reaches the wire as its first 8 bytes.
-    /// `decode` refuses `tkl > 8`, so the two directions disagree about what is legal —
-    /// and silently, because truncating still produces a parseable message.
+    /// `encode` used to truncate an over-long token instead of refusing it. Minimal
+    /// counterexample: a 9-byte token, which reached the wire as its first 8 bytes.
+    /// `decode` refuses `tkl > 8`, so the two directions disagreed about what is legal —
+    /// and silently, because truncating still produces a parseable message, and CoAP's whole
+    /// request/response matching is token equality, so the reply matched nothing.
     #[test]
-    #[ignore = "FINDING: CoapMessage::encode truncates a token longer than 8 bytes"]
-    fn encode_should_refuse_an_over_long_token() {
+    fn encode_refuses_an_over_long_token() {
         let message = CoapMessage {
             mtype: MessageType::Confirmable,
             code: 1,
@@ -713,11 +713,19 @@ mod coap_props {
             options: Vec::new(),
             payload: Vec::new(),
         };
-        let decoded = CoapMessage::decode(&message.encode()).unwrap();
-        assert_eq!(
-            decoded.token, message.token,
-            "token was silently truncated on encode"
+        assert!(
+            message.encode().is_err(),
+            "a 9-byte token must be refused, never shortened to one that matches nothing"
         );
+
+        // The refusal is at the boundary: the longest legal token still encodes and returns
+        // intact, which is what makes the refusal above a bound rather than a blanket no.
+        let legal = CoapMessage {
+            token: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            ..message
+        };
+        let decoded = CoapMessage::decode(&legal.encode().unwrap()).unwrap();
+        assert_eq!(decoded.token, legal.token);
     }
 }
 

@@ -453,7 +453,24 @@ impl CoapServer {
         app_state: &Arc<AppState>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) {
-        let bytes = message.encode();
+        // A message the codec refuses is never patched up and sent anyway: a CoAP reply whose
+        // token was shortened to fit matches nothing at the client, which is a silent drop
+        // dressed as an answer.
+        let bytes = match message.encode() {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                error!(
+                    "CoAP decision=fail_closed_encode: refusing to send {} to {}: {}",
+                    codec::code_to_string(message.code),
+                    peer_addr,
+                    e
+                );
+                let _ = status_tx.send(format!(
+                    "✗ CoAP refused to encode a reply to {peer_addr}: {e}"
+                ));
+                return;
+            }
+        };
         if let Err(e) = socket.send_to(&bytes, peer_addr).await {
             error!("CoAP send to {} failed: {}", peer_addr, e);
             let _ = status_tx.send(format!("✗ CoAP send to {peer_addr} failed: {e}"));
