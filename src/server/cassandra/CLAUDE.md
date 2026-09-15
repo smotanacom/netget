@@ -186,3 +186,27 @@ rather than half-done.
 - [Cassandra native protocol v4](https://github.com/apache/cassandra/blob/trunk/doc/native_protocol_v4.spec)
 - [cassandra-protocol](https://docs.rs/cassandra-protocol/)
 - [scylla driver](https://docs.rs/scylla/)
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/cassandra/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_FRAME_READ_TIMEOUT` | 30s | CQL is client-speaks-first; a driver sends OPTIONS then STARTUP inside its connect path. A peer that has connected and sent nothing has begun no handshake, and this is the bound an unauthenticated flood lives under. |
+| `IDLE_BETWEEN_FRAMES_TIMEOUT` | 900s | Long on purpose: a driver holds a *pool* of persistent connections and most of them are legitimately silent. Both the DataStax and ScyllaDB drivers send a heartbeat OPTIONS on an idle connection every 30s by default, precisely so an idle-but-live connection keeps proving it is live — fifteen minutes is thirty of those. Cassandra's own `native_transport_idle_timeout_in_ms` ships disabled, so there is no upstream default to copy. |
+| `MAX_CONNECTIONS` | 256 | Each connection may buffer a frame of up to `MAX_FRAME_BODY_BYTES` (256 MiB), so the cap is what turns that per-connection bound into a total one. **Refusal: a plain close.** There is a natural vocabulary — an ERROR frame with `Overloaded` — but every CQL frame is stamped with the protocol version, and the version is chosen by the client's first frame, which a refused peer has not sent. Guessing it replaces "server is full" with a version error. Real Cassandra past `native_transport_max_concurrent_connections` closes the channel for the same reason. |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

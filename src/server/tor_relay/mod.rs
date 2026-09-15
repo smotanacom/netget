@@ -164,10 +164,19 @@ impl TorRelayServer {
 
         // Spawn connection handler
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Tor Relay",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id = crate::server::connection::ConnectionId::new(
                             app_state.get_next_unified_id().await,
                         );
@@ -184,6 +193,9 @@ impl TorRelayServer {
                         let circuit_mgr_clone = circuit_manager.clone();
 
                         tokio::spawn(async move {
+                            // Held for the life of the connection, so the cap counts live
+                            // peers rather than accepts.
+                            let _permit = permit;
                             if let Err(e) = handle_tor_relay_connection(
                                 stream,
                                 connection_id,
@@ -331,6 +343,8 @@ impl TorRelaySession {
 
         let mut inbuf: Vec<u8> = Vec::with_capacity(4096);
         let mut read_buf = vec![0u8; 4096];
+        // False until the peer has sent anything at all; see FIRST_CELL_READ_TIMEOUT.
+        let mut seen_cell = false;
         // Only the first cell of a connection may be a VERSIONS cell, and only a VERSIONS
         // cell uses a 2-byte circuit id (tor-spec 3). After it, framing is unambiguous.
         let mut expecting_versions = true;
@@ -375,7 +389,31 @@ impl TorRelaySession {
                 }
             }
 
+            // Re-arm the idle deadline for the wait that follows. It is set here, immediately
+            // before the `select!`, rather than kept running across the loop body — and that is
+            // deliberate: `handle_cell` above awaits the model, and may park the cell for a
+            // human at the dashboard (`src/state/intercepts.rs`, 300s by default). Arming the
+            // clock only over the wait means none of that time is ever counted as idle, so an
+            // answer that takes minutes cannot close the connection it is an answer for.
+            let idle_bound = if seen_cell {
+                IDLE_BETWEEN_CELLS_TIMEOUT
+            } else {
+                FIRST_CELL_READ_TIMEOUT
+            };
+            let idle_deadline = tokio::time::sleep(idle_bound);
+            tokio::pin!(idle_deadline);
+
             tokio::select! {
+                // Nothing at all from the peer, and nothing to send it, for the whole bound.
+                _ = &mut idle_deadline => {
+                    Log::new(Some(&self.status_tx)).info(format!(
+                        "Tor Relay peer {} sent nothing for {}s; closing idle connection",
+                        self.remote_addr,
+                        idle_bound.as_secs()
+                    ));
+                    return Ok(());
+                }
+
                 // Read incoming bytes from the TLS stream. `read` is cancel-safe: if the
                 // other branch wins, nothing has been consumed.
                 read_result = self.stream.read(&mut read_buf) => {
@@ -388,6 +426,7 @@ impl TorRelaySession {
                             return Ok(());
                         }
                         Ok(n) => {
+                            seen_cell = true;
                             trace!("Received {} bytes from {}", n, self.remote_addr);
                             inbuf.extend_from_slice(&read_buf[..n]);
                         }
@@ -1436,6 +1475,36 @@ struct TorCellInfo {
 
 /// The link protocol version this relay frames cells for: 4-byte circuit ids, 514-byte
 /// fixed cells.
+/// How long to wait for a peer's first cell after the TLS handshake.
+///
+/// The Tor link protocol is client-speaks-first once TLS is up: the VERSIONS cell is the first
+/// thing a client sends and the relay says nothing before it. A peer that has completed TLS and
+/// then gone quiet has begun no link handshake, so it gets the short bound — and this is the
+/// one an unauthenticated flood lives under, since it never reaches the idle bound below.
+const FIRST_CELL_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* cell once the link is up.
+///
+/// Fifteen minutes, derived from Tor's own answer to the same question. `KeepalivePeriod`
+/// defaults to five minutes: a relay sends a PADDING cell that often on an open connection
+/// precisely so an idle-but-live link keeps proving it is live through firewalls that would
+/// otherwise drop it. Three of those periods with neither a cell nor a padding keepalive means
+/// the peer is gone, not quiet. (Tor's `CircuitIdleTimeout` — an hour — is about circuits, not
+/// about a connection that is producing nothing at all, so it is not the number to copy here.)
+const IDLE_BETWEEN_CELLS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Concurrent inbound connections this relay admits.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// The cap is applied on the raw TCP accept, before the TLS handshake, so the only vocabulary
+/// available is TLS's: a plaintext fatal alert record — content type 21, legacy record version
+/// 0x0303, length 2, level `fatal`(2), description `internal_error`(80). TLS has no "server
+/// busy" alert and the Tor link protocol has nothing at all that may precede VERSIONS, so this
+/// is as close as either layer comes. A client reports a fatal alert rather than a bare reset.
+const CONNECTION_CAP_REFUSAL: &[u8] = &[0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x50];
+
 const LINK_PROTOCOL_VERSION: u16 = 4;
 /// tor-spec 3, command 7. Variable length, and the only cell with a 2-byte circuit id.
 const CELL_COMMAND_VERSIONS: u8 = 7;

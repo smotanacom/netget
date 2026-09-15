@@ -29,6 +29,42 @@ use crate::logging::emit::Log;
 use actions::SMB_OPERATION_EVENT;
 
 // NTSTATUS codes used in SMB2 response headers (MS-ERREF 2.3.1).
+/// How long to wait for a peer's first SMB2 message after it has connected.
+///
+/// SMB2 is client-speaks-first: NEGOTIATE is the first message and the server says nothing
+/// before it. `smbclient`, the Windows redirector and `mount -t cifs` all send it inside the
+/// connect path, so a peer that has connected and sent nothing has begun no session — which is
+/// the state an unauthenticated flood lives in, and the one this bound exists for.
+const FIRST_MESSAGE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* message once a session exists.
+///
+/// Fifteen minutes, which is not a number invented here: it is Windows' `autodisconnect`
+/// default — the interval after which a server disconnects an idle SMB session — expressed in
+/// seconds. A mounted share with no I/O is genuinely idle for long stretches and must not be
+/// torn down for it, and copying the number every Windows client already expects is the one
+/// choice a real deployment cannot be surprised by.
+const IDLE_BETWEEN_MESSAGES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// How long a peer may stall part-way through a message body it has already announced.
+///
+/// Separate from the two above, and much shorter, because it is a different claim: the peer has
+/// said "this many bytes are coming" and the server has already allocated for them. Nothing
+/// legitimate takes half a minute to finish delivering a body whose header has landed.
+const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Concurrent connections this server admits.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a plain close, as a real SMB server does.
+///
+/// Every SMB2 response — an error response included — echoes the request's MessageId, TreeId
+/// and SessionId, and this peer has sent no request to echo. A response with those fields
+/// invented is a protocol violation rather than a diagnosis. Samba past `max smbd processes`
+/// and Windows past its connection limit both close without a message; the reason is in the
+/// log, tagged `decision=fail_closed_connection_cap`.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 const STATUS_ACCESS_DENIED: u32 = 0xC000_0022;
 /// The command is not one this server implements. Better than silence: a peer given no reply
 /// at all waits out its own timeout with the connection already desynced.
@@ -124,14 +160,23 @@ impl SmbServer {
 
         // Spawn connection acceptor
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             info!("SMB server connection acceptor started");
 
             loop {
                 trace!("SMB acceptor: waiting for connection");
 
-                match listener.accept().await {
-                    Ok((stream, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "SMB",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, peer_addr, permit)) => {
                         Log::new(Some(&status_tx))
                             .info(format!("SMB connection accepted from {}", peer_addr));
 
@@ -142,6 +187,9 @@ impl SmbServer {
                         let status_tx = status_tx.clone();
 
                         tokio::spawn(async move {
+                            // Held for the life of the connection, so the cap counts live
+                            // peers rather than accepts.
+                            let _permit = permit;
                             if let Err(e) = Self::handle_connection(
                                 stream,
                                 peer_addr,
@@ -240,7 +288,34 @@ impl SmbServer {
             // SMB2 header is 64 bytes minimum
             let mut header_buf = vec![0u8; 64];
 
-            match stream.read_exact(&mut header_buf).await {
+            // The deadline wraps this read and nothing else. The LLM round-trip that decides a
+            // login or answers a request, and a `manual` rule parking either for a human
+            // (`src/state/intercepts.rs`, 300s by default), all happen below once a whole
+            // message has been read — outside every deadline by construction. What is bounded
+            // is a peer holding the connection while sending nothing.
+            let header_timeout = if state.lock().await.sessions.is_empty() {
+                FIRST_MESSAGE_READ_TIMEOUT
+            } else {
+                IDLE_BETWEEN_MESSAGES_TIMEOUT
+            };
+            let header_read = match tokio::time::timeout(
+                header_timeout,
+                stream.read_exact(&mut header_buf),
+            )
+            .await
+            {
+                Ok(read) => read,
+                Err(_) => {
+                    Log::new(Some(&status_tx)).info(format!(
+                        "SMB peer {} sent nothing for {}s; closing idle connection",
+                        peer_addr,
+                        header_timeout.as_secs()
+                    ));
+                    break;
+                }
+            };
+
+            match header_read {
                 Ok(_) => {
                     // Update connection stats for received data
                     app_state
@@ -406,7 +481,7 @@ impl SmbServer {
                 // NEGOTIATE request body is 36 bytes (structure) + 2 bytes (dialect) = 38 bytes total
                 // We read exactly 38 bytes to prevent consuming part of the next message
                 let mut body_buf = [0u8; 38];
-                match _stream.read_exact(&mut body_buf).await {
+                match read_body_exact(_stream, &mut body_buf).await {
                     Ok(_) => {
                         debug!("NEGOTIATE body: 38 bytes consumed");
                     }
@@ -428,7 +503,7 @@ impl SmbServer {
 
                 // Read SESSION_SETUP request body (exactly 24 bytes for guest auth)
                 let mut body_buf = [0u8; 24];
-                if let Err(e) = _stream.read_exact(&mut body_buf).await {
+                if let Err(e) = read_body_exact(_stream, &mut body_buf).await {
                     warn!(
                         "Error reading SESSION_SETUP body: {} - continuing anyway",
                         e
@@ -555,7 +630,7 @@ impl SmbServer {
                 // Read CREATE request body (variable length)
                 // Structure size is at offset 0-1 of body (should be 57)
                 let mut body_buf = vec![0u8; 512]; // Sufficient for most paths
-                let bytes_read = _stream.read(&mut body_buf).await?;
+                let bytes_read = read_body(_stream, &mut body_buf).await?;
 
                 // Extract file path from request (simplified parsing)
                 // Path is UTF-16LE encoded starting at offset 120 in the CREATE request
@@ -662,7 +737,7 @@ impl SmbServer {
 
                 // Read CLOSE request body
                 let mut body_buf = vec![0u8; 24]; // CLOSE body is 24 bytes
-                _stream.read_exact(&mut body_buf).await?;
+                read_body_exact(_stream, &mut body_buf).await?;
 
                 // Extract file ID (16 bytes at offset 8)
                 let file_id = body_buf[8..24].to_vec();
@@ -687,7 +762,7 @@ impl SmbServer {
 
                 // Read READ request body (49 bytes)
                 let mut body_buf = vec![0u8; 49];
-                _stream.read_exact(&mut body_buf).await?;
+                read_body_exact(_stream, &mut body_buf).await?;
 
                 // Extract file ID (16 bytes at offset 16)
                 let file_id = body_buf[16..32].to_vec();
@@ -799,7 +874,7 @@ impl SmbServer {
 
                 // Read WRITE request body (49 bytes + data)
                 let mut body_buf = vec![0u8; 49];
-                _stream.read_exact(&mut body_buf).await?;
+                read_body_exact(_stream, &mut body_buf).await?;
 
                 // Extract file ID (16 bytes at offset 16)
                 let file_id = body_buf[16..32].to_vec();
@@ -829,7 +904,7 @@ impl SmbServer {
 
                 // Read data to write (variable length)
                 let mut data = vec![0u8; length as usize];
-                _stream.read_exact(&mut data).await?;
+                read_body_exact(_stream, &mut data).await?;
 
                 // Look up file path from handle
                 let path = {
@@ -914,7 +989,7 @@ impl SmbServer {
 
                 // Read QUERY_INFO request body (variable length)
                 let mut body_buf = vec![0u8; 256];
-                let bytes_read = _stream.read(&mut body_buf).await?;
+                let bytes_read = read_body(_stream, &mut body_buf).await?;
 
                 // Extract file ID (16 bytes at offset 16)
                 if bytes_read >= 32 {
@@ -1009,7 +1084,7 @@ impl SmbServer {
 
                 // Read QUERY_DIRECTORY request body (variable length)
                 let mut body_buf = vec![0u8; 512];
-                let bytes_read = _stream.read(&mut body_buf).await?;
+                let bytes_read = read_body(_stream, &mut body_buf).await?;
 
                 // Extract file ID (directory handle, 16 bytes at offset 8)
                 if bytes_read >= 24 {
@@ -1905,5 +1980,37 @@ impl SmbServer {
         response.extend_from_slice(&[0]); // Padding
 
         Ok(response)
+    }
+}
+
+/// Read exactly `buf.len()` bytes of a body the peer has already announced, bounded by
+/// [`BODY_READ_TIMEOUT`].
+///
+/// Every call site had an unbounded `read_exact`, so a peer that sent a valid SMB2 header
+/// declaring a large body and then stopped held the connection, the task and the buffer it had
+/// chosen the size of, indefinitely. The timeout is a read error rather than a special case so
+/// the existing `?` paths close the connection exactly as they already do for a truncated body.
+async fn read_body_exact(
+    stream: &mut tokio::net::TcpStream,
+    buf: &mut [u8],
+) -> std::io::Result<()> {
+    match tokio::time::timeout(BODY_READ_TIMEOUT, stream.read_exact(buf)).await {
+        Ok(read) => read.map(|_| ()),
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "peer stalled part-way through an announced SMB2 body",
+        )),
+    }
+}
+
+/// As [`read_body_exact`], for the sites that take whatever has arrived rather than a fixed
+/// count.
+async fn read_body(stream: &mut tokio::net::TcpStream, buf: &mut [u8]) -> std::io::Result<usize> {
+    match tokio::time::timeout(BODY_READ_TIMEOUT, stream.read(buf)).await {
+        Ok(read) => read,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "peer stalled part-way through an announced SMB2 body",
+        )),
     }
 }

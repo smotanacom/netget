@@ -36,6 +36,40 @@ enum Disposition {
 /// whether the connection survives it — never by text, which has nowhere to go.
 const CHOKE_FRAME: [u8; 5] = [0x00, 0x00, 0x00, 0x01, 0x00];
 
+/// How long to wait for a peer's handshake after it has connected.
+///
+/// BEP 3 has the initiating peer send its 68-byte handshake immediately — it is the first
+/// thing on the wire and nothing precedes it — so a peer that has connected and sent nothing
+/// is not mid-handshake, it is holding a socket. Thirty seconds is far beyond any real
+/// client's send latency and far below what makes an idle hold worth an attacker's time.
+const HANDSHAKE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* message once the handshake is done.
+///
+/// The peer wire protocol's own answer to this question is the keep-alive: a zero-length
+/// message sent roughly every two minutes precisely so an idle-but-live peer can be told from
+/// a dead one, and every mainline client drops a connection that goes quiet for about that
+/// long. Three minutes gives a conforming peer a full missed keep-alive of slack before this
+/// server does what the convention already expects it to do.
+const IDLE_AFTER_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Real swarms are far smaller
+/// than this — mainline clients cap global peers in the low hundreds and per-torrent peers at
+/// a few dozen — so 256 refuses nothing a real swarm produces.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a plain close and no bytes, and that is deliberate.
+///
+/// BEP 3 has no busy, error or free-text message of any kind, and the one refusal it does
+/// define — [`CHOKE_FRAME`] — is only legal *after* a handshake this peer has not sent. Any
+/// bytes written here would be read as the first 5 of the 68 handshake bytes, so a client
+/// would report a malformed handshake rather than a full server: strictly worse than silence,
+/// which is the same reason twenty protocols in this tree stay silent on an LLM failure. The
+/// refusal is in the log instead, and the log line is the diagnosis.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 /// BitTorrent Peer Wire Protocol server
 pub struct TorrentPeerServer;
 
@@ -58,10 +92,19 @@ impl TorrentPeerServer {
         let protocol = Arc::new(TorrentPeerProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "BitTorrent Peer",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, peer_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let llm_clone = llm_client.clone();
@@ -103,6 +146,9 @@ impl TorrentPeerServer {
                         let _ = status_clone.send("__UPDATE_UI__".to_string());
 
                         tokio::spawn(async move {
+                            // Held for the life of the connection, so the cap counts live
+                            // peers rather than accepts.
+                            let _permit = permit;
                             if let Err(e) = Self::handle_connection(
                                 read_half,
                                 write_half,
@@ -183,7 +229,27 @@ impl TorrentPeerServer {
             let mut handshake_complete = false;
 
             'read: loop {
-                let n = read_half.read(&mut chunk).await?;
+                // The deadline wraps this `read()` alone. The LLM round-trip and a `manual`
+                // rule parking a message for a human (`src/state/intercepts.rs`, 300s by
+                // default) both run further down this loop body, after a read has already
+                // returned, so neither can be cut short by it — what is bounded is only a peer
+                // holding the connection while sending nothing.
+                let read_timeout = if handshake_complete {
+                    IDLE_AFTER_HANDSHAKE_TIMEOUT
+                } else {
+                    HANDSHAKE_READ_TIMEOUT
+                };
+                let n = match tokio::time::timeout(read_timeout, read_half.read(&mut chunk)).await {
+                    Ok(read) => read?,
+                    Err(_) => {
+                        Log::new(Some(&status_tx)).info(format!(
+                            "BitTorrent Peer {} sent nothing for {}s; closing idle connection",
+                            peer_addr,
+                            read_timeout.as_secs()
+                        ));
+                        break;
+                    }
+                };
                 if n == 0 {
                     Log::new(Some(&status_tx)).debug("BitTorrent Peer connection closed by peer");
                     break;

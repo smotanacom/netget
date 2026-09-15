@@ -166,3 +166,27 @@ Each connection registers a peer handle (`peer_support::register_peer_channel` +
 
 - DRDA specification (The Open Group) — DSS/DDM framing and code points.
 - Apache Derby `org.apache.derby.impl.drda` — a readable reference server.
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/db2/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_REQUEST_READ_TIMEOUT` | 30s | DRDA is client-speaks-first with no server greeting: a real driver sends EXCSAT the moment the socket is up. A peer that has connected and sent nothing has made no request at all. |
+| `IDLE_BETWEEN_REQUESTS_TIMEOUT` | 300s | Applies only once the security check has been accepted. An authenticated Db2 session legitimately idles — JDBC, pureQuery and `ibm_db` all pool connections and hold them open between statements, with idle-reap defaults in minutes. An unauthenticated peer never reaches this bound, which is the half that matters against an attacker. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **a plain close.** Every DDM reply is a DSS carrying the *request's* correlation identifier, and a refused peer has sent no request — so no well-formed refusal exists. Invented bytes would be reported as a protocol violation, which tells an operator less than the WARN line tagged `decision=fail_closed_connection_cap`. |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

@@ -15,6 +15,34 @@
 pub mod actions;
 pub mod drda;
 
+/// How long to wait for a peer's first DRDA request after it has connected.
+///
+/// DRDA is client-speaks-first with no server greeting: a real driver sends EXCSAT the moment
+/// the socket is up, and nothing legitimate happens before it. A peer that has connected and
+/// sent nothing is holding a task and a connection slot on the strength of no request at all.
+const FIRST_REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* request once the security check has been accepted.
+///
+/// Much longer, because an authenticated Db2 session legitimately sits idle: every driver in
+/// front of one (JDBC, pureQuery, `ibm_db`) pools connections and holds them open between
+/// statements, and the pools' own idle-reap defaults are in minutes. Five minutes bounds the
+/// hold without closing sessions a real pool considers healthy — and an unauthenticated peer
+/// never reaches this bound, which is the half that matters for an attacker.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Concurrent connections this server admits.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// A peer over [`MAX_CONNECTIONS`] gets a plain close, and that is the honest answer here.
+///
+/// Every DDM reply is a DSS carrying the *request's* correlation identifier, and this peer has
+/// sent no request — so there is no well-formed refusal to write. Bytes invented for the slot
+/// would be parsed as a reply to a request that does not exist and reported as a protocol
+/// violation, which tells the operator less than the refusal already logged at WARN with
+/// `decision=fail_closed_connection_cap`.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"";
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -53,10 +81,19 @@ impl Db2Server {
         Log::new(Some(&status_tx)).info(format!("Db2 server listening on {}", actual_addr));
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Db2",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(actual_addr);
@@ -101,6 +138,9 @@ impl Db2Server {
 
                         let conn_owner = app_state.clone();
                         tokio::spawn(async move {
+                            // Held for the life of the connection, so the cap counts live
+                            // sessions rather than accepts.
+                            let _permit = permit;
                             if let Err(e) = handler.run(stream).await {
                                 debug!("Db2 connection {} ended: {}", connection_id, e);
                             }
@@ -190,7 +230,28 @@ impl Db2Handler {
         loop {
             // Ensure a full DSS is buffered before parsing.
             while buf.len() < 6 || buf.len() < drda::dss_declared_len(&buf).unwrap_or(6) {
-                let n = reader.read(&mut tmp).await?;
+                // The deadline wraps this `read()` and nothing else. The LLM round-trip that
+                // decides the login or the statement result, and a `manual` rule parking
+                // either for a human (`src/state/intercepts.rs`, 300s by default), both happen
+                // below once a whole DSS has arrived — so a slow answer is never cut short by
+                // a read deadline. What is bounded is a peer that holds the connection while
+                // sending nothing, or that stalls part-way through a DSS it announced.
+                let read_timeout = if self.authenticated {
+                    IDLE_BETWEEN_REQUESTS_TIMEOUT
+                } else {
+                    FIRST_REQUEST_READ_TIMEOUT
+                };
+                let n = match tokio::time::timeout(read_timeout, reader.read(&mut tmp)).await {
+                    Ok(read) => read?,
+                    Err(_) => {
+                        debug!(
+                            "Db2 connection {} sent nothing for {}s; closing idle connection",
+                            self.connection_id,
+                            read_timeout.as_secs()
+                        );
+                        return Ok(());
+                    }
+                };
                 if n == 0 {
                     return Ok(()); // clean EOF
                 }

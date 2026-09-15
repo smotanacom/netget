@@ -27,6 +27,39 @@ use crate::state::app_state::AppState;
 use crate::utils::WireFailure;
 use actions::{TLS_CONNECTION_OPENED_EVENT, TLS_DATA_RECEIVED_EVENT};
 
+/// How long a peer has to complete the TLS handshake and then send its first application
+/// record.
+///
+/// Two things are covered by one bound because from the peer's side they are one condition: it
+/// holds a socket and has produced nothing usable. `acceptor.accept()` was previously
+/// unbounded, so a peer that connected and never sent a ClientHello held a task and a rustls
+/// state machine for as long as it liked — cheaper for an attacker than a completed connection.
+/// A real client sends ClientHello immediately and finishes the handshake in one round-trip; a
+/// minute is far beyond that even on a bad link.
+const FIRST_RECORD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long to wait for a *further* record once the peer has sent application data.
+///
+/// TLS is a carrier, not an application: whatever rides on it decides what "idle" means, and
+/// this server cannot know. Five minutes is therefore chosen to sit well above any
+/// request/response turnaround an operator would run over it and well below an unbounded hold.
+/// Because the clock counts only *silence* — see the `activity` check at the read site — a peer
+/// waiting on a slow answer of ours is never counted against it.
+const IDLE_AFTER_DATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Concurrent connections this server admits.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// A plaintext fatal alert record: content type 21 (alert), legacy record version 0x0303,
+/// length 2, level `fatal`(2), description `internal_error`(80). TLS defines no "server busy"
+/// alert — RFC 8446's closest is `internal_error`, which is what a server sends when it cannot
+/// proceed for reasons unrelated to the peer — so that is the honest choice. A client reports
+/// "received fatal alert: internal_error" instead of a bare connection reset, which is the
+/// difference between an operator having a reason and guessing at one.
+const CONNECTION_CAP_REFUSAL: &[u8] = &[0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x50];
+
 /// The `decision=` token for an LLM call that returned `Err`.
 ///
 /// TLS has exactly one failure shape on the wire - a close_notify alert - so an overloaded
@@ -94,10 +127,19 @@ impl TlsServer {
 
         // Spawn accept loop
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "TLS",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -111,10 +153,29 @@ impl TlsServer {
                         let protocol_clone = protocol.clone();
 
                         tokio::spawn(async move {
-                            // Perform TLS handshake
-                            let tls_stream = match acceptor.accept(stream).await {
-                                Ok(stream) => stream,
-                                Err(e) => {
+                            // Held for the life of the connection, so the cap counts live
+                            // peers rather than accepts.
+                            let _permit = permit;
+
+                            // Perform TLS handshake, bounded. This awaits the peer's
+                            // ClientHello and the rest of its side of the handshake; nothing in
+                            // it involves the model, so the deadline may cover the whole of it.
+                            let handshake = tokio::time::timeout(
+                                FIRST_RECORD_READ_TIMEOUT,
+                                acceptor.accept(stream),
+                            );
+                            let tls_stream = match handshake.await {
+                                Err(_) => {
+                                    Log::new(Some(&status_tx_clone)).warn(format!(
+                                        "TLS handshake with {} produced nothing within {}s; \
+                                         closing",
+                                        remote_addr,
+                                        FIRST_RECORD_READ_TIMEOUT.as_secs()
+                                    ));
+                                    return;
+                                }
+                                Ok(Ok(stream)) => stream,
+                                Ok(Err(e)) => {
                                     // Handshake failure ends this connection but is a
                                     // client-side condition, not a server error: WARN.
                                     Log::new(Some(&status_tx_clone)).warn(format!(
@@ -136,6 +197,17 @@ impl TlsServer {
                             // Split stream
                             let (read_half, write_half) = tokio::io::split(tls_stream);
                             let write_half_arc = Arc::new(Mutex::new(write_half));
+
+                            // TLS is the one server here whose read loop runs *concurrently*
+                            // with the answer: `handle_data_with_actions` is spawned and the
+                            // loop goes straight back to reading. So a peer whose record is
+                            // parked for a human, or is waiting on the model, sits inside the
+                            // read deadline while that happens — and closing it there would be
+                            // exactly the live-transfer eviction this project learned about
+                            // from TFTP. This tracks work in flight so the read site can tell
+                            // "the peer is silent" from "the peer is waiting for us".
+                            let activity =
+                                Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
 
                             // Add connection to ServerInstance
                             use crate::state::server::{
@@ -214,12 +286,52 @@ impl TlsServer {
                             let status_tx_for_read = status_tx_clone.clone();
                             let connections_for_read = connections_clone.clone();
                             let protocol_for_read = protocol_clone.clone();
+                            let activity_for_read = Arc::clone(&activity);
                             tokio::spawn(async move {
                                 let mut buffer = vec![0u8; 8192];
                                 let mut read_half = read_half;
+                                let mut seen_data = false;
 
                                 loop {
-                                    match read_half.read(&mut buffer).await {
+                                    let read_timeout = if seen_data {
+                                        IDLE_AFTER_DATA_TIMEOUT
+                                    } else {
+                                        FIRST_RECORD_READ_TIMEOUT
+                                    };
+                                    // Re-arm rather than close whenever the deadline expires
+                                    // while an answer is still being produced: a peer waiting
+                                    // on us is not idle.
+                                    let read = loop {
+                                        match tokio::time::timeout(
+                                            read_timeout,
+                                            read_half.read(&mut buffer),
+                                        )
+                                        .await
+                                        {
+                                            Ok(read) => break Some(read),
+                                            Err(_) => {
+                                                if activity_for_read.idle_for().is_none() {
+                                                    continue;
+                                                }
+                                                Log::new(Some(&status_tx_for_read)).info(format!(
+                                                    "TLS connection {connection_id} sent nothing \
+                                                     for {}s; closing idle connection",
+                                                    read_timeout.as_secs()
+                                                ));
+                                                break None;
+                                            }
+                                        }
+                                    };
+                                    let Some(read) = read else {
+                                        connections_for_read.lock().await.remove(&connection_id);
+                                        app_state_for_read
+                                            .close_connection_on_server(server_id, connection_id)
+                                            .await;
+                                        let _ =
+                                            status_tx_for_read.send("__UPDATE_UI__".to_string());
+                                        break;
+                                    };
+                                    match read {
                                         Ok(0) => {
                                             // Connection closed
                                             connections_for_read
@@ -240,6 +352,7 @@ impl TlsServer {
                                             break;
                                         }
                                         Ok(n) => {
+                                            seen_data = true;
                                             let data = Bytes::copy_from_slice(&buffer[..n]);
 
                                             // Keep the rail's down/up counters and
@@ -298,6 +411,13 @@ impl TlsServer {
                                             let status_clone = status_tx_for_read.clone();
                                             let conns_clone = connections_for_read.clone();
                                             let protocol_clone = protocol_for_read.clone();
+                                            // Marked busy *before* the task is spawned, so
+                                            // there is no window in which the read deadline
+                                            // could see the connection as idle while an answer
+                                            // is on its way.
+                                            activity_for_read.begin_work();
+                                            let activity_for_handler =
+                                                Arc::clone(&activity_for_read);
                                             tokio::spawn(async move {
                                                 Self::handle_data_with_actions(
                                                     connection_id,
@@ -310,6 +430,7 @@ impl TlsServer {
                                                     protocol_clone,
                                                 )
                                                 .await;
+                                                activity_for_handler.end_work();
                                             });
                                         }
                                         Err(e) => {

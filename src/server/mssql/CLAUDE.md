@@ -234,3 +234,28 @@ mssql_error_response error_number 208 severity 16.
 
 - [MS-TDS] Tabular Data Stream Protocol, Microsoft Open Specifications
 - [tiberius](https://docs.rs/tiberius/) — the TDS client used by the E2E tests
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/mssql/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_PACKET_READ_TIMEOUT` | 30s | TDS is client-speaks-first: PRELOGIN is the first packet. `tiberius`, `sqlcmd` and every ADO.NET driver send it inside the connect path. |
+| `IDLE_BETWEEN_PACKETS_TIMEOUT` | 600s | Applies once the peer has logged in. SQL Server has no idle-disconnect default to copy, so the number is argued the way MySQL's and PostgreSQL's are: this server holds nothing a reconnect would lose — no tables, no temp tables, no open transaction — so a reaped pooled connection costs one transparent reconnect. |
+| `BODY_READ_TIMEOUT` | — | The announced-body read shares the bound above; a peer that declares a packet length and then stalls is closed. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **a plain close**, as a real SQL Server does. TDS has no message a server may send to a client still in PRELOGIN: every server packet is a typed response to a request, and a TABULAR_RESULT with an ERROR token read in that state is a framing violation rather than a diagnosis. |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

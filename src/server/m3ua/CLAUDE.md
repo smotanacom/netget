@@ -285,3 +285,27 @@ What was done instead, in `tests/server/m3ua/`:
 Not covered, and it is a long list: **SCTP itself** (never executed), interoperability with any
 real implementation, multi-ASP behaviour, AS state, load sharing, routing key management,
 SSNM, and anything that depends on SCTP's stream identifiers or multi-homing.
+
+## Connection bounds
+
+Before September 2026 this server accepted without limit and bounded no read in time, so a peer
+that connected and said nothing held a socket, a task and an `AppState` entry forever, and a
+hundred of them was a free denial of service on a server that would happily accept a hundred
+more. It now declares both halves; the constants and the reasoning live beside them in
+`src/server/m3ua/mod.rs`.
+
+| Bound | Value | Why this number |
+|---|---|---|
+| `FIRST_MESSAGE_READ_TIMEOUT` | 30s | RFC 4666 has the ASP send ASPUP as soon as the association is established; the SG says nothing first and nothing legitimate precedes it. |
+| `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 900s | Deliberately long: a signalling link with no traffic is the normal case, not a suspicious one, so this must not be a traffic timer. The protocol's own answer to "is this quiet link alive" is BEAT (RFC 4666 §3.5.5), configured at tens of seconds in deployments — so fifteen minutes is on the order of thirty missed beats. Over TCP there is no SCTP heartbeat underneath to tell the difference. |
+| `MAX_CONNECTIONS` | 256 | Refusal: **an M3UA ERR carrying `Refused - Management Blocking`** (error code 0x0d), which is what that code is for and what this server already sends when it declines an ASP. ERR is a Management-class message either end may send unsolicited, so unlike most protocols here there is a genuinely *correct* thing to say to a peer that has not spoken yet. |
+
+**The deadline covers the read and nothing else.** The deadline wraps the `read()` call in this protocol's own loop, and everything that can legitimately take minutes happens after it returns. `read_message` bounds the header, the announced body and the alignment padding. The LLM round-trip, and a `manual`
+rule parking an event for a human (`src/state/intercepts.rs`, 300s by default), are outside
+every deadline here, so an answer that takes minutes can never close the connection it is an
+answer for. That is the `.connectionless()` lesson in the project `CLAUDE.md` read in reverse:
+TFTP evicted live transfers because "idle" was measured wrongly.
+
+`tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
+`tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
+connection is never reported as idle.

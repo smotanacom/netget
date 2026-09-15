@@ -96,6 +96,42 @@ impl EtcdMeta {
 
 /// Matches etcd's own `--max-request-bytes` default (1.5 MiB).
 #[cfg(feature = "etcd")]
+/// How long to wait for a peer's first byte after it connects.
+///
+/// HTTP/2 is client-speaks-first — the connection preface and the client's SETTINGS frame are
+/// the first thing on the wire and the server says nothing before them — and every gRPC client
+/// sends them inside its dial path. A peer that has connected and sent nothing has begun no
+/// connection at all, which is the state an unauthenticated flood lives in.
+const FIRST_BYTE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long a connection may do nothing at all once it is up.
+///
+/// etcd's own `--grpc-keepalive-interval` defaults to two hours, which is a bound in name only,
+/// so there is no upstream number worth copying here. Fifteen minutes instead, and what makes
+/// it safe is a property of *this* server rather than of etcd: every RPC here is unary —
+/// `handle_grpc_request` returns a `Response<Full<Bytes>>`, so even Watch is answered as one
+/// complete message rather than held open as a stream. There is therefore no legitimate
+/// long-lived silent request, and a connection with no RPC for fifteen minutes is a client that
+/// has gone away. A request still being answered is not silence: the watchdog reads
+/// `ConnectionActivity`, which reports a busy connection as not idle at all.
+const IDLE_BETWEEN_REQUESTS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Concurrent connections this server admits.
+///
+/// Each connection may buffer a request of up to [`MAX_REQUEST_BYTES`], so the cap is what
+/// turns that per-connection bound into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// HTTP/1.1 `503 Service Unavailable` with a `Retry-After`, deliberately in the older protocol.
+/// A refused peer has not sent the HTTP/2 preface yet, so nothing has been negotiated, and an
+/// HTTP/2 GOAWAY would have to be preceded by a SETTINGS frame this server is declining to
+/// exchange. Every HTTP client and every human with `curl` can read a 503; a gRPC client
+/// reports a transport failure either way, but the bytes on the wire now say why.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+    Content-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
+
 const MAX_REQUEST_BYTES: usize = 1_572_864;
 
 // gRPC status codes used by this server (google.rpc.Code).
@@ -368,10 +404,19 @@ impl EtcdServer {
 
         // Spawn server task
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "etcd",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, peer_addr, permit)) => {
                         Log::new(Some(&status_tx))
                             .debug(format!("etcd connection from {}", peer_addr));
 
@@ -418,6 +463,9 @@ impl EtcdServer {
                         let conn_owner = app_state.clone();
 
                         tokio::spawn(async move {
+                            // Held for the life of the connection, so the cap counts live
+                            // clients rather than accepts.
+                            let _permit = permit;
                             if let Err(e) = Self::handle_connection(
                                 stream,
                                 peer_addr,
@@ -478,7 +526,36 @@ impl EtcdServer {
         use hyper::service::service_fn;
         use hyper_util::rt::TokioIo;
 
+        // First-byte bound, before hyper sees the socket.
+        //
+        // hyper owns every read once `serve_connection` starts, and wrapping the read half in
+        // a deadline would be *wrong* here rather than merely awkward: hyper keeps polling the
+        // connection for new frames while a request is being answered, so a deadline on reads
+        // would fire in the middle of an LLM round-trip. `peek` waits for data without
+        // consuming it, so the HTTP/2 preface is still there for hyper afterwards — and it
+        // bounds exactly the case that needs bounding, a peer that has connected and sent
+        // nothing at all.
+        match tokio::time::timeout(FIRST_BYTE_READ_TIMEOUT, stream.peek(&mut [0u8; 1])).await {
+            Ok(Ok(0)) | Ok(Err(_)) => return Ok(()),
+            Ok(Ok(_)) => {}
+            Err(_) => {
+                Log::new(Some(&status_tx)).debug(format!(
+                    "etcd peer {} sent nothing for {}s; closing before the HTTP/2 preface",
+                    peer_addr,
+                    FIRST_BYTE_READ_TIMEOUT.as_secs()
+                ));
+                return Ok(());
+            }
+        }
+
         let io = TokioIo::new(stream);
+
+        // Tracks whether this connection is answering anything. A request waiting on the model,
+        // or parked for a human at the dashboard, holds the count above zero, so the idle
+        // watchdog below cannot close the connection the answer belongs to however long it
+        // takes — only genuine silence counts.
+        let activity = Arc::new(crate::server::accept_bounded::ConnectionActivity::new());
+        let activity_for_service = Arc::clone(&activity);
 
         let service = service_fn(move |req: Request<Incoming>| {
             let llm = llm_client.clone();
@@ -486,8 +563,10 @@ impl EtcdServer {
             let status = status_tx.clone();
             let meta_ref = meta.clone();
             let proto = protocol.clone();
+            let activity = Arc::clone(&activity_for_service);
 
             async move {
+                let _busy = activity.busy();
                 let response = Self::handle_grpc_request(
                     req,
                     peer_addr,
@@ -522,9 +601,23 @@ impl EtcdServer {
             }
         });
 
-        hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
-            .serve_connection(io, service)
-            .await?;
+        let conn = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .serve_connection(io, service);
+        tokio::pin!(conn);
+
+        tokio::select! {
+            result = &mut conn => result?,
+            _ = crate::server::accept_bounded::watch_idle(
+                Arc::clone(&activity),
+                IDLE_BETWEEN_REQUESTS_TIMEOUT,
+            ) => {
+                debug!(
+                    "etcd connection {} idle for {}s; closing",
+                    connection_id,
+                    IDLE_BETWEEN_REQUESTS_TIMEOUT.as_secs()
+                );
+            }
+        }
 
         Ok(())
     }

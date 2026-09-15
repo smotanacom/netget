@@ -40,6 +40,41 @@ use protocol::{Command, Parsed};
 /// client grow the buffer without bound.
 const MAX_BUFFERED: usize = protocol::MAX_VALUE_LEN + protocol::MAX_COMMAND_LINE + 16;
 
+/// How long to wait for the first byte of the first command from a peer that has only
+/// connected.
+///
+/// The memcached text protocol is client-speaks-first with no greeting, so a peer that has
+/// connected and sent nothing has made no claim on the server at all. Every real client —
+/// `libmemcached`, `pymemcache`, `memcached-tool`, a person on `nc` — issues a command
+/// immediately.
+const FIRST_COMMAND_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* command once one has been answered.
+///
+/// Shorter than a session protocol's equivalent would be, because memcached has no session:
+/// every command is independent, the server holds nothing on a client's behalf, and a closed
+/// connection costs a pooling client one transparent reconnect and nothing else. Real
+/// memcached's own optional `-o idle_timeout` refuses to be set below 30 seconds, which is the
+/// protocol's own statement about how short is too short; two minutes is generous against that
+/// while still bounding an idle hold.
+const IDLE_BETWEEN_COMMANDS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Concurrent connections this server admits.
+///
+/// [`crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS`]. Each connection may buffer up
+/// to [`MAX_BUFFERED`] bytes, so this is the multiplier that turns that per-connection bound
+/// into a total one.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// `SERVER_ERROR <text>` is the text protocol's one way to say "the server failed on your
+/// request", and this file already uses it for the over-long-command case. No client can read
+/// it as a cache hit, a stored value or a successful delete, which is what makes it safe to
+/// send to a peer that has not spoken yet: the worst a client does is report a server error
+/// for its first command, which is exactly what happened.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"SERVER_ERROR too many connections\r\n";
+
 pub struct MemcachedServer;
 
 impl MemcachedServer {
@@ -63,15 +98,26 @@ impl MemcachedServer {
         Log::new(Some(&status_tx)).info(format!("Memcached server listening on {}", actual_addr));
 
         let task_registrar = state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                let (stream, peer_addr) = match listener.accept().await {
-                    Ok(pair) => pair,
-                    Err(e) => {
-                        Log::new(Some(&status_tx)).error(format!("Memcached accept error: {}", e));
-                        continue;
-                    }
-                };
+                let (stream, peer_addr, permit) =
+                    match crate::server::accept_bounded::accept_bounded(
+                        &listener,
+                        &limiter,
+                        CONNECTION_CAP_REFUSAL,
+                        "Memcached",
+                        Some(&status_tx),
+                    )
+                    .await
+                    {
+                        Ok(triple) => triple,
+                        Err(e) => {
+                            Log::new(Some(&status_tx))
+                                .error(format!("Memcached accept error: {}", e));
+                            continue;
+                        }
+                    };
 
                 let connection_id = ConnectionId::new(state.get_next_unified_id().await);
                 let local_addr = stream.local_addr().unwrap_or(actual_addr);
@@ -89,6 +135,9 @@ impl MemcachedServer {
                 let tx = status_tx.clone();
                 let registrar = state.clone();
                 let conn_handle = tokio::spawn(async move {
+                    // Held for the life of the connection: releasing it here would cap the
+                    // accept rate rather than the number of live connections.
+                    let _permit = permit;
                     if let Err(e) = Self::handle_connection(
                         stream,
                         peer_addr,
@@ -240,6 +289,9 @@ impl MemcachedServer {
 
         let mut buffer: Vec<u8> = Vec::with_capacity(4096);
         let mut chunk = vec![0u8; 8192];
+        // False until this peer has sent something the parser recognised as a command, which
+        // is what separates "has connected and said nothing" from "is an established client".
+        let mut answered_one = false;
 
         loop {
             // Drain every complete command already buffered before reading more.
@@ -290,6 +342,7 @@ impl MemcachedServer {
                     }
                     Parsed::Complete { command, consumed } => {
                         buffer.drain(..consumed);
+                        answered_one = true;
                         Self::count_received(state, server_id, connection_id, consumed).await;
 
                         if matches!(command, Command::Quit) {
@@ -422,7 +475,28 @@ impl MemcachedServer {
                 return Ok(());
             }
 
-            let n = reader.read(&mut chunk).await?;
+            // The deadline wraps this `read()` and nothing else in the loop. Everything that
+            // can legitimately take minutes — the LLM round-trip, and a `manual` rule parking
+            // the command for a human to answer (`src/state/intercepts.rs`, 300s by default) —
+            // happens above, after a read has already returned. So a slow answer can never be
+            // timed out from under itself; only a peer holding the connection while sending
+            // nothing is.
+            let read_timeout = if answered_one {
+                IDLE_BETWEEN_COMMANDS_TIMEOUT
+            } else {
+                FIRST_COMMAND_READ_TIMEOUT
+            };
+            let n = match tokio::time::timeout(read_timeout, reader.read(&mut chunk)).await {
+                Ok(read) => read?,
+                Err(_) => {
+                    debug!(
+                        "Memcached {} sent nothing for {}s; closing idle connection",
+                        peer_addr,
+                        read_timeout.as_secs()
+                    );
+                    return Ok(());
+                }
+            };
             if n == 0 {
                 debug!("Memcached {} closed the connection", peer_addr);
                 return Ok(());

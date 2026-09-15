@@ -27,6 +27,39 @@ use tracing::{debug, error, trace, warn};
 /// far more than any LLM-authored command needs.
 const MAX_PENDING_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
+/// How long to wait for the first byte of the first command from a peer that has only
+/// connected.
+///
+/// Every real RESP client speaks immediately — `redis-cli` sends `COMMAND DOCS`, `redis-rs`
+/// sends `PING` or the `HELLO`/`AUTH` it was configured with, and a bare `nc` user types
+/// within seconds. A peer that has connected and said nothing has made no claim on the server
+/// at all, so this is short.
+const FIRST_COMMAND_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* command once one has been answered.
+///
+/// Much longer than the first wait, and deliberately so: real Redis ships `timeout 0` — it
+/// never closes an idle client — and every pooling client in the ecosystem (`redis-rs`'s
+/// `ConnectionManager`, `deadpool-redis`, an interactive `redis-cli`) depends on holding an
+/// established connection unused between bursts. Closing those at 30s would break correct
+/// clients to fix a problem they are not causing. Five minutes still bounds the hold, and a
+/// client that reconnects after it reconnects transparently.
+const IDLE_BETWEEN_COMMANDS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Concurrent connections this server admits.
+///
+/// [`accept_bounded::DEFAULT_MAX_CONNECTIONS`]; nothing about RESP makes a connection more or
+/// less expensive than the default assumes.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// Byte-for-byte what real Redis sends in the same situation, so every RESP client already
+/// knows it: `redis-rs` surfaces it as `ResponseError`, `redis-cli` prints it. A simple error
+/// can never be mistaken for data, which is what makes it safe to send unprompted — the peer
+/// has not spoken yet, so this arrives before its first command rather than as a reply to one.
+const CONNECTION_CAP_REFUSAL: &[u8] = b"-ERR max number of clients reached\r\n";
+
 /// Redis server implementation
 pub struct RedisServer {
     llm_client: OllamaClient,
@@ -77,10 +110,19 @@ impl RedisServer {
         let task_registrar = app_state.clone();
 
         // Spawn the accept loop
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "Redis",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, addr, permit)) => {
                         Log::new(Some(&status_tx)).info(format!("Redis connection from {}", addr));
 
                         let connection_id =
@@ -122,6 +164,10 @@ impl RedisServer {
                         };
 
                         let conn_handle = tokio::spawn(async move {
+                            // The permit is released when this task ends, which is what makes
+                            // `MAX_CONNECTIONS` a cap on live connections rather than on the
+                            // accept rate.
+                            let _permit = permit;
                             if let Err(e) = handler.handle_connection(stream).await {
                                 error!("Redis connection error: {:?}", e);
                             }
@@ -233,11 +279,35 @@ impl RedisHandler {
 
         let mut buffer = Vec::new();
         let log = Log::new(Some(&self.status_tx));
+        let mut answered_one = false;
 
         loop {
-            // Read data from the stream
+            // Read data from the stream.
+            //
+            // The deadline wraps the `read()` alone and nothing else in this loop. That is the
+            // whole design: an LLM round-trip, and a `manual` rule parking a command for a
+            // human (`src/state/intercepts.rs`, 300s by default), both happen *below*, after
+            // the read has already returned — so neither can be timed out from under itself.
+            // What is bounded is only the time a peer may hold this connection while sending
+            // nothing, which is the resource an idle attacker is actually consuming.
+            let read_timeout = if answered_one {
+                IDLE_BETWEEN_COMMANDS_TIMEOUT
+            } else {
+                FIRST_COMMAND_READ_TIMEOUT
+            };
             let mut chunk = vec![0u8; 4096];
-            let n = match read_half.read(&mut chunk).await {
+            let read = match tokio::time::timeout(read_timeout, read_half.read(&mut chunk)).await {
+                Ok(read) => read,
+                Err(_) => {
+                    log.info(format!(
+                        "Redis client {} sent nothing for {}s; closing idle connection",
+                        self.connection_id,
+                        read_timeout.as_secs()
+                    ));
+                    return Ok(());
+                }
+            };
+            let n = match read {
                 Ok(0) => {
                     debug!("Redis client disconnected");
                     return Ok(());
@@ -295,6 +365,9 @@ impl RedisHandler {
             while offset < buffer.len() {
                 match decode(&buffer[offset..]) {
                     Ok(Some((frame, consumed))) => {
+                        // From here on the peer is an established client, so the longer idle
+                        // bound applies to every later read.
+                        answered_one = true;
                         trace!("Redis frame: {:?}", frame);
 
                         // Extract command from frame. FileOnly: the redis_command

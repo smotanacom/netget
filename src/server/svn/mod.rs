@@ -16,6 +16,39 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
 
+/// How long to wait for the client's answer to the greeting.
+///
+/// `svnserve` speaks first: the server's greeting goes out, and a real `svn` client answers
+/// with its capabilities immediately — it has nothing to decide and nobody to ask. A peer that
+/// has taken the greeting and gone quiet is holding a task and a connection slot on the
+/// strength of nothing at all.
+const FIRST_COMMAND_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* command once one has been answered.
+///
+/// ra_svn after the greeting is strictly request/response — the client sends the next command
+/// as soon as it has consumed the last reply — so seconds of silence normally means the client
+/// is gone. The exception, and the reason this is minutes rather than seconds, is that `svn`
+/// prompts for credentials on the user's terminal *mid-session*: a human typing a password is
+/// a legitimate multi-minute pause with the connection live and nothing on the wire. Three
+/// minutes covers that and still bounds the hold.
+const IDLE_BETWEEN_COMMANDS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Concurrent connections this server admits.
+const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS;
+
+/// What a peer over [`MAX_CONNECTIONS`] is told before the socket closes.
+///
+/// ra_svn's own `( failure ( ( apr-err message file line ) ) )` tuple, built the same way
+/// [`svn_failure_tuple`] builds it, with apr-err 210003 — the code this file already uses for
+/// "the backend is at capacity" rather than "the request was wrong". A client that reads it
+/// where it expected a greeting reports malformed data rather than parsing the reason, which
+/// is a real limit of speaking before the greeting; what it buys is an operator, a packet
+/// capture and a `nc` session that can all see *why* in the bytes, instead of a bare reset
+/// indistinguishable from a crashed server.
+const CONNECTION_CAP_REFUSAL: &[u8] =
+    b"( failure ( ( 210003 28:netget: too many connections 0: 0 ) ) )\n";
+
 /// Largest command line this server will buffer, in bytes.
 ///
 /// `read_line` grows its `String` until it sees a newline, so an unbounded read lets one
@@ -44,10 +77,19 @@ impl SvnServer {
         let protocol = Arc::new(actions::SvnProtocol::new());
 
         let task_registrar = app_state.clone();
+        let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((socket, peer_addr)) => {
+                match crate::server::accept_bounded::accept_bounded(
+                    &listener,
+                    &limiter,
+                    CONNECTION_CAP_REFUSAL,
+                    "SVN",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((socket, peer_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
 
@@ -91,6 +133,9 @@ impl SvnServer {
                         let connection_id_clone = connection_id;
 
                         tokio::spawn(async move {
+                            // Held for the life of the connection, so the cap counts live
+                            // sessions rather than accepts.
+                            let _permit = permit;
                             handle_svn_connection(
                                 socket,
                                 peer_addr,
@@ -286,16 +331,44 @@ async fn handle_svn_connection(
 
     // Main command loop
     let mut buffer = String::new();
+    // False until this client has sent a command, which is what separates "took the greeting
+    // and went quiet" from "is in a session".
+    let mut answered_one = false;
     loop {
         buffer.clear();
 
-        // Bounded: `Take` stops the read at the cap instead of buffering until a newline
-        // that a hostile peer need never send. Rebuilt each iteration so the limit is
-        // per-line, not per-connection.
-        let read = (&mut buf_reader)
-            .take(MAX_COMMAND_BYTES)
-            .read_line(&mut buffer)
-            .await;
+        // Bounded in size *and* in time. `Take` stops the read at the cap instead of buffering
+        // until a newline a hostile peer need never send, rebuilt each iteration so the limit
+        // is per-line; the deadline stops a peer that sends no bytes at all.
+        //
+        // The deadline wraps this read alone. The LLM round-trip that answers the command, and
+        // a `manual` rule parking it for a human (`src/state/intercepts.rs`, 300s by default),
+        // both happen below once a whole line has arrived — neither is inside the deadline, so
+        // neither can be cut short by it.
+        let read_timeout = if answered_one {
+            IDLE_BETWEEN_COMMANDS_TIMEOUT
+        } else {
+            FIRST_COMMAND_READ_TIMEOUT
+        };
+        let read = match tokio::time::timeout(
+            read_timeout,
+            (&mut buf_reader)
+                .take(MAX_COMMAND_BYTES)
+                .read_line(&mut buffer),
+        )
+        .await
+        {
+            Ok(read) => read,
+            Err(_) => {
+                log.info(format!(
+                    "SVN client {} sent nothing for {}s; closing idle connection",
+                    peer_addr,
+                    read_timeout.as_secs()
+                ));
+                break;
+            }
+        };
+        answered_one = true;
 
         // The cap was reached with no newline in sight: this is not a command any svn
         // client sends, so stop reading rather than keep the peer's allocation alive.
