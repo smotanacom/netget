@@ -562,9 +562,11 @@ Two client-side gaps closed recently, both worth knowing before you touch a clie
   was reachable *only* from inside each client's own loop, and only the LLM could produce an
   action for it — nothing, not even a scheduled task, could put bytes on the wire on demand.
   A client opts in with a ~25-line diff: `command_support::register_command_channel` plus a
-  `tokio::select!` arm calling `handle_stream_client_command` (`src/client/command_support.rs`);
-  `tcp` and `telnet` are wired, and non-adopters simply never register (the dashboard greys out
-  `[send]`). The channel is **bounded** — "client busy" backpressure is correct for
+  `tokio::select!` arm calling `handle_stream_client_command` (`src/client/command_support.rs`).
+  **99 clients are wired as of September 2026** — this paragraph said "`tcp` and `telnet`" for
+  a long time after that stopped being true. Non-adopters simply never register (the dashboard
+  greys out `[send]`); `grep -rl 'register_command_channel(' --include=mod.rs src/client` is
+  the count. The channel is **bounded** — "client busy" backpressure is correct for
   user-initiated sends, unlike the unbounded status channels.
 - **Client `event_handlers` are dispatched.** They were stored, validated and round-tripped for a
   long time while `get_client_event_handler_config` had *zero* callers, so every client event
@@ -885,6 +887,12 @@ The stack is worth keeping because it is not catchable: the crash is inside a `D
 no fallible call to wrap and `catch_unwind` cannot see it. It surfaced only because
 `tests/terminal_snapshot` is the one suite that *runs the TUI*, and only once those tests were
 pointed at the rolling TUI — before that they exercised the dashboard and never touched the path.
+
+**There is no logging panic hook.** The only `set_hook` in the tree (`src/tui/event_loop.rs`)
+restores the terminal and chains to the default hook, and it is installed by the TUI alone — so
+in `--mcp` mode a panic inside `tokio::spawn` is swallowed by the task and written nowhere.
+`PROTOCOL_QUALITY.md` Tier 0 has the fix; until it lands, "the server stays Running and the
+peer hangs" has no log line to find.
 
 The TUI installs a native-crash terminal restorer (`src/cli/crash_restore.rs`): a
 SIGSEGV/SIGABRT/SIGTRAP from a C/ObjC library bypasses Rust's `Drop`/panic machinery, so without it
@@ -1459,8 +1467,12 @@ Read before assuming a subsystem is sound:
   to warn about were deleted. Ten files remain and all are durable: `README.md`, `CLAUDE.md`,
   `ARCHITECTURE.md`, `METADATA_EXAMPLES.md`, `CLIENT_PROTOCOL_FEASIBILITY.md`,
   `LICENSE_ANALYSIS.md`, `SYSTEM_DEPENDENCIES_macOS.md`, `TERMUX_INSTALL.md`,
-  `PROTOCOL_MIGRATION_GUIDE.md` and `IMPROVEMENTS.md`. **Do not add new status-report files** —
-  that is what let the directory reach 63 in the first place.
+  `PROTOCOL_MIGRATION_GUIDE.md`, `IMPROVEMENTS.md`, `PROTOCOL_ROADMAP.md` (Programmes 1 and 2,
+  with the batch table and the rubric) and `PROTOCOL_QUALITY.md` (the plan after Programme 2 —
+  a checkbox tracker of what is left, with measured starting points). **Do not add new
+  status-report files** — that is what let the directory reach 63 in the first place. A tracker
+  with checkboxes that outlives the session is not a status report; a narrative of what one
+  session did is.
 
 ## Git
 
