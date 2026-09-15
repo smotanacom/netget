@@ -9,13 +9,41 @@
 //! header's byte count disagrees with the payload, which is the single most likely way to
 //! break this protocol.
 //!
-//! Skipped, loudly, when libmemcached is not installed.
+//! **These tests FAIL, they do not skip, when libmemcached is absent.** That is deliberate and
+//! it is the whole reason Memcached may be rated `Beta`. A skip-when-missing gate returns
+//! `Ok(())` on a runner without the tools, so the suite reports a silent pass and the maturity
+//! rating ends up resting on nothing — which is exactly how a claim outlives the evidence that
+//! justified it. `tests/server/npm/e2e_test.rs::test_npm_with_real_cli` is the precedent.
+//!
+//! Install with `brew install libmemcached` (macOS) or `apt-get install -y libmemcached-tools`
+//! (Debian/Ubuntu). `memcached` is not in CI's `CI_FEATURES`, so this costs the blocking CI
+//! gate nothing; the `registry-audit` job installs the tools.
 
 #![cfg(feature = "memcached")]
 
 use super::super::super::helpers::{self, E2EResult, NetGetConfig};
 use std::time::Duration;
 use tokio::process::Command;
+
+/// Locate a libmemcached tool, or fail the test saying why a skip would be worse.
+///
+/// **Fail, never skip.** These binaries are the only peer in this directory that NetGet did not
+/// write, and they are the whole of Memcached's `Beta` evidence. A machine without libmemcached
+/// must say so loudly rather than return `Ok(())`.
+fn require_tool(name: &str) -> E2EResult<String> {
+    tool(name).ok_or_else(|| -> Box<dyn std::error::Error> {
+        format!(
+            "`{name}` not found (searched /opt/homebrew/bin, /usr/local/bin, /usr/bin and \
+             $PATH). These tests drive libmemcached's own C client against NetGet's Memcached \
+             server, and that is the only independent check that our `VALUE` byte counts and \
+             `STAT`/`VERSION` replies are acceptable to something we did not write. Skipping \
+             would leave Memcached's Beta rating resting on nothing, so this is a failure and \
+             not a skip. Install with `brew install libmemcached` (macOS) or \
+             `apt-get install -y libmemcached-tools` (Debian/Ubuntu)."
+        )
+        .into()
+    })
+}
 
 fn tool(name: &str) -> Option<String> {
     for prefix in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
@@ -52,13 +80,7 @@ async fn run(binary: &str, args: &[String]) -> E2EResult<(bool, String)> {
 /// result rather than as a passing test.
 #[tokio::test]
 async fn libmemcached_memcat_reads_a_value_the_model_invented() -> E2EResult<()> {
-    let Some(memcat) = tool("memcat") else {
-        eprintln!(
-            "SKIPPED: memcat not found. Install with `brew install libmemcached` to run \
-             Memcached against a real client."
-        );
-        return Ok(());
-    };
+    let memcat = require_tool("memcat")?;
 
     let config = NetGetConfig::new(
         "listen on port {AVAILABLE_PORT} via memcached. The key motd holds a short banner.",
@@ -120,10 +142,8 @@ async fn libmemcached_memcat_reads_a_value_the_model_invented() -> E2EResult<()>
 /// shapes `memcat` does not.
 #[tokio::test]
 async fn libmemcached_memstat_and_memping_accept_our_replies() -> E2EResult<()> {
-    let (Some(memstat), Some(memping)) = (tool("memstat"), tool("memping")) else {
-        eprintln!("SKIPPED: memstat/memping not found (brew install libmemcached).");
-        return Ok(());
-    };
+    let memstat = require_tool("memstat")?;
+    let memping = require_tool("memping")?;
 
     let config =
         NetGetConfig::new("listen on port {AVAILABLE_PORT} via memcached. Report healthy stats.")

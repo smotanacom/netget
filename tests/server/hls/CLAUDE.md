@@ -12,17 +12,26 @@ level). Asserts:
 
 Mock: 1 startup + 1 playlist + 1 segment = **3 calls.** Ends with `verify_mocks().await?`.
 
-## `curl_test.rs` — `curl_fetches_playlist_and_segment` (`#[ignore]`)
+## `curl_test.rs` — `curl_fetches_playlist_and_segment`
 
-Real-client validation with `curl`. `#[ignore]` (curl not guaranteed on CI); run manually:
+Real-client validation with `curl`. **Not `#[ignore]`d and it does not skip** — it fails, naming
+the install command, when `curl` is absent.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features hls \
-    --test server -- --ignored --test-threads=1 hls::curl
+    --test server -- --test-threads=100 hls::curl
 ```
 
 Validated: curl retrieves the m3u8 (`#EXTM3U`, HLS content type, segment URIs) and the segment
 (`video/mp2t`). Localhost only.
+
+**This is not enough for `Beta`, and HLS stays `Experimental` because of it.** `curl` is a
+generic HTTP client: it proves the transport underneath HLS answers, the same way `reqwest`
+does for `couchdb`/`openapi`/`spark`, and CLAUDE.md rules that class out. It parses no
+`#EXTM3U` playlist and decodes no MPEG-TS segment, so it says nothing about the layer NetGet
+actually authors. Real HLS evidence needs a player — `ffprobe` reads an HLS master playlist
+natively, which is the shape `tests/server/rtsp/ffprobe_test.rs` already uses — and that test
+does not exist yet.
 
 ## `e2e_test.rs` — `hls_connection_stats_are_recorded`
 

@@ -79,10 +79,7 @@ async fn wait_for_log_containing(state: &AppState, owner: AccessLogOwner, needle
 
 #[tokio::test]
 async fn injected_grpc_call_reaches_our_own_server() {
-    if which_protoc().is_none() {
-        eprintln!("skipping: protoc is not on PATH and the NetGet gRPC server requires it");
-        return;
-    }
+    require_protoc();
 
     let state = new_state().await;
     let (tx, _rx) = mpsc::unbounded_channel();
@@ -219,10 +216,7 @@ async fn injected_grpc_call_reaches_our_own_server() {
 /// one proves the connection was released.
 #[tokio::test]
 async fn injected_call_carries_repeated_and_map_fields_and_refuses_a_wrong_type() {
-    if which_protoc().is_none() {
-        eprintln!("skipping: protoc is not on PATH and the NetGet gRPC server requires it");
-        return;
-    }
+    require_protoc();
 
     const TAGGER_PROTO: &str = "syntax = \"proto3\"; package tagger; \
          service Tagger { rpc Tag(TagRequest) returns (TagResponse); } \
@@ -349,5 +343,24 @@ fn which_protoc() -> Option<std::path::PathBuf> {
         std::env::split_paths(&paths)
             .map(|dir| dir.join("protoc"))
             .find(|p| p.is_file())
+    })
+}
+
+/// Fail, never skip, when `protoc` is absent.
+///
+/// These are the only tests that put a real tonic call on the wire from outside the connect
+/// task, and the NetGet gRPC server they call compiles its `proto_schema` by shelling out to
+/// `protoc`. An `eprintln!("skipping: …")` + `return` is a silent pass on any runner without
+/// the binary, which is exactly how a claim outlives the evidence behind it.
+/// `tests/server/npm/e2e_test.rs::test_npm_with_real_cli` is the shape copied here.
+fn require_protoc() -> std::path::PathBuf {
+    which_protoc().unwrap_or_else(|| {
+        panic!(
+            "protoc is not on PATH. The NetGet gRPC server compiles its `proto_schema` by \
+             shelling out to it on every code path, so without it this test cannot exercise \
+             the injected-call path at all — and skipping would report a pass for a test that \
+             asserted nothing. Install it with `brew install protobuf` (macOS) or \
+             `apt-get install -y protobuf-compiler` (Debian/Ubuntu)."
+        )
     })
 }
