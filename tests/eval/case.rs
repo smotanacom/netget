@@ -121,9 +121,18 @@ pub struct Expect {
     pub none_of: Vec<String>,
     /// Optional regex over the probe's combined output.
     pub regex: Option<String>,
-    /// Every one of these must appear in netget's own captured log. The only
-    /// observable for one-way protocols (syslog writes nothing back).
-    pub server_log_all_of: Vec<String>,
+    /// Every one of these must name an action netget actually **executed**.
+    ///
+    /// The only observable for one-way protocols — syslog writes nothing back,
+    /// so there is no wire to check.
+    ///
+    /// Deliberately not "appears anywhere in the log", and the first version of
+    /// it was: that produced a **false 3/3 for syslog**, because netget dumps a
+    /// rejected model reply into the log verbatim, so the check matched
+    /// `{"type": "ignore_syslog_message"}` inside a reply that had been *thrown
+    /// away*. The model naming an action and netget running it are different
+    /// events, and only the second one is a pass.
+    pub executed_actions_all_of: Vec<String>,
 }
 
 impl Expect {
@@ -144,16 +153,17 @@ impl Expect {
         self
     }
 
-    /// Assert on netget's log instead of (or as well as) the wire.
-    pub fn in_server_log(needles: &[&str]) -> Self {
+    /// Assert netget executed an action of each name, for protocols with no
+    /// reply to inspect.
+    pub fn executed_action(needles: &[&str]) -> Self {
         Self {
-            server_log_all_of: needles.iter().map(|s| s.to_string()).collect(),
+            executed_actions_all_of: needles.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
     }
 
-    pub fn and_server_log(mut self, needles: &[&str]) -> Self {
-        self.server_log_all_of = needles.iter().map(|s| s.to_string()).collect();
+    pub fn and_executed_action(mut self, needles: &[&str]) -> Self {
+        self.executed_actions_all_of = needles.iter().map(|s| s.to_string()).collect();
         self
     }
 
@@ -168,14 +178,14 @@ impl Expect {
         if let Some(r) = &self.regex {
             parts.push(format!("matches /{}/", r));
         }
-        if !self.server_log_all_of.is_empty() {
-            parts.push(format!("server log contains {:?}", self.server_log_all_of));
+        if !self.executed_actions_all_of.is_empty() {
+            parts.push(format!("executes {:?}", self.executed_actions_all_of));
         }
         parts.join(" and ")
     }
 
     /// Evaluate against one probe run. `Ok(())` is a pass.
-    pub fn check(&self, probe_output: &str, server_log: &str) -> Result<(), String> {
+    pub fn check(&self, probe_output: &str, executed: &str) -> Result<(), String> {
         let hay = probe_output.to_lowercase();
         for needle in &self.all_of {
             if !hay.contains(&needle.to_lowercase()) {
@@ -199,10 +209,12 @@ impl Expect {
                 Err(e) => return Err(format!("HARNESS: bad regex /{}/: {}", pattern, e)),
             }
         }
-        let log = server_log.to_lowercase();
-        for needle in &self.server_log_all_of {
-            if !log.contains(&needle.to_lowercase()) {
-                return Err(format!("netget log does not contain {:?}", needle));
+        // `executed` carries only netget's `Executing action` lines, never the
+        // whole log — see the field's own note about the false syslog pass.
+        let executed_lc = executed.to_lowercase();
+        for needle in &self.executed_actions_all_of {
+            if !executed_lc.contains(&needle.to_lowercase()) {
+                return Err(format!("netget executed no {:?} action", needle));
             }
         }
         Ok(())

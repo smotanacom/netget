@@ -349,8 +349,14 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
     // those the observable is netget's own log, and reading it the moment the
     // client returns would race the model call every time. Wait for the needles
     // instead of sleeping on a guess.
-    if !case.expect.server_log_all_of.is_empty() {
-        for needle in &case.expect.server_log_all_of {
+    if !case.expect.executed_actions_all_of.is_empty() {
+        // Wait for an execution, not merely for the name: netget logs a rejected
+        // reply verbatim, so the name appears whether or not anything ran.
+        let _ = server
+            .instance
+            .wait_for_log("Executing action", probe_timeout().as_secs())
+            .await;
+        for needle in &case.expect.executed_actions_all_of {
             // Returns quietly on timeout; the check below is what asserts.
             let _ = server
                 .instance
@@ -361,7 +367,15 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
 
     // Read the log *after* the probe, so it contains this exchange.
     let log = server.instance.get_output().await;
-    let log_text = log.join("\n");
+    // Only the lines that prove netget *ran* something. Handing `check` the
+    // whole log let an `executed_action` expectation match netget's own dump of
+    // a **rejected** reply, which is how syslog scored a false 3/3.
+    let executed_text = log
+        .iter()
+        .filter(|l| l.contains("Executing action"))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
     let _ = server.finish().await;
 
     let outcome = match outcome {
@@ -384,7 +398,7 @@ async fn run_once(case: &EvalCase, probe_spec: &super::case::Probe, run: usize) 
     };
 
     let combined = outcome.combined();
-    match case.expect.check(&combined, &log_text) {
+    match case.expect.check(&combined, &executed_text) {
         Ok(()) => RunRecord {
             run,
             verdict: "pass",

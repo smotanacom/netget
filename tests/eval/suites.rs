@@ -597,7 +597,7 @@ fn syslog() -> Vec<EvalCase> {
             "syslog",
             "Keep every message that arrives.",
             syslog_probe("<14>Oct 11 22:14:15 evalhost netget-eval: disk almost full\n"),
-            Expect::in_server_log(&["store_syslog_message"]),
+            Expect::executed_action(&["store_syslog_message"]),
         )
         .note("BSD logger cannot target a remote port; driven with nc -u."),
         EvalCase::new(
@@ -606,7 +606,7 @@ fn syslog() -> Vec<EvalCase> {
             "Throw away any message whose text mentions healthcheck. Keep everything \
              else.",
             syslog_probe("<14>Oct 11 22:14:15 evalhost netget-eval: healthcheck ok\n"),
-            Expect::in_server_log(&["ignore_syslog_message"]),
+            Expect::executed_action(&["ignore_syslog_message"]),
         ),
     ]
 }
