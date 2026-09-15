@@ -596,6 +596,11 @@ async fn test_gtpv1_session_lifecycle_over_real_udp() -> E2EResult<()> {
     // Every decision must be recorded, and none of them as a fail-closed one.
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
+    // Same race as the `model_reject` case further down: `wait_for_mocks` proves the
+    // model was called, and `decision=` is written after its answer is handled. Waiting
+    // for the positive line does not weaken the negative one below — giving
+    // model_accept time to appear gives fail_closed the same time.
+    server.wait_for_any(&["decision=model_accept"], 30).await;
     assert!(
         server.output_contains("decision=model_accept").await,
         "an accepted session must be logged with a decision token"
@@ -976,11 +981,22 @@ async fn test_a_sequence_wider_than_the_header_field_fails_closed() -> E2EResult
 
     server.wait_for_mocks(30).await;
     server.verify_mocks().await?;
-    assert!(
-        server.output_contains("decision=fail_closed").await,
-        "the fail-closed path must be recorded with its own decision token, because the \
-         wire cannot distinguish it from a refusal the model chose deliberately"
-    );
+
+    // Wait for the line rather than checking once. The refusal reaches the socket
+    // before the harness's reader task has necessarily drained the server's stdout into
+    // `output_lines`, so a bare `output_contains` here is a race — green on a quiet
+    // machine, intermittently red at `--test-threads=100`, and reproduced at unmodified
+    // HEAD as often as anywhere else. This still asserts the line must appear; it only
+    // stops asserting *when*.
+    server
+        .wait_for_log("decision=fail_closed", 20)
+        .await
+        .map_err(|e| {
+            format!(
+                "the fail-closed path must be recorded with its own decision token, because \
+                 the wire cannot distinguish it from a refusal the model chose deliberately: {e}"
+            )
+        })?;
     server.stop().await?;
     Ok(())
 }
