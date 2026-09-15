@@ -129,7 +129,7 @@ async fn test_mcp_initialize() -> E2EResult<()> {
     println!("Server started on port {}", server.port);
 
     // Wait for server to be ready
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     // Send initialize request
     println!("\n→ Sending MCP initialize request...");
@@ -316,7 +316,7 @@ async fn test_mcp_resources_list() -> E2EResult<()> {
     let server = helpers::start_netget_server(server_config).await?;
     println!("Server started on port {}", server.port);
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    server.wait_for_mocks(30).await;
 
     // Send resources/list request
     println!("\n→ Sending MCP resources/list request...");
@@ -410,7 +410,7 @@ async fn test_mcp_resources_read() -> E2EResult<()> {
     let server = helpers::start_netget_server(server_config).await?;
     println!("Server started on port {}", server.port);
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    server.wait_for_mocks(30).await;
 
     // Send resources/read request
     println!("\n→ Sending MCP resources/read request...");
@@ -530,7 +530,7 @@ async fn test_mcp_tools_list() -> E2EResult<()> {
     let server = helpers::start_netget_server(server_config).await?;
     println!("Server started on port {}", server.port);
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    server.wait_for_mocks(30).await;
 
     // Send tools/list request
     println!("\n→ Sending MCP tools/list request...");
@@ -629,7 +629,7 @@ async fn test_mcp_tools_call() -> E2EResult<()> {
     let server = helpers::start_netget_server(server_config).await?;
     println!("Server started on port {}", server.port);
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    server.wait_for_mocks(30).await;
 
     // Send tools/call request
     println!("\n→ Sending MCP tools/call request...");
@@ -736,7 +736,7 @@ async fn test_mcp_prompts_list() -> E2EResult<()> {
     let server = helpers::start_netget_server(server_config).await?;
     println!("Server started on port {}", server.port);
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    server.wait_for_mocks(30).await;
 
     // Send prompts/list request
     println!("\n→ Sending MCP prompts/list request...");
@@ -833,7 +833,7 @@ async fn test_mcp_prompts_get() -> E2EResult<()> {
     let server = helpers::start_netget_server(server_config).await?;
     println!("Server started on port {}", server.port);
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    server.wait_for_mocks(30).await;
 
     // Send prompts/get request
     println!("\n→ Sending MCP prompts/get request...");

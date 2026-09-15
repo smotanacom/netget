@@ -18,7 +18,7 @@ mod e2e_isis {
     /// Test IS-IS server startup with interface configuration
     /// LLM calls: 1 (server startup with open_server action)
     #[tokio::test]
-    #[ignore] // Requires root and network interface setup
+    #[ignore = "Requires root and network interface setup"]
     async fn test_isis_server_startup() -> E2EResult<()> {
         println!("\n=== Test: IS-IS Server Startup ===");
 
@@ -77,7 +77,7 @@ mod e2e_isis {
     /// 2. Ability to inject raw Ethernet frames with IS-IS PDUs
     /// 3. Root privileges
     #[tokio::test]
-    #[ignore] // Requires root, veth setup, and packet injection
+    #[ignore = "Requires root, veth setup, and packet injection"]
     async fn test_isis_hello_pdu_exchange() -> E2EResult<()> {
         println!("\n=== Test: IS-IS Hello PDU Exchange ===");
 
@@ -151,7 +151,7 @@ mod e2e_isis {
     /// Test IS-IS with multiple Hello PDUs
     /// LLM calls: 4 (startup + 3 hello events)
     #[tokio::test]
-    #[ignore] // Requires root, veth setup, and packet injection
+    #[ignore = "Requires root, veth setup, and packet injection"]
     async fn test_isis_multiple_neighbors() -> E2EResult<()> {
         println!("\n=== Test: IS-IS Multiple Neighbor Discovery ===");
 

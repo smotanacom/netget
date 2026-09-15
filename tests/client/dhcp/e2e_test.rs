@@ -15,7 +15,7 @@ mod dhcp_client_tests {
     /// Test DHCP client can send DISCOVER and receive OFFER
     /// LLM calls: 4 (server startup, client startup, client action after OFFER)
     #[tokio::test]
-    #[ignore] // Requires elevated privileges to bind port 68
+    #[ignore = "Requires elevated privileges to bind port 68"]
     async fn test_dhcp_client_discover_offer() -> E2EResult<()> {
         // Start a DHCP server that offers IP 192.168.1.100 with mocks
         let server_config = NetGetConfig::new(
@@ -138,7 +138,7 @@ mod dhcp_client_tests {
     /// Test DHCP client can complete full DORA exchange
     /// LLM calls: 6 (server startup, client startup, server OFFER, client REQUEST, server ACK, client parse ACK)
     #[tokio::test]
-    #[ignore] // Requires elevated privileges to bind port 68
+    #[ignore = "Requires elevated privileges to bind port 68"]
     async fn test_dhcp_client_full_dora() -> E2EResult<()> {
         // Start a DHCP server with mocks
         let server_config = NetGetConfig::new(
@@ -280,7 +280,7 @@ mod dhcp_client_tests {
     /// Test DHCP client with broadcast mode
     /// LLM calls: 4 (server startup, client startup)
     #[tokio::test]
-    #[ignore] // Requires elevated privileges to bind port 68
+    #[ignore = "Requires elevated privileges to bind port 68"]
     async fn test_dhcp_client_broadcast() -> E2EResult<()> {
         // Start DHCP server with mocks
         let server_config = NetGetConfig::new(

@@ -40,7 +40,7 @@ mod mdns_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to initialize
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        client.wait_for_mocks(30).await;
 
         // Verify client output shows initialization
         let output = client.get_output().await;
@@ -219,7 +219,7 @@ mod mdns_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to resolve
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        client.wait_for_mocks(30).await;
 
         let output = client.get_output().await;
 

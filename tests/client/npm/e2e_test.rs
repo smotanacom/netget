@@ -27,7 +27,7 @@ async fn setup_test() -> (Arc<AppState>, OllamaClient, mpsc::UnboundedSender<Str
 }
 
 #[tokio::test]
-#[ignore] // Requires Ollama and network access
+#[ignore = "Requires Ollama and network access"]
 async fn test_npm_client_get_package_info() {
     let (app_state, llm_client, status_tx) = setup_test().await;
 
@@ -76,7 +76,7 @@ async fn test_npm_client_get_package_info() {
 }
 
 #[tokio::test]
-#[ignore] // Requires Ollama and network access
+#[ignore = "Requires Ollama and network access"]
 async fn test_npm_client_search_packages() {
     let (app_state, llm_client, status_tx) = setup_test().await;
 
@@ -229,7 +229,7 @@ async fn download_tarball_reports_the_bytes_and_writes_no_file() {
 }
 
 #[tokio::test]
-#[ignore] // Requires Ollama and network access
+#[ignore = "Requires Ollama and network access"]
 async fn test_npm_client_scoped_package() {
     let (app_state, llm_client, status_tx) = setup_test().await;
 

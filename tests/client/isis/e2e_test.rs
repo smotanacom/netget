@@ -20,7 +20,7 @@ use std::time::Duration;
 /// Test IS-IS client startup and interface capture
 /// LLM calls: 1 (client startup with open_client action)
 #[tokio::test]
-#[ignore] // Requires root access for pcap
+#[ignore = "Requires root access for pcap"]
 async fn test_isis_client_startup() -> E2EResult<()> {
     println!("\n=== Test: IS-IS Client Startup ===");
 
@@ -74,7 +74,7 @@ async fn test_isis_client_startup() -> E2EResult<()> {
 /// Test IS-IS client capturing Hello PDU
 /// LLM calls: 2 (client startup, PDU received)
 #[tokio::test]
-#[ignore] // Requires root, veth setup, and packet injection
+#[ignore = "Requires root, veth setup, and packet injection"]
 async fn test_isis_client_capture_hello() -> E2EResult<()> {
     println!("\n=== Test: IS-IS Client Capture Hello PDU ===");
 
@@ -136,7 +136,7 @@ async fn test_isis_client_capture_hello() -> E2EResult<()> {
 /// This simulates a full IS-IS client-server scenario
 /// LLM calls: 3 (server startup, client startup, PDU received)
 #[tokio::test]
-#[ignore] // Requires root, veth pair, and complex setup
+#[ignore = "Requires root, veth pair, and complex setup"]
 async fn test_isis_client_server_interaction() -> E2EResult<()> {
     println!("\n=== Test: IS-IS Client-Server Interaction ===");
 
@@ -234,7 +234,7 @@ async fn test_isis_client_server_interaction() -> E2EResult<()> {
 /// Test IS-IS client analyzing multiple PDU types
 /// LLM calls: 5 (startup + 4 different PDU types)
 #[tokio::test]
-#[ignore] // Requires root and IS-IS traffic
+#[ignore = "Requires root and IS-IS traffic"]
 async fn test_isis_client_multiple_pdu_types() -> E2EResult<()> {
     println!("\n=== Test: IS-IS Client Multiple PDU Types ===");
 

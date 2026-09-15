@@ -68,7 +68,6 @@ mod turn_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to connect and allocate
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
         client.wait_for_any(&["TURN", "connected"], 30).await;
@@ -170,7 +169,7 @@ mod turn_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify client is TURN protocol
         assert_eq!(client.protocol, "TURN", "Client should be TURN protocol");
@@ -268,7 +267,7 @@ mod turn_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify TURN operations occurred
         let output = client.get_output().await;

@@ -85,7 +85,7 @@ async fn test_rtsp_setup_play_streams_rtp() -> E2EResult<()> {
         });
 
     let test_state = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&test_state, Duration::from_secs(30)).await?;
 
     let server_addr: SocketAddr = format!("127.0.0.1:{}", test_state.port).parse().unwrap();
 

@@ -152,5 +152,11 @@ async fn a_backend_failure_tells_the_peer_nothing_about_netget() -> E2EResult<()
         !message.is_empty(),
         "the peer still needs to be told something: {body}"
     );
+
+    // The startup rule is the one expectation this test sets, and it must have fired:
+    // without it the server would never have started and the 5xx above would be a
+    // connection refusal wearing the same shape.
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
     Ok(())
 }

@@ -247,7 +247,7 @@ async fn test_dot_server() -> E2EResult<()> {
     println!("DoT server started on port {}", port);
 
     // Wait for server to fully initialize
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    server.wait_for_mocks(30).await;
 
     // Each query gets a distinct IP so a reply routed to the wrong question is visible.
     // `query_dot` additionally asserts the transaction id and question are echoed.

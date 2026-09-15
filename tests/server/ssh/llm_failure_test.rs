@@ -50,7 +50,7 @@ async fn test_ssh_denies_auth_when_llm_fails() -> E2EResult<()> {
     });
 
     let server = start_netget_server(server_config).await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let port = server.port;
     let authenticated = tokio::task::spawn_blocking(move || -> Result<bool, String> {
@@ -112,7 +112,7 @@ async fn test_ssh_disconnects_when_shell_command_llm_fails() -> E2EResult<()> {
     });
 
     let server = start_netget_server(server_config).await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let port = server.port;
     let outcome =
@@ -240,7 +240,7 @@ async fn test_ssh_exec_reports_failure_when_llm_fails() -> E2EResult<()> {
     });
 
     let server = start_netget_server(server_config).await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let port = server.port;
     let outcome = tokio::task::spawn_blocking(move || -> Result<(String, String, i32), String> {

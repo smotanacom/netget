@@ -108,7 +108,6 @@ mod doh_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to connect and query
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
         client.wait_for_any(&["connected"], 30).await;
@@ -237,7 +236,7 @@ mod doh_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to connect and query
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify client connected
         // `client.protocol` is the name the client was opened with, which is what the
@@ -395,7 +394,7 @@ mod doh_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to make multiple queries
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify client is using DNS-over-HTTPS protocol
         assert_eq!(client.protocol, "DoH", "Client should be DoH protocol");
@@ -524,7 +523,7 @@ mod doh_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to connect and make query
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify output shows MX query or mail-related content
         let output = client.get_output().await;

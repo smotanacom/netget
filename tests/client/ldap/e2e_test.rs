@@ -28,7 +28,7 @@ async fn create_test_app_state() -> (Arc<AppState>, ClientId) {
 }
 
 #[tokio::test]
-#[ignore] // Requires Docker OpenLDAP container
+#[ignore = "Requires Docker OpenLDAP container"]
 async fn test_ldap_client_connect() -> Result<()> {
     // This test requires an OpenLDAP container running on localhost:1389
     // Start with: docker run -d -p 1389:389 -e LDAP_ORGANISATION="Example Inc" \
@@ -70,7 +70,7 @@ async fn test_ldap_client_connect() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore] // Requires Docker OpenLDAP container and Ollama
+#[ignore = "Requires Docker OpenLDAP container and Ollama"]
 async fn test_ldap_client_bind_and_search() -> Result<()> {
     // This test requires:
     // 1. OpenLDAP container (see above)
@@ -131,7 +131,7 @@ async fn test_ldap_client_bind_and_search() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore] // Requires Docker OpenLDAP container and Ollama
+#[ignore = "Requires Docker OpenLDAP container and Ollama"]
 async fn test_ldap_client_add_modify_delete() -> Result<()> {
     // This test requires:
     // 1. OpenLDAP container (see above)

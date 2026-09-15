@@ -25,7 +25,7 @@ mod smb_client_tests {
     ///   dperson/samba
     /// ```
     #[tokio::test]
-    #[ignore] // Requires external Samba server
+    #[ignore = "Requires external Samba server"]
     async fn test_smb_client_connect_and_list() -> E2EResult<()> {
         // SMB client that connects and lists directory
         let client_config = NetGetConfig::new(
@@ -59,7 +59,7 @@ mod smb_client_tests {
     /// Test SMB client can read files
     /// LLM calls: 2 (initial connection, read operation)
     #[tokio::test]
-    #[ignore] // Requires external Samba server with test file
+    #[ignore = "Requires external Samba server with test file"]
     async fn test_smb_client_read_file() -> E2EResult<()> {
         // SMB client that reads a file
         let client_config = NetGetConfig::new(
@@ -84,7 +84,7 @@ mod smb_client_tests {
     /// Test SMB client can write files (requires write access)
     /// LLM calls: 2 (initial connection, write operation)
     #[tokio::test]
-    #[ignore] // Requires external Samba server with write access
+    #[ignore = "Requires external Samba server with write access"]
     async fn test_smb_client_write_file() -> E2EResult<()> {
         // SMB client that writes a file
         let client_config = NetGetConfig::new(
@@ -117,7 +117,7 @@ mod smb_client_tests {
     /// Test SMB client can create and delete directories
     /// LLM calls: 3 (connection, create, delete)
     #[tokio::test]
-    #[ignore] // Requires external Samba server with write access
+    #[ignore = "Requires external Samba server with write access"]
     async fn test_smb_client_directory_operations() -> E2EResult<()> {
         // SMB client that creates and deletes a directory
         let client_config = NetGetConfig::new(

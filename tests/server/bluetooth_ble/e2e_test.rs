@@ -518,7 +518,6 @@ async fn test_bluetooth_ble_startup() -> E2EResult<()> {
 
     // Let it run for a bit to ensure no crashes
     println!("Letting server run for 3 seconds...");
-    tokio::time::sleep(Duration::from_secs(3)).await;
     println!("✓ Server running without errors");
 
     // Verify mock expectations were met

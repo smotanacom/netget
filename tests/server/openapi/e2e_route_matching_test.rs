@@ -195,7 +195,11 @@ async fn test_openapi_route_matching_comprehensive() -> E2EResult<()> {
 /// Test llm_on_invalid configuration
 #[tokio::test]
 #[cfg(feature = "openapi")]
-#[ignore = "Requires complex multi-step mock setup with configure_error_handling action"]
+#[ignore = "llm_on_invalid can only be switched on by the configure_error_handling action, \
+            which has to run after the server exists — a second model turn this one-prompt \
+            harness cannot drive. `spec` is openapi's only startup parameter, so the flag \
+            cannot be set at startup either. Un-ignoring it needs a mock that answers a \
+            second user turn (or an injected async action), not a change here."]
 async fn test_openapi_llm_on_invalid_override() -> E2EResult<()> {
     let spec_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/server/openapi/test_spec.yaml");
@@ -221,12 +225,19 @@ async fn test_openapi_llm_on_invalid_override() -> E2EResult<()> {
             ]))
             .expect_calls(1)
             .and()
+            // `send_openapi_response`, not `send_http_response`: OpenAPI cannot execute the
+            // latter. This mock named it for as long as the test was ignored, so the server
+            // would have rejected the action as unknown and answered with its own fallback —
+            // the rule would have been "satisfied" by a reply the model never chose.
+            // `assert_actions_valid_for_event` catches exactly this, and is what the test
+            // tripped on the moment it was un-ignored.
             .on_event("openapi_request")
             .respond_with_actions(serde_json::json!([
                 {
-                    "type": "send_http_response",
-                    "status": 404,
-                    "body": {"error": "Custom LLM 404 response"}
+                    "type": "send_openapi_response",
+                    "status_code": 404,
+                    "headers": {"content-type": "application/json"},
+                    "body": "{\"error\": \"Custom LLM 404 response\"}"
                 }
             ]))
             .expect_at_least(1)
@@ -259,10 +270,16 @@ async fn test_openapi_llm_on_invalid_override() -> E2EResult<()> {
 
     println!("Status: {}, Body: {}", status, body);
 
-    // Just verify we got a response (LLM was consulted)
+    // The model's own answer has to reach the peer. Asserting only that the body is
+    // non-empty passes just as happily on the server's built-in fallback, which is what
+    // this test is supposed to prove was overridden.
+    assert_eq!(
+        status, 404,
+        "the model's status code should be what the peer sees, got {status}: {body}"
+    );
     assert!(
-        !body.is_empty(),
-        "Should receive LLM-generated response for 404"
+        body.contains("Custom LLM 404 response"),
+        "the peer got the server's fallback rather than the model's override: {body}"
     );
 
     println!("\n=== LLM override test passed! ===");

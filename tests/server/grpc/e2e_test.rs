@@ -160,7 +160,7 @@ When you receive GetUser requests, respond with a User message containing the re
     );
 
     // Give server time to initialize and compile schema
-    sleep(Duration::from_secs(3)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     // Compile proto text for client-side protobuf encoding
     let descriptor_bytes = compile_proto_to_fds(&proto_text)?;
@@ -283,7 +283,7 @@ When you receive CreateUser requests, respond with a User message having id=456 
     println!("Server started on port {}", server.port);
 
     // Give server time to load schema
-    sleep(Duration::from_secs(2)).await;
+    server.wait_for_mocks(30).await;
 
     // Check server output for schema loading confirmation
     let output = server.get_output().await;
@@ -361,7 +361,7 @@ When you receive GetUser requests, respond with a User message containing the re
     println!("Server started on port {}", server.port);
 
     // Give server time to compile and load schema
-    sleep(Duration::from_secs(3)).await;
+    server.wait_for_mocks(30).await;
 
     // Check server is still running
     assert!(
@@ -450,7 +450,7 @@ When you receive GetUser requests:
     println!("Server started on port {}", server.port);
 
     // Give server time to initialize
-    sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     // Encode request as protobuf
     use prost::Message;
@@ -586,7 +586,7 @@ When you receive GetUser requests, respond with a User message where the id matc
     let mut server = helpers::start_netget_server(server_config).await?;
     println!("Server started on port {}", server.port);
 
-    sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     // Make 3 concurrent requests
     let client = reqwest::Client::builder()

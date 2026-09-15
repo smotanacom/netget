@@ -104,7 +104,7 @@ mod usb_client_tests {
     /// USB_TEST_VID=1234 USB_TEST_PID=5678 cargo test --features usb test_usb_device_connection -- --ignored
     /// ```
     #[tokio::test]
-    #[ignore]
+    #[ignore = "needs a physical USB device plus USB_TEST_VID/USB_TEST_PID and permission to claim it"]
     async fn test_usb_device_connection() {
         // Get test device VID/PID from environment
         let vid = env::var("USB_TEST_VID").expect("USB_TEST_VID environment variable not set");

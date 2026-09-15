@@ -95,7 +95,6 @@ mod http2_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to make request
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection/response
         client
@@ -216,7 +215,7 @@ mod http2_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify the client is HTTP2 protocol
         assert_eq!(client.protocol, "HTTP2", "Client should be HTTP2 protocol");
@@ -343,8 +342,6 @@ mod http2_client_tests {
         });
 
         let mut client = start_netget_client(client_config).await?;
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client shows HTTP/2 protocol
         client.wait_for_any(&["HTTP2", "http2", "HTTP/2"], 30).await;

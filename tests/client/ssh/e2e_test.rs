@@ -37,7 +37,7 @@ mod ssh_client_tests {
     /// Test basic SSH client connection and authentication
     /// LLM calls: 1 (client connection + auth)
     #[tokio::test]
-    #[ignore] // Requires external SSH server
+    #[ignore = "Requires external SSH server"]
     async fn test_ssh_client_connect_and_authenticate() -> E2EResult<()> {
         let (port, user, pass) = get_ssh_test_config();
 
@@ -72,7 +72,7 @@ mod ssh_client_tests {
     /// Test SSH client can execute commands via LLM
     /// LLM calls: 2 (connect + execute command)
     #[tokio::test]
-    #[ignore] // Requires external SSH server
+    #[ignore = "Requires external SSH server"]
     async fn test_ssh_client_execute_command() -> E2EResult<()> {
         let (port, user, pass) = get_ssh_test_config();
 
@@ -108,7 +108,7 @@ mod ssh_client_tests {
     /// Test SSH client can execute multiple chained commands
     /// LLM calls: 4 (connect + 3 commands)
     #[tokio::test]
-    #[ignore] // Requires external SSH server
+    #[ignore = "Requires external SSH server"]
     async fn test_ssh_client_multiple_commands() -> E2EResult<()> {
         let (port, user, pass) = get_ssh_test_config();
 
@@ -145,7 +145,7 @@ mod ssh_client_tests {
     /// Test SSH client handles authentication failure gracefully
     /// LLM calls: 1 (connection attempt)
     #[tokio::test]
-    #[ignore] // Requires external SSH server
+    #[ignore = "Requires external SSH server"]
     async fn test_ssh_client_auth_failure() -> E2EResult<()> {
         let (port, user, _pass) = get_ssh_test_config();
 
@@ -180,7 +180,7 @@ mod ssh_client_tests {
     /// Test SSH client can disconnect cleanly
     /// LLM calls: 2 (connect + disconnect)
     #[tokio::test]
-    #[ignore] // Requires external SSH server
+    #[ignore = "Requires external SSH server"]
     async fn test_ssh_client_disconnect() -> E2EResult<()> {
         let (port, user, pass) = get_ssh_test_config();
 

@@ -198,7 +198,6 @@ async fn test_etcd_client_basic_operations() -> E2EResult<()> {
     let mut client = start_netget_client(client_config).await?;
 
     // Give client time to execute operations
-    tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Verify client output shows connection and operations
     client.wait_for_any(&["etcd"], 30).await;
@@ -368,8 +367,6 @@ async fn test_etcd_client_multiple_keys() -> E2EResult<()> {
 
     let mut client = start_netget_client(client_config).await?;
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
     println!("✅ etcd client completed multiple key operations");
 
     // Verify mocks
@@ -468,8 +465,6 @@ async fn test_etcd_client_nonexistent_key() -> E2EResult<()> {
     });
 
     let mut client = start_netget_client(client_config).await?;
-
-    tokio::time::sleep(Duration::from_secs(2)).await;
 
     println!("✅ etcd client verified nonexistent key returns empty");
 

@@ -115,7 +115,7 @@ async fn test_nntp_basic_newsgroups() -> E2EResult<()> {
     let mut server = start_netget_server(server_config).await?;
 
     // Wait for server to start
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     // Connect to NNTP server
     let stream = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
@@ -301,7 +301,7 @@ async fn test_nntp_article_overview() -> E2EResult<()> {
 
     let mut server = start_netget_server(server_config).await?;
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    crate::helpers::wait_for_server_listening(&server, Duration::from_secs(30)).await?;
 
     let stream = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
     let (read_half, mut write_half) = tokio::io::split(stream);

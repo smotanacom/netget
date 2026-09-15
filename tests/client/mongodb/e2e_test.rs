@@ -95,7 +95,6 @@ async fn test_mongodb_client_with_server_mocks() -> E2EResult<()> {
     let client = start_netget_client(client_config).await?;
 
     // Wait for operations to complete
-    sleep(Duration::from_secs(2)).await;
 
     // Verify mocks
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -182,7 +181,6 @@ async fn test_mongodb_client_insert_workflow_with_mocks() -> E2EResult<()> {
     let client = start_netget_client(client_config).await?;
 
     // Wait for operations to complete
-    sleep(Duration::from_secs(2)).await;
 
     // Verify mocks
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -271,7 +269,6 @@ async fn test_mongodb_client_update_workflow_with_mocks() -> E2EResult<()> {
     let client = start_netget_client(client_config).await?;
 
     // Wait for operations to complete
-    sleep(Duration::from_secs(2)).await;
 
     // Verify mocks
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -358,7 +355,6 @@ async fn test_mongodb_client_delete_workflow_with_mocks() -> E2EResult<()> {
     let client = start_netget_client(client_config).await?;
 
     // Wait for operations to complete
-    sleep(Duration::from_secs(2)).await;
 
     // Verify mocks
     // Wait for the exchange the mocks describe, rather than trusting a fixed

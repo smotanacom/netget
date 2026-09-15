@@ -109,7 +109,6 @@ mod nntp_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to connect and execute command
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection
         client.wait_for_any(&["connected"], 30).await;
@@ -230,8 +229,6 @@ mod nntp_client_tests {
         });
 
         let mut client = start_netget_client(client_config).await?;
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify the client is NNTP protocol
         assert_eq!(client.protocol, "NNTP", "Client should be NNTP protocol");
@@ -356,7 +353,7 @@ mod nntp_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify the client is NNTP protocol
         assert_eq!(client.protocol, "NNTP", "Client should be NNTP protocol");

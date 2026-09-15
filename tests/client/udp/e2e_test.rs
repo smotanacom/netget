@@ -159,7 +159,7 @@ mod udp_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         assert_eq!(client.protocol, "UDP", "Client should be UDP protocol");
 
@@ -252,7 +252,7 @@ mod udp_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         let output = client.get_output().await;
         assert!(
@@ -371,7 +371,7 @@ mod udp_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server1.wait_for_mocks(30).await;
 
         assert_eq!(client.protocol, "UDP", "Client should be UDP protocol");
 

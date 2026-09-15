@@ -123,7 +123,7 @@ Use scripting mode to handle all requests without LLM calls after initial setup.
         .map_err(|_| "Server startup timeout")??;
 
     // Wait for server to be ready
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&test_state, Duration::from_secs(30)).await?;
 
     let base_url = format!("http://127.0.0.1:{}/simple/", test_state.port);
 
@@ -402,7 +402,7 @@ Use scripting mode for zero LLM calls after setup.
     let test_state = timeout(Duration::from_secs(30), start_netget_server(config))
         .await
         .map_err(|_| "Server startup timeout")??;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_server_listening(&test_state, Duration::from_secs(30)).await?;
 
     let base_url = format!("http://127.0.0.1:{}/simple/", test_state.port);
     println!("✓ Minimal PyPI server started on port {}", test_state.port);

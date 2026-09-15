@@ -36,7 +36,6 @@ async fn test_file_transfer_service_startup() -> E2EResult<()> {
     .await?;
 
     println!("✓ File transfer service started");
-    tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after
