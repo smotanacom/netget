@@ -135,6 +135,26 @@ mod tests {
         let reply = &buf[..n];
         println!("✓ received {} bytes back", n);
 
+        // --- an independent dissector reads the frame before we do --------------------------
+        //
+        // The pcap oracle. Every other check here goes through
+        // `netget::server::cdp::codec`, which is the code that wrote the frame; the
+        // checksum assertion in particular compares our encoder against our decoder.
+        // Wireshark's `cdp` dissector shares nothing with either: it recomputes the
+        // checksum itself, walks the TLV list, and — because this is 802.3 rather than
+        // Ethernet II — objects if the length field is not a length. That last case is
+        // the defect Programme 2 found here by hand (an EtherType where the 802.3
+        // length belongs), and it is worth knowing that it raises no expert info at
+        // all: tshark simply hands the frame to the generic `data` dissector, which is
+        // why the oracle fails on the dissector chain as well as on expert severity.
+        //
+        // The datagram is a complete 802.3 frame — that is what the `transport: "udp"`
+        // test transport carries — so it goes to the oracle as a link-layer frame with
+        // no synthetic framing added at all.
+        crate::helpers::pcap_oracle::PcapOracle::ethernet("cdp")
+            .frame(reply)
+            .assert_clean();
+
         // --- assert the raw framing directly, before trusting any of our own parsers ---------
         assert!(n > 22, "reply is too short to be a CDP frame");
         assert_eq!(

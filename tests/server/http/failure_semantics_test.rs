@@ -101,6 +101,60 @@ async fn test_http_answers_500_when_the_llm_fails() -> E2EResult<()> {
     Ok(())
 }
 
+/// The failure response must be a well-formed HTTP message, not merely a status code
+/// `reqwest` was willing to accept.
+///
+/// `CLAUDE.md` names this server as the thing ~44 other protocols were written by
+/// copying, so its error path is the most-replicated wire format in the tree — and it
+/// is hand-assembled, on a branch no model is involved in, which is where a missing
+/// `Content-Length` or a header block terminated by a bare LF lives. `reqwest` cannot
+/// see any of that: it is lenient by design and reports the status either way.
+///
+/// So this test takes a raw socket, reads the whole response, and hands it to
+/// Wireshark's HTTP dissector. A `Content-Length` that disagrees with the body makes
+/// the dissector wait for bytes that never arrive, and the response is reported as
+/// undissectable plain TCP.
+#[tokio::test]
+async fn test_http_failure_response_is_well_formed_on_the_wire() -> E2EResult<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let server = server_with_failing_model().await?;
+
+    let request = format!(
+        "GET /oracle HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        server.port
+    );
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", server.port)).await?;
+    stream.write_all(request.as_bytes()).await?;
+    stream.flush().await?;
+
+    // Read to EOF: `Connection: close` means the whole response is everything that
+    // arrives before the close, so nothing is left buffered for the oracle to miss.
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(20), stream.read_to_end(&mut response))
+        .await
+        .map_err(|_| {
+            "the HTTP server neither answered nor closed within 20s on LLM failure"
+        })??;
+
+    assert!(
+        response.starts_with(b"HTTP/1.1 500 "),
+        "expected a 500 status line, got: {:?}",
+        String::from_utf8_lossy(&response[..response.len().min(120)])
+    );
+
+    crate::helpers::pcap_oracle::PcapOracle::tcp("http")
+        .to_server(request.as_bytes())
+        .from_server(&response)
+        .assert_clean();
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    Ok(())
+}
+
 /// The same failure must not leak through a body-carrying method either, and must still
 /// be prompt. POST is the path that also exercises request-body extraction.
 #[tokio::test]

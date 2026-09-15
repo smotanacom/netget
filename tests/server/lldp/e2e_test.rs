@@ -235,6 +235,18 @@ async fn an_identity_the_model_authors_reaches_the_wire() -> E2EResult<()> {
         .await
         .map_err(|_| "no advertisement came back within 30s")??;
 
+    // The pcap oracle. `codec::decode_frame` below is the counterpart of the encoder
+    // that produced these bytes, so it agrees with them by construction — the class of
+    // defect Programme 2 found in this family (a transposed `05 75`/`75 05` pad, a
+    // big-endian field that should be little-endian) survives a round trip through its
+    // own codec untouched. Wireshark's `lldp` dissector shares nothing with it: it
+    // walks the TLV list by type-and-length, requires the mandatory Chassis ID / Port
+    // ID / TTL in order, and reports a TLV whose length runs past the frame as a
+    // malformed packet.
+    crate::helpers::pcap_oracle::PcapOracle::ethernet("lldp")
+        .frame(&buf[..n])
+        .assert_clean();
+
     let frame = codec::decode_frame(&buf[..n]).expect("what came back is a real LLDP frame");
 
     assert_eq!(

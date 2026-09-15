@@ -74,6 +74,17 @@ async fn command(stream: &mut TcpStream, argv: &[&str]) -> Vec<u8> {
         .await
         .expect("a reply within 10s")
         .expect("read reply");
+
+    // The pcap oracle. This file asserts on the *content* of the reply, byte for
+    // byte; Wireshark's `resp` dissector asserts it is a well-formed RESP frame at
+    // all — the type byte, the length prefix agreeing with the payload, the CRLF
+    // terminator. Both halves of the injection hazard this file exists for are
+    // framing questions, so an independent RESP reader belongs in the loop.
+    crate::helpers::pcap_oracle::PcapOracle::tcp("redis")
+        .to_server(&req)
+        .from_server(&buf[..n])
+        .assert_clean();
+
     buf[..n].to_vec()
 }
 

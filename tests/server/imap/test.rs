@@ -22,9 +22,13 @@ async fn send_imap_command(
     stream.flush().await?;
 
     // Read responses with timeout to prevent indefinite hangs
-    let result = timeout(Duration::from_secs(60), async {
+    let (result, raw) = timeout(Duration::from_secs(60), async {
         let mut reader = BufReader::new(stream);
         let mut responses = Vec::new();
+        // The bytes exactly as they arrived, line endings included. The trimmed
+        // strings below are what the assertions read; the oracle needs the CRLFs,
+        // because "every response line ends CRLF" is one of the things it checks.
+        let mut raw: Vec<u8> = Vec::new();
 
         loop {
             let mut line = String::new();
@@ -33,6 +37,7 @@ async fn send_imap_command(
                 break; // EOF
             }
 
+            raw.extend_from_slice(line.as_bytes());
             responses.push(line.trim().to_string());
 
             // Check if this is the tagged response (A001 OK, A001 NO, A001 BAD)
@@ -41,7 +46,7 @@ async fn send_imap_command(
             }
         }
 
-        Ok::<Vec<String>, std::io::Error>(responses)
+        Ok::<(Vec<String>, Vec<u8>), std::io::Error>((responses, raw))
     })
     .await
     .map_err(|_| {
@@ -50,6 +55,16 @@ async fn send_imap_command(
             "Timeout reading IMAP response after 60 seconds",
         )
     })??;
+
+    // The pcap oracle. Every assertion in this file is on `line.trim()`, which
+    // discards precisely the framing RFC 3501 cares about: a response that ended
+    // with a bare LF, or a literal `{n}` whose octet count disagreed with what
+    // followed, would read identically after trimming. Wireshark's `imap` dissector
+    // reads the untrimmed bytes.
+    crate::helpers::pcap_oracle::PcapOracle::tcp("imap")
+        .to_server(cmd.as_bytes())
+        .from_server(&raw)
+        .assert_clean();
 
     Ok(result)
 }
@@ -586,7 +601,7 @@ async fn test_imap_fetch_message() -> E2EResult<()> {
     let prompt = "listen on port {AVAILABLE_PORT} via imap. Allow LOGIN for 'alice'. \
          After SELECT INBOX, respond with 1 EXISTS. \
          After FETCH 1 (FLAGS BODY[]), respond with: \
-         * 1 FETCH (FLAGS (\\Seen) BODY[] {{50}}\r\nFrom: test@example.com\r\nSubject: Test\r\n\r\nHello)\r\nA004 OK FETCH completed";
+         * 1 FETCH (FLAGS (\\Seen) BODY[] {{46}}\r\nFrom: test@example.com\r\nSubject: Test\r\n\r\nHello)\r\nA004 OK FETCH completed";
 
     let config = NetGetConfig::new(prompt)
         .with_mock(|mock| {
@@ -636,12 +651,21 @@ async fn test_imap_fetch_message() -> E2EResult<()> {
                 .expect_calls(1)
                 .and()
                 // Mock 5: FETCH command
+                //
+                // The literal count is 46, and it must be counted rather than guessed:
+                // `From: test@example.com\r\nSubject: Test\r\n\r\nHello` is 22+2 + 13+2
+                // + 2 + 5 octets. This fixture said {50} until the pcap oracle read it,
+                // and nothing else in the test could see the difference — every
+                // assertion here is `line.contains("FETCH")` on a trimmed string. A real
+                // client does not have that luxury: RFC 3501 §4.3 makes it read exactly
+                // the declared number of octets, so it would have swallowed `)\r\nA004`
+                // as message body and desynchronised the connection for good.
                 .on_event("imap_command")
                 .and_event_data_contains("command", "FETCH")
                 .respond_with_actions(serde_json::json!([
                     {
                         "type": "send_imap_response",
-                        "response": "* 1 FETCH (FLAGS (\\Seen) BODY[] {50}\r\nFrom: test@example.com\r\nSubject: Test\r\n\r\nHello)\r\nA004 OK FETCH completed"
+                        "response": "* 1 FETCH (FLAGS (\\Seen) BODY[] {46}\r\nFrom: test@example.com\r\nSubject: Test\r\n\r\nHello)\r\nA004 OK FETCH completed"
                     }
                 ]))
                 .expect_calls(1)
