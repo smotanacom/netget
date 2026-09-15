@@ -123,7 +123,10 @@ impl Protocol for PypiClientProtocol {
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
         vec![ParameterDefinition {
             name: "index_url".to_string(),
-            description: "PyPI index URL (default: https://pypi.org)".to_string(),
+            description: "PyPI index URL, overriding remote_addr. There is no default: with \
+                          neither, the client refuses to start rather than reaching the public \
+                          Python package index by omission. Name it explicitly to use it."
+                .to_string(),
             type_hint: "string".to_string(),
             required: false,
             example: json!("https://pypi.org"),

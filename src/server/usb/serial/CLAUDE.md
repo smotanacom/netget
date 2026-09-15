@@ -96,6 +96,24 @@ became 705032704 and 264 became 8, after which `GET_LINE_CODING` handed the host
 configuration nobody had asked for. Both are checked at full width now, `data_bits` against the
 five values CDC PSTN 1.2 table 17 defines (5, 6, 7, 8, 16).
 
+## `LineCoding::from_bytes` is total
+
+It is `pub`, takes an arbitrary `&[u8]`, and used to index `bytes[0..6]` with no length check —
+relying entirely on `handle_control` guarding with `req.len() >= 7`. The payload is a
+SET_LINE_CODING data stage, so its length is chosen by the USB host; the defect was latent, one
+new caller away from a panic on a control OUT with a short or empty body.
+
+It is also the kind of panic that hides: `handle_urb` runs inside a `tokio::spawn`ed connection
+task, so the panic is swallowed by the task, the server stays `Running`, the log shows the
+transfer succeeding and the peer hangs. (`src/panic_log.rs` now writes it to `netget.log`, which
+makes it findable — not fixed.)
+
+It returns `Option<Self>` now, and `LineCoding::WIRE_LEN` names the 7. A short payload leaves
+the port's existing coding in place and logs at WARN, which is what a device does when it cannot
+honour a SET_LINE_CODING. `tests/server/usb_serial/line_coding_test.rs` asserts every length
+below 7 refuses **and** that a well-formed payload still decodes field for field — a guard
+returning `None` for everything would satisfy the first half alone.
+
 ## LLM Actions
 
 **send_data**: queue text for the host's next read.

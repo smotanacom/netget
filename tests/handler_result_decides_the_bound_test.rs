@@ -49,26 +49,25 @@ use std::path::{Path, PathBuf};
 
 /// `role:protocol:file` for every budget gated on configuration rather than on a result.
 ///
-/// **`server:rtp:mod.rs` — this is a LIVE DEFECT, not accepted debt.** It is the `tuntap` bug,
-/// unfixed, in the other high-rate protocol; its own doc comment says "Same shape as
-/// `tuntap::a_rule_answers`", which stopped being true when tuntap was repaired.
+/// **Empty, and it must stay empty.** `server:rtp:mod.rs` was its only entry and was fixed on
+/// 15 September 2026 rather than re-baselined: `RtpServer::handle_datagram` now calls
+/// `try_execute_event_handler` and branches on `Handled` versus `FallbackToLlm`, so a `Script`
+/// rule that cannot answer — no `python3`, an unknown language name, a script that threw —
+/// falls through to the rolling `RtpLlmBudget` like any unclaimed datagram instead of buying an
+/// exemption from it.
 ///
-/// `RtpServer::a_rule_answers` asks `state.get_event_handler_config(server_id)` whether
-/// `find_handler(event_type_id)` returns `Script`, `Static` or `Manual`, and on a match skips
-/// gate 2 — the rolling `RtpLlmBudget` — entirely. The datagram then goes to
-/// `action_helper::call_llm`, which dispatches the handler *itself*; so when
-/// `execute_script_handler` answers `FallbackToLlm` (no `python3`, unknown language, script
-/// threw), the model is consulted with the budget already bypassed. RTP is the protocol where
-/// that matters most: a 50 pps stream is 50 model calls a second, and the module header says as
-/// much two hundred lines above the hole.
+/// It was measured rather than argued, by reinstating the old gate and counting the calls a
+/// recording mock model received: five datagrams at `llm_max_per_minute: 0` produced **five**
+/// consultations before, and **zero** after. `tests/server/rtp/script_fallback_budget_test.rs`
+/// keeps that measurement, including the ample-ceiling control that makes the zero mean
+/// something.
 ///
-/// `Static` and `Manual` are genuinely safe to exempt — a static handler with an empty `actions`
+/// `Static` and `Manual` were always safe to exempt — a static handler with an empty `actions`
 /// array provably suppresses the call (`tests/empty_static_handler_test.rs`), and a manual one
-/// parks or fails closed. `Script` is the only leaky variant, so the smallest correct fix is to
-/// restructure gate 1 the way tuntap did: call `try_execute_event_handler` and branch on
-/// `Handled` vs `FallbackToLlm`. Narrowing the match to `Static | Manual` would also close it,
-/// at the cost of charging the intended high-rate path to the budget.
-const CONFIGURATION_GATED_BUDGET_BASELINE: &[&str] = &["server:rtp:mod.rs"];
+/// parks or fails closed — but exempting them by *type* is the same reasoning that made
+/// `Script` leak, so the repaired gate does not distinguish: whatever answers is free, whatever
+/// declines is charged.
+const CONFIGURATION_GATED_BUDGET_BASELINE: &[&str] = &[];
 
 /// Tokens that mean "this file owns a bound it could skip".
 ///
@@ -276,30 +275,42 @@ fn no_budget_is_gated_on_handler_configuration() {
     );
 }
 
-/// The rule's whole force comes from `tuntap` being *seen and passed*.
+/// The rule's whole force comes from the two budget-owning protocols being *seen and passed*.
 ///
 /// The gate is narrow — two files in the tree own a per-instance LLM budget — so if
 /// [`BOUND_MARKERS`] ever stopped matching, `survey` would return an empty set and the test
-/// above would go green while checking nothing at all. This asserts the subject still exists
-/// and that the known-good implementation is recognised as good.
+/// above would go green while checking nothing at all. This asserts both subjects still exist
+/// and that both are recognised as correct.
+///
+/// `rtp` is checked by reading its source directly rather than through `survey`, because the
+/// repair left it with no configuration peek *in the budget path* at all — only the
+/// diagnostics-only `configured_handler_kind`, which is what keeps it in the examined set. A
+/// bare `with_bound.len() >= 2` would therefore be satisfied by the wrong thing the day that
+/// helper is inlined; `classify` says the two things that actually matter.
 #[test]
-fn the_scan_sees_the_protocol_that_gets_this_right() {
+fn the_scan_sees_the_protocols_that_get_this_right() {
     let (with_bound, gated) = survey();
+    for known_good in ["server:tuntap:mod.rs", "server:rtp:mod.rs"] {
+        assert!(
+            with_bound.contains(known_good),
+            "{known_good} owns a per-minute LLM budget and consults handler configuration, so \
+             it must be in the examined set; the scan currently sees {with_bound:?}"
+        );
+        assert!(
+            !gated.contains(known_good),
+            "{known_good} dispatches on EventHandlerResult and must be recognised as correct — \
+             if this fails, the repair has been undone"
+        );
+    }
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let rtp = std::fs::read_to_string(manifest.join("src/server/rtp/mod.rs"))
+        .expect("src/server/rtp/mod.rs must exist");
+    let (bound, _peek, result) = classify(&rtp);
+    assert!(bound, "rtp still owns the rolling RtpLlmBudget");
     assert!(
-        with_bound.contains("server:tuntap:mod.rs"),
-        "tuntap owns a per-minute LLM budget and consults handler configuration, so it must be \
-         in the examined set; the scan currently sees {with_bound:?}"
-    );
-    assert!(
-        !gated.contains("server:tuntap:mod.rs"),
-        "tuntap dispatches on EventHandlerResult and must be recognised as correct — if this \
-         fails, the repair has been undone"
-    );
-    assert!(
-        with_bound.len() >= 2,
-        "only {} files own a bound and peek at handler configuration; there were two (rtp, \
-         tuntap) when this was written",
-        with_bound.len()
+        result,
+        "rtp must decide that budget from the handler's answer, not from its configuration"
     );
 }
 

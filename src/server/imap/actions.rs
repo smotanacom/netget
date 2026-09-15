@@ -21,6 +21,110 @@ use serde_json::json;
 use std::sync::LazyLock;
 use tracing::debug;
 
+/// Octets that may legally follow a literal inside an IMAP **server** response.
+///
+/// RFC 3501's response grammar puts a literal either as the last element of a line (so a CR
+/// follows, opening the CRLF), or as one element of a space-separated, parenthesised list (so a
+/// space or a closing paren follows). `msg-att-static`'s `"BODY" section SP nstring` is the case
+/// that matters here — a `BODY[]` literal is followed by ` ` when another attribute comes after
+/// it and by `)` when it is last — and this server's own `send_imap_fetch`, which computes its
+/// counts from `body.len()`, produces exactly those two.
+const LITERAL_FOLLOWERS: &[u8] = b") \r";
+
+/// Refuse a response whose `{N}` literal count disagrees with the octets that follow it.
+///
+/// # Why this is a guard and not a lint
+///
+/// `send_imap_response`'s `response` field relays a **pre-framed, model-authored** response
+/// straight to the socket. RFC 3501 §4.3 makes a client read *exactly* the declared number of
+/// octets, so a count that is wrong by even one desynchronises the connection **permanently**:
+/// the client swallows part of the next line as message body, then reads the remainder as a
+/// response it cannot parse, and every subsequent tag is off by that much. There is no
+/// recovery and no error the server can send afterwards that the client will understand.
+///
+/// It is also invisible to the kind of assertion a test naturally writes. A fixture in this
+/// tree declared `{50}` for a 46-octet body and passed for as long as it existed, because every
+/// assertion was `line.contains("FETCH")` on a **trimmed** string — trimming discards precisely
+/// the framing the RFC cares about. The pcap oracle found it by handing the bytes to
+/// Wireshark's dissector. This function is the same check on our side of the socket, so a
+/// model that miscounts is refused rather than relayed.
+///
+/// # What it checks
+///
+/// Walking the bytes once, and skipping *over* each literal's payload so a `{5}` that happens
+/// to appear inside a message body is not mistaken for a second marker:
+///
+/// * `{N}` immediately followed by CRLF is a literal marker. `{N}` anywhere else is ordinary
+///   text — `A001 OK fetched {46} bytes` is a perfectly good response — and is left alone.
+/// * At least `N` octets must follow. Fewer is a truncated response.
+/// * The octet at `N` must be one of [`LITERAL_FOLLOWERS`]. This is what catches an *over*-count
+///   that is still long enough: `{50}` over a 46-octet body lands mid-`A004`, which is neither a
+///   space, a paren, nor the CR of a CRLF.
+///
+/// A count that is short by a whole element could still land on a legal follower and pass; this
+/// is a guard against the counting mistake models actually make, not a parser.
+pub fn validate_imap_literals(response: &[u8]) -> Result<()> {
+    let mut i = 0usize;
+    while i < response.len() {
+        if response[i] != b'{' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < response.len() && response[j].is_ascii_digit() {
+            j += 1;
+        }
+        // `{}` with no digits, or `{` with no closing brace, is not a literal marker.
+        if j == i + 1 || j >= response.len() || response[j] != b'}' {
+            i += 1;
+            continue;
+        }
+        // A literal marker is `{N}CRLF`. Anything else is text that happens to contain braces.
+        if j + 3 > response.len() || &response[j + 1..j + 3] != b"\r\n" {
+            i += 1;
+            continue;
+        }
+        let digits = std::str::from_utf8(&response[i + 1..j]).unwrap_or("");
+        let Ok(declared) = digits.parse::<usize>() else {
+            // Too many digits to be a real count; nothing on this wire is that big.
+            anyhow::bail!(
+                "IMAP response declares a literal of {{{digits}}}, which is not a usable octet \
+                 count; the client would block reading it"
+            );
+        };
+        let start = j + 3;
+        let available = response.len() - start;
+        if declared > available {
+            anyhow::bail!(
+                "IMAP response declares a literal of {{{declared}}} octets but only {available} \
+                 follow it. RFC 3501 §4.3 makes the client read exactly the declared count, so \
+                 it would block on octets that are never sent. Count the bytes of the literal \
+                 itself — CRLFs included — and declare that number."
+            );
+        }
+        match response.get(start + declared) {
+            None => anyhow::bail!(
+                "IMAP response declares a literal of {{{declared}}} octets that runs to the very \
+                 end, so the line carrying it is never terminated. A literal is an element of a \
+                 line, not the line: follow it with the rest of the line and a CRLF."
+            ),
+            Some(b) if LITERAL_FOLLOWERS.contains(b) => {}
+            Some(b) => anyhow::bail!(
+                "IMAP response declares a literal of {{{declared}}} octets, but octet {declared} \
+                 is followed by {:?} rather than a space, a ')' or the CR of a CRLF — so the \
+                 count does not line up with the response around it. RFC 3501 §4.3 makes the \
+                 client read exactly {declared} octets as data, swallowing the start of what \
+                 comes next and desynchronising the connection for good. Count the literal's \
+                 own bytes, CRLFs included.",
+                *b as char
+            ),
+        }
+        // Skip the payload: a `{5}` inside a message body is data, not a second marker.
+        i = start + declared;
+    }
+    Ok(())
+}
+
 /// IMAP protocol action handler
 pub struct ImapProtocol;
 
@@ -612,9 +716,10 @@ impl Server for ImapProtocol {
         let action_type = action
             .get("type")
             .and_then(|v| v.as_str())
-            .context("Missing 'type' field in action")?;
+            .context("Missing 'type' field in action")?
+            .to_string();
 
-        match action_type {
+        let result = match action_type.as_str() {
             "send_imap_greeting" => self.execute_send_imap_greeting(action),
             "send_imap_response" => self.execute_send_imap_response(action),
             "send_imap_untagged" => self.execute_send_imap_untagged(action),
@@ -631,6 +736,24 @@ impl Server for ImapProtocol {
             "wait_for_more" => Ok(ActionResult::WaitForMore),
             "close_connection" => Ok(ActionResult::CloseConnection),
             _ => Err(anyhow::anyhow!("Unknown IMAP action: {}", action_type)),
+        };
+
+        // One choke point, so no action can put a mis-framed literal on the wire.
+        //
+        // `send_imap_response` is the one that needed it — its `response` field relays a
+        // pre-framed, model-authored response verbatim — but the check belongs here rather
+        // than in that one arm: every other action reaches the same socket, and a guard that
+        // covers the path nobody has abused yet is the point of having one. The actions that
+        // build their own literals (`send_imap_fetch` counts `body.len()`) are
+        // correct-by-construction and pass unchanged.
+        match result {
+            Ok(ActionResult::Output(bytes)) => {
+                validate_imap_literals(&bytes).with_context(|| {
+                    format!("refusing to send the {action_type} response as framed")
+                })?;
+                Ok(ActionResult::Output(bytes))
+            }
+            other => other,
         }
     }
 }

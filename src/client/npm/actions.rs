@@ -119,7 +119,10 @@ impl Protocol for NpmClientProtocol {
     fn get_startup_parameters(&self) -> Vec<ParameterDefinition> {
         vec![ParameterDefinition {
             name: "registry_url".to_string(),
-            description: "NPM registry URL (default: https://registry.npmjs.org)".to_string(),
+            description: "NPM registry URL, overriding remote_addr. There is no default: \
+                          with neither, the client refuses to start rather than reaching the \
+                          public npm registry by omission. Name it explicitly to use it."
+                .to_string(),
             type_hint: "string".to_string(),
             required: false,
             example: json!("https://registry.npmjs.org"),

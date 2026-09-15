@@ -58,7 +58,7 @@ server an amplifier as well. Two gates now stand in front of `call_llm`, in the 
 `src/server/tuntap/` established:
 
 ```text
-  datagram ─▶ GATE 1  a deterministic handler answers  ── yes ──▶ no model call, never charged
+  datagram ─▶ GATE 1  run the handler; did it ANSWER?  ── yes ──▶ no model call, never charged
              │        (script / static / manual rule)
              └─▶ GATE 2  a rolling per-minute budget   ── over ──▶ dropped, nothing sent,
                          (`llm_max_per_minute`, 30)                decision=fail_closed_rate_limited
@@ -69,14 +69,43 @@ server an amplifier as well. Two gates now stand in front of `call_llm`, in the 
   by handlers.
 - Gate 1 is what makes a low ceiling usable rather than crippling: script and static handlers are
   the intended way to run RTP at rate, and they are never charged.
+- **Gate 1 is decided by the handler's answer, not by the routing table.** `handle_datagram`
+  calls `try_execute_event_handler` itself and branches on `Handled` versus `FallbackToLlm`. The
+  distinction is not academic: `execute_script_handler` answers `FallbackToLlm` when the language
+  name is unknown, when the interpreter is missing, or when the script throws, so a rule that
+  *looks* deterministic in `list_servers` may not be.
 - It is a **sliding window**, not a leaky bucket, so "never more than N in any minute" is
   literally true rather than an average that permits bursts.
 - Over-budget datagrams get the same silence as every other RTP failure. They are counted, and
   the refusals are reported once per burst rather than once per packet — the status channel is
-  unbounded, so a line per dropped packet would be its own denial of service.
+  unbounded, so a line per dropped packet would be its own denial of service. When a rule *was*
+  configured and declined, the refusal line says so, because the routing table and the charge
+  otherwise appear to contradict each other.
 
-`tests/server/rtp/budget_test.rs` measures all of it, including the control that makes the zeros
-mean something: at `llm_max_per_minute: 0` a static handler still streams.
+### The hole this had, and how it was measured shut
+
+Gate 1 used to ask `find_handler` what kind of rule was *configured* and skip gate 2 on a
+`Script`, `Static` or `Manual` match. `action_helper::call_llm` then dispatched that same handler
+itself — so a script that answered `FallbackToLlm` reached the model with the budget already
+bypassed, at wire rate, with `llm_max_per_minute` inert at every setting including `0`. The
+shipped script-mode example on a box without `python3` is exactly that configuration.
+
+It was fixed by measurement, not inspection: with the old gate reinstated, five datagrams at
+`llm_max_per_minute: 0` produced **five** model calls; with the repair, **zero**.
+`tests/server/rtp/script_fallback_budget_test.rs` keeps both numbers, plus the ample-ceiling
+control that proves the datagrams arrive and the handler really does decline.
+
+**One consequence worth knowing.** Because `call_llm` is no longer the entry point on the
+answered path, the two things it does for every event regardless of who answers — the pipe tap
+(`pipe::dispatch_pipes`) and the access-log entry the dashboard's request pane reads — are done
+by `handle_datagram` itself in the `Handled` arm. On the declining path `call_llm` dispatches the
+handler a second time; for a handler that has just said it cannot answer that is a wasted no-op
+or a second failing script run, which is the trade `tuntap` documents and accepts. Nothing that
+*answered* is ever run twice: no script that produced actions runs again, and no manual rule
+parks twice.
+
+`tests/server/rtp/budget_test.rs` measures the window itself, including the control that makes
+the zeros mean something: at `llm_max_per_minute: 0` a static handler still streams.
 
 ## One connection entry per peer, not per datagram
 

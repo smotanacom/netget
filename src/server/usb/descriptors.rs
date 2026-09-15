@@ -839,14 +839,31 @@ impl LineCoding {
         ]
     }
 
-    /// Parse from 7-byte array
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        Self {
-            baud_rate: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            stop_bits: bytes[4],
-            parity: bytes[5],
-            data_bits: bytes[6],
-        }
+    /// How many octets a CDC ACM line-coding structure occupies (USB CDC 1.2 §6.3.11).
+    pub const WIRE_LEN: usize = 7;
+
+    /// Parse from the 7 octets of a SET_LINE_CODING payload, or `None` if there are fewer.
+    ///
+    /// **This is `pub` and takes an arbitrary slice, so the length check belongs here.** It
+    /// used to index `bytes[0..6]` unchecked and rely on its one call site guarding with
+    /// `req.len() >= 7` — a latent panic one new caller away, and one that would be easy to
+    /// miss: a panic inside a `tokio::spawn`ed connection task is swallowed by the task, so
+    /// the server stays `Running`, the log shows the transfer succeeding and the peer simply
+    /// hangs. (`src/panic_log.rs` now writes such a panic to `netget.log`, which makes it
+    /// findable rather than harmless.) The payload comes from the USB host, so its length is
+    /// decided by the peer, not by us.
+    ///
+    /// A short payload is a malformed request, not a reason to guess: returning `None` leaves
+    /// the caller's existing line coding in place, which is what a device does when it cannot
+    /// honour a SET_LINE_CODING.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let b: &[u8; Self::WIRE_LEN] = bytes.get(..Self::WIRE_LEN)?.try_into().ok()?;
+        Some(Self {
+            baud_rate: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+            stop_bits: b[4],
+            parity: b[5],
+            data_bits: b[6],
+        })
     }
 }
 
