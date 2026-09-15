@@ -126,7 +126,7 @@ black-box mode.
 
 ## Test Infrastructure
 
-**Uses**: `tests/helpers.rs`
+**Uses**: `tests/helpers/mod.rs`
 
 - `start_netget_server()`: Spawn NetGet server process
 - `start_netget_client()`: Spawn NetGet client process
@@ -185,6 +185,6 @@ black-box mode.
 ## References
 
 - Main tests: `tests/client/cassandra/e2e_test.rs`
-- Test helpers: `tests/helpers.rs`
+- Test helpers: `tests/helpers/mod.rs`
 - Client implementation: `src/client/cassandra/`
-- Test infrastructure docs: `TEST_INFRASTRUCTURE_FIXES.md`
+- Test infrastructure docs: `tests/README.md`

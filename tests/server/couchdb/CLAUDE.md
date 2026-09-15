@@ -137,4 +137,4 @@ response had already gone out on the wire. Give every rule something that distin
 ## References
 
 - [CouchDB HTTP API Documentation](https://docs.couchdb.org/en/stable/api/index.html)
-- [NetGet Test Infrastructure](../../TEST_INFRASTRUCTURE_FIXES.md)
+- [NetGet Test Infrastructure](../../README.md)

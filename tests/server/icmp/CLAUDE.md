@@ -189,4 +189,4 @@ warning and returning `Ok(())`.
 
 - RFC 792 - ICMP specification
 - Similar tests: `tests/server/arp/e2e_test.rs` (also requires raw sockets)
-- Mock pattern: `tests/server/dns/e2e_test.rs`
+- Mock pattern: `tests/server/dns/test.rs`

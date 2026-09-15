@@ -105,7 +105,8 @@ Then list all children under /myapp to verify."
 
 ## Testing Strategy
 
-See `tests/client/zookeeper/CLAUDE.md` for E2E testing approach.
+There is no test-side CLAUDE.md. The suite is one file,
+`tests/client/zookeeper/command_channel_test.rs`.
 
 ## Command channel (the dashboard's `[ send ]`) — registered, but it cannot act
 

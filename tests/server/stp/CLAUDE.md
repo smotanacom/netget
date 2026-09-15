@@ -7,7 +7,7 @@ Two files with different jobs, and the split is the whole strategy:
 | `codec_test.rs` | the BPDU codec against **literal specification bytes**, both directions | nothing — no socket, no LLM, no privilege |
 | `e2e_test.rs` | the full frame → event → model → action → frame path, the silence guarantee, and startup-parameter handling | a mock Ollama on loopback |
 
-27 tests, all passing, ~5 s at `--test-threads=100`.
+28 tests (21 codec + 7 e2e), all passing, ~5 s at `--test-threads=100`.
 
 ```bash
 ./cargo-isolated.sh test --no-default-features --features stp \

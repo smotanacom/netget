@@ -74,9 +74,9 @@ read from it before the client writes it is unconditionally absent.
 1. User opens SMTP client → smtp_connected event
 2. LLM receives event, decides to send email
 3. LLM returns send_email action with email details
-4. Action executor calls SmtpClient::send_email()
-5. Email sent via lettre library
-6. smtp_email_sent event triggered
+4. `apply_action` runs it through `SmtpClientProtocol::execute_action`
+5. `deliver` builds the message and lettre sends it
+6. `follow_up` raises smtp_email_sent
 7. LLM processes result, may send more emails
 ```
 
@@ -131,40 +131,29 @@ SmtpClient::connect_with_llm_actions(
 
 ### Sending Email
 
+There is no free-standing send entry point. A `send_email` action — whether it came from the
+model's answer to `smtp_connected`, from a later event, or from a command injected at the
+dashboard — takes one path:
+
 ```rust
-SmtpClient::send_email(
-    client_id,
-    from,
-    to,             // Vec<String>
-    subject,
-    body,
-    username,       // Option<String>
-    password,       // Option<String>
-    use_tls,        // bool
-    app_state,
-    llm_client,
-    status_tx,
-)
+SmtpClient::apply_action(client_id, &app_state, action, &settings)
+//   └─ SmtpClientProtocol::execute_action(action)
+//        -> ClientActionResult::Custom { name: "smtp_send_email", data }
+//   └─ SmtpClient::deliver(client_id, &app_state, &data, &settings) -> host:port
 ```
 
-- Retrieves SMTP server from client state
-- Builds email message using lettre's `Message` builder
-- Configures SMTP transport with TLS and auth
-- Sends email in blocking task (lettre is sync)
-- Calls LLM with `smtp_email_sent` event
+`deliver` reads `smtp_server` / `smtp_port` back out of client state, builds the message with
+lettre's `Message` builder, configures the transport with TLS and auth, and sends on a blocking
+task because lettre is sync. `apply_action` makes no LLM call of its own — `follow_up` raises
+`smtp_email_sent` afterwards, so the command loop can answer an injected send before the model
+reacts to it.
 
 ### Action Dispatch Integration
 
-**Status**: Async action dispatching for clients is in progress framework-wide
-
-The SMTP client returns `ClientActionResult::Custom` with name `"smtp_send_email"` and email data. This needs to be
-handled by a central client action dispatcher (similar to server actions) to call `SmtpClient::send_email()`.
-
-**Current State**:
-
-- Action structure defined ✓
-- Event system integrated ✓
-- Action dispatcher integration: TODO (framework-wide)
+The action is dispatched inside this client's own connection loop, which is how every client
+protocol works: `Client::execute_action` is reachable from the loop that owns the socket, and
+`AppState::send_to_client` injects an action into it (`src/state/client_handles.rs`). There is
+no separate central client action dispatcher, and none is needed.
 
 ## Limitations
 

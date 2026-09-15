@@ -137,5 +137,4 @@ Total time: ~3 seconds
 ## References
 
 - [CouchDB HTTP API Documentation](https://docs.couchdb.org/en/stable/api/index.html)
-- [NetGet Test Infrastructure](../../TEST_INFRASTRUCTURE_FIXES.md)
-- [NetGet Mock Pattern](../../TEST_STATUS_REPORT.md)
+- [NetGet Test Infrastructure](../../README.md)

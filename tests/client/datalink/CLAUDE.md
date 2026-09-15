@@ -29,7 +29,7 @@ should go.
 
 ## Tests
 
-### `action_test.rs` (15 tests, no privilege, no LLM)
+### `action_test.rs` (14 tests, no privilege, no LLM)
 
 - every declared `example`, from async actions, sync actions and every event's action list, is
   accepted by this protocol's own `execute_action`
