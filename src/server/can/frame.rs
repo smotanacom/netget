@@ -304,6 +304,14 @@ impl CanFrame {
             // An error frame's "identifier" is a class bitmask, so the 11/29-bit rules do not
             // apply to it. NetGet never *builds* one; this branch exists for frames read off the
             // bus, which are already whatever the controller said they were.
+            //
+            // The payload length is checked all the same, and it must be checked *here* rather
+            // than after this return: `to_wire_bytes` copies into `out[8..8 + data.len()]` of a
+            // fixed 16- or 72-octet buffer, so an over-long error frame is a panic in a `pub fn`
+            // on a struct with `pub` fields, not a short frame. A panic inside a connection task
+            // is swallowed by `tokio::spawn`, which is the failure mode this repository has hit
+            // three times.
+            dlc_for_len(self.data.len(), self.fd)?;
             return Ok(());
         }
 

@@ -3167,22 +3167,21 @@ mod can_props {
     // FINDINGS
     // -------------------------------------------------------------------------------------
 
-    /// FINDING: `validate` short-circuits on an error frame — reasonably, since an error
-    /// frame's identifier is a class bitmask and the 11/29-bit rules do not apply to it — but
-    /// it short-circuits *before* the payload length check too. `to_wire_bytes` then writes
-    /// into `out[8..8 + data.len()]` of a 16-octet buffer and **panics**.
+    /// `validate` short-circuits on an error frame — reasonably, since an error frame's
+    /// identifier is a class bitmask and the 11/29-bit rules do not apply to it — but it used
+    /// to short-circuit *before* the payload length check too. `to_wire_bytes` then wrote into
+    /// `out[8..8 + data.len()]` of a 16-octet buffer and **panicked**.
     ///
     /// Minimal counterexample: `CanFrame { error: true, data: vec![0; 9], .. }`, classic.
     ///
     /// Latent rather than live: `from_action` never sets `error: true` (the model cannot
     /// build one), and the only other producer is `from_wire_bytes`, which clamps the length
-    /// to 8 or 64 first. It is a panic in a `pub fn` on a struct with `pub` fields, and a
+    /// to 8 or 64 first. It was a panic in a `pub fn` on a struct with `pub` fields, and a
     /// panic inside a connection task is swallowed by `tokio::spawn` — the failure mode this
-    /// repository has hit three times. The fix is to move the error-frame early return below
-    /// the `dlc_for_len` check.
+    /// repository has hit three times. The error-frame early return now sits *below* the
+    /// `dlc_for_len` check.
     #[test]
-    #[ignore = "FINDING: validate() skips the length check for error frames; to_wire_bytes panics"]
-    fn an_over_long_error_frame_should_be_refused_not_panic() {
+    fn an_over_long_error_frame_is_refused_not_a_panic() {
         let frame = CanFrame {
             id: 0x04,
             extended: false,
@@ -3199,5 +3198,27 @@ mod can_props {
             "an error frame with a 9-octet payload must be refused before to_wire_bytes \
              indexes past its 16-octet buffer"
         );
+        // The panic was inside `to_wire_bytes`, which calls `validate` first — so the refusal
+        // has to reach there, not merely be available to a caller who thinks to ask.
+        assert!(frame.to_wire_bytes().is_err());
+
+        // An FD error frame has the same shape, and a length that is not one of the sixteen
+        // encodable FD sizes is refused for an error frame as for any other.
+        let fd = CanFrame {
+            fd: true,
+            data: vec![0u8; 65],
+            ..frame.clone()
+        };
+        assert!(fd.validate().is_err());
+        assert!(fd.to_wire_bytes().is_err());
+
+        // An error frame carrying a legal payload is still accepted: this is a bound, not a
+        // ban on error frames.
+        let legal = CanFrame {
+            data: vec![0u8; 8],
+            ..frame
+        };
+        assert!(legal.validate().is_ok());
+        assert_eq!(legal.to_wire_bytes().unwrap().len(), CAN_MTU);
     }
 }
