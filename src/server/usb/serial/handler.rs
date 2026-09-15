@@ -180,20 +180,26 @@ impl UsbCdcAcmSerialHandler {
     ) -> std::result::Result<Vec<u8>, std::io::Error> {
         match (setup.request_type, setup.request) {
             (request_type::CLASS_INTERFACE_OUT, cdc_request::SET_LINE_CODING) => {
-                if req.len() >= 7 {
-                    self.line_coding = LineCoding::from_bytes(req);
-                    debug!(
-                        "USB serial host set line coding: {} baud, {} data bits, parity {}, stop {}",
-                        self.line_coding.baud_rate,
-                        self.line_coding.data_bits,
-                        self.line_coding.parity,
-                        self.line_coding.stop_bits
-                    );
-                } else {
-                    warn!(
-                        "USB serial SET_LINE_CODING carried {} bytes, expected 7 - ignored",
-                        req.len()
-                    );
+                // The length check lives in `LineCoding::from_bytes`, which is `pub` and takes
+                // an arbitrary slice; duplicating it here is how the unchecked indexing it used
+                // to do looked safe.
+                match LineCoding::from_bytes(req) {
+                    Some(coding) => {
+                        self.line_coding = coding;
+                        debug!(
+                            "USB serial host set line coding: {} baud, {} data bits, parity {}, \
+                             stop {}",
+                            self.line_coding.baud_rate,
+                            self.line_coding.data_bits,
+                            self.line_coding.parity,
+                            self.line_coding.stop_bits
+                        );
+                    }
+                    None => warn!(
+                        "USB serial SET_LINE_CODING carried {} bytes, expected {} - ignored",
+                        req.len(),
+                        LineCoding::WIRE_LEN
+                    ),
                 }
                 // A control OUT transfer must answer with an empty buffer; usbip's own
                 // `debug_assert` in `usbip_ret_submit_success` enforces it.

@@ -65,3 +65,21 @@ Runtime is about 1 second for the whole suite.
   `resolve_handler`.
 - The host sending `SET_LINE_CODING` or `SET_CONTROL_LINE_STATE` (handled, but no event to
   assert on).
+
+## `line_coding_test.rs` — `LineCoding::from_bytes` is total
+
+Four tests, **zero LLM calls**: the decoder is called directly.
+
+`from_bytes` is `pub`, takes an arbitrary `&[u8]`, and used to index `bytes[0..6]` unchecked,
+relying on its single call site guarding with `req.len() >= 7`. The payload is a SET_LINE_CODING
+data stage whose length the USB host chooses, and a panic inside the spawned connection task
+would be swallowed: server `Running`, log showing success, peer hung.
+
+- every length from 0 to 6 returns `None` rather than panicking — this fails with the check
+  removed, with `index out of bounds: the len is 0 but the index is 0`;
+- **the control**: a well-formed payload still decodes field for field, little-endian baud rate
+  included, for two different codings. A guard returning `None` for everything would pass the
+  first test alone;
+- a longer payload reads only the first 7 octets, as a device does with an over-long data stage;
+- `to_bytes` / `from_bytes` still round-trip.
+
