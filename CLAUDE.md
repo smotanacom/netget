@@ -1631,6 +1631,19 @@ Read before assuming a subsystem is sound:
   ```
 - Conventional Commits, one logical change per commit. No co-author or bot attribution
   trailers of any kind.
+- **Write the message to a file and use `git commit -F`, not `-m`.** The Bash tool runs zsh, so
+  a backtick inside a `-m` string is command substitution: `` `checked` `` runs `checked`, the
+  shell prints "command not found", **the commit still succeeds**, and the word is silently
+  missing from the message. It happened once in September 2026 and is unfixable afterwards,
+  because amending is forbidden here. Backticks are natural to reach for when naming a
+  variable, which is exactly why this bites. A heredoc into a scratch file costs nothing:
+  ```bash
+  cat > /tmp/<your-task>-msg.txt <<'MSG'
+  fix(x): ...
+  MSG
+  git add -- <paths> && git commit -S -F /tmp/<your-task>-msg.txt -- <paths>
+  ```
+  Note the quoted `<<'MSG'` delimiter — unquoted, the heredoc expands backticks too.
 - **Commit as you go.** Land each logical change as soon as it is verified, rather than
   accumulating a large uncommitted tree and committing at the end. Other agents are editing this
   repo continuously: a big working tree is a merge hazard, it is what broad `git add` sweeps pick
