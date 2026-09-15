@@ -219,17 +219,17 @@ mod bencode_props {
 // Modbus — `src/server/modbus/codec.rs`
 // ===========================================================================================
 //
-// FINDINGS (see the `#[ignore]`d tests at the end of this module):
+// Two findings, both fixed; the regression tests are at the end of this module.
 //
-//  * `encode_adu` applies no bound to the PDU it is given, while `try_parse_adu` refuses any
+//  * `encode_adu` applied no bound to the PDU it was given, while `try_parse_adu` refuses any
 //    MBAP length outside `2..=254`. Exactly the m3ua shape.
-//  * `encode_registers_response` writes `(values.len() * 2) as u8` and
-//    `encode_bits_response` writes `byte_count as u8`, both unchecked. 128 registers produce
-//    a byte count of 0 followed by 256 octets of data.
+//  * `encode_registers_response` wrote `(values.len() * 2) as u8` and `encode_bits_response`
+//    wrote `byte_count as u8`, both unchecked. 128 registers produced a byte count of 0
+//    followed by 256 octets of data.
 //
-// Neither is reachable through `mod.rs` today, which bounds the model's value list to the
-// quantity `parse_request` already validated (≤2000 bits, ≤125 registers). Both are unguarded
-// in a `pub fn`.
+// Neither was reachable through `mod.rs`, which bounds the model's value list to the quantity
+// `parse_request` already validated (≤2000 bits, ≤125 registers). Both were unguarded in a
+// `pub fn`; all three now return `Result` and refuse.
 
 #[cfg(feature = "modbus")]
 mod modbus_props {
@@ -358,7 +358,7 @@ mod modbus_props {
             unit_id in any::<u8>(),
             pdu in proptest::collection::vec(any::<u8>(), 1..=MAX_PDU_LEN),
         ) {
-            let bytes = encode_adu(transaction_id, unit_id, &pdu);
+            let bytes = encode_adu(transaction_id, unit_id, &pdu).unwrap();
             let parsed = try_parse_adu(&bytes);
             prop_assert!(matches!(parsed, Ok(Some(_))), "{:?}", parsed);
             let Ok(Some((adu, consumed))) = parsed else { unreachable!() };
@@ -374,8 +374,14 @@ mod modbus_props {
             unit_id in any::<u8>(),
             pdu in proptest::collection::vec(any::<u8>(), 0..=MAX_PDU_LEN),
         ) {
-            let bytes = encode_adu(transaction_id, unit_id, &pdu);
-            prop_assert!(bytes.len() <= MBAP_HEADER_LEN + MAX_PDU_LEN);
+            // Property 2 in full: the encoder either refuses, or produces something inside
+            // the bound. An empty PDU is refused, because the MBAP length field cannot
+            // describe one.
+            if let Ok(bytes) = encode_adu(transaction_id, unit_id, &pdu) {
+                prop_assert!(bytes.len() <= MBAP_HEADER_LEN + MAX_PDU_LEN);
+            } else {
+                prop_assert!(pdu.is_empty() || pdu.len() > MAX_PDU_LEN);
+            }
         }
 
         /// A partial ADU is `Ok(None)` — "read more" — and never an error or a panic.
@@ -386,7 +392,7 @@ mod modbus_props {
             pdu in proptest::collection::vec(any::<u8>(), 1..=MAX_PDU_LEN),
             cut in 0usize..260,
         ) {
-            let bytes = encode_adu(transaction_id, unit_id, &pdu);
+            let bytes = encode_adu(transaction_id, unit_id, &pdu).unwrap();
             let cut = cut.min(bytes.len().saturating_sub(1));
             prop_assert_eq!(try_parse_adu(&bytes[..cut]), Ok(None));
         }
@@ -422,11 +428,11 @@ mod modbus_props {
             bits in proptest::collection::vec(any::<bool>(), 1..=2000),
             regs in proptest::collection::vec(any::<u16>(), 1..=125),
         ) {
-            let bit_pdu = encode_bits_response(FC_READ_COILS, &bits);
+            let bit_pdu = encode_bits_response(FC_READ_COILS, &bits).unwrap();
             prop_assert!(bit_pdu.len() <= MAX_PDU_LEN, "bit PDU {} bytes", bit_pdu.len());
             prop_assert_eq!(bit_pdu[1] as usize, bits.len().div_ceil(8));
 
-            let reg_pdu = encode_registers_response(FC_READ_HOLDING_REGISTERS, &regs);
+            let reg_pdu = encode_registers_response(FC_READ_HOLDING_REGISTERS, &regs).unwrap();
             prop_assert!(reg_pdu.len() <= MAX_PDU_LEN, "register PDU {} bytes", reg_pdu.len());
             prop_assert_eq!(reg_pdu[1] as usize, regs.len() * 2);
         }
@@ -435,7 +441,7 @@ mod modbus_props {
         /// writes is what `parse_request` reads back out of a Write Multiple Coils body.
         #[test]
         fn bit_packing_round_trips(values in proptest::collection::vec(any::<bool>(), 1..=1968)) {
-            let response = encode_bits_response(FC_READ_COILS, &values);
+            let response = encode_bits_response(FC_READ_COILS, &values).unwrap();
             let packed = &response[2..];
             let read_back: Vec<bool> = (0..values.len())
                 .map(|i| packed[i / 8] & (1 << (i % 8)) != 0)
@@ -460,9 +466,9 @@ mod modbus_props {
         fn framed_arbitrary_pdus_never_panic(
             transaction_id in any::<u16>(),
             unit_id in any::<u8>(),
-            pdu in proptest::collection::vec(any::<u8>(), 0..=MAX_PDU_LEN),
+            pdu in proptest::collection::vec(any::<u8>(), 1..=MAX_PDU_LEN),
         ) {
-            let bytes = encode_adu(transaction_id, unit_id, &pdu);
+            let bytes = encode_adu(transaction_id, unit_id, &pdu).unwrap();
             if let Ok(Some((adu, _))) = try_parse_adu(&bytes) {
                 let _ = parse_request(&adu.pdu);
             }
@@ -497,43 +503,52 @@ mod modbus_props {
     }
 
     // -------------------------------------------------------------------------------------
-    // FINDINGS
+    // WAS A FINDING — fixed; these are the regression tests
     // -------------------------------------------------------------------------------------
 
-    /// FINDING: `encode_adu` bounds nothing, while `try_parse_adu` refuses any MBAP length
-    /// outside `2..=254`. Minimal counterexample: a 254-byte PDU, which produces a length
+    /// `encode_adu` used to bound nothing, while `try_parse_adu` refuses any MBAP length
+    /// outside `2..=254`. Minimal counterexample: a 254-byte PDU, which produced a length
     /// field of 255 that the codec's own parser rejects as `BadLength`. Beyond 65534 bytes
-    /// the `(pdu.len() as u16) + 1` also overflows, which panics in every debug and test
+    /// the `(pdu.len() as u16) + 1` also overflowed, which panics in every debug and test
     /// build (`Cargo.toml` has no `[profile.dev]`, so `overflow-checks` is on there).
     ///
-    /// Not reachable through `mod.rs`, which bounds the model's answer to the quantity
-    /// `parse_request` validated. Unguarded in a `pub fn`.
+    /// It now refuses. The property stated in full: an ADU this encoder produces is always one
+    /// its own parser accepts, and anything else is an `Err` rather than a shortened frame.
     #[test]
-    #[ignore = "FINDING: encode_adu enforces no bound while try_parse_adu enforces 2..=254"]
-    fn encode_adu_should_refuse_a_pdu_its_own_parser_would_reject() {
+    fn encode_adu_refuses_a_pdu_its_own_parser_would_reject() {
         let pdu = vec![0u8; MAX_PDU_LEN + 1];
-        let bytes = encode_adu(0, 1, &pdu);
-        assert!(
-            try_parse_adu(&bytes).is_ok(),
-            "encode_adu produced an ADU its own parser rejects"
-        );
+        match encode_adu(0, 1, &pdu) {
+            Err(_) => {}
+            Ok(bytes) => panic!(
+                "encode_adu produced {} octets for an over-long PDU; its own parser says {:?}",
+                bytes.len(),
+                try_parse_adu(&bytes)
+            ),
+        }
+
+        // The refusal is at the boundary and not one octet early: the largest legal PDU still
+        // encodes, and round-trips.
+        let legal = vec![0u8; MAX_PDU_LEN];
+        let bytes = encode_adu(0, 1, &legal).expect("a MAX_PDU_LEN PDU is legal");
+        assert!(try_parse_adu(&bytes).is_ok());
+
+        // And the overflow case is a refusal rather than a panic.
+        assert!(encode_adu(0, 1, &vec![0u8; 65_535]).is_err());
     }
 
-    /// FINDING: `encode_registers_response` writes `(values.len() * 2) as u8`. At 128
-    /// registers the byte count is 0 and 256 octets of data follow it — a silently corrupt
-    /// frame rather than a refusal. `encode_bits_response` has the same shape at 2040 bits.
+    /// `encode_registers_response` used to write `(values.len() * 2) as u8`. At 128 registers
+    /// the byte count was 0 and 256 octets of data followed it — a silently corrupt frame
+    /// rather than a refusal. `encode_bits_response` had the same shape at 2040 bits.
     #[test]
-    #[ignore = "FINDING: encode_registers_response narrows the byte count with a bare `as u8`"]
-    fn encode_registers_response_should_not_narrow_its_byte_count() {
-        let values = vec![0u16; 128];
-        let pdu = encode_registers_response(FC_READ_HOLDING_REGISTERS, &values);
-        assert_eq!(
-            pdu[1] as usize,
-            values.len() * 2,
-            "byte count wrapped: declared {} for {} octets of data",
-            pdu[1],
-            values.len() * 2
-        );
+    fn read_responses_refuse_a_byte_count_they_cannot_declare() {
+        assert!(encode_registers_response(FC_READ_HOLDING_REGISTERS, &vec![0u16; 128]).is_err());
+        assert!(encode_bits_response(FC_READ_COILS, &vec![false; 2040]).is_err());
+
+        // Every quantity `parse_request` accepts still encodes, and declares itself honestly.
+        let regs = encode_registers_response(FC_READ_HOLDING_REGISTERS, &vec![0u16; 125]).unwrap();
+        assert_eq!(regs[1] as usize, 250);
+        let bits = encode_bits_response(FC_READ_COILS, &vec![false; 2000]).unwrap();
+        assert_eq!(bits[1] as usize, 250);
     }
 }
 
@@ -541,13 +556,16 @@ mod modbus_props {
 // CoAP — `src/server/coap/codec.rs`
 // ===========================================================================================
 //
-// FINDINGS:
+// Two findings, both fixed:
 //
-//  * `CoapMessage::encode` silently truncates a token longer than 8 bytes
-//    (`self.token.len().min(8)`), while `decode` refuses `tkl > 8`. A model that supplies a
-//    16-byte token gets a different token on the wire, and CoAP's whole request/response
-//    matching is token equality.
-//  * An option value longer than 65535 bytes has its length narrowed by `as u16`.
+//  * `CoapMessage::encode` silently truncated a token longer than 8 bytes
+//    (`self.token.len().min(8)`), while `decode` refuses `tkl > 8`. A model that supplied a
+//    16-byte token got a different token on the wire, and CoAP's whole request/response
+//    matching is token equality — so the reply was discarded at the client with no error at
+//    either end.
+//  * An option value longer than 65535 bytes had its length narrowed by `as u16`.
+//
+// `encode` now returns `Result` and refuses both.
 
 #[cfg(feature = "coap")]
 mod coap_props {

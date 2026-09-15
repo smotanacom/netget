@@ -679,10 +679,22 @@ impl ModbusServer {
                             codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
                         );
                     }
-                    return (
-                        Decision::ModelAnswer,
-                        codec::encode_bits_response(fc, &values),
-                    );
+                    // Unreachable while the count check above holds — `parse_request` caps a
+                    // coil read at 2000 bits — but the codec is what owns the bound, so its
+                    // refusal is answered rather than unwrapped.
+                    return match codec::encode_bits_response(fc, &values) {
+                        Ok(pdu) => (Decision::ModelAnswer, pdu),
+                        Err(e) => {
+                            error!(
+                                "Modbus {}: cannot encode a bit response: {}",
+                                connection_id, e
+                            );
+                            (
+                                Decision::FailClosedWrongShape,
+                                codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
+                            )
+                        }
+                    };
                 }
                 RESULT_REGISTERS => {
                     if !request.is_register_read() {
@@ -726,10 +738,21 @@ impl ModbusServer {
                             codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
                         );
                     }
-                    return (
-                        Decision::ModelAnswer,
-                        codec::encode_registers_response(fc, &values),
-                    );
+                    // Unreachable while the count check above holds — `parse_request` caps a
+                    // register read at 125 — but the codec is what owns the bound.
+                    return match codec::encode_registers_response(fc, &values) {
+                        Ok(pdu) => (Decision::ModelAnswer, pdu),
+                        Err(e) => {
+                            error!(
+                                "Modbus {}: cannot encode a register response: {}",
+                                connection_id, e
+                            );
+                            (
+                                Decision::FailClosedWrongShape,
+                                codec::encode_exception(fc, codec::EXC_SERVER_DEVICE_FAILURE),
+                            )
+                        }
+                    };
                 }
                 RESULT_WRITE_ACK => {
                     if !request.is_write() {
@@ -774,7 +797,21 @@ impl ModbusServer {
         connections: &Arc<Mutex<HashMap<ConnectionId, ConnectionData>>>,
         status_tx: &mpsc::UnboundedSender<String>,
     ) {
-        let adu = codec::encode_adu(transaction_id, unit_id, pdu);
+        // A PDU the framer refuses is dropped rather than sent in a frame whose MBAP length
+        // field disagrees with it. Every PDU reaching here is built by this module's own
+        // encoders, which are bounded, so this is a ratchet rather than a live path.
+        let adu = match codec::encode_adu(transaction_id, unit_id, pdu) {
+            Ok(adu) => adu,
+            Err(e) => {
+                error!(
+                    "Modbus {} decision=fail_closed_encode: refusing to frame a {}-octet PDU: {}",
+                    connection_id,
+                    pdu.len(),
+                    e
+                );
+                return;
+            }
+        };
 
         let write_half = {
             let conns = connections.lock().await;

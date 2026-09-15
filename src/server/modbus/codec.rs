@@ -129,6 +129,44 @@ impl std::fmt::Display for FrameError {
     }
 }
 
+/// A value the encoder refuses to put on the wire.
+///
+/// The mirror image of [`FrameError`], and it exists because the two directions disagreed:
+/// [`try_parse_adu`] enforced `2..=254` against a hostile peer while [`encode_adu`] enforced
+/// nothing at all against the caller, so a 254-byte PDU produced a frame this codec's own
+/// parser rejects. The rule is refuse, never narrow: a byte count silently wrapped by an
+/// `as u8` is a frame that claims to carry a different number of registers than it does, and
+/// on this protocol a register value is a plant reading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncodeError {
+    /// The PDU is empty or longer than [`MAX_PDU_LEN`], so the MBAP length field would land
+    /// outside the `2..=254` range `try_parse_adu` accepts.
+    PduLength { len: usize },
+    /// A read response's byte count would not fit the one-octet field, or the PDU it heads
+    /// would not fit [`MAX_PDU_LEN`].
+    ByteCount { values: usize, bytes: usize },
+}
+
+impl std::fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EncodeError::PduLength { len } => write!(
+                f,
+                "a Modbus PDU is 1..={MAX_PDU_LEN} octets; {len} given, which the MBAP length \
+                 field cannot describe"
+            ),
+            EncodeError::ByteCount { values, bytes } => write!(
+                f,
+                "{values} value(s) need {bytes} octets of data, past the {} a read response's \
+                 one-octet byte count and the {MAX_PDU_LEN}-octet PDU can carry",
+                MAX_PDU_LEN - 2
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
 /// A complete Modbus/TCP Application Data Unit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adu {
@@ -178,14 +216,23 @@ pub fn try_parse_adu(buf: &[u8]) -> Result<Option<(Adu, usize)>, FrameError> {
 }
 
 /// Wrap a PDU in an MBAP header addressed back to the requester.
-pub fn encode_adu(transaction_id: u16, unit_id: u8, pdu: &[u8]) -> Vec<u8> {
+///
+/// Refuses any PDU [`try_parse_adu`] would not accept back. Without the check a 254-byte PDU
+/// produced a length field of 255 — outside the `2..=254` the parser enforces — and past
+/// 65534 octets the `(pdu.len() as u16) + 1` overflowed, which panics in every debug and test
+/// build and wrapped silently before `[profile.release] overflow-checks` was turned on.
+pub fn encode_adu(transaction_id: u16, unit_id: u8, pdu: &[u8]) -> Result<Vec<u8>, EncodeError> {
+    if pdu.is_empty() || pdu.len() > MAX_PDU_LEN {
+        return Err(EncodeError::PduLength { len: pdu.len() });
+    }
     let mut out = Vec::with_capacity(MBAP_HEADER_LEN + pdu.len());
     out.extend_from_slice(&transaction_id.to_be_bytes());
     out.extend_from_slice(&MODBUS_PROTOCOL_ID.to_be_bytes());
+    // Range-checked above, so neither the cast nor the increment can wrap.
     out.extend_from_slice(&((pdu.len() as u16) + 1).to_be_bytes());
     out.push(unit_id);
     out.extend_from_slice(pdu);
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -396,12 +443,28 @@ fn check_range(start: u16, quantity: u16) -> Result<(), u8> {
 // Responses
 // ---------------------------------------------------------------------------
 
+/// Most data octets a read response can carry: the PDU ceiling less the function code and the
+/// byte-count octet. The byte count is one octet, and `MAX_PDU_LEN - 2` is 251, so the PDU
+/// bound is the tighter of the two and the only one that has to be stated.
+pub const MAX_READ_RESPONSE_DATA: usize = MAX_PDU_LEN - 2;
+
 /// PDU for a FC 1/2 read response: byte count then packed bits, least-significant bit
 /// of the first byte carrying the first requested coil.
-pub fn encode_bits_response(function_code: u8, values: &[bool]) -> Vec<u8> {
+///
+/// Refuses a value list whose byte count would not fit rather than narrowing it with an
+/// `as u8`. At 2040 bits the narrowed count was 255 and at 2048 it was 0, both followed by
+/// the full data — a frame that lies about its own length.
+pub fn encode_bits_response(function_code: u8, values: &[bool]) -> Result<Vec<u8>, EncodeError> {
     let byte_count = values.len().div_ceil(8);
+    if byte_count > MAX_READ_RESPONSE_DATA {
+        return Err(EncodeError::ByteCount {
+            values: values.len(),
+            bytes: byte_count,
+        });
+    }
     let mut pdu = Vec::with_capacity(2 + byte_count);
     pdu.push(function_code);
+    // Range-checked above, so the cast cannot lose a bit.
     pdu.push(byte_count as u8);
     let mut packed = vec![0u8; byte_count];
     for (i, &on) in values.iter().enumerate() {
@@ -410,18 +473,32 @@ pub fn encode_bits_response(function_code: u8, values: &[bool]) -> Vec<u8> {
         }
     }
     pdu.extend_from_slice(&packed);
-    pdu
+    Ok(pdu)
 }
 
 /// PDU for a FC 3/4 read response: byte count then big-endian registers.
-pub fn encode_registers_response(function_code: u8, values: &[u16]) -> Vec<u8> {
-    let mut pdu = Vec::with_capacity(2 + values.len() * 2);
+///
+/// Refuses past [`MAX_READ_RESPONSE_DATA`]. At 128 registers the old `(values.len() * 2) as u8`
+/// declared a byte count of **0** and then wrote 256 octets of data behind it.
+pub fn encode_registers_response(
+    function_code: u8,
+    values: &[u16],
+) -> Result<Vec<u8>, EncodeError> {
+    let byte_count = values.len() * 2;
+    if byte_count > MAX_READ_RESPONSE_DATA {
+        return Err(EncodeError::ByteCount {
+            values: values.len(),
+            bytes: byte_count,
+        });
+    }
+    let mut pdu = Vec::with_capacity(2 + byte_count);
     pdu.push(function_code);
-    pdu.push((values.len() * 2) as u8);
+    // Range-checked above, so the cast cannot lose a bit.
+    pdu.push(byte_count as u8);
     for v in values {
         pdu.extend_from_slice(&v.to_be_bytes());
     }
-    pdu
+    Ok(pdu)
 }
 
 /// PDU acknowledging a write.

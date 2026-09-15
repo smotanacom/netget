@@ -96,6 +96,28 @@ header from the request it parsed. Consequences:
   encoding to get wrong. (`send_tcp_data`'s documented-but-not-decoded `hex` field is the
   cautionary case; it cannot recur here because nothing here takes encoded bytes.)
 
+**The framing functions bound their output, and did not used to.** `encode_adu`,
+`encode_bits_response` and `encode_registers_response` all return `Result<Vec<u8>, EncodeError>`
+and refuse anything this codec's own parser would reject:
+
+- `encode_adu` wrote `(pdu.len() as u16) + 1` unchecked while `try_parse_adu` refuses any MBAP
+  length outside `2..=254`. A 254-octet PDU produced a length field of 255 — a frame this
+  codec rejects on the way back in. Past 65534 octets the increment also overflowed, which
+  panics in every debug and test build (there is no `[profile.dev]` in `Cargo.toml`, so
+  `overflow-checks` is on there) and, before `[profile.release] overflow-checks` was turned on,
+  wrapped silently where it shipped.
+- `encode_registers_response` wrote `(values.len() * 2) as u8` and `encode_bits_response` wrote
+  `byte_count as u8`. At 128 registers the declared byte count was **0** followed by 256 octets
+  of data; at 2040 bits the same shape. On this protocol a register value is a plant reading,
+  and a frame that lies about how many of them it carries is worse than no frame.
+
+None of the three was reachable from the wire: `mod.rs` checks the model's value list against
+the quantity `parse_request` already validated (≤2000 bits, ≤125 registers) before it encodes,
+and every PDU `send_pdu` frames comes from these same bounded encoders. They were unguarded in
+`pub fn`s, which is the asymmetry the property tests exist to find — a bound enforced on decode
+against a hostile peer and not on encode against the model. `mod.rs` answers a refusal with
+exception 0x04 and `decision=fail_closed_encode` rather than unwrapping it.
+
 ### 4. Fail closed
 
 `pdu_from_results` answers with exception **0x04 server device failure** and an ERROR log when:
