@@ -46,7 +46,6 @@ async fn test_heart_rate_service_startup() -> E2EResult<()> {
 
     println!("✓ Heart rate service started");
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
     println!("✓ Server running without errors");
 
     // Verify mock expectations were met
@@ -98,7 +97,6 @@ async fn test_heart_rate_updates() -> E2EResult<()> {
 
     println!("✓ Heart rate service started with dynamic updates");
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
     println!("✓ Server handled heart rate changes");
 
     // Verify mock expectations were met

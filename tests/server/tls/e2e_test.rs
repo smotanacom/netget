@@ -188,7 +188,7 @@ async fn test_tls_echo_server() -> E2EResult<()> {
     println!("TLS server started on port {}", server.port);
 
     // Wait for server to fully initialize
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     // Test 1: Connect and check welcome message
     println!("\n[Test 1] Connect and check welcome message...");
@@ -313,7 +313,7 @@ async fn test_tls_http_like_server() -> E2EResult<()> {
     println!("TLS HTTP-like server started on port {}", server.port);
 
     // Wait for server to fully initialize
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     // Test 1: GET /
     println!("\n[Test 1] Request GET /...");

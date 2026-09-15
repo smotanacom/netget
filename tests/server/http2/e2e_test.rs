@@ -112,7 +112,7 @@ Set Content-Type header appropriately (text/plain for /, application/json for /a
     );
 
     // Give server time to initialize
-    sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     // Create HTTP/2 client (with prior knowledge - no TLS, direct HTTP/2)
     let client = reqwest::Client::builder()
@@ -274,7 +274,7 @@ Set Content-Type: application/json for all responses."#;
     println!("Server started on port {}", server.port);
 
     // Give server time to initialize
-    sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     // Create HTTP/2 client
     let client = reqwest::Client::builder()
@@ -396,7 +396,7 @@ Set Content-Type: application/json."#;
     println!("Server started on port {}", server.port);
 
     // Give server time to initialize
-    sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     // Create HTTP/2 client (reuses connection for multiplexing)
     let client = reqwest::Client::builder()

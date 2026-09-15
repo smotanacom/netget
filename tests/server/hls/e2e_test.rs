@@ -70,7 +70,7 @@ async fn test_hls_playlist_and_segment() -> E2EResult<()> {
         });
 
     let test_state = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_tcp_port(test_state.port, Duration::from_secs(30)).await?;
     let server_addr: SocketAddr = format!("127.0.0.1:{}", test_state.port).parse().unwrap();
 
     // Playlist

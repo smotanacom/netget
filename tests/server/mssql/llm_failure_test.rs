@@ -47,7 +47,7 @@ async fn test_mssql_answers_error_token_when_llm_fails() -> E2EResult<()> {
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     let mut config_tds = Config::new();
     config_tds.host("127.0.0.1");
@@ -147,7 +147,7 @@ async fn test_mssql_fails_closed_when_no_response_action_is_produced() -> E2ERes
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     let mut config_tds = Config::new();
     config_tds.host("127.0.0.1");

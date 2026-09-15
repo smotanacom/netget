@@ -57,7 +57,7 @@ mod openapi_client_tests {
         let server = start_netget_server(server_config).await?;
 
         // Give server time to start
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
         println!("[TEST] Server started on port {}", server.port);
 
@@ -113,7 +113,6 @@ mod openapi_client_tests {
         let client = start_netget_client(client_config).await?;
 
         // Wait for test to complete
-        tokio::time::sleep(Duration::from_secs(5)).await;
 
         // Verify all mocks were called
         // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -168,7 +167,7 @@ mod openapi_client_tests {
             });
 
         let server = start_netget_server(server_config).await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        client.wait_for_mocks(30).await;
 
         // Inject actual port into spec
         let openapi_spec = spec_template.replace("{port}", &server.port.to_string());
@@ -210,7 +209,6 @@ mod openapi_client_tests {
         });
 
         let client = start_netget_client(client_config).await?;
-        tokio::time::sleep(Duration::from_secs(5)).await;
 
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands

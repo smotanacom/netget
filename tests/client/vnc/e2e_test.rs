@@ -106,7 +106,6 @@ mod vnc_client_tests {
             serde_json::json!({"type": "request_framebuffer_update", "incremental": false}),
         ))
         .await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
@@ -141,7 +140,6 @@ mod vnc_client_tests {
             }),
         ))
         .await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
@@ -174,7 +172,6 @@ mod vnc_client_tests {
             serde_json::json!({"type": "send_key_event", "key": "a", "down": true}),
         ))
         .await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands

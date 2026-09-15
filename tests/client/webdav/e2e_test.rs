@@ -100,7 +100,6 @@ mod webdav_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to make request
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Verify client output shows connection/response
         client
@@ -223,7 +222,7 @@ mod webdav_client_tests {
 
         let mut client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        server.wait_for_mocks(30).await;
 
         // Verify the client is WebDAV protocol
         assert_eq!(

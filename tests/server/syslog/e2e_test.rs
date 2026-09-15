@@ -91,7 +91,7 @@ async fn test_syslog_comprehensive() -> E2EResult<()> {
     println!("✓ Error message sent");
 
     // Give server time to process all messages
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    test_state.wait_for_mocks(30).await;
 
     println!("\n✓ Syslog test with mocks passed!");
     println!("  - Sent 3 syslog messages (emergency, auth, error)");

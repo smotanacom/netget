@@ -101,7 +101,6 @@ mod dns_client_tests {
             "A",
         ))
         .await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
@@ -160,7 +159,6 @@ mod dns_client_tests {
             "MX",
         ))
         .await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
@@ -215,7 +213,6 @@ mod dns_client_tests {
             "A",
         ))
         .await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands
@@ -313,7 +310,6 @@ mod dns_client_tests {
         });
 
         let mut client = start_netget_client(client_config).await?;
-        tokio::time::sleep(Duration::from_secs(3)).await;
 
         // Wait for the exchange the mocks describe, rather than trusting a fixed
         // sleep to have covered it. Under load the last response routinely lands

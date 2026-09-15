@@ -371,3 +371,40 @@ where
         ).into()),
     }
 }
+
+/// Wait until a loopback TCP port accepts a connection.
+///
+/// This is the condition the fixed `sleep` after `start_netget_server` stood in for.
+/// `start_netget_server` returns as soon as it has *parsed* the startup conversation —
+/// which can be a "Updated conversation state after server changes" line rather than a
+/// bound socket — so suites slept one or two seconds and hoped. Under
+/// `--test-threads=100` that hope is where this repo's load-flakes came from: the sleep
+/// is a constant, the scheduling delay is not.
+///
+/// Connecting and immediately dropping is a real observation of the accept loop, not a
+/// restatement of something the harness already knew, so it is a legitimate replacement
+/// rather than a wait on a condition that is already true.
+///
+/// Only for protocols that listen on TCP. UDP, raw and off-network protocols have no
+/// such condition — wait on the exchange they provoke (`wait_for_mocks`) instead.
+#[allow(dead_code)]
+pub async fn wait_for_tcp_port(port: u16, timeout_duration: Duration) -> E2EResult<()> {
+    let start = std::time::Instant::now();
+    let addr = format!("127.0.0.1:{}", port);
+    let mut last_err = String::new();
+    while start.elapsed() < timeout_duration {
+        match tokio::net::TcpStream::connect(&addr).await {
+            Ok(stream) => {
+                drop(stream);
+                return Ok(());
+            }
+            Err(e) => last_err = e.to_string(),
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    Err(format!(
+        "port {} never accepted a connection within {:?} (last error: {})",
+        port, timeout_duration, last_err
+    )
+    .into())
+}

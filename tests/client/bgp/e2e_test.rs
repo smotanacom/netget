@@ -118,7 +118,7 @@ mod bgp_client_tests {
 
         // OPEN -> OPEN -> KEEPALIVE -> KEEPALIVE -> UPDATE, with an LLM round trip at three of
         // those steps.
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        server.wait_for_mocks(30).await;
 
         assert_eq!(client.protocol, "BGP", "Client should be BGP protocol");
 
@@ -223,7 +223,7 @@ mod bgp_client_tests {
 
         let client = start_netget_client(client_config).await?;
 
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        server.wait_for_mocks(30).await;
 
         assert_eq!(client.protocol, "BGP", "Client should be BGP protocol");
 

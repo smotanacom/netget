@@ -45,7 +45,6 @@ mod ntp_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to query and process response
-        tokio::time::sleep(Duration::from_secs(6)).await;
 
         // Verify client output shows NTP response
         client.wait_for_any(&["ntp", "time"], 30).await;
@@ -106,7 +105,7 @@ mod ntp_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to query and process response
-        tokio::time::sleep(Duration::from_secs(6)).await;
+        client.wait_for_mocks(30).await;
 
         // Verify protocol is NTP
         assert_eq!(client.protocol, "NTP", "Client should be NTP protocol");
@@ -160,7 +159,7 @@ mod ntp_client_tests {
         let mut client = start_netget_client(client_config).await?;
 
         // Give client time to complete
-        tokio::time::sleep(Duration::from_secs(6)).await;
+        client.wait_for_mocks(30).await;
 
         // Verify client is disconnected after single query
         // (This validates the single-query design documented in CLAUDE.md)

@@ -123,7 +123,7 @@ async fn test_smb_llm_allows_guest_auth() -> E2EResult<()> {
                     .and()
             })
     ).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
     let mut stream = TcpStream::connect(&addr)?;
@@ -218,7 +218,7 @@ async fn test_smb_llm_denies_user() -> E2EResult<()> {
                     .and()
             })
     ).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
     let mut stream = TcpStream::connect(&addr)?;
@@ -308,10 +308,10 @@ async fn test_smb_llm_file_creation() -> E2EResult<()> {
                     .and()
             })
     ).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    server.wait_for_mocks(30).await;
 
     // Check that LLM received file creation events
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    server.wait_for_mocks(30).await;
 
     let output = server.get_output().await;
 
@@ -369,7 +369,7 @@ async fn test_smb_llm_file_content() -> E2EResult<()> {
                     .and()
             })
     ).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    server.wait_for_mocks(30).await;
 
     // Verify server started with correct configuration
     let output = server.get_output().await;
@@ -415,7 +415,7 @@ async fn test_smb_llm_directory_listing() -> E2EResult<()> {
                 ])).expect_calls(1).and()
             })
     ).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    server.wait_for_mocks(30).await;
 
     // Verify LLM integration is working
     let output = server.get_output().await;
@@ -465,7 +465,7 @@ async fn test_smb_llm_connection_tracking() -> E2EResult<()> {
                 ])).expect_calls(1).and()
             })
     ).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     let addr = format!("127.0.0.1:{}", server.port);
 
@@ -537,7 +537,7 @@ async fn test_smb_llm_receives_events() -> E2EResult<()> {
             .and()
     }))
     .await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    server.wait_for_mocks(30).await;
 
     // Verify server is ready to process LLM events
     assert!(server.stack.contains("SMB"), "Should use SMB stack");

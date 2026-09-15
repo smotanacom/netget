@@ -38,7 +38,7 @@ async fn test_ldap_answers_unavailable_when_llm_fails() -> E2EResult<()> {
     });
 
     let server = start_netget_server(server_config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     let (conn, mut ldap) = LdapConnAsync::new(&format!("ldap://127.0.0.1:{}", server.port)).await?;
     ldap3::drive!(conn);

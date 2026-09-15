@@ -41,7 +41,7 @@ async fn test_mongodb_answers_ok_zero_when_llm_fails() -> E2EResult<()> {
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     let uri = format!(
         "mongodb://127.0.0.1:{}/?directConnection=true&serverSelectionTimeoutMS=8000",

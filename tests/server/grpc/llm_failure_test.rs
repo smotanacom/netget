@@ -107,7 +107,7 @@ async fn test_grpc_answers_internal_when_llm_fails() -> E2EResult<()> {
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     let client = reqwest::Client::builder()
         .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
@@ -238,7 +238,7 @@ async fn test_grpc_answers_internal_when_handler_returns_no_usable_action() -> E
     });
 
     let server = start_netget_server(config).await?;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
     let client = reqwest::Client::builder()
         .resolve("127.0.0.1", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))

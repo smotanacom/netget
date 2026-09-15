@@ -164,7 +164,7 @@ mod e2e_bitcoin {
         let server = start_netget_server(config).await?;
 
         // Wait for server to be ready
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
         // Connect to Bitcoin P2P server
         println!(
@@ -320,7 +320,7 @@ mod e2e_bitcoin {
         });
 
         let server = start_netget_server(config).await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
         println!("  [TEST] Establishing Bitcoin P2P connection");
         let mut client = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
@@ -447,7 +447,7 @@ mod e2e_bitcoin {
         });
 
         let server = start_netget_server(config).await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
         println!("  [TEST] Establishing connection");
         let mut client = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
@@ -566,7 +566,7 @@ mod e2e_bitcoin {
         });
 
         let server = start_netget_server(config).await?;
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        crate::helpers::wait_for_tcp_port(server.port, Duration::from_secs(30)).await?;
 
         println!("  [TEST] Connecting to testnet server");
         let mut client = TcpStream::connect(format!("127.0.0.1:{}", server.port)).await?;
