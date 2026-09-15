@@ -230,7 +230,7 @@ pub static USB_SMARTCARD_DETACHED_EVENT: LazyLock<EventType> = LazyLock::new(|| 
         // model to answer with an action that would be rejected as unknown.
         json!({
             "type": "append_to_log",
-            "message": "smart card host {{event.connection_id}} detached"
+            "message": "smart card host conn-2 detached"
         }),
     )
     .with_parameters(vec![Parameter {

@@ -234,7 +234,10 @@ impl Protocol for NfsClientProtocol {
             },
             ActionDefinition {
                 name: "nfs_remove".to_string(),
-                description: "Remove a file".to_string(),
+                description: "Remove a file from the mounted export by path. Unlinks a regular \
+                              file only — a directory needs the server's own rmdir and is \
+                              refused here — and the removal is immediate and not reversible."
+                    .to_string(),
                 parameters: vec![Parameter {
                     name: "path".to_string(),
                     type_hint: "string".to_string(),

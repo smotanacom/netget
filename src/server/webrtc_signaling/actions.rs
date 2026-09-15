@@ -59,12 +59,15 @@ pub static WEBRTC_SIGNALING_PEER_CONNECTED_EVENT: LazyLock<EventType> = LazyLock
     EventType::new(
         "webrtc_signaling_peer_connected",
         "A peer registered a peer ID with the signaling server. The server has already          acknowledged it with a `registered` message.",
+        // A literal peer id, not "{{event.peer_id}}". Handler substitution runs for a static
+        // or script handler; this is the template for the model's own reply, where nothing
+        // substitutes and the braces would reach the wire verbatim.
         json!({
             "type": "send_signaling_message",
             "message": {
                 "type": "relay",
                 "from": "netget",
-                "to": "{{event.peer_id}}",
+                "to": "peer-a1b2c3",
                 "data": {"welcome": true}
             }
         }),
@@ -108,7 +111,7 @@ pub static WEBRTC_SIGNALING_PEER_DISCONNECTED_EVENT: LazyLock<EventType> = LazyL
         "A registered peer's signaling connection closed. Informational: the socket is          already gone, so there is nothing protocol-specific left to send.",
         json!({
             "type": "append_to_log",
-            "message": "signaling peer {{event.peer_id}} went away"
+            "message": "signaling peer peer-a1b2c3 went away"
         }),
     )
     .with_parameters(vec![
@@ -140,7 +143,7 @@ pub static WEBRTC_SIGNALING_MESSAGE_RECEIVED_EVENT: LazyLock<EventType> = LazyLo
         "An offer, answer, ICE candidate or relay message passed through the server. It          has already been forwarded (or found undeliverable) by the time this fires, so          this event is for observation and memory only.",
         json!({
             "type": "append_memory",
-            "memory": "{{event.peer_id}} sent a {{event.message_type}} to {{event.target_peer}}"
+            "memory": "peer-a1b2c3 sent an offer to peer-d4e5f6"
         }),
     )
     .with_parameters(vec![

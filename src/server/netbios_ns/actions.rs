@@ -536,7 +536,7 @@ fn name_response_action() -> ActionDefinition {
             },
             Parameter {
                 name: "group".to_string(),
-                type_hint: "bool".to_string(),
+                type_hint: "boolean".to_string(),
                 description:
                     "true for a group name (several hosts may hold it, e.g. a workgroup), false \
                      for a unique name owned by one host. Defaults to false."
@@ -834,7 +834,7 @@ pub static NETBIOS_NAME_REGISTRATION_EVENT: LazyLock<EventType> = LazyLock::new(
         },
         Parameter {
             name: "group".to_string(),
-            type_hint: "bool".to_string(),
+            type_hint: "boolean".to_string(),
             description: "true if the claimant is registering a group name.".to_string(),
             required: false,
         },

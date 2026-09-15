@@ -153,7 +153,7 @@ impl Protocol for GitClientProtocol {
                      destructive verbs (git_checkout, git_delete_branch with force and no \
                      remote) are NOT gated: their damage is confined to allowed_root."
                     .to_string(),
-                type_hint: "bool".to_string(),
+                type_hint: "boolean".to_string(),
                 required: false,
                 example: json!(false),
             },

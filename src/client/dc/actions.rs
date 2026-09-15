@@ -264,7 +264,10 @@ impl Protocol for DcClientProtocol {
             crate::llm::actions::ParameterDefinition {
                 name: "email".to_string(),
                 type_hint: "string".to_string(),
-                description: "Email address".to_string(),
+                description: "Email address advertised in the client's MyINFO line, which every \
+                              other user on the hub can read. Optional; hubs rarely \
+                              require it and many users leave it empty."
+                    .to_string(),
                 required: false,
                 example: json!("user@example.com"),
             },
@@ -676,7 +679,10 @@ fn send_dc_myinfo_action() -> ActionDefinition {
             Parameter {
                 name: "email".to_string(),
                 type_hint: "string".to_string(),
-                description: "Email address".to_string(),
+                description: "Email address advertised in the client's MyINFO line, which every \
+                              other user on the hub can read. Optional; hubs rarely \
+                              require it and many users leave it empty."
+                    .to_string(),
                 required: false,
             },
             Parameter {
