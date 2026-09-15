@@ -14,13 +14,28 @@ SFTP tree contains. Nothing is read from or written to the real filesystem.
 ### Why Experimental, not Beta
 
 `Beta` means "human reviewed, **works against real clients**", evidenced by a test in which a
-third-party implementation completed a real exchange. There is no such test here.
+third-party implementation completed a real exchange.
 
-`tests/server/ssh/` does now exist and is substantial — banner, version exchange, concurrent
-connections, script-vs-LLM routing, SFTP, and `llm_failure_test.rs` for the fail-closed paths —
-but every one of those drives the server through a bare `TcpStream`. The one third-party client
-that was tried, `ssh2`, does not complete a session: `test.rs` records that it "has
-timing/compatibility issues with russh server". So NetGet is still only checking NetGet.
+**The stated reason for staying Experimental is stale, and `actions.rs` still carries it.** Its
+`metadata()` comment says "`tests/server/ssh` drives the server with a bare `TcpStream`" and its
+`e2e_testing` field says "No third-party SSH client completes a session in the automated suite".
+Neither is true any more:
+
+- `test_sftp_basic_operations` takes `ssh2` — libssh2 bindings, independent of the `russh` this
+  server is built on — through `handshake()`, `userauth_password()`, `sess.sftp()`, `readdir`,
+  `open` + `read_to_string` and `stat`. It propagates every failure with `?` and asserts
+  unconditionally; nothing about it is `#[ignore]`d or skipped when something is missing, and
+  `ssh2` is pulled in by the `ssh` feature itself (`ssh = [… "dep:ssh2"]`), so the evidence
+  compiles wherever the suite does.
+- The "timing/compatibility issues with russh server" note is real but narrower than it reads.
+  It applies to `test_ssh_version_exchange` and `test_ssh_connection_attempt`, which wrap ssh2
+  in `match … { Ok => assert, Err => println! }` — failure-tolerant, so those two prove nothing
+  on their own. The SFTP test is not written that way.
+
+So the Beta bar appears to be met and the rating has not been revisited. Check it before
+trusting either state: promoting is a deliberate `actions.rs` change, and what a reviewer should
+weigh is whether one SFTP session is enough for "works against real clients" when interactive
+shell and `exec` have no third-party coverage at all.
 
 **russh would not close the gap either.** It is the library this server is built on, so using it
 as the peer is the circular case `tests/server/websocket/e2e_test.rs` describes — it would prove
@@ -28,9 +43,10 @@ russh round-trips through itself. (The code briefly claimed `Beta` on exactly th
 while its own `e2e_testing` field said "no automated test exists" three lines below. Both the
 rating and the contradiction are gone.)
 
-Raise to `Beta` when a real SSH client — openssh's `ssh`/`sftp`, or a working `ssh2` — completes
-auth and a channel exchange in a test that is neither `#[ignore]`d nor skipped when the binary
-is absent.
+What would settle it either way: openssh's `ssh`/`sftp`, or `ssh2` again, completing auth **and
+a shell/exec channel exchange** in a test that is neither `#[ignore]`d nor skipped when the
+binary is absent — the same shape `test_sftp_basic_operations` already has for the SFTP
+subsystem.
 
 ### Fail-closed
 
