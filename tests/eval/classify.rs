@@ -218,7 +218,31 @@ pub fn model_output(log: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Drop the terminal colour codes netget writes, so the evidence in a published
+/// artefact is text a person can read rather than `[2m[33m WARN[0m`.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // CSI: ESC [ … final-byte in @..~
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn truncate(line: &str, max: usize) -> String {
+    let line = &strip_ansi(line);
     // Char-boundary safe: model output is routinely non-ASCII and byte slicing
     // it is the exact panic `utils::truncate` exists to prevent.
     if line.chars().count() <= max {

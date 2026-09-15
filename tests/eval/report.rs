@@ -280,7 +280,7 @@ fn markdown(report: &EvalReport) -> String {
     );
 
     out.push_str(&format!(
-        "## Score\n\n**{} of {} runs passed ({}) across {} instructions on {} protocols.**\n\n",
+        "## Score\n\n**{} of {} runs passed ({}) across {} instructions on {} protocol(s).**\n\n",
         report.totals.runs_passed,
         report.totals.runs_total,
         pct(Some(report.totals.pass_rate)),
