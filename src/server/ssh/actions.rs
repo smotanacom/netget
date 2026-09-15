@@ -74,30 +74,43 @@ impl Protocol for SshProtocol {
         };
 
         ProtocolMetadataV2::builder()
-            // Experimental, not Beta. Beta means "works against real clients", evidenced by a
-            // test that a third-party implementation completed a real exchange. No such test
-            // exists here: `tests/server/ssh` drives the server with a bare `TcpStream` and
-            // asserts on the version-exchange banner, and its own comment records that the
-            // `ssh2` client "has timing/compatibility issues with russh server" — i.e. the one
-            // third-party client that was tried does not complete a session.
+            // Beta, on the exact bar the Experimental comment here used to set: "promote
+            // when a real SSH client (openssh's ssh/sftp, or ssh2) completes auth and a
+            // channel exchange in a test that is neither #[ignore]d nor skipped when the
+            // binary is absent". `test_sftp_basic_operations` has done that for some time.
             //
-            // russh is not the missing evidence either. It is the library this server is
-            // *built on*, so driving it with russh would be the circular case
-            // `tests/server/websocket/e2e_test.rs` describes, not an independent peer.
+            // The demotion that preceded this was right about russh and wrong about the
+            // tests. russh IS the library this server is built on, so driving the server
+            // with russh would be the circular case — that part stands. But the tests do
+            // not use russh: they use `ssh2`, which is a binding to the C libssh2 and
+            // shares no line of code with russh. The claim that libssh2 "does not complete
+            // a session" came from a stale comment in `tests/server/ssh/test.rs`,
+            // describing a runtime-blocking bug that was fixed by moving libssh2 onto
+            // `spawn_blocking`; the comment outlived the bug and was quoted here and in
+            // `src/server/ssh/CLAUDE.md` as the reason for the rating.
             //
-            // Promote to Beta when a real SSH client (openssh's `ssh`/`sftp`, or `ssh2`)
-            // completes auth and a channel exchange in a test that is neither `#[ignore]`d nor
-            // skipped when the binary is absent.
-            .state(DevelopmentState::Experimental)
+            // Check what the test drives, not what the server links.
+            .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(22))
             .implementation("russh v0.45, russh-sftp v2.1; ephemeral Ed25519 host key")
             .llm_control("Auth decisions, shell banner and output, SFTP reads and listings")
             .e2e_testing(
-                "No third-party SSH client completes a session in the automated suite. \
-                 tests/server/ssh drives the socket directly (banner, version exchange, \
-                 concurrent connects, script-vs-LLM routing) and tests/server/ssh/llm_failure_test \
-                 covers the fail-closed paths. Interactive checks with openssh ssh/sftp were \
-                 done by hand and are not reproducible in CI.",
+                "libssh2 (via the ssh2 crate - a binding to the C library, sharing no code \
+                 with the russh this server is built on) completes real sessions, in tests \
+                 that are neither #[ignore]d nor skip-gated. \
+                 test_sftp_basic_operations is the evidence: transport handshake, password \
+                 auth, the SFTP subsystem, opendir/readdir, open+read and lstat, with the \
+                 file's bytes and the declared size asserted exactly. \
+                 test_ssh_python_auth_script and test_ssh_script_fallback_to_llm drive \
+                 libssh2 password auth through a script handler and through the model, and \
+                 llm_failure_test asserts libssh2 sees a refusal on all three fail-closed \
+                 paths. test_ssh_connection_attempt asserts libssh2 completes the handshake \
+                 and is then refused a login no handler granted. Alongside these, bare \
+                 TcpStream tests cover the banner, version exchange and concurrent connects. \
+                 UNPROVEN: openssh's own ssh/sftp binaries have only been driven by hand, so \
+                 no automated test covers the client most users would point at this server; \
+                 and no test exercises an interactive shell through a third-party client, \
+                 only exec and SFTP.",
             )
             .notes(
                 "FAILS CLOSED: an LLM error, a handler that returns no ssh_auth_decision, and \
