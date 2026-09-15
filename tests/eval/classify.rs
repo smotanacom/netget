@@ -72,44 +72,55 @@ impl Diagnosis {
 /// repairs or reformats — if the model did not emit a complete JSON value, this
 /// returns nothing and the run is scored as a genuine miss.
 fn recover_action_names(text: &str) -> Vec<String> {
-    let start = match (text.find('{'), text.find('[')) {
-        (Some(a), Some(b)) => a.min(b),
-        (Some(a), None) => a,
-        (None, Some(b)) => b,
-        (None, None) => return Vec::new(),
-    };
-    let mut stream =
-        serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
-    let value = match stream.next() {
-        Some(Ok(v)) => v,
-        _ => return Vec::new(),
-    };
+    // Try each `{`/`[` in turn rather than only the first. A captured block
+    // starts with netget's own marker line and can carry a brace before the
+    // model's JSON; anchoring on the first one silently gave up. Bounded so a
+    // long log line cannot turn this into a quadratic scan.
+    let candidates: Vec<usize> = text
+        .char_indices()
+        .filter(|(_, c)| *c == '{' || *c == '[')
+        .map(|(i, _)| i)
+        .take(8)
+        .collect();
 
-    fn names_in(value: &serde_json::Value, out: &mut Vec<String>) {
-        match value {
-            serde_json::Value::Array(items) => {
-                for item in items {
-                    names_in(item, out);
-                }
-            }
-            serde_json::Value::Object(map) => {
-                if let Some(name) = map.get("type").and_then(|t| t.as_str()) {
-                    out.push(name.to_string());
-                }
-                for key in ["actions", "tools"] {
-                    if let Some(nested) = map.get(key) {
-                        names_in(nested, out);
-                    }
-                }
-            }
-            _ => {}
+    for start in candidates {
+        let mut stream =
+            serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
+        let value = match stream.next() {
+            Some(Ok(v)) => v,
+            _ => continue,
+        };
+        let mut names = Vec::new();
+        names_in(&value, &mut names);
+        names.dedup();
+        if !names.is_empty() {
+            return names;
         }
     }
+    Vec::new()
+}
 
-    let mut names = Vec::new();
-    names_in(&value, &mut names);
-    names.dedup();
-    names
+/// Every `type` in a response value, at any of the nesting levels netget
+/// accepts (a bare action, an array of them, or the `{tools, actions}` object).
+fn names_in(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                names_in(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(name) = map.get("type").and_then(|t| t.as_str()) {
+                out.push(name.to_string());
+            }
+            for key in ["actions", "tools"] {
+                if let Some(nested) = map.get(key) {
+                    names_in(nested, out);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Every distinct mode the classifier can report, with the prose that belongs
@@ -221,6 +232,33 @@ fn lines_with<'a>(log: &'a [String], needle: &str) -> Vec<&'a String> {
     log.iter().filter(|l| l.contains(needle)).collect()
 }
 
+/// The response dumps netget writes, reassembled.
+///
+/// `Actual response:` and `Malformed response (raw):` are followed by the
+/// model's reply, and the capture stores one log line per entry — so a reply
+/// that spans lines is split across several. Looking for the JSON on the marker
+/// line alone finds it only when the model happened to answer on one line, which
+/// undercounted the recoverable runs in the first validation pass.
+fn response_blocks(log: &[String]) -> Vec<String> {
+    const FOLLOWING_LINES: usize = 8;
+    let mut blocks = Vec::new();
+    for (i, line) in log.iter().enumerate() {
+        if line.contains(ACTUAL_RESPONSE) || line.contains(MALFORMED_RAW) {
+            let end = (i + 1 + FOLLOWING_LINES).min(log.len());
+            blocks.push(log[i..end].join("\n"));
+        }
+    }
+    // Some models do answer on one line, and then the JSON is on the marker
+    // line itself rather than after it — already covered above — or on a line
+    // with no marker at all, which these catch.
+    for line in log {
+        if line.contains("\"actions\"") || line.contains("\"type\"") {
+            blocks.push(line.clone());
+        }
+    }
+    blocks
+}
+
 /// Diagnose one failed run.
 ///
 /// `check_error` is what the expectation itself complained about; it is the
@@ -299,20 +337,18 @@ pub fn classify(log: &[String], probe: &ProbeOutcome, check_error: &str) -> Diag
         // stray fence? `ActionResponse::from_str` strips a *leading* fence but
         // nothing trailing, so `{"actions":[…]}```Here is why…` is rejected
         // whole even though the JSON in it is correct and complete.
-        let wrapped: Vec<String> = log
+        let blocks = response_blocks(log);
+        let mut recovered: Vec<String> = blocks
             .iter()
-            .filter(|l| l.contains("\"actions\"") && l.contains("\"type\""))
-            .filter(|l| {
-                let t = l.trim_end();
-                t.contains("```") || !t.ends_with('}')
-            })
-            .map(|l| truncate(l, 900))
+            .flat_map(|block| recover_action_names(block))
             .collect();
+        recovered.dedup();
+        let wrapped: Vec<String> = if recovered.is_empty() {
+            Vec::new()
+        } else {
+            blocks.iter().map(|b| truncate(b, 1200)).collect()
+        };
         if !wrapped.is_empty() {
-            let recovered: Vec<String> = wrapped
-                .iter()
-                .flat_map(|line| recover_action_names(line))
-                .collect();
             let detail = if recovered.is_empty() {
                 "the reply contained action JSON and would not parse".to_string()
             } else {
