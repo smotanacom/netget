@@ -1,0 +1,131 @@
+name: Fuzz
+
+# Nightly fuzzing of the pre-authentication decoders. See fuzz/README.md.
+#
+# This is deliberately NOT a PR gate and must never become one. A fuzzer is a search,
+# not a check: it finds a defect on the run it happens to find it on, so gating a merge
+# on "did the search turn something up in 300 seconds" fails honest PRs at random and
+# passes the ones that got lucky. `ci.yml` is the gate; this job's output is a crash
+# artefact, and a crash here is a real defect whenever it appears, on whatever branch.
+#
+# What it *can* regress on is the harness itself — a target that stops compiling, or a
+# corpus that stops being readable — and the build step below fails loudly for that.
+on:
+  schedule:
+    # 04:30 UTC daily, after the nightly toolchain has published.
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds_per_target:
+        description: 'Seconds to run each target'
+        required: false
+        default: '300'
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Per-target budget. The nightly run is 300s x 17 targets ~= 85 minutes of fuzzing
+  # plus the build; a manual dispatch can ask for more.
+  SECONDS_PER_TARGET: ${{ github.event.inputs.seconds_per_target || '300' }}
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    strategy:
+      # One job per target: a crash in one must not cancel the search in the others,
+      # and a per-target job makes the crashing target obvious in the run summary.
+      fail-fast: false
+      matrix:
+        target:
+          - bencode_structure
+          - snmp_ber
+          - amqp_field_table
+          - nats_frame
+          - stomp_frame
+          - radius_packet
+          - dns_message
+          - lldp_frame
+          - cdp_frame
+          - modbus_adu
+          - coap_message
+          - hsrp_message
+          - m3ua_message
+          - bgp_message
+          - ndef_message
+          - nfc_apdu
+          - nfs_record_guard
+    steps:
+      - uses: actions/checkout@v4
+
+      # libFuzzer needs the sanitizer support that only nightly ships.
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      # The fuzz crate enables lldp/cdp (libpcap) and nfc/nfc-client (pcsclite).
+      # Keep in sync with the same list in ci.yml's registry-audit job.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpcap-dev libpcsclite-dev
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      # Separate from the run so a harness that stopped compiling is reported as a
+      # build failure rather than as a fuzzing result.
+      #
+      # AddressSanitizer is left at cargo-fuzz's default here, which is correct on Linux.
+      # It is NOT usable on macOS 26/27, where ASan deadlocks re-entrantly in its own
+      # initialiser before `main` and every target hangs having executed nothing —
+      # fuzz/README.md has the stack. Anyone reproducing a finding from this job on a Mac
+      # needs `-s none`; the inputs are identical either way, since a Rust stack overflow
+      # is caught by libFuzzer's signal handler rather than by ASan.
+      - name: Build target
+        working-directory: fuzz
+        run: cargo fuzz build ${{ matrix.target }}
+
+      # -timeout=25 makes a single slow input a reported crash rather than a job that
+      # silently overruns its budget: libFuzzer only checks the wall clock between
+      # executions, so without it one hanging input looks exactly like a long run.
+      # -rss_limit_mb catches an allocation driven by an attacker-declared length,
+      # which is a real finding in this codebase and not merely a resource limit.
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: fuzz
+        run: |
+          cargo fuzz run ${{ matrix.target }} -- \
+            -max_total_time=${{ env.SECONDS_PER_TARGET }} \
+            -timeout=25 \
+            -rss_limit_mb=2048 \
+            -print_final_stats=1
+
+      # `if: failure()` is the point of the whole job: the crashing input is the
+      # deliverable, and without it a red run says only that something broke.
+      - name: Upload crash artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: warn
+          retention-days: 30
+
+      # The corpus libFuzzer grew during the run. Feeding it back in makes the next
+      # night start where this one stopped instead of rediscovering the same headers;
+      # download it into fuzz/corpus/<target>/ to reproduce a run's coverage locally.
+      - name: Upload grown corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}/
+          if-no-files-found: warn
+          retention-days: 7
