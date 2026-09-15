@@ -82,10 +82,7 @@ use std::path::{Path, PathBuf};
 // signed with whatever ambient credentials the machine had - a client the operator pointed at
 // localhost issuing real queue operations against real AWS. This ratchet is the reason there
 // will not be a third.
-const VENDOR_FALLBACK_BASELINE: &[&str] = &[
-    "B:npm:registry.npmjs.org",
-    "B:pypi:pypi.org",
-];
+const VENDOR_FALLBACK_BASELINE: &[&str] = &["B:npm:registry.npmjs.org", "B:pypi:pypi.org"];
 
 /// SDKs that resolve an endpoint of their own when none is configured.
 ///
