@@ -297,11 +297,15 @@ fn build_safe_response(
 /// **Fails closed.** If nothing usable came back — the model emitted no WebDAV action, or the
 /// executor rejected the one it did emit — the client gets `503 Service Unavailable`, not a
 /// permissive default. A model that means to allow something says so with
-/// `send_webdav_status`; silence is not consent, and 503 is deliberately distinct from any
-/// status the model can choose, so "it refused" and "it never answered" are never confused in
-/// a packet capture or an access log.
+/// `send_webdav_status`; silence is not consent.
+///
+/// 503 is *not* reserved: `send_webdav_status` can send one too, so a packet capture cannot
+/// tell "it refused" from "it never answered". The `decision=` token on every exit path is
+/// what does — `model_answer` / `model_reject` when the model decided,
+/// `model_silent` / `fail_closed_bad_action` here, `fail_closed_llm_*` on a backend failure.
 fn build_webdav_response(
     results: Vec<ActionResult>,
+    had_action_failures: bool,
     method: &str,
     path: &str,
     status_tx: &mpsc::UnboundedSender<String>,
@@ -328,10 +332,24 @@ fn build_webdav_response(
     }
 
     let Some(payload) = find(&results) else {
-        Log::new(Some(status_tx)).warn(format!(
-            "WebDAV {} {} -> 503 (model produced no send_webdav_* action)",
-            method, path
-        ));
+        // Two different failures land here and the tag keeps them apart: the model emitted
+        // an action the executor rejected (`fail_closed_bad_action`), or it emitted nothing
+        // usable at all (`model_silent`). Both answer 503, and 503 is *not* a status the
+        // model is prevented from choosing — `send_webdav_status` will send one — so the log
+        // is the only place these stay distinct from a deliberate refusal.
+        let log = Log::new(Some(status_tx));
+        if had_action_failures {
+            log.error(format!(
+                "WebDAV {} {} decision=fail_closed_bad_action: the model's action(s) failed to \
+                 execute; answering 503",
+                method, path
+            ));
+        } else {
+            log.warn(format!(
+                "WebDAV {} {} decision=model_silent: no send_webdav_* action; answering 503",
+                method, path
+            ));
+        }
         return build_safe_response(
             503,
             vec![("Content-Type".to_string(), "text/plain".to_string())],
@@ -359,10 +377,19 @@ fn build_webdav_response(
         .unwrap_or("")
         .to_string();
 
-    Log::new(Some(status_tx)).debug(format!(
-        "WebDAV {} {} -> {} ({} bytes)",
+    // WebDAV has a real refusal vocabulary (403, 409, 423 Locked, 507 Insufficient Storage),
+    // so a model that means to refuse says so with a status of its own. That is still the
+    // *model* deciding, which is why it is `model_reject` and never `fail_closed_*`.
+    let decision = if status >= 400 {
+        "model_reject"
+    } else {
+        "model_answer"
+    };
+    Log::new(Some(status_tx)).info(format!(
+        "WebDAV {} {} decision={}: answering {} ({} bytes)",
         method,
         path,
+        decision,
         status,
         body.len()
     ));
@@ -433,7 +460,8 @@ async fn handle_webdav_request_inner(
 
     if request.body_too_large {
         Log::new(Some(&status_tx)).warn(format!(
-            "WebDAV {} {} -> 413 (body over {} bytes, no LLM call)",
+            "WebDAV {} {} decision=refused_body_too_large: body over {} bytes, answering 413 \
+             with no LLM call",
             request.method, request.path, MAX_REQUEST_BODY
         ));
         return build_safe_response(
@@ -473,7 +501,8 @@ async fn handle_webdav_request_inner(
     match request.method.as_str() {
         "OPTIONS" => {
             Log::new(Some(&status_tx)).debug(format!(
-                "WebDAV OPTIONS {} -> 200 (no LLM call)",
+                "WebDAV OPTIONS {} decision=static_answer: 200, capability advertisement, no \
+                 LLM call",
                 request.path
             ));
             return build_safe_response(
@@ -497,8 +526,14 @@ async fn handle_webdav_request_inner(
                  </D:activelock></D:lockdiscovery></D:prop>",
                 token
             );
-            Log::new(Some(&status_tx)).debug(format!(
-                "WebDAV LOCK {} -> 200 (synthetic token, never enforced, no LLM call)",
+            // **LOCK always grants.** The model is never asked, nothing is recorded, and no
+            // request is ever refused with `423 Locked` on this path — so the grant is an
+            // affirmative answer the server invents on every call. It is deliberately NOT a
+            // `fail_closed_*` tag, because the peer got a lock token; `protocol_synthetic_lock`
+            // is the honest name and is grep-able for exactly that reason. See CLAUDE.md.
+            Log::new(Some(&status_tx)).warn(format!(
+                "WebDAV LOCK {} decision=protocol_synthetic_lock: granting an unconditional, \
+                 never-enforced lock; no LLM call and no refusal is possible here",
                 request.path
             ));
             return build_safe_response(
@@ -515,7 +550,8 @@ async fn handle_webdav_request_inner(
         }
         "UNLOCK" => {
             Log::new(Some(&status_tx)).debug(format!(
-                "WebDAV UNLOCK {} -> 204 (no LLM call)",
+                "WebDAV UNLOCK {} decision=static_answer: 204, no LLM call (nothing was ever \
+                 locked)",
                 request.path
             ));
             return build_safe_response(204, Vec::new(), String::new());
@@ -560,11 +596,15 @@ async fn handle_webdav_request_inner(
     .await
     {
         Ok(execution_result) => {
+            // Read `failures` before `protocol_results` is moved into the builder: the
+            // decision has to be computed while both halves are still available.
+            let had_action_failures = !execution_result.failures.is_empty();
             for msg in execution_result.messages {
                 let _ = status_tx.send(msg);
             }
             build_webdav_response(
                 execution_result.protocol_results,
+                had_action_failures,
                 &request.method,
                 &request.path,
                 &status_tx,
@@ -574,9 +614,13 @@ async fn handle_webdav_request_inner(
             // An LLM failure is the server's fault, not the client's request being wrong, and
             // it is distinct from both a refusal (whatever status the model chose) and a
             // no-answer (503).
-            Log::new(Some(&status_tx)).warn(format!(
-                "WebDAV {} {} -> 500 (LLM error: {})",
-                request.method, request.path, e
+            let decision = match crate::utils::WireFailure::classify(&e) {
+                crate::utils::WireFailure::Overloaded => "fail_closed_llm_overloaded",
+                crate::utils::WireFailure::Unavailable => "fail_closed_llm_error",
+            };
+            Log::new(Some(&status_tx)).error(format!(
+                "WebDAV {} {} decision={}: answering 500: {}",
+                request.method, request.path, decision, e
             ));
             build_safe_response(
                 500,

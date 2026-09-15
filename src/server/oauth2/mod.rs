@@ -51,7 +51,12 @@ async fn read_body_limited(body: Incoming) -> Result<Bytes, ()> {
     {
         Ok(collected) => Ok(collected.to_bytes()),
         Err(e) => {
-            warn!("OAuth2: rejecting request body over {MAX_REQUEST_BYTES} bytes: {e}");
+            // The refusal is the protocol's, before any model call: there is no decision to
+            // make about a body the server declined to read. Every caller answers 413.
+            warn!(
+                "OAuth2 decision=refused_body_too_large: rejecting request body over \
+                 {MAX_REQUEST_BYTES} bytes: {e}"
+            );
             Err(())
         }
     }
@@ -169,6 +174,18 @@ fn oauth2_backend_failure(err: &anyhow::Error) -> (u16, &'static str) {
 /// (`crate::utils::wire_failure`).
 fn oauth2_failure_description(err: &anyhow::Error) -> &'static str {
     crate::utils::WireFailure::classify(err).prefixed_text()
+}
+
+/// The `decision=` token for a `call_llm` that returned `Err`.
+///
+/// A saturated backend and a dead one both refuse, and both are `fail_closed_` so the
+/// documented `grep decision=fail_closed` finds them — but only one is worth retrying, and
+/// an operator reading `netget.log` should not have to infer which from the HTTP status.
+fn llm_error_decision(err: &anyhow::Error) -> &'static str {
+    match crate::utils::WireFailure::classify(err) {
+        crate::utils::WireFailure::Overloaded => "fail_closed_llm_overloaded",
+        crate::utils::WireFailure::Unavailable => "fail_closed_llm_error",
+    }
 }
 
 fn json_response(status: u16, body: String) -> Response<Full<Bytes>> {
@@ -393,7 +410,10 @@ async fn handle_oauth2_request(
             .await
         }
         _ => {
-            debug!("OAuth2: Unknown endpoint {} {}", method, path);
+            debug!(
+                "OAuth2 conn={} {} {} decision=unknown_endpoint: 404, no LLM call",
+                connection_id, method, path
+            );
             Ok(json_response(
                 404,
                 json!({
@@ -500,7 +520,11 @@ async fn handle_authorize_request(
                 // Approval: redirect with the code the model minted.
                 Some((kind, payload)) if kind == "authorize" => {
                     let Some(code) = payload.get("code").and_then(|v| v.as_str()) else {
-                        error!("OAuth2 authorize action carried no code; refusing the request");
+                        Log::new(Some(&status_tx)).error(format!(
+                            "OAuth2 /authorize conn={} decision=fail_closed_bad_action: the \
+                             authorize action carried no code",
+                            connection_id
+                        ));
                         return Ok(authorize_redirect(
                             &redirect_uri,
                             &[
@@ -510,7 +534,11 @@ async fn handle_authorize_request(
                             request_state.as_deref(),
                         ));
                     };
-                    info!("OAuth2 authorization approved for {}", redirect_uri);
+                    Log::new(Some(&status_tx)).info(format!(
+                        "OAuth2 /authorize conn={} decision=model_answer: approved, redirecting \
+                         to {}",
+                        connection_id, redirect_uri
+                    ));
                     Ok(authorize_redirect(
                         &redirect_uri,
                         &[("code", code)],
@@ -530,7 +558,10 @@ async fn handle_authorize_request(
                         .and_then(|v| v.as_str())
                         .unwrap_or("access_denied");
                     let description = payload.get("error_description").and_then(|v| v.as_str());
-                    warn!("OAuth2 authorization denied: {}", error);
+                    Log::new(Some(&status_tx)).info(format!(
+                        "OAuth2 /authorize conn={} decision=model_reject: {}",
+                        connection_id, error
+                    ));
                     let mut pairs = vec![("error", error)];
                     if let Some(d) = description {
                         pairs.push(("error_description", d));
@@ -545,10 +576,19 @@ async fn handle_authorize_request(
                 // Fail closed: an authorization server that mints a code when it was told
                 // nothing is worse than one that errors.
                 other => {
+                    let log = Log::new(Some(&status_tx));
                     if let Some((kind, _)) = other {
-                        warn!("OAuth2 authorize got a '{kind}' result; treating as no decision");
+                        log.error(format!(
+                            "OAuth2 /authorize conn={} decision=fail_closed_bad_action: got a \
+                             '{}' result, which belongs to another endpoint",
+                            connection_id, kind
+                        ));
                     } else {
-                        warn!("OAuth2 authorize produced no action; denying");
+                        log.warn(format!(
+                            "OAuth2 /authorize conn={} decision=model_silent: no action \
+                             produced, denying",
+                            connection_id
+                        ));
                     }
                     Ok(authorize_redirect(
                         &redirect_uri,
@@ -571,8 +611,12 @@ async fn handle_authorize_request(
             // distinction, and no branch here can produce an authorization code.
             let (status, code) = oauth2_backend_failure(&e);
             Log::new(Some(&status_tx)).error(format!(
-                "OAuth2 /authorize failing with {} {}: {}",
-                status, code, e
+                "OAuth2 /authorize conn={} decision={}: failing with {} {}: {}",
+                connection_id,
+                llm_error_decision(&e),
+                status,
+                code,
+                e
             ));
             Ok(json_response(
                 status,
@@ -673,7 +717,10 @@ async fn handle_token_request(
         Ok(execution_result) => match first_oauth2_payload(execution_result.protocol_results) {
             Some((kind, mut payload)) if kind == "token" => {
                 strip_envelope(&mut payload);
-                info!("OAuth2 token issued");
+                Log::new(Some(&status_tx)).info(format!(
+                    "OAuth2 /token conn={} decision=model_answer: token issued",
+                    connection_id
+                ));
                 Ok(json_response(200, payload.to_string()))
             }
             // A denial must carry an error status. RFC 6749 §5.2 says 400 (401 for
@@ -682,16 +729,28 @@ async fn handle_token_request(
             Some((kind, mut payload)) if kind == "error" => {
                 let status = status_or(payload.get("status_code"), 400);
                 strip_envelope(&mut payload);
-                warn!("OAuth2 token request denied ({status})");
+                Log::new(Some(&status_tx)).info(format!(
+                    "OAuth2 /token conn={} decision=model_reject: answering {}",
+                    connection_id, status
+                ));
                 Ok(json_response(status, payload.to_string()))
             }
             // Fail closed: minting the old hardcoded `ACCESS_TOKEN_123` whenever the model
             // said nothing meant an LLM outage silently issued working credentials.
             other => {
+                let log = Log::new(Some(&status_tx));
                 if let Some((kind, _)) = other {
-                    warn!("OAuth2 token got a '{kind}' result; no token issued");
+                    log.error(format!(
+                        "OAuth2 /token conn={} decision=fail_closed_bad_action: got a '{}' \
+                         result, no token issued",
+                        connection_id, kind
+                    ));
                 } else {
-                    warn!("OAuth2 token request produced no action; refusing");
+                    log.warn(format!(
+                        "OAuth2 /token conn={} decision=model_silent: no action produced, \
+                         refusing",
+                        connection_id
+                    ));
                 }
                 Ok(json_response(
                     400,
@@ -711,8 +770,12 @@ async fn handle_token_request(
             // server error, and clients retry those.
             let (status, code) = oauth2_backend_failure(&e);
             Log::new(Some(&status_tx)).error(format!(
-                "OAuth2 /token failing with {} {}: {}",
-                status, code, e
+                "OAuth2 /token conn={} decision={}: failing with {} {}: {}",
+                connection_id,
+                llm_error_decision(&e),
+                status,
+                code,
+                e
             ));
             Ok(json_response(
                 status,
@@ -792,23 +855,43 @@ async fn handle_introspect_request(
     {
         Ok(execution_result) => match first_oauth2_payload(execution_result.protocol_results) {
             Some((kind, mut payload)) if kind == "introspect" => {
+                // `active` is the model's verdict either way, so this is `model_answer` even
+                // when it reports the token inactive — the refusal below is the *server*
+                // deciding, and the two must not read alike.
+                let active = payload.get("active").and_then(|v| v.as_bool());
                 strip_envelope(&mut payload);
-                info!("OAuth2 token introspected");
+                Log::new(Some(&status_tx)).info(format!(
+                    "OAuth2 /introspect conn={} decision=model_answer: active={:?}",
+                    connection_id, active
+                ));
                 Ok(json_response(200, payload.to_string()))
             }
             Some((kind, mut payload)) if kind == "error" => {
                 let status = status_or(payload.get("status_code"), 400);
                 strip_envelope(&mut payload);
+                Log::new(Some(&status_tx)).info(format!(
+                    "OAuth2 /introspect conn={} decision=model_reject: answering {}",
+                    connection_id, status
+                ));
                 Ok(json_response(status, payload.to_string()))
             }
             // Fail closed. The old default was `{"active": true, ...}`, so any token at all
             // introspected as valid whenever the model produced nothing — a resource server
             // trusting this endpoint would have accepted every bearer token in existence.
             other => {
+                let log = Log::new(Some(&status_tx));
                 if let Some((kind, _)) = other {
-                    warn!("OAuth2 introspect got a '{kind}' result; reporting inactive");
+                    log.error(format!(
+                        "OAuth2 /introspect conn={} decision=fail_closed_bad_action: got a '{}' \
+                         result, reporting inactive",
+                        connection_id, kind
+                    ));
                 } else {
-                    warn!("OAuth2 introspect produced no action; reporting inactive");
+                    log.warn(format!(
+                        "OAuth2 /introspect conn={} decision=model_silent: no action produced, \
+                         reporting inactive",
+                        connection_id
+                    ));
                 }
                 Ok(json_response(200, json!({"active": false}).to_string()))
             }
@@ -823,8 +906,12 @@ async fn handle_introspect_request(
             // "cannot validate" and therefore also refuses.
             let (status, code) = oauth2_backend_failure(&e);
             Log::new(Some(&status_tx)).error(format!(
-                "OAuth2 /introspect failing with {} {}: {}",
-                status, code, e
+                "OAuth2 /introspect conn={} decision={}: failing with {} {}: {}",
+                connection_id,
+                llm_error_decision(&e),
+                status,
+                code,
+                e
             ));
             Ok(json_response(
                 status,
@@ -902,8 +989,12 @@ async fn handle_revoke_request(
         // client would stop trying.
         let (status, code) = oauth2_backend_failure(&e);
         Log::new(Some(&status_tx)).error(format!(
-            "OAuth2 /revoke failing with {} {}: {}",
-            status, code, e
+            "OAuth2 /revoke conn={} decision={}: failing with {} {}: {}",
+            connection_id,
+            llm_error_decision(&e),
+            status,
+            code,
+            e
         ));
         return Ok(json_response(
             status,
@@ -915,9 +1006,16 @@ async fn handle_revoke_request(
         ));
     }
 
-    info!("OAuth2 token revoked");
     // RFC 7009 §2.2: answer 200 whether or not the token was valid. Nothing the model says
-    // changes this, which is why OAUTH2_REVOKE_EVENT declares .with_no_actions().
+    // changes this, which is why OAUTH2_REVOKE_EVENT declares .with_no_actions() — so the
+    // decision here is the *protocol's*, not the model's, and the tag says so rather than
+    // claiming a `model_answer` that was never consulted. The server keeps no tokens, so the
+    // 200 asserts nothing beyond "the request was processed".
+    Log::new(Some(&status_tx)).info(format!(
+        "OAuth2 /revoke conn={} decision=protocol_mandated_ok: RFC 7009 §2.2 fixes this reply \
+         at 200 regardless of what the model said",
+        connection_id
+    ));
     Ok(build_safe_response(200, [], String::new()))
 }
 

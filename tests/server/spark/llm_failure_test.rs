@@ -67,6 +67,28 @@ async fn test_spark_answers_error_when_llm_fails() -> E2EResult<()> {
         "the error should name the source of the failure: {text}"
     );
 
+    // A 5xx is also a status the *model* may choose with `spark_response`, so the status code
+    // alone does not say whether anything was asked. The `decision=` tag does, and
+    // `grep decision=fail_closed` is the diagnostic this repo teaches.
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+    let lines = server.get_output().await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| { l.contains("/api/v1/applications") && l.contains("decision=fail_closed_") }),
+        "the LLM-failure path must carry a fail_closed decision tag naming the request; \
+         without it a backend outage reads exactly like a model that chose to answer 500. \
+         Output was:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("decision=model_")),
+        "nothing the model decided happened here — it was never reached. Output was:\n{}",
+        lines.join("\n")
+    );
+
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after
     // the sleep expires, and the test reports it as never having happened.

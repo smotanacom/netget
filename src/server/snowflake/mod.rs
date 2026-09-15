@@ -34,7 +34,7 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error};
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::actions::protocol_trait::ActionResult;
@@ -206,6 +206,17 @@ fn json_200(body: String) -> Response<Full<Bytes>> {
     }
 }
 
+/// The `decision=` token for a `call_llm` that returned `Err`.
+///
+/// Both variants refuse and both carry the `fail_closed_` prefix the documented
+/// `grep decision=fail_closed` matches; only the saturated one is worth retrying.
+fn llm_error_decision(err: &anyhow::Error) -> &'static str {
+    match crate::utils::WireFailure::classify(err) {
+        crate::utils::WireFailure::Overloaded => "fail_closed_llm_overloaded",
+        crate::utils::WireFailure::Unavailable => "fail_closed_llm_error",
+    }
+}
+
 /// A Snowflake error envelope: `{"data":null,"code":..,"message":..,"success":false}`.
 fn error_envelope(code: &str, message: &str) -> String {
     json!({
@@ -300,7 +311,10 @@ async fn handle_snowflake_request(
             .await
         }
         _ => {
-            debug!("Snowflake: unknown endpoint {} {}", method, path);
+            debug!(
+                "Snowflake conn={} {} {} decision=unknown_endpoint: no LLM call",
+                connection_id, method, path
+            );
             Ok(json_200(error_envelope(
                 "390318",
                 "Unknown Snowflake endpoint",
@@ -421,7 +435,11 @@ async fn handle_login(
                     .to_string();
                 if token.is_empty() {
                     // Fail closed: a "success" with no token is unusable — refuse.
-                    warn!("Snowflake login_success carried no token; refusing the login");
+                    Log::new(Some(&status_tx)).error(format!(
+                        "Snowflake login conn={} user={} decision=fail_closed_bad_action: \
+                         login_success carried no token; refusing the login",
+                        connection_id, login_name
+                    ));
                     return Ok(json_200(error_envelope(
                         CODE_AUTH_UNAVAILABLE,
                         "netget: login backend returned no token",
@@ -461,7 +479,10 @@ async fn handle_login(
                     "code": Value::Null,
                     "success": true
                 });
-                Log::new(Some(&status_tx)).info(format!("Snowflake login OK for {login_name}"));
+                Log::new(Some(&status_tx)).info(format!(
+                    "Snowflake login conn={} user={} decision=model_answer: session token issued",
+                    connection_id, login_name
+                ));
                 Ok(json_200(out.to_string()))
             }
             Some((name, payload)) if name == "snowflake_error" => {
@@ -474,12 +495,19 @@ async fn handle_login(
                     .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Login refused");
-                Log::new(Some(&status_tx)).info(format!("Snowflake login denied: {code}"));
+                Log::new(Some(&status_tx)).info(format!(
+                    "Snowflake login conn={} user={} decision=model_reject: {}",
+                    connection_id, login_name, code
+                ));
                 Ok(json_200(error_envelope(code, message)))
             }
             _ => {
                 // No usable answer → refuse (fail closed), do not fabricate a token.
-                warn!("Snowflake: no login action produced; refusing the login");
+                Log::new(Some(&status_tx)).warn(format!(
+                    "Snowflake login conn={} user={} decision=model_silent: no login action \
+                     produced; refusing the login",
+                    connection_id, login_name
+                ));
                 Ok(json_200(error_envelope(
                     CODE_AUTH_UNAVAILABLE,
                     "netget: no login decision produced",
@@ -489,10 +517,12 @@ async fn handle_login(
         Err(e) => {
             // LLM outage: refuse. No token is ever issued on failure, and the
             // message marks this as a backend outage, distinct from a model denial.
-            let overloaded = crate::llm::is_overload_error(&e);
-            Log::new(Some(&status_tx)).warn(format!(
-                "Snowflake login LLM error (overload={}): {} - refusing",
-                overloaded, e
+            Log::new(Some(&status_tx)).error(format!(
+                "Snowflake login conn={} user={} decision={}: refusing, no token issued: {}",
+                connection_id,
+                login_name,
+                llm_error_decision(&e),
+                e
             ));
             Ok(json_200(error_envelope(
                 CODE_AUTH_UNAVAILABLE,
@@ -573,7 +603,10 @@ async fn handle_query(
                     "code": Value::Null,
                     "success": true
                 });
-                Log::new(Some(&status_tx)).info(format!("Snowflake query OK ({returned} rows)"));
+                Log::new(Some(&status_tx)).info(format!(
+                    "Snowflake query conn={} auth={} decision=model_answer: {} rows",
+                    connection_id, has_auth_token, returned
+                ));
                 Ok(json_200(out.to_string()))
             }
             Some((name, payload)) if name == "snowflake_error" => {
@@ -585,11 +618,18 @@ async fn handle_query(
                     .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Query failed");
-                Log::new(Some(&status_tx)).info(format!("Snowflake query error: {code}"));
+                Log::new(Some(&status_tx)).info(format!(
+                    "Snowflake query conn={} decision=model_reject: {}",
+                    connection_id, code
+                ));
                 Ok(json_200(error_envelope(code, message)))
             }
             _ => {
-                warn!("Snowflake: no query action produced; returning error envelope");
+                Log::new(Some(&status_tx)).warn(format!(
+                    "Snowflake query conn={} decision=model_silent: no query action produced; \
+                     returning an error envelope",
+                    connection_id
+                ));
                 Ok(json_200(error_envelope(
                     CODE_INTERNAL,
                     "netget: no query result produced",
@@ -598,9 +638,11 @@ async fn handle_query(
         },
         Err(e) => {
             let overloaded = crate::llm::is_overload_error(&e);
-            Log::new(Some(&status_tx)).warn(format!(
-                "Snowflake query LLM error (overload={}): {}",
-                overloaded, e
+            Log::new(Some(&status_tx)).error(format!(
+                "Snowflake query conn={} decision={}: {}",
+                connection_id,
+                llm_error_decision(&e),
+                e
             ));
             let code = if overloaded {
                 CODE_REQUEST_TIMEOUT
@@ -653,7 +695,10 @@ async fn handle_session(
                     "code": Value::Null,
                     "success": true
                 });
-                Log::new(Some(&status_tx)).info(format!("Snowflake session OK ({operation})"));
+                Log::new(Some(&status_tx)).info(format!(
+                    "Snowflake session conn={} op={} decision=model_answer",
+                    connection_id, operation
+                ));
                 Ok(json_200(out.to_string()))
             }
             Some((name, payload)) if name == "snowflake_error" => {
@@ -665,18 +710,37 @@ async fn handle_session(
                     .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Session request failed");
+                Log::new(Some(&status_tx)).info(format!(
+                    "Snowflake session conn={} op={} decision=model_reject: {}",
+                    connection_id, operation, code
+                ));
                 Ok(json_200(error_envelope(code, message)))
             }
             _ => {
                 // A logout with no answer is harmless to ack; a token renewal with no
                 // answer must fail closed (no renewed token). Distinguish by operation.
                 if operation == "logout" {
+                    // **This arm answers `success: true` when the model said nothing.** It is
+                    // the one affirmative default in this protocol, so it is deliberately NOT
+                    // tagged `fail_closed_*`: that prefix is what an operator greps for, and a
+                    // line claiming it while the peer got an OK would be a lie. The server
+                    // keeps no sessions, so there is nothing a logout could fail to do — but
+                    // the ack is still the *server's* assertion, not the model's.
+                    Log::new(Some(&status_tx)).warn(format!(
+                        "Snowflake session conn={} op=logout decision=default_logout_ack: no \
+                         model answer, acking anyway (success:true was not decided by the model)",
+                        connection_id
+                    ));
                     Ok(json_200(
                         json!({"data": {}, "message": Value::Null, "code": Value::Null, "success": true})
                             .to_string(),
                     ))
                 } else {
-                    warn!("Snowflake: no session action produced for token_renew; refusing");
+                    Log::new(Some(&status_tx)).warn(format!(
+                        "Snowflake session conn={} op={} decision=model_silent: no session \
+                         action produced; refusing the renewal",
+                        connection_id, operation
+                    ));
                     Ok(json_200(error_envelope(
                         CODE_INTERNAL,
                         "netget: no session decision produced",
@@ -685,7 +749,13 @@ async fn handle_session(
             }
         },
         Err(e) => {
-            Log::new(Some(&status_tx)).warn(format!("Snowflake session LLM error: {}", e));
+            Log::new(Some(&status_tx)).error(format!(
+                "Snowflake session conn={} op={} decision={}: {}",
+                connection_id,
+                operation,
+                llm_error_decision(&e),
+                e
+            ));
             Ok(json_200(error_envelope(
                 CODE_INTERNAL,
                 crate::utils::WireFailure::classify(&e).prefixed_text(),

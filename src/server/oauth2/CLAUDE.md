@@ -74,6 +74,72 @@ Three rules follow, and they are why the endpoints look the way they do:
 If you add an endpoint, tag its payload and add a `match` arm. An untagged payload falls into
 the fail-closed branch, which is the safe direction.
 
+## Failure behaviour
+
+Every terminal outcome carries a `decision=` token on the status stream and in `netget.log`,
+because **nothing on the wire distinguishes them**: a 500 the model chose with
+`oauth2_error_response` and a 500 the server fell back to are the same bytes. `grep
+decision=fail_closed` is the diagnostic; it only works if the tag is there.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| `/authorize` — model returned `oauth2_authorize_response` with a `code` | `302` to `redirect_uri` with `code=` | INFO `decision=model_answer` |
+| `/authorize` — model returned `oauth2_error_response` | `302` with `error=`, no code | INFO `decision=model_reject` |
+| `/authorize` — authorize action carried no `code`, or a payload belonging to another endpoint | `302` with `error=server_error` | ERROR `decision=fail_closed_bad_action` |
+| `/authorize` — no action at all | `302` with `error=server_error` | WARN `decision=model_silent` |
+| `/authorize` — `call_llm` failed | `500`/`503` + RFC 6749 §5.2 code, category text only | ERROR `decision=fail_closed_llm_error` / `..._llm_overloaded` |
+| `/token` — model returned `oauth2_token_response` | `200` + the token | INFO `decision=model_answer` |
+| `/token` — model returned `oauth2_error_response` | its `status_code`, default `400` | INFO `decision=model_reject` |
+| `/token` — payload for another endpoint | `400 invalid_grant` | ERROR `decision=fail_closed_bad_action` |
+| `/token` — no action | `400 invalid_grant` | WARN `decision=model_silent` |
+| `/token` — `call_llm` failed | `500`/`503`, **never** `invalid_grant` | ERROR `decision=fail_closed_llm_error` / `..._llm_overloaded` |
+| `/introspect` — model returned `oauth2_introspect_response` | `200` + its verdict (`active` either way) | INFO `decision=model_answer` |
+| `/introspect` — model returned `oauth2_error_response` | its `status_code`, default `400` | INFO `decision=model_reject` |
+| `/introspect` — payload for another endpoint | `200 {"active": false}` | ERROR `decision=fail_closed_bad_action` |
+| `/introspect` — no action | `200 {"active": false}` | WARN `decision=model_silent` |
+| `/introspect` — `call_llm` failed | `500`/`503`, **not** `{"active": false}` | ERROR `decision=fail_closed_llm_error` / `..._llm_overloaded` |
+| `/revoke` — `call_llm` succeeded | `200`, empty body | INFO `decision=protocol_mandated_ok` |
+| `/revoke` — `call_llm` failed | `500`/`503` | ERROR `decision=fail_closed_llm_error` / `..._llm_overloaded` |
+| any endpoint — body over `MAX_REQUEST_BYTES` | `413`, no LLM call | WARN `decision=refused_body_too_large` |
+| unrouted path | `404`, no LLM call | DEBUG `decision=unknown_endpoint` |
+
+Two tokens here are not from the shared vocabulary, and both name a decision the **protocol**
+made rather than the model:
+
+- `decision=protocol_mandated_ok` — `/revoke`'s success path. RFC 7009 §2.2 fixes the reply at
+  `200` whether or not the token existed, which is why `OAUTH2_REVOKE_EVENT` declares
+  `.with_no_actions()`. The model is asked (so an outage is still detectable) but its answer
+  changes nothing, so calling this `model_answer` would credit a decision nobody made. Note
+  that the `200` asserts less than it looks like: this server stores no tokens, so nothing was
+  revoked in any case.
+- `decision=refused_body_too_large` — already in use elsewhere in the tree, emitted from
+  `read_body_limited`, which is shared by all four endpoints and so does not name one.
+
+**`fail_closed_llm_overloaded`** is emitted where `WireFailure::classify` says `Overloaded`;
+it keeps the `fail_closed_` prefix so the documented grep still finds it, while telling an
+operator the backend was saturated rather than dead.
+
+### The historical fail-open is gone — verified, not assumed
+
+The root `CLAUDE.md` names this protocol as *the* worked example of a fail-open: no action
+meant a hardcoded `AUTH_CODE_123`, a hardcoded `ACCESS_TOKEN_123`, and introspection answering
+`{"active": true}` for every bearer token. **That is history.** Re-read against the current
+`mod.rs` (September 2026): every one of the four endpoints refuses when the model produces
+nothing usable, and no branch of any of them can synthesise a credential — there is no
+literal token, code or `active: true` anywhere in the file. The section above is derived from
+that reading rather than from the older prose, and `tests/server/oauth2/llm_failure_test.rs`
+pins all four.
+
+Two things that are *not* fail-opens but look adjacent, recorded so the next reader does not
+re-flag them:
+
+- `/introspect` answering `200 {"active": false}` when the model said nothing is affirmative
+  in shape but negative in content, and a resource server refuses on it. The **outage** path
+  deliberately does not use it, because it is a statement that the server looked.
+- An `oauth2_error_response` may carry `status_code: 200`. That is the model explicitly
+  choosing a status, tagged `model_reject`, and `status_or` only stops it wrapping out of
+  range — it does not second-guess an in-range choice.
+
 ## Hostile input
 
 Three bounds, each of which was absent and each of which turned an attack into a *success*

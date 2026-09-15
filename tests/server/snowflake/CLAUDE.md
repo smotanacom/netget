@@ -42,3 +42,24 @@ wording; a Snowflake driver prints that string to a human.
   `code == "390100"`, and `data` is null (no token leaked on a refusal).
 
 Localhost only (`127.0.0.1`), plaintext HTTP (the server does not do TLS).
+
+## The `decision=` tag, and why it is asserted in two files
+
+Every Snowflake reply is HTTP `200` with a JSON `success` flag, so the status line carries no
+information and a `success:false` envelope looks the same whether the model refused or netget
+could not reach a model at all. The `decision=` token in `netget.log` and on the status stream
+is the only place those separate, and it is asserted from both sides deliberately:
+
+- `e2e_test.rs::test_snowflake_login_refused` — the model answers `snowflake_error`. Asserts a
+  line containing `Snowflake login` and `decision=model_reject`, and that **no** line contains
+  `decision=fail_closed_`.
+- `llm_failure_test.rs::test_snowflake_refuses_login_when_llm_fails` — no rule matches, the
+  mock 500s, `call_llm` returns `Err`. Asserts `Snowflake login` with `decision=fail_closed_`,
+  and that **no** line says `decision=model_reject`.
+
+Either assertion alone would pass against a server that tagged both outcomes identically. The
+pair is the actual contract.
+
+Not covered: `decision=default_logout_ack`, the one arm that answers `success:true` when the
+model said nothing — see `src/server/snowflake/CLAUDE.md` for why it is tagged that way rather
+than as a fail-closed, and why it is (currently) harmless.
