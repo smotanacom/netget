@@ -7,7 +7,7 @@
     --test server::tuntap::packet_test -- --test-threads=100
 ```
 
-48 tests, all passing, none `#[ignore]`d, none gated on a binary being installed.
+51 tests (35 in `packet_test.rs`, 16 in `e2e_test.rs`), all passing, none `#[ignore]`d, none gated on a binary being installed.
 
 ## The constraint that shapes everything here
 
