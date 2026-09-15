@@ -169,7 +169,7 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   `dns`, `doh`, `dot`, `http`, `ntp`, `openai`, `snmp`, `tcp`, `udp`, `whois`; August 2026 added
   fourteen that are each driven by the protocol's own third-party client in a test that is **not**
   `#[ignore]`d — `amqp` (lapin), `cassandra` (scylla), `coap` (coap-lite), `imap` (async-imap),
-  `ldap` (ldap3), `mongodb` (official driver), `mssql` (tiberius), `mysql` (mysql_async),
+  `ldap` (ldap3), `mongodb` (official driver), `mssql` (tiberius), `mysql` (mysql_async — but a *current* `mysql` client cannot connect at all; see below),
   `postgresql` (tokio-postgres), `redis` (redis-rs), `sqs` (aws-sdk-sqs), `webdav`
   (reqwest_dav), `zookeeper` (zookeeper-async). Each protocol's `metadata()` names its client.
   **August 28 2026 added two more**: `npm` (the real npm CLI — `npm view` resolves the packument
@@ -314,6 +314,15 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   2131 decoder: an independent reading of the spec, but not an independent implementation.
 
   Re-derive this list rather than trusting it; the counts drift.
+
+  **`mysql` is the worked example of one client agreeing with one bug**, found in September
+  2026 by pointing the real CLI at it rather than by reading. This server offers
+  `mysql_native_password`; the shipping MySQL 9.x client no longer carries that plugin and
+  fails to connect outright. So the Beta rating rests entirely on `mysql_async` being more
+  permissive than the client a user would actually reach for. The evidence is real and the
+  rating is not withdrawn — but it is exactly why the Stable bar above asks for **two**
+  independent clients, and why "a real client completes a session" is worth asking *which*
+  client, and which version.
 
   **And check that the mechanism giving the evidence its force actually covers every verb the
   rating names.** `s3`'s Beta rests on each operation being pinned to `expect_calls(1)` through

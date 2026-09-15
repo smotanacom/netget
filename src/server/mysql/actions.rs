@@ -84,10 +84,21 @@ impl Protocol for MysqlProtocol {
             .state(DevelopmentState::Beta)
             .implementation("opensrv-mysql v0.7 protocol library")
             .llm_control("Query responses (result sets, OK packets, ERR packets)")
-            .e2e_testing("mysql_async client crate, text and binary (prepared) protocols")
+            .e2e_testing(
+                "mysql_async client crate, text and binary (prepared) protocols. Note what \
+                 that does NOT cover: this server offers `mysql_native_password`, which the \
+                 shipping MySQL 9.x client no longer carries, so `mysql` 9.x fails to connect \
+                 at all with 'Authentication plugin cannot be loaded'. The Beta rating \
+                 therefore rests on mysql_async being more permissive than the client a user \
+                 would reach for. Found by the real-model eval driving the CLI; the suite \
+                 pins the 8.0 binary.",
+            )
             .notes(
                 "No authentication, no TLS. Prepared statements work and report their `?` \
-                 count, but parameter values are not substituted - the model sees the `?`",
+                 count, but parameter values are not substituted - the model sees the `?`. \
+                 Offering caching_sha2_password, which 9.x expects, is what would let a \
+                 current client connect and is the single thing standing between this and a \
+                 second independent client.",
             )
             .build()
     }
