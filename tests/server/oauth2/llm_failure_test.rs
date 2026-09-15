@@ -42,6 +42,32 @@ fn startup_only(prompt: &str) -> NetGetConfig {
     })
 }
 
+/// Every endpoint above answers 5xx on a backend outage — but a 5xx is also what a *model*
+/// could in principle ask for, and nothing on the wire says which happened. The `decision=`
+/// tag is the only place that distinction survives, so assert it: the line must name the
+/// endpoint and carry a `fail_closed_` token, never `model_reject` or `model_silent`.
+///
+/// `grep decision=fail_closed` is the diagnostic the root CLAUDE.md teaches, and it is worth
+/// nothing if the tag is absent on the one path that matters.
+fn assert_fail_closed_tag(lines: &[String], endpoint: &str) {
+    let tagged: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains(endpoint) && l.contains("decision=fail_closed_"))
+        .collect();
+    assert!(
+        !tagged.is_empty(),
+        "no `decision=fail_closed_*` line for {endpoint}: a backend outage and a model refusal \
+         are indistinguishable without it. Output was:\n{}",
+        lines.join("\n")
+    );
+    for line in &tagged {
+        assert!(
+            !line.contains("decision=model_"),
+            "a line cannot be both fail-closed and a model decision: {line}"
+        );
+    }
+}
+
 async fn post_form(url: &str, body: &str) -> E2EResult<(u16, Value)> {
     let client = reqwest::Client::new();
     let response = tokio::time::timeout(
@@ -93,6 +119,11 @@ async fn test_oauth2_token_reports_a_server_error_not_invalid_grant() -> E2EResu
         "a failure must never hand out a token: {body}"
     );
 
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+    assert_fail_closed_tag(&server.get_output().await, "OAuth2 /token");
+
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after
     // the sleep expires, and the test reports it as never having happened.
@@ -130,6 +161,11 @@ async fn test_oauth2_introspect_reports_a_server_error_not_inactive() -> E2EResu
          is indistinguishable from a real denial: {body}"
     );
 
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+    assert_fail_closed_tag(&server.get_output().await, "OAuth2 /introspect");
+
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after
     // the sleep expires, and the test reports it as never having happened.
@@ -155,6 +191,21 @@ async fn test_oauth2_revoke_reports_a_server_error_not_success() -> E2EResult<()
         (500..600).contains(&status),
         "RFC 7009 2.2.1: answer 503 so the client assumes the token still exists and retries. \
          A 200 says it is gone, and nothing processed the request: {status}"
+    );
+
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+    let lines = server.get_output().await;
+    assert_fail_closed_tag(&lines, "OAuth2 /revoke");
+    // `decision=protocol_mandated_ok` is the tag on the *success* path, where RFC 7009 fixes
+    // the reply at 200 whatever the model said. It must not appear when nothing was processed.
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("decision=protocol_mandated_ok")),
+        "an outage must not be logged as the RFC-mandated 200: {}",
+        lines.join("\n")
     );
 
     // Wait for the exchange the mocks describe, rather than trusting a fixed
@@ -211,6 +262,11 @@ async fn test_oauth2_authorize_reports_a_server_error() -> E2EResult<()> {
         ),
         "expected an RFC 6749 5.2 server-side error code: {text}"
     );
+
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+    assert_fail_closed_tag(&server.get_output().await, "OAuth2 /authorize");
 
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after

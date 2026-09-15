@@ -32,7 +32,13 @@ impl BluetoothBleHeartRate {
         } else {
             format!("{trimmed}. {SENTENCE}")
         };
-        crate::server::bluetooth_ble::BluetoothBle::spawn_with_llm_actions(
+        // This profile decides nothing once the radio is up: the base stack owns the event
+        // loop, and every `decision=` a read, write or subscribe produces is emitted there
+        // against `BluetoothBleProtocol`. The one terminal outcome the profile does own is
+        // this — the shared radio would not come up, so no Heart Rate Service was published.
+        let log_tx = status_tx.clone();
+        let log_name = device_name.clone();
+        match crate::server::bluetooth_ble::BluetoothBle::spawn_with_llm_actions(
             device_name,
             llm_client,
             app_state,
@@ -41,7 +47,29 @@ impl BluetoothBleHeartRate {
             hr_instruction,
         )
         .await
+        {
+            Ok(addr) => Ok(addr),
+            Err(e) => {
+                crate::console_error!(log_tx, "{}", radio_start_failure(&log_name, &e));
+                Err(e)
+            }
+        }
     }
+}
+
+/// The single source of the text used when the shared BLE radio could not be brought up.
+///
+/// `pub` so a test can assert the `decision=` tag without claiming a Bluetooth adapter: this is
+/// the profile's only terminal outcome of its own, and the project forbids `#[cfg(test)]`
+/// modules in `src/`. No model is consulted on this path — the radio fails before any event
+/// exists — so the token is deliberately not one of the `fail_closed_llm_*` pair, which would
+/// send someone to restart Ollama over an adapter that is switched off.
+pub fn radio_start_failure(device_name: &str, err: &anyhow::Error) -> String {
+    format!(
+        "BLE Heart Rate Service '{device_name}' could not start \
+         (decision=refused_adapter_unavailable): {err}. No Heart Rate Service was published \
+         and nothing is advertising."
+    )
 }
 
 #[cfg(not(feature = "bluetooth-ble-heart-rate"))]

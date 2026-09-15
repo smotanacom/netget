@@ -318,3 +318,21 @@ test_state.stop().await?;
 6. **Large Requests**: Send STUN request with many attributes (test maximum size handling)
 7. **Malformed Attributes**: Attribute length exceeds message length, partial attributes
 8. **Performance Benchmarking**: Measure requests/second with and without LLM (scripting future)
+
+## `llm_failure_test.rs`
+
+One test, `test_stun_answers_static_response_when_llm_fails`. The prompt gives the server an
+instruction, which is what opts it into model control (`operator_wants_dynamic`); the mock then
+has no rule for `stun_binding_request`, so `call_llm` returns `Err`.
+
+It asserts the client still gets a correct Binding Success Response — transaction ID echoed,
+XOR-MAPPED-ADDRESS decoding to its own source address, decoded from the raw bytes rather than
+through the server's own builder — **and** that the log carries
+`decision=static_fallback_llm_error`, and not `decision=static_default`.
+
+Both halves are needed because those two paths put *byte-identical* datagrams on the wire: one
+is a server nobody asked to consult a model, the other is a server whose backend went down.
+The token deliberately is not `fail_closed_*`, since the peer did get an affirmative answer.
+See the failure-behaviour table in `src/server/stun/CLAUDE.md`.
+
+LLM call budget: 1 (startup); the per-request call is *made to fail on purpose*.

@@ -52,6 +52,39 @@ server answers **500** rather than a bare `[]` with 200 — an empty array is a 
 applications/jobs" result and a client cannot tell it from a backend that never ran. The failure
 path (a JSON *object* with an `error` field) is structurally distinct from any success array.
 
+## Failure behaviour
+
+**Every terminal outcome is decided inside `src/server/spark/mod.rs`.** This server does *not*
+delegate to `src/server/http_common/handler.rs` — it owns its own `service_fn`, its own
+`build_spark_response`/`build_spark_error`, and its own LLM call site — so the whole decision
+table below lives in one file and there is no shared handler to consult.
+
+The wire cannot carry the distinction on its own: `send_spark_error` lets the model choose a
+status, so a model-chosen 500 and a fail-closed 500 are the same three digits. The `decision=`
+token is where they separate.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Model returned `spark_response` with a status < 400 | that status + the model's body | INFO `decision=model_answer` |
+| Model returned `spark_response` with a status ≥ 400 | that status + the model's body | INFO `decision=model_reject` |
+| Model answered with no `spark_response` action | `500` + `{"error": …, "status": 500}` | WARN `decision=model_silent` |
+| `call_llm` failed (unavailable) | `500` + JSON error object, `WireFailure` category text only | ERROR `decision=fail_closed_llm_error` |
+| `call_llm` failed (overloaded) | `503` + JSON error object | ERROR `decision=fail_closed_llm_overloaded` |
+| `GET /api/v1/version` | `200` + `{"spark": …}` | DEBUG `decision=static_answer` |
+| Unrecognised path | `404` plain text | DEBUG `decision=unknown_endpoint` |
+
+`decision=static_answer` and `decision=unknown_endpoint` are invented tokens for the two paths
+the model never sees: calling either `model_answer` would credit a decision nobody made. Both
+are DEBUG, so they stay in `netget.log` and off the status stream — the two LLM-failure tokens
+and `model_silent` are what an operator greps.
+
+**Known defect, unrelated to tagging and left alone in this pass:** `handle_spark_request_inner`
+narrows the model's `status` with `data.get("status").and_then(|v| v.as_u64()).unwrap_or(200) as
+u16`. That is the truncating cast `oauth2` replaced with `status_or` — `65736 as u16 == 200`, so
+a nonsense status becomes the one code a client reads as success. Here the payoff is a bogus
+monitoring response rather than a credential, which is why it is recorded rather than fixed
+mid-sweep, but it should use a checked `u16::try_from` + range filter.
+
 ## Startup parameters
 
 `spark_version` (optional, default `3.5.1`) — the version in the static `/api/v1/version` banner,

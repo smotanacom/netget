@@ -1,7 +1,8 @@
 # WebDAV Protocol E2E Tests
 
-Three tests in `test.rs`, declared in `tests/server/webdav/mod.rs` (which *is* wired into
-`tests/server/mod.rs` — check before assuming, that is the repo's largest silent test hole).
+Five tests across two files, both declared in `tests/server/webdav/mod.rs` (which *is* wired
+into `tests/server/mod.rs` — check before assuming, that is the repo's largest silent test
+hole): three in `test.rs` driven by `reqwest_dav`, and two in `decision_tag_test.rs`.
 
 ## Client
 
@@ -75,6 +76,32 @@ Four things at once:
 - OPTIONS → `200` with `Allow` advertising PROPFIND/MKCOL/PUT/LOCK, at **zero** LLM cost. No
   mock rule matches an OPTIONS event, so if it ever started reaching the model the mock would
   answer HTTP 500 and `verify_mocks()` would report the unexpected call.
+
+## `decision_tag_test.rs` — who decided, not just what was answered
+
+WebDAV can express a refusal on the wire (`403`, `409`, `423 Locked`, `507`), so `test.rs`
+above can assert the model's chosen status reaches the client. What a status cannot say is
+**who chose it**: `send_webdav_status` will happily send a `503` or a `500`, which are exactly
+the codes the server falls back to. The `decision=` tag in `netget.log` and on the status
+stream is the only place the two separate, and these two tests are a deliberate pair —
+
+- `test_webdav_llm_failure_is_tagged_fail_closed`: the mock answers a `webdav_request` with raw
+  text that is not an action, so the repair loop exhausts and `call_llm` returns `Err`. Asserts
+  a 5xx with **no `multistatus` body** (an empty multistatus would be an affirmative claim that
+  the collection exists and is empty), a log line carrying `decision=fail_closed_` and naming
+  `PROPFIND`, and that **no** line records a `decision=model_`.
+- `test_webdav_model_refusal_is_tagged_model_reject`: the model refuses a `PUT` with `423
+  Locked`. Asserts the 423 reaches the client verbatim, that it is logged
+  `decision=model_reject`, and that **no** line says `decision=fail_closed_` — tagging it so
+  would make the documented `grep decision=fail_closed` report a backend outage that never
+  happened.
+
+Either test alone would pass against a server that tagged every outcome identically, which is
+why they are written and maintained as a pair. `wait_for_any` gates both assertions; neither
+sleeps.
+
+Not covered here: the `LOCK` path, which always grants an unenforced lock and logs
+`decision=protocol_synthetic_lock` — see `src/server/webdav/CLAUDE.md` for why that stands.
 
 ## Expected runtime
 

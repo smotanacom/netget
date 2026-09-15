@@ -317,3 +317,28 @@ the tracing and status channels, naming the peer and saying explicitly that no r
 possible, plus a WARN when `crate::llm::is_overload_error` identifies capacity exhaustion.
 `tests/server/udp/llm_failure_test.rs` asserts both halves — nothing on the wire, and the log
 line that explains it.
+
+### The table
+
+Every datagram ends in exactly one `decision=` line. Four of the six outcomes put **nothing**
+on the wire, so the log is the only place they differ — which is exactly why this protocol
+needs the tags most.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Model answered `send_udp_response` | that datagram | INFO `decision=model_answer` |
+| Model answered `send_to_address` | a datagram to the **named** address; nothing to this peer | INFO `decision=model_answer` (names the action) |
+| Model answered `ignore_datagram` | nothing | INFO `decision=model_reject` |
+| Model answered with no usable action | nothing | WARN `decision=model_silent` |
+| The action could not be executed | nothing | ERROR `decision=fail_closed_bad_action` |
+| The reply could not be put on the socket | nothing | ERROR `decision=protocol_error` |
+| Backend failed / saturated | nothing | ERROR `decision=fail_closed_llm_error` / `decision=fail_closed_llm_overloaded` |
+
+`decision=protocol_error` is the one invented token here: nothing about the model went wrong,
+the `send_to` itself did. It is kept separate from `fail_closed_*` so a `grep
+decision=fail_closed` audit is not diluted by socket errors.
+
+`tests/server/udp/decision_tag_test.rs` pins the `model_reject` and `model_silent` rows,
+asserting for each that **nothing** reached the socket *and* that the right token reached the
+log. Either assertion alone is meaningless: silence with no log is the defect, and a log line
+with a datagram beside it would mean the tag was lying.

@@ -10,6 +10,12 @@
 //!
 //! The response is decoded here from the raw bytes against the RFC's header and attribute
 //! layout, not through the server's own builder.
+//!
+//! Because the fallback bytes are byte-identical to the ones a server with no instruction
+//! would have sent, the test also asserts the log tag. The token is `static_fallback_llm_error`
+//! rather than a `fail_closed_*` one precisely because the peer *did* get an affirmative
+//! answer here; tagging it `fail_closed_` would mislead anyone grepping for requests that went
+//! unanswered. See the failure-behaviour table in `src/server/stun/CLAUDE.md`.
 
 #![cfg(feature = "stun")]
 
@@ -90,6 +96,29 @@ async fn test_stun_answers_static_response_when_llm_fails() -> E2EResult<()> {
     assert_eq!(
         mapped, client_addr,
         "the static fallback must reflect the client's own source address"
+    );
+
+    // The bytes on the wire are identical to the ones a server with no instruction at all
+    // would have sent, so the wire cannot say which path produced them. The log has to: a
+    // backend outage and an operator who never opted in must not read the same.
+    server
+        .wait_for_any(&["decision=static_fallback_llm_error"], 30)
+        .await;
+    let lines = server.get_output().await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("decision=static_fallback_llm_error")),
+        "the fallback must be logged with a decision= tag; `static_default` (no model asked) \
+         and `static_fallback_llm_error` (asked, backend failed) send the same bytes and are \
+         otherwise indistinguishable. Output was:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("decision=static_default")),
+        "this server has an instruction, so it opted into model control: the static default \
+         path must not have run. Output was:\n{}",
+        lines.join("\n")
     );
 
     // Wait for the exchange the mocks describe, rather than trusting a fixed

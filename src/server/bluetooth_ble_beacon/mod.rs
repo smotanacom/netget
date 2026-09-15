@@ -30,13 +30,13 @@ pub mod payload;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::llm::action_helper::call_llm;
 use crate::llm::ollama_client::OllamaClient;
 use crate::protocol::Event;
 use crate::state::app_state::AppState;
-use crate::{console_error, console_info};
+use crate::{console_error, console_info, console_warn};
 use actions::{BluetoothBleBeaconProtocol, BEACON_STARTED_EVENT};
 use advertise::BeaconAdvertiser;
 use payload::BeaconFrame;
@@ -104,22 +104,30 @@ impl BeaconServer {
 /// transient hiccup. The project forbids `#[cfg(test)]` modules in `src/`, and on macOS and
 /// Windows `spawn` refuses before it ever reaches the model call, so this is the only part of
 /// the fail-closed path a test can reach off Linux.
+///
+/// It carries the `decision=` tag as well as the prose, because a beacon puts nothing on the
+/// wire on any failure path: the log line *is* the whole distinction between a saturated
+/// backend, a broken one, and a handler that deliberately configured no frame.
 pub fn beacon_configuration_failure(
     device_name: &str,
     adapter: &str,
     err: &anyhow::Error,
 ) -> String {
-    let overloaded = if crate::llm::is_overload_error(err) {
-        " The LLM backend was saturated rather than broken, so starting the server again may \
-         succeed."
+    let (decision, overloaded) = if crate::llm::is_overload_error(err) {
+        (
+            "decision=fail_closed_llm_overloaded",
+            " The LLM backend was saturated rather than broken, so starting the server again may \
+             succeed.",
+        )
     } else {
-        ""
+        ("decision=fail_closed_llm_error", "")
     };
     format!(
-        "BLE beacon '{device_name}' on adapter {adapter} could not be configured: the handler \
-         failed ({err}). NOTHING is being advertised and the server is not running - a beacon \
-         is its advertising payload, so there is no useful default to fall back to and \
-         inventing one would put an unattributable frame on the air.{overloaded}"
+        "BLE beacon '{device_name}' on adapter {adapter} could not be configured \
+         ({decision}): the handler failed ({err}). NOTHING is being advertised and the server \
+         is not running - a beacon is its advertising payload, so there is no useful default \
+         to fall back to and inventing one would put an unattributable frame on the \
+         air.{overloaded}"
     )
 }
 
@@ -146,7 +154,23 @@ impl BluetoothBleBeacon {
 
         // Open the adapter first: everything below assumes an advertisement can be registered,
         // and a failure here is the honest "this platform/host cannot do it" answer.
-        let advertiser = BeaconAdvertiser::open(device_name.clone(), adapter).await?;
+        //
+        // Tagged with its own token rather than a `fail_closed_llm_*` one: no model was asked,
+        // and conflating "the radio cannot do this at all" with "the backend was down" would
+        // send someone to restart Ollama over a macOS CoreBluetooth limit.
+        let advertiser = match BeaconAdvertiser::open(device_name.clone(), adapter).await {
+            Ok(advertiser) => advertiser,
+            Err(e) => {
+                console_error!(
+                    status_tx,
+                    "BLE beacon '{}' cannot start (decision=refused_adapter_unavailable): {}. \
+                     NOTHING is being advertised and the server is not running.",
+                    device_name,
+                    e
+                );
+                return Err(e);
+            }
+        };
         let adapter_name = advertiser.adapter_name().to_string();
 
         console_info!(
@@ -214,18 +238,64 @@ impl BluetoothBleBeacon {
         // No fallback beacon. If the model (or the configured handler) named no frame, nothing
         // is broadcast and that is said out loud — inventing a default UUID would put a beacon
         // on the air that nobody asked for and that no scanner could attribute.
-        if server.current().await.is_none() {
-            warn!(
-                "BLE beacon started but nothing is being advertised: no start_ibeacon / \
-                 start_eddystone_uid / start_eddystone_url action was produced ({} action(s) \
-                 returned)",
-                result.raw_actions.len()
-            );
-            let _ = status_tx.send(
-                "[WARN] BLE beacon is idle: no beacon frame was configured. Use start_ibeacon, \
-                 start_eddystone_uid or start_eddystone_url to begin broadcasting."
-                    .to_string(),
-            );
+        //
+        // Which *kind* of nothing it is has to come from the log, because the air is identical
+        // in all three cases. What is on air is the authority — an action that claimed to start
+        // a frame and failed leaves `current()` empty — so the classification is taken from
+        // `failures` and `raw_actions` only once that has been checked.
+        let refused: Vec<String> = result
+            .failures
+            .iter()
+            .map(|f| format!("{}: {}", f.action, f.error))
+            .collect();
+        let asked_to_stop = result
+            .raw_actions
+            .iter()
+            .any(|a| a.get("type").and_then(|v| v.as_str()) == Some("stop_beacon"));
+        let action_count = result.raw_actions.len();
+
+        match server.current().await {
+            Some(frame) => {
+                console_info!(
+                    status_tx,
+                    "BLE beacon '{}' on adapter {} is advertising (decision=model_answer): {}",
+                    device_name,
+                    adapter_name,
+                    frame.describe()
+                );
+            }
+            None if !refused.is_empty() => {
+                console_error!(
+                    status_tx,
+                    "BLE beacon '{}' on adapter {} is idle \
+                     (decision=fail_closed_bad_action): the handler answered, but no action it \
+                     produced could be executed ({}). NOTHING is being advertised.",
+                    device_name,
+                    adapter_name,
+                    refused.join("; ")
+                );
+            }
+            None if asked_to_stop => {
+                console_info!(
+                    status_tx,
+                    "BLE beacon '{}' on adapter {} is idle (decision=model_reject): the handler \
+                     answered with stop_beacon, so nothing is advertised on purpose.",
+                    device_name,
+                    adapter_name
+                );
+            }
+            None => {
+                console_warn!(
+                    status_tx,
+                    "BLE beacon '{}' on adapter {} is idle (decision=model_silent): no \
+                     start_ibeacon / start_eddystone_uid / start_eddystone_url action was \
+                     produced ({} action(s) returned). NOTHING is being advertised; use one of \
+                     those actions to begin broadcasting.",
+                    device_name,
+                    adapter_name,
+                    action_count
+                );
+            }
         }
 
         // BLE has no IP address or port; the registry's display layer wants a SocketAddr, so

@@ -310,10 +310,19 @@ impl Pop3Session {
                 // A POP3 client waits for a banner before saying anything, so dropping the
                 // socket here left it blocked until its own timeout. RFC 1939 allows the
                 // greeting to be `-ERR`, and RFC 2449 gives the reason a machine-readable code.
+                let token = if crate::utils::WireFailure::classify(&e).is_overloaded() {
+                    "fail_closed_llm_overloaded"
+                } else {
+                    "fail_closed_llm_error"
+                };
                 error!(
-                    "Failed to send POP3 greeting on connection {}: {}",
-                    connection_id, e
+                    "POP3 greeting on connection {} decision={}: {}",
+                    connection_id, token, e
                 );
+                let _ = status_tx.send(format!(
+                    "[ERROR] POP3 greeting on connection {} decision={}",
+                    connection_id, token
+                ));
                 let reply = pop3_failure_reply(&e);
                 let _ = status_tx.send(format!(
                     "[ERROR] POP3 connection {} refused: {}",
@@ -362,6 +371,13 @@ impl Pop3Session {
                     if command.is_empty() {
                         continue;
                     }
+                    // The verb alone, for log lines. Kept separately so nothing downstream
+                    // has to re-derive it from a `command` the event may have consumed.
+                    let verb = command
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("?")
+                        .to_uppercase();
 
                     console_debug!(
                         status_tx,
@@ -401,10 +417,22 @@ impl Pop3Session {
                             // client cannot tell a refused login from a lost connection.
                             // `-ERR` is a refusal on every command POP3 has, so this fails
                             // closed by construction - there is no `+OK` on this path.
+                            // `-ERR`, always. A backend outage and a model that denied the
+                            // login are indistinguishable on this wire, so the token is
+                            // what keeps them apart in the log.
+                            let token = if crate::utils::WireFailure::classify(&e).is_overloaded() {
+                                "fail_closed_llm_overloaded"
+                            } else {
+                                "fail_closed_llm_error"
+                            };
                             error!(
-                                "Failed to process POP3 command on connection {}: {}",
-                                connection_id, e
+                                "POP3 {} on connection {} decision={}: {}",
+                                verb, connection_id, token, e
                             );
+                            let _ = status_tx.send(format!(
+                                "[ERROR] POP3 {} on connection {} decision={}",
+                                verb, connection_id, token
+                            ));
                             let reply = pop3_failure_reply(&e);
                             let _ = status_tx.send(format!(
                                 "[ERROR] POP3 connection {} replying: {}",
@@ -454,7 +482,26 @@ impl Pop3Session {
     {
         use tokio::io::AsyncWriteExt;
 
-        // Call LLM for action
+        // The command this answer belongs to, for the decision line. Without it a
+        // `decision=` tag has no subject, and "which command was refused" is the only
+        // question worth asking of a POP3 log.
+        let command = event
+            .data
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .split_whitespace()
+            .next()
+            .unwrap_or("?")
+            .to_uppercase();
+
+        // Call LLM for action.
+        //
+        // The `?` hands an LLM failure back to `run_session`, which answers `-ERR` and
+        // logs `decision=fail_closed_llm_*`. **Nothing on that path can produce `+OK`**:
+        // the only `+OK` in this protocol comes from an action the model named, and
+        // `pop3_failure_reply` is `-ERR` in every branch. That is what stops a backend
+        // outage from becoming a granted mailbox — the OAuth2 failure mode.
         let llm_result = call_llm(
             llm_client,
             app_state,
@@ -464,15 +511,25 @@ impl Pop3Session {
             protocol.as_ref(),
         )
         .await?;
+        let failures = llm_result.failures.len();
 
         // Execute actions. `close_connection` must still flush everything queued before it -
         // the QUIT reply is normally `send_pop3_ok` followed by `close_connection` in the same
         // batch - so record the intent and act on it once the batch is drained.
         let mut control = SessionControl::Continue;
+        // What the model actually put on the wire. POP3 says yes and no with the same
+        // action mechanism, so the leading token of the first reply is the only honest
+        // way to tell an approval from a refusal — and they must never be conflated.
+        let mut first_reply: Option<String> = None;
+        let mut asked_to_close = false;
 
         for action in llm_result.protocol_results {
             match action {
                 ActionResult::Output(data) => {
+                    if first_reply.is_none() {
+                        first_reply =
+                            Some(String::from_utf8_lossy(&data[..data.len().min(8)]).to_string());
+                    }
                     let mut writer = write_half.lock().await;
                     writer.write_all(&data).await?;
                     writer.flush().await?;
@@ -497,6 +554,7 @@ impl Pop3Session {
                 }
                 ActionResult::CloseConnection => {
                     control = SessionControl::Close;
+                    asked_to_close = true;
                 }
                 ActionResult::WaitForMore => {
                     // Do nothing, wait for next command
@@ -504,6 +562,39 @@ impl Pop3Session {
                 _ => {
                     // Not an action that produces POP3 output (memory updates, logging, ...)
                 }
+            }
+        }
+
+        // One decision line per command, so `grep decision=` separates a granted request
+        // from a refused one from a request nobody answered.
+        let decision = match first_reply.as_deref() {
+            Some(reply) if reply.starts_with("-ERR") => "model_reject",
+            Some(_) => "model_answer",
+            // A `close_connection` with no reply is the model hanging up rather than
+            // answering — a deliberate refusal, not a failure.
+            None if asked_to_close => "model_reject",
+            None if failures == 0 => "model_silent",
+            None => "fail_closed_bad_action",
+        };
+        let summary = format!(
+            "POP3 {} on connection {} decision={} ({} failed action(s))",
+            command, connection_id, decision, failures
+        );
+        match decision {
+            // Nothing was written and nothing asked to close: the client is still waiting
+            // for a reply it will never get. No `+OK` was produced, so no mailbox was
+            // opened — but the peer is owed an answer it did not receive.
+            "model_silent" => {
+                tracing::warn!("{}", summary);
+                let _ = status_tx.send(format!("[WARN] {}", summary));
+            }
+            "fail_closed_bad_action" => {
+                error!("{}", summary);
+                let _ = status_tx.send(format!("[ERROR] {}", summary));
+            }
+            _ => {
+                info!("{}", summary);
+                let _ = status_tx.send(format!("[INFO] {}", summary));
             }
         }
 

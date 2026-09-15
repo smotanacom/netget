@@ -76,6 +76,21 @@ async fn test_udp_stays_silent_but_logs_when_llm_fails() -> E2EResult<()> {
             )
         })?;
 
+    // And the explanation must carry the grep-able token, because the prose alone does not
+    // separate a dead backend from the model answering `ignore_datagram` or answering with
+    // nothing - both of which are the same silence on the socket. See
+    // `decision_tag_test.rs` for those two.
+    let lines = server.get_output().await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("decision=fail_closed_llm_error")
+                || l.contains("decision=fail_closed_llm_overloaded")),
+        "the dropped datagram must be tagged decision=fail_closed_llm_* so `grep \
+         decision=fail_closed` finds it. Output was:\n{}",
+        lines.join("\n")
+    );
+
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after
     // the sleep expires, and the test reports it as never having happened.

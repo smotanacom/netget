@@ -134,6 +134,37 @@ async fn test_mqtt_refuses_connect_when_llm_fails() -> E2EResult<()> {
         "expected return code 3 (server unavailable): {connack:02x?}"
     );
 
+    // The wire says "server unavailable" and nothing more — CONNACK has no free-text field —
+    // so the log is the only place an outage is distinguishable from a model that refused this
+    // client deliberately with the same return code. `model_silent` must NOT appear: that
+    // token's CONNECT default is return code 0, an accepted session.
+    server
+        .wait_for_any(
+            &[
+                "decision=fail_closed_llm_error",
+                "decision=fail_closed_llm_overloaded",
+            ],
+            30,
+        )
+        .await;
+    let lines = server.get_output().await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("decision=fail_closed_llm_error")
+                || l.contains("decision=fail_closed_llm_overloaded")),
+        "a refused CONNECT caused by the backend must be logged with a fail_closed_llm_* tag: \
+         CONNACK 3 alone cannot say whether the model refused this client or the backend was \
+         down. Output was:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("decision=model_silent")),
+        "the handler could not run, so this is not the model's silence — and model_silent's \
+         CONNECT default is CONNACK 0, an accepted session. Output was:\n{}",
+        lines.join("\n")
+    );
+
     // 3.2.2.3: the server must close the connection after a non-zero CONNACK. A reset counts
     // as closed - what must not happen is the socket staying usable or the read blocking.
     // Checked after `verify_mocks` so a failure here is not masked by the harness's own
@@ -216,6 +247,37 @@ async fn test_mqtt_refuses_subscribe_when_llm_fails() -> E2EResult<()> {
         body[2], 0x80,
         "expected 0x80 (failure) rather than a granted QoS - granting a subscription is an \
          access decision, and nothing decided it: {body:02x?}"
+    );
+
+    // Both halves of this connection in one log: the CONNECT the model answered, and the
+    // SUBSCRIBE it could not be asked about. Same server, two different decisions.
+    server
+        .wait_for_any(
+            &[
+                "decision=fail_closed_llm_error",
+                "decision=fail_closed_llm_overloaded",
+            ],
+            30,
+        )
+        .await;
+    let lines = server.get_output().await;
+    assert!(
+        lines.iter().any(|l| {
+            l.contains("mqtt_subscribe")
+                && (l.contains("decision=fail_closed_llm_error")
+                    || l.contains("decision=fail_closed_llm_overloaded"))
+        }),
+        "the refused SUBSCRIBE must carry a fail_closed_llm_* tag naming mqtt_subscribe. \
+         Output was:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("mqtt_connect") && l.contains("decision=model_answer")),
+        "the CONNECT was answered by the model and must be tagged as such, so the two events \
+         on this connection do not read alike. Output was:\n{}",
+        lines.join("\n")
     );
 
     // Wait for the exchange the mocks describe, rather than trusting a fixed

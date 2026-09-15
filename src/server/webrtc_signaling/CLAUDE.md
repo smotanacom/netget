@@ -274,6 +274,46 @@ All three log at ERROR on both channels (`error!` plus a `[ERROR]` status messag
 `tests/server/webrtc_signaling/llm_failure_test.rs` asserts the error frame, the silence, and
 that the relay itself is unaffected.
 
+## Failure behaviour
+
+The relay schema is NetGet's own invention — no third-party implementation of it exists or
+could — so its terminal outcomes are entirely this server's design and **the log is the only
+specification of them**. Every LLM call site now emits one `decision=` token.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| `peer_connected` → `send_signaling_message` | that signaling frame | INFO `decision=model_answer` |
+| `peer_connected` → `disconnect_peer` | connection closed | INFO `decision=model_reject` |
+| `peer_connected` → no action, or actions that address no peer | nothing | WARN `decision=model_silent` |
+| `peer_connected` → actions refused by the executor, or non-UTF-8 output | nothing | ERROR `decision=fail_closed_bad_action` |
+| `peer_connected` → backend failed | `{"type":"error", …}`, fixed wording | ERROR `decision=llm_error_peer_admitted category=overloaded\|unavailable` |
+| `message_received` → backend failed | **nothing** (deliberate: the relay already happened) | ERROR `decision=llm_error_notice_only` |
+| `peer_disconnected` → backend failed | **nothing** (the socket is gone) | ERROR `decision=llm_error_notice_only` |
+| `register` refused — empty/over-long id, duplicate, registry full | `{"type":"error", …}` | WARN `decision=protocol_error` |
+
+Two tokens here are this protocol's own, and both exist because `fail_closed_*` would be a lie:
+
+- **`llm_error_peer_admitted`** — registration completes and the `registered` frame is sent
+  **before** `webrtc_signaling_peer_connected` fires, so a backend failure denies the peer
+  nothing: it stays registered and can relay. The tag says exactly that. `category=` carries the
+  `WireFailure` split, the way `radius` does, because the `error` frame has no code field and
+  the wire therefore cannot tell a saturated backend from a dead one.
+- **`llm_error_notice_only`** — the other two events are `.with_no_actions()` and fire after the
+  fact, so the model could not have spoken to the peer even on the success path.
+
+**A peer is admitted without the model ever being consulted, and that is structural.** The
+`peer_connected` event fires *after* registration and *after* the confirmation frame, and relay
+is decided in Rust before any handler runs (a model round-trip in front of every ICE candidate
+would break any real browser peer). So there is no event on which a model could refuse a peer,
+and an LLM outage changes nothing about what a peer may do. `disconnect_peer` at registration
+time is the only lever, and it acts after the fact. This is not a regression and not a
+fail-open introduced by a failure — it is the admission model, and it is written down here
+because the tag alone would suggest otherwise.
+
+`tests/server/webrtc_signaling/llm_failure_test.rs` asserts the `llm_error_peer_admitted` tag
+(and that nothing is logged as a `decision=model_*` the model never took) and the
+`llm_error_notice_only` tag alongside the wire silence it accompanies.
+
 ## State Management
 
 ### Peer Tracking

@@ -6,3 +6,6 @@ mod e2e_scheduled_tasks_test;
 
 #[cfg(all(test, feature = "http"))]
 mod failure_semantics_test;
+
+#[cfg(all(test, feature = "http"))]
+mod decision_tag_test;

@@ -202,6 +202,26 @@ async fn test_snowflake_login_refused() -> E2EResult<()> {
         "refused login must not carry a token"
     );
 
+    // The refusal on the wire is byte-identical to the one a backend outage produces
+    // (`success:false`, code 390100, no token), because that is the only refusal RADIUS-style
+    // this protocol has. So the log is the only place "the model said no" stays distinct from
+    // "we could not ask" — assert the model's denial is tagged as the model's.
+    server.wait_for_any(&["decision=model_reject"], 30).await;
+    let lines = server.get_output().await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("Snowflake login") && l.contains("decision=model_reject")),
+        "a deliberate model denial must be logged as decision=model_reject, not as a \
+         fail-closed. Output was:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("decision=fail_closed_")),
+        "nothing failed closed here: the model answered. Output was:\n{}",
+        lines.join("\n")
+    );
+
     // Wait for the exchange the mocks describe, rather than trusting a fixed
     // sleep to have covered it. Under load the last event routinely lands after
     // the sleep expires, and the test reports it as never having happened.

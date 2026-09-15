@@ -308,8 +308,10 @@ impl TelnetServer {
                                 .await
                                 {
                                     Ok(execution_result) => {
+                                        let mut greeted = 0usize;
                                         for protocol_result in execution_result.protocol_results {
                                             if let ActionResult::Output(data) = protocol_result {
+                                                greeted += 1;
                                                 use tokio::io::AsyncWriteExt;
                                                 let mut write = write_half_arc.lock().await;
                                                 let _ = write.write_all(&data).await;
@@ -332,17 +334,44 @@ impl TelnetServer {
                                                 ));
                                             }
                                         }
+                                        if greeted > 0 {
+                                            log.info(format!(
+                                                "Telnet greeting for {} (connection {}) \
+                                                 decision=model_answer ({} write(s))",
+                                                remote_addr, connection_id, greeted
+                                            ));
+                                        } else {
+                                            // `send_first` was asked for and nothing came back,
+                                            // so the peer stares at a blank screen with no
+                                            // notice. Distinct from the backend failing below.
+                                            log.warn(format!(
+                                                "Telnet greeting for {} (connection {}) \
+                                                 decision=model_silent: send_first was requested \
+                                                 but the model produced no banner",
+                                                remote_addr, connection_id
+                                            ));
+                                        }
                                     }
                                     Err(e) => {
                                         // The client asked for a banner and is sitting at a
                                         // blank screen. Telnet has no error frame - it is a
                                         // byte stream with a human on the other end - so the
                                         // protocol-appropriate answer is a plain notice line.
-                                        // Non-fatal: a wire notice is still delivered
-                                        // (fallback), so this is WARN not ERROR.
-                                        log.warn(format!(
-                                            "Telnet greeting handler failed on connection {}: {}",
-                                            connection_id, e
+                                        //
+                                        // Tagged like the per-line path: the notice is a
+                                        // category, not the banner that was asked for.
+                                        let decision = match crate::utils::WireFailure::classify(&e)
+                                        {
+                                            crate::utils::WireFailure::Overloaded => {
+                                                "fail_closed_llm_overloaded"
+                                            }
+                                            crate::utils::WireFailure::Unavailable => {
+                                                "fail_closed_llm_error"
+                                            }
+                                        };
+                                        log.error(format!(
+                                            "Telnet greeting for {} (connection {}) decision={}: {}",
+                                            remote_addr, connection_id, decision, e
                                         ));
                                         let notice = telnet_failure_notice(&e);
                                         use tokio::io::AsyncWriteExt;
@@ -368,10 +397,14 @@ impl TelnetServer {
                                         // No error frame exists in telnet, so say it in words
                                         // on their own line and hang up. A category, never an
                                         // error string: see `telnet_failure_notice`.
+                                        // The protocol refused this, not the model: no LLM call
+                                        // was made and none will be. Its own token, so it is
+                                        // never confused with a backend failure.
                                         log.warn(format!(
-                                            "Telnet connection {} sent more than {} bytes with \
-                                             no newline; closing",
-                                            connection_id, MAX_LINE_BYTES
+                                            "Telnet line from {} (connection {}) \
+                                             decision=refused_line_too_long: more than {} bytes \
+                                             with no newline; closing",
+                                            remote_addr, connection_id, MAX_LINE_BYTES
                                         ));
                                         use tokio::io::AsyncWriteExt;
                                         let mut write = write_half_arc.lock().await;
@@ -453,9 +486,31 @@ impl TelnetServer {
                                             execution_result.protocol_results.len()
                                         ));
 
+                                        // Classify *before* `protocol_results` is consumed.
+                                        //
+                                        // Three of these outcomes write nothing to the socket
+                                        // and leave the session open, so from the peer's seat
+                                        // they are identical: a deliberate `wait_for_more`, a
+                                        // model that returned no usable action at all, and an
+                                        // action the executor refused. Only the log can tell
+                                        // them apart, and only if it carries a token.
+                                        let waited = execution_result
+                                            .protocol_results
+                                            .iter()
+                                            .any(|r| matches!(r, ActionResult::WaitForMore));
+                                        let failure_summary = execution_result
+                                            .failures
+                                            .iter()
+                                            .map(|f| format!("{}: {}", f.action, f.error))
+                                            .collect::<Vec<_>>()
+                                            .join("; ");
+                                        let mut wrote = 0usize;
+                                        let mut closed = false;
+
                                         for protocol_result in execution_result.protocol_results {
                                             match protocol_result {
                                                 ActionResult::Output(data) => {
+                                                    wrote += 1;
                                                     let mut write = write_half_arc.lock().await;
 
                                                     // Write the action's bytes verbatim. Going
@@ -499,9 +554,55 @@ impl TelnetServer {
                                                 // open, so close_connection did nothing.
                                                 ActionResult::CloseConnection => {
                                                     close_requested = true;
+                                                    closed = true;
                                                 }
                                                 _ => {}
                                             }
+                                        }
+
+                                        // One decision line per line of input, whatever happened.
+                                        let subject = format!(
+                                            "Telnet line from {} (connection {})",
+                                            remote_addr, connection_id
+                                        );
+                                        if wrote > 0 {
+                                            log.info(format!(
+                                                "{} decision=model_answer ({} write(s){})",
+                                                subject,
+                                                wrote,
+                                                if closed { ", then close" } else { "" }
+                                            ));
+                                        } else if closed {
+                                            log.info(format!(
+                                                "{} decision=model_reject (close_connection with \
+                                                 no reply: the model hung up rather than answer)",
+                                                subject
+                                            ));
+                                        } else if !failure_summary.is_empty() {
+                                            log.error(format!(
+                                                "{} decision=fail_closed_bad_action: nothing was \
+                                                 written because the model's action(s) could not \
+                                                 be executed ({})",
+                                                subject, failure_summary
+                                            ));
+                                        } else if waited {
+                                            log.info(format!(
+                                                "{} decision=model_wait_for_more (deliberately \
+                                                 nothing yet; the session stays open)",
+                                                subject
+                                            ));
+                                        } else {
+                                            // Not a fail-closed: the peer gets no notice and the
+                                            // session stays open, so a human sits at a terminal
+                                            // that looks hung. It is the model's silence rather
+                                            // than the backend's, which is exactly why the two
+                                            // need different tokens.
+                                            log.warn(format!(
+                                                "{} decision=model_silent: the model was asked and \
+                                                 returned no usable action, so nothing was written \
+                                                 and the peer sees an idle session",
+                                                subject
+                                            ));
                                         }
                                     }
                                     Err(e) => {
@@ -510,11 +611,25 @@ impl TelnetServer {
                                         // broken server from a slow one. A notice is not a
                                         // prompt and not a shell result, so nothing downstream
                                         // can read it as the command having run.
-                                        // Non-fatal: a wire notice is still delivered
-                                        // (fallback), so this is WARN not ERROR.
-                                        log.warn(format!(
-                                            "Telnet LLM call failed on connection {}: {}",
-                                            connection_id, e
+                                        //
+                                        // ERROR with a `decision=fail_closed_*` token: the notice
+                                        // on the wire is a category, not an answer, so this turn
+                                        // produced nothing the peer asked for. The token is what
+                                        // separates a dead backend from the model's own silence
+                                        // and from its `close_connection` — all three leave the
+                                        // request unanswered.
+                                        let decision = match crate::utils::WireFailure::classify(&e)
+                                        {
+                                            crate::utils::WireFailure::Overloaded => {
+                                                "fail_closed_llm_overloaded"
+                                            }
+                                            crate::utils::WireFailure::Unavailable => {
+                                                "fail_closed_llm_error"
+                                            }
+                                        };
+                                        log.error(format!(
+                                            "Telnet line from {} (connection {}) decision={}: {}",
+                                            remote_addr, connection_id, decision, e
                                         ));
                                         let notice = telnet_failure_notice(&e);
                                         use tokio::io::AsyncWriteExt;

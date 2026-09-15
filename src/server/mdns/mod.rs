@@ -104,6 +104,8 @@ impl MdnsServer {
                     services.len()
                 );
                 used_startup_params = true;
+                let requested = services.len();
+                let mut registered = 0usize;
                 for service in services {
                     if let Some(service_obj) = service.as_object() {
                         let service_type = service_obj
@@ -134,16 +136,28 @@ impl MdnsServer {
                             .unwrap_or(default_port);
 
                         // Don't fail server startup if registration fails
-                        let _ = register_service(
+                        if register_service(
                             &mdns,
                             service_type,
                             service_name,
                             port,
                             &properties,
                             &status_tx,
-                        );
+                        )
+                        .is_ok()
+                        {
+                            registered += 1;
+                        }
                     }
                 }
+                // The operator supplied the service list, so no model was asked. Say so:
+                // "advertising nothing" because nobody asked for anything must not read the
+                // same as "advertising nothing" because the backend failed.
+                Log::new(Some(&status_tx)).info(format!(
+                    "mDNS advertising {}/{} service(s) decision=operator_config \
+                     (from startup parameters; no model call)",
+                    registered, requested
+                ));
             }
             // Check for single service parameters
             else if let Some(service_type) = params.get_optional_string("service_type")? {
@@ -167,14 +181,20 @@ impl MdnsServer {
                     .unwrap_or(default_port);
 
                 // Don't fail server startup if registration fails
-                let _ = register_service(
+                let registered = register_service(
                     &mdns,
                     &service_type,
                     &service_name,
                     port,
                     &properties,
                     &status_tx,
-                );
+                )
+                .is_ok();
+                Log::new(Some(&status_tx)).info(format!(
+                    "mDNS advertising {}/1 service(s) decision=operator_config \
+                     (from startup parameters; no model call)",
+                    usize::from(registered)
+                ));
             }
         }
 
@@ -223,6 +243,13 @@ impl MdnsServer {
             )
             .await;
 
+            // How many services the handler asked for, and how many the daemon accepted.
+            // Counted so the three ways of ending up advertising nothing — the backend
+            // failed, the handler said nothing, the handler's services were rejected —
+            // are three different log lines rather than one absence.
+            let mut requested = 0usize;
+            let mut registered = 0usize;
+
             if let Err(ref e) = llm_outcome {
                 // Nothing goes on the wire. mDNS has no unicast error frame and no request to
                 // answer - this call is a *startup* event asking what services to advertise,
@@ -237,14 +264,22 @@ impl MdnsServer {
                 // This is the `udp` case, one step worse.
                 //
                 // So: announce nothing, and be loud about it on both channels.
+                let category = match crate::utils::wire_failure::WireFailure::classify(e) {
+                    crate::utils::wire_failure::WireFailure::Overloaded => "overloaded",
+                    crate::utils::wire_failure::WireFailure::Unavailable => "unavailable",
+                };
+                // `console_error!` below logs to `tracing` as well, so the tag lives there
+                // and only there: one incident must be one `grep decision=` hit, not two.
                 error!(
-                    "mDNS service-registration handler failed; the responder is running \
-                     but will advertise nothing: {}",
-                    e
+                    "mDNS service-registration handler failed (category={}); the responder is \
+                     running but will advertise nothing: {}",
+                    category, e
                 );
                 console_error!(
                     status_tx,
-                    "mDNS advertising nothing: service-registration handler failed: {}",
+                    "mDNS advertising nothing: service-registration handler failed \
+                     (decision=fail_closed_llm_error category={}): {}",
+                    category,
                     e
                 );
             }
@@ -288,16 +323,44 @@ impl MdnsServer {
 
                             // Failures are logged by register_service; one bad
                             // service must not abort the remaining registrations.
-                            let _ = register_service(
+                            requested += 1;
+                            if register_service(
                                 &mdns,
                                 service_type,
                                 instance_name,
                                 port,
                                 &properties,
                                 &status_tx,
-                            );
+                            )
+                            .is_ok()
+                            {
+                                registered += 1;
+                            }
                         }
                     }
+                }
+
+                // One grep-able line for what the handler's answer amounted to. mDNS has no
+                // refusal action, so there is no `model_reject` here: a handler that wants
+                // to advertise nothing and a handler that had nothing to say are the same
+                // answer, and `model_silent` is the honest name for both.
+                let log = Log::new(Some(&status_tx));
+                if registered > 0 {
+                    log.info(format!(
+                        "mDNS advertising {}/{} service(s) decision=model_answer",
+                        registered, requested
+                    ));
+                } else if requested > 0 {
+                    log.error(format!(
+                        "mDNS advertising nothing: all {} service(s) the handler asked for \
+                         were rejected by the daemon decision=fail_closed_bad_action",
+                        requested
+                    ));
+                } else {
+                    log.warn(
+                        "mDNS advertising nothing: the handler ran and asked for no services \
+                         decision=model_silent",
+                    );
                 }
             }
         } // Close if !used_startup_params

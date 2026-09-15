@@ -468,3 +468,43 @@ Examples:
 - [RFC 2812: Internet Relay Chat: Client Protocol](https://datatracker.ietf.org/doc/html/rfc2812)
 - [IRC Numeric List](https://www.alien.net.au/irc/irc2numerics.html)
 - [Modern IRC Documentation](https://modern.ircdocs.horse/)
+
+## Failure behaviour
+
+Every terminal outcome of an `irc_message_received` line is logged with a stable `decision=`
+token. IRC *does* have a wire vocabulary for failure — numeric 400 (`ERR_UNKNOWNERROR`) and
+`ERROR :Closing link` — but only the backend-failure path uses it. A model that answered, a
+model that asked to hang up and a model that produced nothing all end with the server going
+quietly back to reading, so the log is the only place those three differ.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Model answered with any `send_irc_*` | that line, CRLF-terminated | INFO `decision=model_answer` |
+| Model answered `close_connection` only | nothing (see the defect below) | INFO `decision=model_reject` |
+| Model answered with no usable action | **nothing** | WARN `decision=model_silent` |
+| Model answered but every action failed | **nothing** | ERROR `decision=fail_closed_bad_action` |
+| Backend failed / retries exhausted | `:netget 400 * <CMD> :netget: request could not be processed` then `ERROR :Closing link` and a close | ERROR `decision=fail_closed_llm_error` |
+| Backend saturated | `:netget 400 * <CMD> :netget: backend at capacity, retry later`, link kept | ERROR `decision=fail_closed_llm_overloaded` |
+| Line over `MAX_IRC_READ_LINE` with no newline | `ERROR :Closing link: message exceeds …` and a close | ERROR `decision=refused_body_too_large` |
+
+**No fail-open in the registration path.** Numeric 001 (`RPL_WELCOME`) exists only as the
+`send_irc_welcome` action, so nothing in `mod.rs` can synthesise a completed registration; on
+every failure path above the client either gets a 400 or gets nothing, never a 001. The
+numeric's trailing parameter is a `WireFailure` category, never the error — that matters more
+here than in most protocols, because a real IRC client prints a numeric's trailing parameter
+verbatim to a human.
+
+**Two things that are not fail-opens but are worth knowing:**
+
+- **`model_silent` writes nothing at all.** A client that sent NICK/USER and got no answer
+  waits out its own connection timeout. This is not a fabricated success, but it is not a
+  reply either; fixing it means answering 400 on that path too, which is a wire change this
+  tagging pass deliberately did not make.
+- **`close_connection` does not close the connection.** In the LLM path
+  `ActionResult::CloseConnection => { … break; }` breaks the `for` over `protocol_results`,
+  not the read loop, so the link survives and the server reads the next line. The
+  `decision=model_reject` token above is therefore honest about the model's *intent* and not
+  about the socket. Dashboard-injected `close_connection` goes through `peer_support` and does
+  half-close, which is why this has gone unnoticed.
+
+Tested by `tests/server/irc/decision_tag_test.rs`.

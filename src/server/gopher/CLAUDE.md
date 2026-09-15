@@ -210,3 +210,30 @@ Three things about `curl`'s gopher support, measured rather than assumed:
   error reply must be asserted on stdout, never on the exit status.
 
 `tests/server/gopher/` is declared in `tests/server/mod.rs` and runs.
+
+## Failure behaviour
+
+Every terminal outcome of a `gopher_request` is logged with a stable `decision=` token, so
+`grep decision=fail_closed` separates "netget could not get an answer" from "the model
+answered and its answer was no". The wire cannot carry that distinction — Gopher has exactly
+one error form, the type-3 item — which is precisely why the log must.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| Model answered with a menu / text / error item | that reply, then `.\r\n` and FIN | INFO `decision=model_answer` |
+| Model answered with `close_connection` only | nothing, then FIN | INFO `decision=model_reject` |
+| Model answered with no usable action | type-3 item, `netget: request could not be processed` | WARN `decision=model_silent` |
+| Model answered but every action failed to execute | the same type-3 item | ERROR `decision=fail_closed_bad_action` |
+| Backend failed / retries exhausted | type-3 item carrying the `WireFailure` category | ERROR `decision=fail_closed_llm_error` |
+| Backend saturated (`WireFailure::Overloaded`) | type-3 item, `netget: backend at capacity, retry later` | ERROR `decision=fail_closed_llm_overloaded` |
+| Selector line over `MAX_REQUEST_BYTES` with no newline | type-3 item, `netget: selector line too long` | WARN `decision=refused_body_too_large` |
+
+`refused_body_too_large` is reused from elsewhere in the tree rather than invented: it is a
+refusal the *protocol* made before any model call, and is deliberately not a `fail_closed_*`
+token, which would claim a backend failure that did not happen.
+
+Nothing on any of these paths interpolates the error into the reply — `wire_failure_item`
+takes a `&'static str`, so it structurally cannot. The error text appears only in the log line
+that carries the token.
+
+Tested by `tests/server/gopher/decision_tag_test.rs`.

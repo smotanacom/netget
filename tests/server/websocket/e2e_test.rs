@@ -16,7 +16,7 @@
 //! `tungstenite`, so it is a second, genuinely independent RFC 6455 implementation and not the
 //! circular-evidence case. That test **fails** when `websocat` is missing; it does not skip.
 //!
-//! # LLM call budget: 5
+//! # LLM call budget: 6 (plus repair retries on the one deliberate failure)
 //!
 //! - `test_websocket_wire_protocol_against_raw_client`: 1 (`open_server`; every event on that
 //!   server is answered by a static handler, so frames cost nothing)
@@ -24,6 +24,8 @@
 //!   decisions, one `websocket_connection_opened`)
 //! - `test_websocket_with_websocat`: 0 additional (reuses the static-handler server started
 //!   inside it — 1 `open_server`)
+//! - `test_websocket_handshake_backend_failure_is_tagged_fail_closed`: 1 (`open_server`) plus
+//!   one deliberately unanswerable `websocket_handshake`, which the repair loop retries
 
 #![cfg(feature = "websocket")]
 
@@ -857,4 +859,80 @@ async fn run_websocat(url: &str, input: &str) -> Result<String, Box<dyn std::err
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     ))
+}
+
+/// A backend failure and a model that deliberately refused the upgrade both put an HTTP error
+/// on the wire and nothing else. The peer cannot tell them apart and never could; the log has
+/// to.
+///
+/// The failure is forced the way `tests/server/cdp/e2e_test.rs` forces it — the mock answers
+/// `websocket_handshake` with something that is not an action, so the retry/repair loop
+/// exhausts and `call_llm` returns `Err`.
+///
+/// Both halves of the contract are asserted: the upgrade is **refused** (503, never a 101 —
+/// silence must not read as consent), and the refusal carries `decision=fail_closed_llm_error`
+/// rather than `decision=model_reject`, which is what an explicit `reject_websocket` gets.
+#[tokio::test]
+async fn test_websocket_handshake_backend_failure_is_tagged_fail_closed() -> E2EResult<()> {
+    let config = NetGetConfig::new("Start a WebSocket server on port 0 for a chat service")
+        .with_mock(|mock| {
+            mock.on_instruction_containing("chat service")
+                .respond_with_actions(serde_json::json!([{
+                    "type": "open_server",
+                    "port": 0,
+                    "base_stack": "websocket",
+                    "instruction": "Chat service."
+                }]))
+                .expect_calls(1)
+                .and()
+                // Not JSON, not an action: `call_llm` ends in `Err`, which is the path here.
+                .on_event("websocket_handshake")
+                .respond_with_raw("the backend is having a bad day and this is not an action")
+                .expect_at_least(1)
+                .and()
+        });
+
+    let server = start_netget_server(config).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut stream = TcpStream::connect(("127.0.0.1", server.port)).await?;
+    stream
+        .write_all(
+            b"GET /chat HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n\
+              Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+              Sec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .await?;
+    let (status, _headers, _) = read_http_response(&mut stream).await?;
+    assert_eq!(
+        status, 503,
+        "a handshake the backend could not answer must be refused, never upgraded"
+    );
+
+    server
+        .wait_for_any(&["decision=fail_closed_llm_error"], 30)
+        .await;
+
+    let output = server.get_output().await;
+    assert!(
+        output
+            .iter()
+            .any(|line| line.contains("decision=fail_closed_llm_error")),
+        "a backend failure on websocket_handshake must be tagged \
+         decision=fail_closed_llm_error; output was:\n{}",
+        output.join("\n")
+    );
+    assert!(
+        !output
+            .iter()
+            .any(|line| line.contains("decision=model_reject")),
+        "a backend failure is not the model refusing, and must never be logged as one; output \
+         was:\n{}",
+        output.join("\n")
+    );
+
+    server.wait_for_mocks(30).await;
+    server.verify_mocks().await?;
+    server.stop().await?;
+    Ok(())
 }

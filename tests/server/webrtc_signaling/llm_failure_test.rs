@@ -121,6 +121,33 @@ mod webrtc_signaling_llm_failure_tests {
             );
         }
 
+        // The error frame is what the peer sees. The log is where the *reason* lives, and it
+        // has to say which of three things happened: the model refused, the model said
+        // nothing, or the backend never answered. `llm_error_peer_admitted` is this
+        // protocol's own token for the last one — deliberately not `fail_closed_*`, because
+        // nothing was closed: registration completed and the `registered` frame went out
+        // before the model was ever consulted, so the peer keeps every capability it had.
+        server
+            .wait_for_any(&["decision=llm_error_peer_admitted"], 30)
+            .await;
+        let lines = server.get_output().await;
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("decision=llm_error_peer_admitted")),
+            "a backend failure on webrtc_signaling_peer_connected must be tagged so it is \
+             distinguishable from a model that chose to say nothing. Output was:\n{}",
+            lines.join("\n")
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("WebRTC signaling") && l.contains("decision=model_")),
+            "the model never answered, so nothing may be logged as a decision it took. \
+             Output was:\n{}",
+            lines.join("\n")
+        );
+
         alice.close(None).await.ok();
         tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -190,6 +217,24 @@ mod webrtc_signaling_llm_failure_tests {
             ),
             Ok(other) => panic!("alice's signaling socket closed unexpectedly: {other:?}"),
         }
+
+        // The wire carries nothing here by design, so the log is the *only* place this
+        // failure can exist. Both halves of that contract are asserted: the silence above,
+        // and the tag here.
+        server
+            .wait_for_any(&["decision=llm_error_notice_only"], 30)
+            .await;
+        let lines = server.get_output().await;
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("webrtc_signaling_message_received")
+                    && l.contains("decision=llm_error_notice_only")),
+            "a failed observation call is silent on the wire, so it must be loud in the log — \
+             and tagged as a failure that refused nothing, since the relay already happened. \
+             Output was:\n{}",
+            lines.join("\n")
+        );
 
         alice.close(None).await.ok();
         bob.close(None).await.ok();

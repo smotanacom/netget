@@ -33,6 +33,14 @@ conforming client discard its refresh token, so an outage would sign every sessi
 permanently) and `/introspect` does **not** say `{"active": false}` (a statement about the
 token, when nobody looked at it).
 
+Each of the four also asserts the **`decision=` tag**, via `assert_fail_closed_tag`. This is
+not decoration: a 5xx is a status the model can itself choose with `oauth2_error_response`, so
+the wire cannot say whether anything was asked. The helper requires a line naming the endpoint
+(`OAuth2 /token`, `OAuth2 /introspect`, …) and carrying `decision=fail_closed_`, and forbids
+that line from also carrying `decision=model_`. The `/revoke` test additionally asserts
+`decision=protocol_mandated_ok` — the tag on its RFC 7009 §2.2 success path — is **absent**,
+because nothing was processed.
+
 `hardening_test.rs` (2): a 1 MiB `/token` body is refused `413` before any LLM call, and a
 model-supplied `status_code` of `65736` does not wrap into a `200`. Both were live defects;
 `65736 as u16 == 200` meant a refusal arrived as the status a client reads as success.

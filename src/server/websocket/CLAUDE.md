@@ -123,8 +123,43 @@ in "this is not a handshake". It gets 400/405/426/505 directly, and a 426 carrie
 `Sec-WebSocket-Version: 13` as §4.4 requires.
 
 On a **handler failure mid-session** the connection is closed with code **1011** (internal
-error) rather than being reset to Idle in silence, so the peer is not left waiting for a reply
-that is never coming.
+error), or **1013** (try again later) when the failure is a saturated backend, rather than being
+reset to Idle in silence — so the peer is not left waiting for a reply that is never coming, and
+a client backs off rather than recording a permanent fault. The close *reason* is the fixed
+string `handler failed` in both cases: a close reason is peer-visible, so the backend's error
+text belongs in the log line beside it and nowhere else.
+
+## Failure behaviour
+
+Every LLM call site emits one `decision=` line. The important one is `websocket_text_message` /
+`websocket_binary_message` / `websocket_ping`: a handler that answers with nothing sends no
+frame at all and the connection simply goes quiet, which used to be logged nowhere — so a model
+that deliberately said nothing and a rule that never matched were the same silence.
+
+| Outcome | On the wire | Log |
+|---|---|---|
+| `websocket_handshake` → `accept_websocket` | 101, with the agreed subprotocol | INFO `decision=model_answer` |
+| `websocket_handshake` → `reject_websocket` | the handler's own status (default 403) | INFO `decision=model_reject` |
+| `websocket_handshake` → neither, no action at all | **503**, fixed reason | ERROR `decision=fail_closed_no_action` |
+| `websocket_handshake` → neither, but actions ran | **503**, fixed reason | ERROR `decision=fail_closed_bad_action` |
+| `websocket_handshake` → backend failed | **503**, fixed reason | ERROR `decision=fail_closed_llm_error` / `..._overloaded` |
+| message → frames sent, or `wait_for_websocket_data` | those frames, or the message is held | INFO `decision=model_answer` |
+| message → `close_websocket` | close frame with the model's code and reason | INFO `decision=model_reject` |
+| message → no action | **nothing**; the connection stays open | WARN `decision=model_silent` |
+| message → every action refused by the executor | **nothing**; the connection stays open | ERROR `decision=fail_closed_bad_action` |
+| message → backend failed | close **1011** / **1013**, reason `handler failed` | ERROR `decision=fail_closed_llm_error` / `..._overloaded` |
+| `websocket_connection_opened` → backend failed | nothing; the connection stays open | WARN `decision=llm_error_notice_only` |
+| `websocket_close` → backend failed | nothing; the peer has already closed | WARN `decision=llm_error_notice_only` |
+
+`llm_error_notice_only` is this protocol's own token and is deliberately **not** `fail_closed_*`.
+Both events it covers fire when nothing is pending: the upgrade was already decided by
+`websocket_handshake`, and `websocket_close` fires because the peer has gone. Tagging them
+`fail_closed_` would put lines that refused nothing in front of every
+`grep decision=fail_closed`.
+
+`tests/server/websocket/e2e_test.rs::test_websocket_handshake_backend_failure_is_tagged_fail_closed`
+asserts both halves of the handshake row: the 503 on the wire, and
+`decision=fail_closed_llm_error` in the log with no `decision=model_reject` anywhere.
 
 ## Connection state machine
 

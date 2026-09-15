@@ -307,8 +307,10 @@ async fn handle_mqtt_connection(
                 Ok(Some(p)) => p,
                 Ok(None) => break, // need more bytes
                 Err(e) => {
-                    Log::new(Some(&status_tx))
-                        .warn(format!("MQTT protocol error from {}: {}", peer_addr, e));
+                    Log::new(Some(&status_tx)).warn(format!(
+                        "MQTT protocol error from {} decision=protocol_error: {}",
+                        peer_addr, e
+                    ));
                     // A malformed packet desynchronises the stream; the spec says close.
                     finish_connection(
                         protocol,
@@ -463,13 +465,15 @@ async fn dispatch_packet(
     match packet.packet_type {
         PKT_CONNECT => {
             let Some(connect) = parse_connect(&packet.body) else {
-                Log::new(Some(&status_tx)).warn("MQTT malformed CONNECT from client, closing");
+                Log::new(Some(&status_tx))
+                    .warn("MQTT malformed CONNECT from client decision=protocol_error, closing");
                 return false;
             };
 
             if client_id.is_some() {
                 // 3.1.0-2: a second CONNECT on one connection is a protocol violation.
-                Log::new(Some(&status_tx)).warn("MQTT duplicate CONNECT, closing connection");
+                Log::new(Some(&status_tx))
+                    .warn("MQTT duplicate CONNECT decision=protocol_error, closing connection");
                 return false;
             }
 
@@ -537,8 +541,17 @@ async fn dispatch_packet(
                     // CONNACK is mandatory (3.2). Accept by default rather than let the
                     // client sit in its connect timeout. Safe only because the handler ran
                     // and declined to decide - see `LlmOutcome::Failed`.
+                    //
+                    // Read that carefully before copying it: this is the one place in MQTT
+                    // where a *permissive* packet follows a `decision=model_silent`. The
+                    // session is accepted, credentials and all, because the model said
+                    // nothing - which is the OAuth2 shape, narrowed to the case where the
+                    // handler demonstrably ran. The preceding `decision=model_silent` line
+                    // is what makes it auditable; see the fail-open note in
+                    // `src/server/mqtt/CLAUDE.md`.
                     Log::new(Some(&status_tx)).warn(format!(
-                        "MQTT no mqtt_connack from handler for '{}'; accepting by default",
+                        "MQTT no mqtt_connack from handler for '{}'; accepting by default \
+                         (CONNACK 0 — an accepted session nothing decided)",
                         effective_id
                     ));
                     let _ = out_tx.send(build_connack(0, false));
@@ -565,11 +578,13 @@ async fn dispatch_packet(
         PKT_PUBLISH => {
             let qos = (packet.flags >> 1) & 0x03;
             if qos > 2 {
-                Log::new(Some(&status_tx)).warn("MQTT PUBLISH with invalid QoS 3, closing");
+                Log::new(Some(&status_tx))
+                    .warn("MQTT PUBLISH with invalid QoS 3 decision=protocol_error, closing");
                 return false;
             }
             let Some(publish) = parse_publish(&packet.body, qos) else {
-                Log::new(Some(&status_tx)).warn("MQTT malformed PUBLISH, closing connection");
+                Log::new(Some(&status_tx))
+                    .warn("MQTT malformed PUBLISH decision=protocol_error, closing connection");
                 return false;
             };
 
@@ -664,11 +679,13 @@ async fn dispatch_packet(
 
         PKT_SUBSCRIBE => {
             let Some(sub) = parse_subscribe(&packet.body) else {
-                Log::new(Some(&status_tx)).warn("MQTT malformed SUBSCRIBE, closing connection");
+                Log::new(Some(&status_tx))
+                    .warn("MQTT malformed SUBSCRIBE decision=protocol_error, closing connection");
                 return false;
             };
             if sub.topics.is_empty() {
-                Log::new(Some(&status_tx)).warn("MQTT SUBSCRIBE with no topic filter, closing");
+                Log::new(Some(&status_tx))
+                    .warn("MQTT SUBSCRIBE with no topic filter decision=protocol_error, closing");
                 return false;
             }
 
@@ -743,7 +760,8 @@ async fn dispatch_packet(
 
         PKT_UNSUBSCRIBE => {
             let Some(unsub) = parse_unsubscribe(&packet.body) else {
-                Log::new(Some(&status_tx)).warn("MQTT malformed UNSUBSCRIBE, closing connection");
+                Log::new(Some(&status_tx))
+                    .warn("MQTT malformed UNSUBSCRIBE decision=protocol_error, closing connection");
                 return false;
             };
 
@@ -882,26 +900,77 @@ async fn run_llm(
     .await
     {
         Ok(result) => {
+            // One grep-able line per event saying how it was decided. Every branch below
+            // ends in a packet (or a close) chosen by a different actor, and the wire form
+            // is frequently identical — a CONNACK 0 sent because the model said so and one
+            // sent because it said nothing are the same four bytes.
+            let client = event
+                .data
+                .get("client_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unidentified>");
+            let log = Log::new(Some(&status_tx));
+
             if result
                 .protocol_results
                 .iter()
                 .any(|r| matches!(r, ActionResult::CloseConnection))
             {
+                log.info(format!(
+                    "MQTT {} from '{}' ({}) decision=model_reject (close_connection)",
+                    event.event_type.id, client, connection_id
+                ));
                 return LlmOutcome::Closed;
             }
-            match required_reply {
-                None => LlmOutcome::Responded,
-                Some(packet_type) if protocol.wrote_packet_type(packet_type) => {
-                    LlmOutcome::Responded
+
+            let answered = match required_reply {
+                // Nothing is owed on the wire (a QoS 0 PUBLISH), so "answered" is simply
+                // whether the handler produced any action at all.
+                None => !result.raw_actions.is_empty(),
+                Some(packet_type) => protocol.wrote_packet_type(packet_type),
+            };
+
+            if answered {
+                log.info(format!(
+                    "MQTT {} from '{}' ({}) decision=model_answer",
+                    event.event_type.id, client, connection_id
+                ));
+                LlmOutcome::Responded
+            } else {
+                // `actions=` matters: 0 is a handler with nothing to say, non-zero is a
+                // handler that did something else and omitted the packet the spec requires.
+                log.warn(format!(
+                    "MQTT {} from '{}' ({}) decision=model_silent actions={} — the protocol \
+                     default applies",
+                    event.event_type.id,
+                    client,
+                    connection_id,
+                    result.raw_actions.len()
+                ));
+                match required_reply {
+                    None => LlmOutcome::Responded,
+                    Some(_) => LlmOutcome::Silent,
                 }
-                Some(_) => LlmOutcome::Silent,
             }
         }
         Err(e) => {
-            let overloaded = crate::llm::is_overload_error(&e);
-            Log::new(Some(&status_tx)).warn(format!(
-                "MQTT handler failed for {} on connection {} (overload={}): {}",
-                event.event_type.id, connection_id, overloaded, e
+            // `fail_closed_llm_*` is accurate for every caller of this function: each of the
+            // four `LlmOutcome::Failed` arms refuses (CONNACK 3, SUBACK 0x80) or closes.
+            // MQTT 3.1.1 has no retryable/permanent split to put on the wire, so the overload
+            // distinction lives here and nowhere else.
+            let decision = if crate::llm::is_overload_error(&e) {
+                "fail_closed_llm_overloaded"
+            } else {
+                "fail_closed_llm_error"
+            };
+            let client = event
+                .data
+                .get("client_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unidentified>");
+            Log::new(Some(&status_tx)).error(format!(
+                "MQTT {} from '{}' ({}) decision={}: {}",
+                event.event_type.id, client, connection_id, decision, e
             ));
             LlmOutcome::Failed
         }
