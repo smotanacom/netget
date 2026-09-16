@@ -3,11 +3,50 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::process::Command;
 use tokio::time::sleep;
 
 /// Result type for e2e tests
 pub type E2EResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+/// How long an Ollama reachability or model-listing probe may take.
+///
+/// It was 2 seconds in `check_ollama_available` and 5 in `ensure_model_available`,
+/// and both were below what a healthy Ollama actually costs: `/api/tags` was
+/// measured at **3.85 seconds** with the service idle and healthy, and it does
+/// not answer at all while the daemon is swapping models. Every one of the 45
+/// `tests/llm_live/` suites gates on these calls, so the two bounds made a
+/// working Ollama read as an absent one.
+///
+/// This is a bound on *availability*, not on a model call — nothing waits on it
+/// in the common path, because the common path is the mock.
+pub const OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The Ollama endpoint the test harness probes.
+///
+/// `OLLAMA_BASE_URL` wins. The default is the **literal** loopback address
+/// rather than `localhost`, so that `client_for_endpoint` recognises it as an
+/// `IpAddr` and installs its resolver override: asking the system resolver about
+/// a dotted quad is never meaningful, and on macOS it goes through libinfo to
+/// mDNSResponder, a single system-wide daemon measured blocking for 8.25 seconds
+/// under ~100 concurrent askers. `check_ollama_available` falls back to
+/// `localhost` once if nothing was configured, so an Ollama bound only to `::1`
+/// is still found.
+pub fn ollama_base_url() -> String {
+    std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string())
+}
+
+/// One HTTP client for every Ollama probe in this test binary.
+///
+/// Built through `netget`'s own `client_for_endpoint` for the literal-IP DNS
+/// bypass, and built **once**: `Client::builder().build()` loads the platform
+/// root store, which on macOS reads the keychain through Security.framework
+/// synchronously and serialised across processes. Called on the async runtime it
+/// parks a tokio worker, and under `--test-threads=100` that is exactly the
+/// stall this repository already traced once in the `doh` client suite.
+pub fn ollama_http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| netget::llm::ollama_client::client_for_endpoint(&ollama_base_url()))
+}
 
 /// Retry a condition with exponential backoff until it succeeds or times out
 ///
@@ -195,16 +234,21 @@ pub fn get_netget_binary_path() -> E2EResult<PathBuf> {
     }
 }
 
-/// Kill all running netget processes (useful for cleanup)
+/// Kill netget processes orphaned by an earlier, killed test run.
+///
+/// This used to be `pkill -f "target/.*/netget"`, which is precisely the command
+/// `CLAUDE.md` forbids: the operator's own session is
+/// `<repo>/target/release/netget --mcp`, so that pattern matched it and would
+/// have killed it. It had no callers, which is the only reason it never did.
+///
+/// The replacement is `child_guard`'s sweeper, whose predicate requires PPID 1
+/// **and** an executable under a build target directory **and** the absence of
+/// any `--mcp` flag — see `tests/helpers/child_guard.rs`.
 #[allow(dead_code)]
 pub async fn cleanup_stray_processes() {
     #[cfg(unix)]
     {
-        let _ = Command::new("pkill")
-            .arg("-f")
-            .arg("target/.*/netget")
-            .output()
-            .await;
+        super::child_guard::sweep_orphaned_netget();
     }
 }
 

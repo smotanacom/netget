@@ -61,6 +61,7 @@ impl NetGetServer {
 
     /// Stop the server gracefully
     pub async fn stop(mut self) -> E2EResult<()> {
+        let child_pid = self.child.id();
         // Try to stop gracefully with Ctrl+C
         #[cfg(unix)]
         {
@@ -86,6 +87,11 @@ impl NetGetServer {
                 Ok(())
             }
         };
+
+        // Release the OS-level death tie now the child is confirmed gone.
+        if let Some(pid) = child_pid {
+            super::child_guard::untie_child(pid);
+        }
 
         // Abort background reader tasks to prevent hanging
         self.stdout_reader_handle.abort();
@@ -421,6 +427,14 @@ impl NetGetServer {
 
 impl Drop for NetGetServer {
     fn drop(&mut self) {
+        // Signal the child here rather than leaving it to `kill_on_drop`, so the
+        // death tie is released only once the signal is on its way.
+        let pid = self.child.id();
+        let _ = self.child.start_kill();
+        if let Some(pid) = pid {
+            super::child_guard::untie_child(pid);
+        }
+
         // Abort background reader tasks to prevent hanging
         self.stdout_reader_handle.abort();
         self.stderr_reader_handle.abort();

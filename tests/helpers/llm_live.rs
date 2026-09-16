@@ -117,13 +117,19 @@ pub fn live_llm_enabled() -> bool {
 }
 
 /// Fail fast with a clear message if the model is not pulled locally.
+///
+/// The bound is `common::OLLAMA_PROBE_TIMEOUT` and the client is the shared one. It
+/// used to be five seconds against a client built here, per call: `/api/tags`
+/// was **measured at 3.85 seconds** with Ollama healthy and idle, and it does not
+/// answer at all while the daemon is loading a different model — which is exactly
+/// when this runs, since the case before it just finished one. See
+/// `check_ollama_available` in `tests/helpers/netget.rs` for the three costs.
 pub async fn ensure_model_available(model: &str) -> E2EResult<()> {
-    let base_url =
-        std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
-    let client = reqwest::Client::new();
+    let base_url = super::common::ollama_base_url();
+    let client = super::common::ollama_http_client();
     let resp = client
         .get(format!("{}/api/tags", base_url))
-        .timeout(Duration::from_secs(5))
+        .timeout(super::common::OLLAMA_PROBE_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("Ollama not reachable at {}: {}", base_url, e))?;

@@ -302,6 +302,12 @@ impl NetGetConfig {
 /// Start a NetGet instance with the given configuration
 /// Returns instance with 0+ servers and 0+ clients
 pub async fn start_netget(config: NetGetConfig) -> E2EResult<NetGetInstance> {
+    // Once per test binary, before the first spawn: collect any netget left
+    // behind by an earlier run that was killed before it could clean up. Safe to
+    // run while other test binaries are mid-run — their children have a live
+    // parent, and the predicate requires PPID 1. See `child_guard.rs`.
+    super::child_guard::sweep_orphaned_netget_once();
+
     // Determine mode: force_ollama > env var/flag > default (mock mode)
     let use_ollama = if config.force_ollama {
         true
@@ -423,6 +429,17 @@ pub async fn start_netget(config: NetGetConfig) -> E2EResult<NetGetInstance> {
 
     // Start the process
     let mut child = cmd.spawn()?;
+
+    // Tie the child's life to this process's, at the OS level.
+    //
+    // `kill_on_drop(true)` above covers the normal and unwinding-panic paths and
+    // nothing else: `Drop` does not run when this test binary is `SIGKILL`ed,
+    // aborts, or is interrupted mid-run — which is exactly how 78 orphaned
+    // netget processes accumulated on one machine in ten hours. See
+    // `tests/helpers/child_guard.rs` for the mechanism and its limits.
+    if let Some(pid) = child.id() {
+        super::child_guard::tie_child(pid);
+    }
 
     // Get both stdout and stderr for reading output
     let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
@@ -876,9 +893,17 @@ impl Drop for NetGetInstance {
         self.stdout_reader_handle.abort();
         self.stderr_reader_handle.abort();
 
-        // Note: child.kill() is async, so we can't call it in Drop
-        // However, the Child struct has kill_on_drop=true set (line 326),
-        // so it will be killed automatically when dropped
+        // `child.kill()` is async and cannot be awaited here, but `start_kill`
+        // is not: it sends the signal synchronously. Send it explicitly rather
+        // than relying on `kill_on_drop`, so the death tie can be released in
+        // the same breath — a tie released before the child is signalled would
+        // leave nothing watching, and one never released at all could act on a
+        // recycled pid at process exit.
+        let pid = self.child.id();
+        let _ = self.child.start_kill();
+        if let Some(pid) = pid {
+            super::child_guard::untie_child(pid);
+        }
         println!("[DEBUG] NetGetInstance dropped, background tasks aborted");
     }
 }
@@ -1100,6 +1125,7 @@ impl NetGetInstance {
     /// Stop the NetGet instance gracefully
     #[allow(dead_code)]
     pub async fn stop(mut self) -> E2EResult<()> {
+        let child_pid = self.child.id();
         // Try to stop gracefully with Ctrl+C
         #[cfg(unix)]
         {
@@ -1125,6 +1151,12 @@ impl NetGetInstance {
                 Ok(())
             }
         };
+
+        // The child is gone (waited for, or killed above); release the tie so
+        // nothing fires against its pid once it is recycled.
+        if let Some(pid) = child_pid {
+            super::child_guard::untie_child(pid);
+        }
 
         // Abort background reader tasks to prevent hanging
         // (Do this after killing the child so pipes will close)
@@ -1292,13 +1324,50 @@ impl NetGetInstance {
     }
 }
 
-/// Check if Ollama is available
+/// Check if Ollama is available.
+///
+/// # Why this is not two seconds, and not a fresh client
+///
+/// It was both, and it made all 45 `tests/llm_live/` suites flaky against an
+/// Ollama that was up and serving the whole time. Three costs land on this one
+/// call, and this repository has already documented every one of them:
+///
+/// - **`reqwest::Client::builder().build()` is a blocking operation.** It loads
+///   the platform root store, which on macOS reads the keychain through
+///   Security.framework, synchronously and serialised across processes.
+///   Building one per call paid it per call; `ollama_http_client` builds one for
+///   the whole test binary.
+/// - **`localhost` goes through the resolver.** `127.0.0.1` does not, once
+///   `client_for_endpoint` is what constructs the client: it installs a resolver
+///   override when — and only when — the host parses as an `IpAddr`. On macOS
+///   `getaddrinfo` reaches mDNSResponder, one system-wide daemon, measured at
+///   8.25 seconds with ~100 processes asking at once.
+/// - **Ollama is often mid-answer.** A check that runs right after the previous
+///   case's model call catches it swapping models, and swapping a model takes a
+///   great deal longer than two seconds.
+///
+/// Measured: 3.85 seconds against a *healthy* Ollama, and a full timeout while it
+/// was between models. So the bound is [`OLLAMA_PROBE_TIMEOUT`], which is long
+/// enough to be an answer about availability rather than about load.
 async fn check_ollama_available() -> bool {
-    // Try to connect to Ollama
-    let client = reqwest::Client::new();
+    let base = ollama_base_url();
+    if probe_ollama(&base).await {
+        return true;
+    }
+    // Only when nothing was configured: an Ollama bound to `::1` rather than
+    // `127.0.0.1` would otherwise read as absent purely because of the default
+    // chosen above for the resolver's sake.
+    if std::env::var("OLLAMA_BASE_URL").is_err() {
+        return probe_ollama("http://localhost:11434").await;
+    }
+    false
+}
+
+async fn probe_ollama(base_url: &str) -> bool {
+    let client = ollama_http_client();
     match tokio::time::timeout(
-        Duration::from_secs(2),
-        client.get("http://localhost:11434/api/tags").send(),
+        OLLAMA_PROBE_TIMEOUT,
+        client.get(format!("{}/api/tags", base_url)).send(),
     )
     .await
     {
