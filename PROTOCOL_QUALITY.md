@@ -269,7 +269,10 @@ declare, whether or not anyone has looked at it.
   `tests/max_inbound_bytes_bound_plus_one_test.rs`.)* It reads `max_inbound_bytes` off the
   registry, starts each declaring protocol on port 0, sends `bound + 1` bytes and asserts the
   server **decided** — closed the connection or wrote something back — with **zero model calls
-  attributable to the message**. At `--all-features`: **54 probed, 28 skipped, 3 findings**.
+  attributable to the message**. At `--all-features`: **55 probed, 29 skipped, 3 findings**.
+  (54/28 before the same day's `mysql` and `tls` bounds merged in — the point of walking the
+  registry is that the two new numbers were probed without anyone editing this test: `tls`
+  passes, `mysql`'s 64 MiB is over the cap and is listed as skipped.)
 
   The item predicted the hard part correctly and it turned out to have two answers rather than
   none. A generic test cannot know each protocol's refusal vocabulary, so it asserts the thing
@@ -281,9 +284,9 @@ declare, whether or not anyone has looked at it.
   does **not** prove the declared number is the one that fired, which is why it is an addition
   to the per-protocol tests and not a replacement.
 
-  **Skipped, all enumerated by the test on every run:** 19 not a TCP stream (UDP, SCTP,
-  link-level, USB, NFC — derived from `stack_name()`, not listed by hand), 6 whose bound is past
-  the 8 MiB probe cap (`cassandra` 256 MiB, `kafka` 100 MiB, `redis` and `websocket` 64 MiB,
+  **Skipped, all enumerated by the test on every run:** 21 not a TCP stream (UDP, SCTP,
+  link-level, USB, NFC — derived from `stack_name()`, not listed by hand), 7 whose bound is past
+  the 8 MiB probe cap (`cassandra` 256 MiB, `kafka` 100 MiB, `mysql`/`redis`/`websocket` 64 MiB,
   `mongodb` 48 MiB, `mqtt` 16 MiB), and `grpc`, which will not start without a `proto_schema`.
 
   **Three real findings, baselined shrink-only rather than exempted** (all outside the boundary
