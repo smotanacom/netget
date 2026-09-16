@@ -866,9 +866,27 @@ Bind to localhost only (127.0.0.1 / ::1); never contact external endpoints.
 ./cargo-isolated.sh test --no-default-features --features tcp \
     --test server::tcp::e2e_test -- --test-threads=100
 
-# Full sweep (slow, 3GB+ RAM)
-./cargo-isolated.sh test --all-features --no-fail-fast -- --test-threads=100
+# Full sweep. NOTE THE THREAD COUNT: 32, not 100.
+./cargo-isolated.sh test --all-features --no-fail-fast -- --test-threads=32 > /tmp/sweep.txt 2>&1
 ```
+
+**`--test-threads=100` is right for one protocol and wrong for the whole tree**, and the
+failure is not a test failure. `--all-features` builds ~29 test binaries that each link the
+whole 137-protocol library; at 100 threads the run was **killed by the OS for memory pressure**
+on a 96 GB machine (September 2026). "3GB+ RAM", which this section used to say, is off by an
+order of magnitude. At 32 threads the same sweep is **172 targets, 3768 passed, 0 failed**.
+
+**Redirect the sweep to a file and parse the file.** Two sweeps were mis-read in one day
+because of how their output was handled, and both nearly got reported as clean:
+
+- One died at `ld: write() failed, errno=28 (No space left on device)` while linking, **exited
+  0**, and produced zero `test result` lines. Six concurrent `--all-features` target dirs is
+  ~150 GiB; a seventh filled the disk.
+- The other was piped through `tail -30`, which discarded almost every result line — it read as
+  "29 targets, 154 passed" where the truth was 171 targets and 17 failures.
+
+So: parse for a **non-zero target count** and a plausible total, never grep only for failures,
+and never truncate the stream you are about to measure.
 
 **Always pass `--test-threads=100`.** Single-threaded runs are 10-20x slower; if a test hangs,
 fix the hang rather than serializing the suite.
