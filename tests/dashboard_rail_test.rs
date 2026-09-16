@@ -299,9 +299,16 @@ fn a_card_shows_facts_then_an_aligned_button_grid_then_its_sections() {
     assert_eq!(card[1].positions(), 0, "facts are not cursor stops");
     assert!(card[2].text().contains("MANUAL"), "{}", card[2].text());
 
+    // The card's ACTION GRID, which is what this test is about — not every button-bearing
+    // row in the card. `button_width == 0` is the renderer's marker for a standalone
+    // affordance that must NOT be padded into a column (`src/tui/render/cards.rs`), and a
+    // server card now ends with one: `[ + tcp client ]` at the foot of its peers. Including
+    // it made this assertion compare a grid cell against a deliberate non-cell.
     let button_rows: Vec<&Row> = card
         .iter()
-        .filter(|r| r.header.is_none() && !r.buttons.is_empty() && r.spans.is_empty())
+        .filter(|r| {
+            r.header.is_none() && !r.buttons.is_empty() && r.spans.is_empty() && r.button_width > 0
+        })
         .collect();
     assert!(
         button_rows.len() >= 2,
@@ -350,11 +357,16 @@ fn a_wider_column_puts_the_buttons_on_one_row() {
     let snap = snapshot(vec![server(Vec::new(), Vec::new())], Vec::new());
     let rows = rows_for(&snap, &CardState::default(), 160);
     let card = card_rows(&rows, UiKey::Server(ServerId::new(1)));
+    // Grid rows only, for the same reason as above: `[ + tcp client ]` is a standalone
+    // affordance with no grid width and is never part of the action row.
     let button_rows = card
         .iter()
-        .filter(|r| !r.buttons.is_empty() && r.spans.is_empty())
+        .filter(|r| !r.buttons.is_empty() && r.spans.is_empty() && r.button_width > 0)
         .count();
-    assert_eq!(button_rows, 1);
+    assert_eq!(
+        button_rows, 1,
+        "at 160 columns every action fits on one row"
+    );
 }
 
 #[test]
@@ -420,32 +432,66 @@ fn peers_carry_their_buttons_and_unfold_into_their_requests() {
         .iter()
         .find(|r| r.on_enter == Activate::Toggle(NodeId::Peer(key, Some(1))))
         .unwrap();
-    assert!(peer1.text().contains("2 req"), "{}", peer1.text());
+    // `· N` is the request count. The peer row used to spell it `2 req`; it converged on the
+    // same `· N` form the loose-requests row further down has always used, and this assertion
+    // was the only place still expecting the old spelling.
+    assert!(peer1.text().contains("· 2"), "{}", peer1.text());
     assert_eq!(
         peer1.expanded,
         Some(true),
         "a peer's requests are open by default"
     );
+    // The peer row itself carries `[ disconnect ]`. `[ send message ]` used to sit here too
+    // and now has its own row *under the conversation*, which is where a reply belongs —
+    // the composer opens beneath what it is replying to rather than above it.
     let actions: Vec<InstanceAction> = peer1.buttons.iter().map(|b| b.action).collect();
-    assert_eq!(
-        actions,
-        vec![
-            InstanceAction::MessagePeer(1),
-            InstanceAction::DisconnectPeer(1)
-        ]
-    );
+    assert_eq!(actions, vec![InstanceAction::DisconnectPeer(1)]);
     assert!(peer1.buttons.iter().all(|b| b.enabled));
-    assert_eq!(peer1.positions(), 3, "the label and two buttons");
+    assert_eq!(peer1.positions(), 2, "the label and one button");
 
-    // Its requests sit right beneath it, newest first, and open on Enter.
-    let at = card.iter().position(|r| std::ptr::eq(r, peer1)).unwrap();
-    assert_eq!(
-        card[at + 1].on_enter,
-        Activate::Action(InstanceAction::OpenRequest(2))
+    // And the send row really is there, beneath, enabled because this peer can be messaged.
+    // Asserting both halves is the point: without this, moving the button off the peer row
+    // and losing it entirely would look identical.
+    let send = card
+        .iter()
+        .find(|r| {
+            r.buttons
+                .iter()
+                .any(|b| b.action == InstanceAction::MessagePeer(1))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no row offers MessagePeer(1); rows were: {:?}",
+                card.iter().map(|r| r.text()).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        send.buttons.iter().all(|b| b.enabled),
+        "this peer registered a handle, so the button is live"
     );
+
+    // Its conversation sits right beneath it, **oldest first**, and each entry opens on
+    // Enter. Two changes since this was written, both deliberate and both documented in
+    // `src/tui/CLAUDE.md`: the order went newest-first to oldest-first, because this is a
+    // conversation and not a list; and each entry renders as TWO rows, one for the message
+    // in and one for the message out. Asserting the sequence of distinct ids says what the
+    // test means without pinning either of those.
+    let at = card.iter().position(|r| std::ptr::eq(r, peer1)).unwrap();
+    // Bounded to this peer's own subtree: the rows beneath it sit at depth 3, and the next
+    // peer's row comes back up to depth 2. Walking to the end of the card instead picks up
+    // the neighbouring peer's conversation, which is how this first read as [1, 2, 3].
+    let mut order: Vec<u64> = Vec::new();
+    for row in card[at + 1..].iter().take_while(|r| r.depth >= 3) {
+        if let Activate::Action(InstanceAction::OpenRequest(id)) = row.on_enter {
+            if order.last() != Some(&id) {
+                order.push(id);
+            }
+        }
+    }
     assert_eq!(
-        card[at + 2].on_enter,
-        Activate::Action(InstanceAction::OpenRequest(1))
+        order,
+        vec![1, 2],
+        "the conversation reads oldest first, like a transcript"
     );
     assert_eq!(card[at + 1].depth, 3);
 
@@ -455,7 +501,20 @@ fn peers_carry_their_buttons_and_unfold_into_their_requests() {
         .find(|r| r.on_enter == Activate::Toggle(NodeId::Peer(key, Some(2))))
         .unwrap();
     assert!(peer2.buttons.iter().all(|b| !b.enabled));
-    assert!(peer2.buttons[0]
+    // The "cannot message" reason lives on the send row now, not on the peer row — the peer
+    // row's own button is `[ disconnect ]`. Asserting it where it actually is keeps the real
+    // guarantee: a peer whose protocol registered no handle still SHOWS the affordance, and
+    // says why it is dead, rather than hiding it.
+    let peer2_send = card
+        .iter()
+        .find(|r| {
+            r.buttons
+                .iter()
+                .any(|b| b.action == InstanceAction::MessagePeer(2))
+        })
+        .expect("a peer without a handle still offers a disabled send row");
+    assert!(peer2_send.buttons.iter().all(|b| !b.enabled));
+    assert!(peer2_send.buttons[0]
         .why_disabled
         .as_deref()
         .unwrap_or("")
@@ -484,22 +543,46 @@ fn a_busy_peer_is_capped_with_a_show_all_row() {
     );
     let key = UiKey::Server(ServerId::new(1));
     let rows = rows_for(&snap, &CardState::default(), 80);
+    // Count ENTRIES, not rows. `message_rows` emits one row for the message in and one for
+    // the message out, so five capped entries are ten rows — the cap is doing its job and
+    // this assertion was counting the wrong unit. Distinct `OpenRequest` ids is the entry
+    // count however many rows each entry renders as.
     let shown = rows
         .iter()
-        .filter(|r| matches!(r.on_enter, Activate::Action(InstanceAction::OpenRequest(_))))
-        .count();
+        .filter_map(|r| match r.on_enter {
+            Activate::Action(InstanceAction::OpenRequest(id)) => Some(id),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
     assert_eq!(shown, cards::CHILD_LIMIT);
-    let more = rows.iter().find(|r| r.text().contains("… 4 more")).unwrap();
+    // "earlier", not "more": these rows are a conversation, and the hidden ones are the
+    // older messages above rather than extra items below. The wording changed with the
+    // meaning when per-connection conversations landed.
+    let more = rows
+        .iter()
+        .find(|r| r.text().contains("… 4 earlier"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no '… 4 earlier' row; saw: {:?}",
+                rows.iter().map(|r| r.text()).collect::<Vec<_>>()
+            )
+        });
     assert_eq!(more.on_enter, Activate::ShowAll(NodeId::Peer(key, Some(1))));
 
     let mut state = CardState::default();
     state.show_all(&NodeId::Peer(key, Some(1)));
     let rows = rows_for(&snap, &state, 80);
+    // Entries again, not rows — same reason as above.
     let shown = rows
         .iter()
-        .filter(|r| matches!(r.on_enter, Activate::Action(InstanceAction::OpenRequest(_))))
-        .count();
-    assert_eq!(shown, 9);
+        .filter_map(|r| match r.on_enter {
+            Activate::Action(InstanceAction::OpenRequest(id)) => Some(id),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    assert_eq!(shown, 9, "show-all lifts the cap to every entry");
 }
 
 #[test]
