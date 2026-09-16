@@ -1563,7 +1563,7 @@ Read before assuming a subsystem is sound:
   `stop_server` used to release the listening socket and leave every open connection running —
   still reading, still calling the model, still answering, on a server the operator had stopped.
   It *looked* stopped: port free, instance gone from state. `AppState::spawn_server_task` /
-  `spawn_client_task` spawn and register in one call, and 141 sites across ~110 protocols were
+  `spawn_client_task` spawn and register in one call, and 145 sites across 113 server protocols and 2 clients were
   converted to them in September 2026. `tests/stop_server_stops_connections_test.rs` is the
   contract (asserted from the **peer's** side, which is the only vantage that distinguishes a
   live connection from an aborted one) and `tests/detached_task_drift_test.rs` is the ratchet.

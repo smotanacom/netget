@@ -90,7 +90,7 @@ once these exist.
   *Verify:* start, connect a peer that never sends, stop, assert the peer reads EOF within 1s.
   *Effort:* M — the registration is one line per protocol, but there are ~140 of them; do the
   shared accept-loop helpers first so most inherit it.
-  **Done 15 Sep 2026**: mechanism plus the whole sweep (141 sites, ~110 protocols), the
+  **Done 15 Sep 2026**: mechanism plus the whole sweep (145 sites, 115 protocols), the
   peer-side contract on four protocols, and `tests/detached_task_drift_test.rs` as the ratchet.
   What is still detached is enumerated with a reason in Done, below — the one open gap is a
   task awaited inside a `select!` by a registered parent, because aborting a parent does not
@@ -221,7 +221,7 @@ declare, whether or not anyone has looked at it.
   entry per connection and is invisible until production. *Effort:* M for the harness.
 
 - [x] **Stop releases the port, every protocol.** *(the generic test exists, and the
-  `spawn_server_task` sweep landed 15 Sep 2026 — 141 sites, ~110 protocols; see Done)* A generic test: start on port 0, read the
+  `spawn_server_task` sweep landed 15 Sep 2026 — 145 sites, 115 protocols; see Done)* A generic test: start on port 0, read the
   bound port, stop, bind that port again within 1s. *Why:* `register_server_task` is
   "required for `stop_server` to actually release the socket" and adoption has never been
   measured. *Effort:* S — one parametrised test over the registry.
@@ -458,7 +458,7 @@ Move items here with the date and the commit or PR that verified them.
   because those tests do not depend on the accept loop spawning the reader. Only an assertion
   from the **peer's** side distinguishes a live connection from an aborted one.
 
-  **The sweep landed the same day.** 141 sites converted across ~110 protocols — every bare
+  **The sweep landed the same day.** 145 sites converted across 113 server protocols and 2 clients — every bare
   `tokio::spawn` *statement* in `src/{server,client}/*/mod.rs` that had a `server_id` or
   `client_id` to register against. The flagging rule was measured before it became a gate: it
   named 136 sites, 135 of which were the defect, so the false-positive rate is 0.7% and the
