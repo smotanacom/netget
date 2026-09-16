@@ -218,6 +218,12 @@ impl Server for TlsProtocol {
             "send_tls_data" => self.execute_send_tls_data(action),
             "wait_for_more" => Ok(ActionResult::WaitForMore),
             "close_this_connection" => Ok(ActionResult::CloseConnection),
+            // The dashboard's `[ disconnect this peer ]` injects a bare
+            // `{"type": "close_connection"}` (`src/tui/actions.rs`) whatever the protocol calls
+            // its own close verb, so a server that advertises only `close_this_connection`
+            // answers that button with "Unknown TLS action". Accepted as an alias rather than
+            // advertised — `close_this_connection` stays the one name the model is offered.
+            "close_connection" => Ok(ActionResult::CloseConnection),
             _ => Err(anyhow::anyhow!("Unknown TLS action: {action_type}")),
         }
     }

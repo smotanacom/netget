@@ -369,10 +369,11 @@ a circuit can open a TCP stream to anything this host can reach.
 **TLS Connection**:
 
 - Server generates self-signed certificate with `rcgen`
-- TLS 1.3 required (configured with `tokio-rustls`)
-- TLS stream split into read/write halves
+- TLS 1.3 **and** 1.2 (configured with `tokio-rustls`). The link specification's minimum is
+  1.2, and restricted to 1.3 alone this server rejected every peer that sent a 1.2 ClientHello.
+- TLS stream split into read/write halves with `tokio::io::split`
 - Read half processes incoming cells
-- Write half sends responses + forwarder channel
+- Write half sends responses, the forwarder channel's cells, and injected peer messages
 
 **Circuit Manager**:
 
@@ -382,9 +383,45 @@ a circuit can open a TCP stream to anything this host can reach.
 
 **Connection Tracking**:
 
-- Connections tracked in AppState (connection_id, remote_addr, local_addr)
-- Bytes sent/received tracked per circuit, not per connection
-- Packet stats not tracked (cell-based protocol)
+- Connections are tracked in `AppState` (connection_id, remote_addr, local_addr). Until
+  September 2026 nothing called `add_connection_to_server` at all, so a relay with peers on it
+  drew an empty peer list — this section claimed the tracking existed for a long time before it
+  did.
+- Bytes and cells are counted per connection as well as per circuit: every read in the `select!`
+  loop and every write through `write_counted` updates `update_connection_stats`, which is what
+  the dashboard's `↓`/`↑` columns and `last_activity` read. The per-circuit counters in
+  `circuit.rs` are unchanged and measure something different (relayed payload).
+- The connection entry is marked `Closed` on **every** exit, a failed TLS handshake included.
+
+### Dashboard injection (peer handle)
+
+Every connection registers a peer handle (`server::peer_support`) once TLS is up and **before
+the first cell is read**: a relay says nothing until the peer sends VERSIONS, and a manual `*`
+rule parks what the connection raises for minutes, so the operator has to be able to reach the
+peer while it waits. The TLS stream is split with `tokio::io::split` — the reader stays with the
+`select!` loop, the write half is shared as an `Arc<Mutex<WriteHalf<TlsStream<TcpStream>>>>`
+between the session, the stream forwarders' outgoing channel and the peer-command task. Nothing
+reads through that mutex, which is the difference from `spawn_stream_forwarder`, where a lock
+held over a whole *exit* `TcpStream` whose task parks in `read()` deadlocked the write path; that
+is why only the read half is taken there.
+
+**What an injected action does here:**
+
+| Action | Effect |
+|---|---|
+| `send_destroy` | Really reaches the wire: `ActionResult::Output` carrying a whole 514-byte DESTROY cell (tor-spec 5.4), so the outcome is `Sent { bytes_sent: 514 }`. |
+| `close_connection` | Half-closes the write half — `[ disconnect this peer ]`. |
+| `detect_relay_cell` | Logs; `ActionResult::Custom`, nothing on the wire. |
+| `tor_relay_log` | `ActionResult::NoAction` by design. |
+
+So unlike SMB, `[ message this peer ]` on a relay has one verb that genuinely speaks to the
+peer. The handle is removed on every exit path.
+
+`tests/server/tor_relay/peer_inject_test.rs` drives this with a real rustls client (the
+connection is TLS, so asserting at the socket means decrypting) and zero LLM calls: it asserts
+the injected DESTROY's circuit id, command and reason byte off the wire, the byte counters
+either side of it, EOF after `close_connection`, and that a peer hanging up releases the handle
+and marks the entry closed.
 
 ## Limitations
 

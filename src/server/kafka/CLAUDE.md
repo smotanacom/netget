@@ -223,6 +223,41 @@ and action handling against schemas generated from Apache Kafka's own message de
 It does **not** validate those schemas, and it is not a substitute for driving a real
 client. See `tests/server/kafka/CLAUDE.md`.
 
+## Dashboard injection (peer handle)
+
+Every connection registers a peer handle (`server::peer_support`) **before its first read**,
+so the dashboard shows `[ message this peer ]` / `[ disconnect this peer ]` on a live broker
+connection. Before the first read is the point that matters: Kafka is client-speaks-first and
+the broker says nothing until a request arrives, so a `*` manual rule parks the connection's
+very first request — and the operator being asked to answer it must be able to reach, or hang
+up, the connection while it waits.
+
+The socket is split with `tokio::io::split` (never cloned) and the write half is an
+`Arc<Mutex<WriteHalf>>` shared by the session and the peer-command task. `write_frame` takes
+one lock for the whole frame, because the size prefix and the body are a single unit on the
+wire and an injected write landing between them would desynchronise the client for the rest of
+the connection.
+
+- **`[ disconnect this peer ]`** works: it injects a bare `{"type": "close_connection"}`,
+  which `execute_action` maps to `ActionResult::CloseConnection`. That arm exists for this
+  button alone and is deliberately **not advertised** in `get_sync_actions`/`get_async_actions`
+  — Kafka has no close message, so the model has nothing to gain from it and the tool list
+  stays as it was. The generic peer task half-closes the write side; the reader's
+  `UnexpectedEof` path runs the normal teardown and the peer reads EOF.
+- **Custom-result gap:** all five wire verbs (`metadata_response`, `produce_response`,
+  `fetch_response`, `offset_commit_response`, `error_response`) return `ActionResult::Custom`,
+  never `ActionResult::Output`, because a Kafka response is `(size)(correlation_id)(body)` and
+  the correlation id belongs to the **request being answered** — an out-of-band injection is
+  answering none. The generic peer task therefore reports an injected wire verb as `Executed`
+  and writes nothing. No bespoke path is provided: a response carrying an invented correlation
+  id is matched to the wrong in-flight request by every client, which is worse than not
+  writing. Wire replies stay driven by the read loop, where the id is known.
+- Connection counters (`update_connection_stats`) were already updated on every request read
+  and every response write, size prefix included, and still are. Bytes written by the generic
+  peer task are not counted here (that is `peer_support.rs`'s job).
+
+`tests/server/kafka/peer_inject_test.rs` proves all of it with zero LLM calls.
+
 ## Route to Beta
 
 1. Drive it with a real client (librdkafka via a scratch binary, or the Java console

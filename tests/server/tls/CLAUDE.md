@@ -17,6 +17,15 @@ Black-box testing approach:
 ## Test Files
 
 - `e2e_test.rs` - End-to-end tests with real TLS clients
+- `llm_failure_test.rs` - what the peer gets when the backend fails: a close_notify alert,
+  then `Ok(0)` rather than `UnexpectedEof`
+- `peer_inject_test.rs` - the dashboard's `[ message this peer ]` / `[ disconnect this peer ]`
+  path, **0 LLM calls**. In-process, `instruction: Some(String::new())` and a `*` static
+  handler, so the model is never reached. It asserts the handle exists before the peer has
+  sent an application record (the parked-first-record window), that an injected
+  `send_tls_data` comes out of a real rustls client **as plaintext** — the point being that
+  the injected bytes go through the same rustls write half the session uses — and that
+  `close_connection` produces a clean `Ok(0)`.
 
 ## LLM Call Budget
 

@@ -547,3 +547,23 @@ The signaling server works with:
 - [WebRTC Signaling](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Signaling_and_video_calling)
 - [Perfect Negotiation Pattern](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Perfect_negotiation)
 - [tokio-tungstenite Documentation](https://docs.rs/tokio-tungstenite/)
+
+## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+
+The connection is a WebSocket, and this server never holds an `AsyncWrite` for it: `PeerHandle`
+holds a channel into the connection's writer task rather than the `SplitSink` itself, which is
+what makes the fan-out safe. `peer_support` writes `ActionResult::Output` bytes directly to a
+write half, so an injected message would be an unframed payload inside a WebSocket stream — the
+peer reads a protocol violation, not a message.
+
+There is a second reason worth stating, because it outlasts any refactor: the layer this server
+actually authors is an ad-hoc JSON relay schema, so a message that did not come from a peer in
+the room has no place in it. That is the same property that makes this protocol's Beta evidence
+circular: there is no independent implementation of the thing being spoken, because the thing
+being spoken is ours.
+
+The dashboard renders that as a dim button reading "this protocol cannot message a peer from
+here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
+source on every run, so if the mechanism changes the build fails rather than the file going
+quietly stale.

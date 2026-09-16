@@ -197,6 +197,18 @@ impl Server for SmbProtocol {
             .and_then(|v| v.as_str())
             .context("Missing 'type' field in action")?;
 
+        // `close_connection` is the one action this executor resolves itself, and it is
+        // deliberately NOT advertised in `get_sync_actions()` / the event's action list —
+        // adding it there would change the model's tool list. It exists for the peer handle:
+        // the dashboard's "[ disconnect this peer ]" injects a bare
+        // `{"type": "close_connection"}` whatever the protocol calls its own close verb, and
+        // `server::peer_support` turns `ActionResult::CloseConnection` into the half-close.
+        // Without this arm the button would come back "executed" having done nothing, because
+        // the fall-through below answers every name with a `Custom` result.
+        if action_type == "close_connection" {
+            return Ok(ActionResult::CloseConnection);
+        }
+
         // Return Custom result with the action data for SMB server to handle
         Ok(ActionResult::Custom {
             name: action_type.to_string(),

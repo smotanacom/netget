@@ -63,7 +63,7 @@ pub mod stream;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace, warn};
 
 #[cfg(feature = "tor")]
@@ -92,6 +92,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
+
+/// The write half of a peer's TLS stream, shared between the session loop and the dashboard's
+/// peer-command task (`server::peer_support`).
+#[cfg(feature = "tor")]
+type SharedWrite = Arc<Mutex<tokio::io::WriteHalf<tokio_rustls::server::TlsStream<TcpStream>>>>;
 
 /// Tor Relay server - handles OR protocol connections
 pub struct TorRelayServer;
@@ -266,8 +271,88 @@ fn generate_tls_certificate() -> Result<(CertificateDer<'static>, PrivateKeyDer<
     Ok((cert_der, key_der))
 }
 
-/// Handle individual Tor Relay connection
+/// Handle individual Tor Relay connection.
+///
+/// Owns the connection's bookkeeping: the `AppState` entry the dashboard draws the peer row
+/// from, and the peer handle that row's `[ message ]` / `[ disconnect ]` buttons need. Both
+/// are released here on **every** exit, including a failed TLS handshake, so nothing is left
+/// listed as live after the socket has gone.
+#[allow(clippy::too_many_arguments)]
 async fn handle_tor_relay_connection(
+    stream: TcpStream,
+    connection_id: crate::server::connection::ConnectionId,
+    server_id: crate::state::ServerId,
+    remote_addr: SocketAddr,
+    acceptor: TlsAcceptor,
+    llm_client: OllamaClient,
+    app_state: Arc<AppState>,
+    status_tx: mpsc::UnboundedSender<String>,
+    protocol: Arc<TorRelayProtocol>,
+    circuit_manager: Arc<CircuitManager>,
+) -> Result<()> {
+    // Track the connection. Nothing did this before, so a relay with peers on it showed an
+    // empty peer list, no byte counters, and no row for the dashboard to hang a
+    // "[ message this peer ]" button on.
+    let local_addr = stream
+        .local_addr()
+        .unwrap_or_else(|_| "0.0.0.0:0".parse().expect("0.0.0.0:0 parses"));
+    let now = crate::utils::clock::Instant::now();
+    app_state
+        .add_connection_to_server(
+            server_id,
+            crate::state::server::ConnectionState {
+                id: connection_id,
+                remote_addr,
+                local_addr,
+                bytes_sent: 0,
+                bytes_received: 0,
+                packets_sent: 0,
+                packets_received: 0,
+                last_activity: now,
+                status: crate::state::server::ConnectionStatus::Active,
+                status_changed_at: now,
+                protocol_info: crate::state::server::ProtocolConnectionInfo::empty(),
+            },
+        )
+        .await;
+    let _ = status_tx.send("__UPDATE_UI__".to_string());
+
+    let result = run_tor_relay_connection(
+        stream,
+        connection_id,
+        server_id,
+        remote_addr,
+        acceptor,
+        llm_client,
+        app_state.clone(),
+        status_tx.clone(),
+        protocol,
+        circuit_manager,
+    )
+    .await;
+
+    // Every exit path lands here - a TLS handshake that never completed, a clean close, a cell
+    // error that returned `Err`, an injected disconnect. Idempotent with the peer task's own
+    // close path.
+    app_state
+        .remove_peer_handle(server_id, connection_id.as_u32())
+        .await;
+    app_state
+        .update_connection_status(
+            server_id,
+            connection_id,
+            crate::state::server::ConnectionStatus::Closed,
+        )
+        .await;
+    let _ = status_tx.send("__UPDATE_UI__".to_string());
+
+    result
+}
+
+/// The TLS handshake and the session itself. Split out so its `?` paths cannot skip the
+/// teardown in [`handle_tor_relay_connection`].
+#[allow(clippy::too_many_arguments)]
+async fn run_tor_relay_connection(
     stream: TcpStream,
     connection_id: crate::server::connection::ConnectionId,
     server_id: crate::state::ServerId,
@@ -293,11 +378,41 @@ async fn handle_tor_relay_connection(
         }
     };
 
+    // Split the TLS stream (never clone it). The reader stays with the session's `select!`
+    // loop; the write half is shared with the peer-command task through an `Arc<Mutex<..>>`,
+    // which is the only lock either side takes and is never held across an `.await` that does
+    // anything but the write itself. Note the difference from `spawn_stream_forwarder` below:
+    // there a lock is held over a whole *exit* TcpStream whose task parks in `read()`, which
+    // is why only the read half is taken there. Here nothing reads through the mutex.
+    let (reader, writer) = tokio::io::split(tls_stream);
+    let write_half: SharedWrite = Arc::new(Mutex::new(writer));
+
+    // Peer messaging: registered BEFORE the first cell is read. A relay says nothing until the
+    // peer sends VERSIONS, and a manual `*` rule parks the events this connection raises for
+    // minutes - the operator has to be able to reach, or hang up, a connection that is waiting
+    // on their own answer.
+    let peer_rx = crate::server::peer_support::register_peer_channel(
+        &app_state,
+        server_id,
+        connection_id.as_u32(),
+    )
+    .await;
+    crate::server::peer_support::spawn_peer_command_task(
+        peer_rx,
+        protocol.clone(),
+        app_state.clone(),
+        server_id,
+        connection_id.as_u32(),
+        write_half.clone(),
+        status_tx.clone(),
+    );
+
     // Create channel for outgoing cells
     let (outgoing_tx, outgoing_rx) = mpsc::unbounded_channel();
 
     let mut session = TorRelaySession {
-        stream: tls_stream,
+        reader,
+        write_half: write_half.clone(),
         connection_id,
         server_id,
         remote_addr,
@@ -310,12 +425,19 @@ async fn handle_tor_relay_connection(
         outgoing_rx,
     };
 
-    session.handle().await
+    let result = session.handle().await;
+
+    // Make the FIN immediate rather than waiting for the peer task to drop its clone.
+    let _ = write_half.lock().await.shutdown().await;
+    result
 }
 
 /// Tor Relay session handler
 struct TorRelaySession {
-    stream: tokio_rustls::server::TlsStream<TcpStream>,
+    /// Read half of the TLS stream, owned outright by the `select!` loop.
+    reader: tokio::io::ReadHalf<tokio_rustls::server::TlsStream<TcpStream>>,
+    /// Write half, shared with the dashboard's peer-command task.
+    write_half: SharedWrite,
     connection_id: crate::server::connection::ConnectionId,
     server_id: crate::state::ServerId,
     remote_addr: SocketAddr,
@@ -363,7 +485,7 @@ impl TorRelaySession {
                         command, payload, ..
                     } => {
                         if let Some(response) = self.handle_variable_cell(command, &payload) {
-                            self.stream.write_all(&response).await?;
+                            self.write_counted(&response).await?;
                         }
                     }
                     FramedCell::Fixed { circuit_id, raw } => {
@@ -378,14 +500,14 @@ impl TorRelaySession {
 
                         match self.handle_cell(cell_info, &raw).await {
                             Ok(Some(response)) => {
-                                self.stream.write_all(&response).await?;
+                                self.write_counted(&response).await?;
                                 debug!("Sent response cell ({} bytes)", response.len());
                             }
                             Ok(None) => {}
                             Err(e) => {
                                 error!("Failed to handle cell: {}", e);
                                 let destroy = self.create_destroy_cell(circuit_id);
-                                self.stream.write_all(&destroy).await?;
+                                self.write_counted(&destroy).await?;
                                 return Err(e);
                             }
                         }
@@ -420,7 +542,7 @@ impl TorRelaySession {
 
                 // Read incoming bytes from the TLS stream. `read` is cancel-safe: if the
                 // other branch wins, nothing has been consumed.
-                read_result = self.stream.read(&mut read_buf) => {
+                read_result = self.reader.read(&mut read_buf) => {
                     match read_result {
                         Ok(0) => {
                             Log::new(Some(&self.status_tx)).info(format!(
@@ -432,6 +554,19 @@ impl TorRelaySession {
                         Ok(n) => {
                             seen_cell = true;
                             trace!("Received {} bytes from {}", n, self.remote_addr);
+                            // The rail's down-counter and the peer row's last_activity read
+                            // these; nothing updated them before, so every relay connection
+                            // showed 0/0 however much traffic crossed it.
+                            self.app_state
+                                .update_connection_stats(
+                                    self.server_id,
+                                    self.connection_id,
+                                    Some(n as u64),
+                                    None,
+                                    Some(1),
+                                    None,
+                                )
+                                .await;
                             inbuf.extend_from_slice(&read_buf[..n]);
                         }
                         Err(e) => {
@@ -444,10 +579,36 @@ impl TorRelaySession {
                 // Send outgoing cells from forwarder tasks
                 Some(cell) = self.outgoing_rx.recv() => {
                     trace!("Sending outgoing cell ({} bytes)", cell.len());
-                    self.stream.write_all(&cell).await?;
+                    self.write_counted(&cell).await?;
                 }
             }
         }
+    }
+
+    /// Write one cell to the peer and count it.
+    ///
+    /// The guard is dropped before the stats update, so nothing awaits `AppState` while
+    /// holding the write half - the peer-command task needs the same lock to inject a cell or
+    /// a disconnect. A cell must reach the wire whole: a short write desynchronises the peer's
+    /// framing for the rest of the connection, which is why the lock is taken around
+    /// `write_all` + `flush` together rather than per call.
+    async fn write_counted(&self, data: &[u8]) -> Result<()> {
+        {
+            let mut writer = self.write_half.lock().await;
+            writer.write_all(data).await?;
+            writer.flush().await?;
+        }
+        self.app_state
+            .update_connection_stats(
+                self.server_id,
+                self.connection_id,
+                None,
+                Some(data.len() as u64),
+                None,
+                Some(1),
+            )
+            .await;
+        Ok(())
     }
 
     /// Handle a variable-length cell.

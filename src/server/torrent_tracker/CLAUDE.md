@@ -279,19 +279,43 @@ generic `serde_json::Value` wrapper (`state/server.rs`), not the per-protocol en
 versions of this file described; there is no `TorrentTracker` variant and no
 `recent_requests` list. Each announce or scrape is a separate short-lived connection.
 
-### Dashboard injection — stats yes, peer handle intentionally no
+### Dashboard injection — stats and a peer handle
 
-`handle_connection` now calls `AppState::update_connection_stats` on the single read and on
-every write path (LLM response, `400 Bad Request`, `500`), so the dashboard rail shows real
-`↓ ↑` byte counts and a fresh `last_activity` instead of `↓0 ↑0`.
+`handle_connection` calls `AppState::update_connection_stats` on the single read and on every
+write path (LLM response, `400 Bad Request`, `500`, the injected write), so the dashboard rail
+shows real `↓ ↑` byte counts and a fresh `last_activity` instead of `↓0 ↑0`.
 
-It does **not** register a `peer_support` handle, so the rail offers no
-"message this peer" / "disconnect this peer" affordance. That is deliberate: the tracker is
-HTTP-style one-shot — one read, one write, then the connection returns and closes — so there
-is no live window in which an injected `send_announce_response` or `close_connection` could
-reach the peer. Wiring a handle would register it and immediately drop it; the honest
-rendering is the dim "cannot message a peer from here yet" row. (Because there is no peer
-handle, `execute_action` also needs no `close_connection` arm.)
+It also registers a `peer_support` handle, so `[ message this peer ]` and
+`[ disconnect this peer ]` work. **This file used to argue the opposite, and the argument was
+wrong in the one case the buttons exist for.** It said the tracker is "HTTP-style one-shot —
+one read, one write, then the connection returns and closes — so there is no live window". The
+live window is the *first* read: the tracker says nothing until the announce arrives, and a
+`manual` rule parks that announce for a human for up to 300s (`src/state/intercepts.rs`). For
+almost the whole life of a parked connection the peer has spoken and this server has not, and
+the operator is being asked to decide about a connection they could not reach or hang up. The
+handle is therefore registered **before the first read**, not after the exchange.
+
+What an injected action can do here:
+
+- `send_announce_response` / `send_scrape_response` / `send_error_response` all return
+  `ActionResult::Output`, so they are encoded by the same executor the model's actions go
+  through and the bytes reach the socket. The reply is a complete HTTP response with
+  `Connection: close`, so an injected one is an *answer*, not an extra frame — sending a second
+  one after the session has already replied puts two responses on a connection the first one
+  declared closed.
+- `close_connection` is accepted by `execute_action` but deliberately **not advertised** to the
+  model: a tracker reply already carries `Connection: close` and the session ends on its own,
+  so there is nothing for the model to decide. The arm exists because the dashboard's
+  `[ disconnect this peer ]` injects a bare `{"type": "close_connection"}` whatever the protocol
+  calls its own close verb, and without an arm that button fails as an unknown action.
+
+### The connection entry was never closed
+
+Adopting the handle exposed this: `handle_connection` had no `close_connection_on_server` call
+at all, on any path. Because `torrent_tracker` is not `.connectionless()`, the 10-second idle
+sweep never collected those rows either — so **every peer the tracker ever served accumulated
+as a live `Active` row** for the life of the server. It now closes on every exit path, beside
+the handle removal. `tests/server/torrent_tracker/peer_inject_test.rs` asserts both.
 
 ## Limitations
 
