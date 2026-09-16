@@ -153,16 +153,20 @@ impl AmqpServer {
                         let app_state = accept_state.clone();
                         let status_tx = accept_status_tx.clone();
 
-                        tokio::spawn(async move {
-                            if let Err(e) = handle_connection(
-                                socket, peer_addr, local_addr, llm_client, app_state, status_tx,
-                                server_id, frame_max, heartbeat,
-                            )
-                            .await
-                            {
-                                debug!("AMQP connection {} ended: {}", peer_addr, e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = handle_connection(
+                                    socket, peer_addr, local_addr, llm_client, app_state,
+                                    status_tx, server_id, frame_max, heartbeat,
+                                )
+                                .await
+                                {
+                                    debug!("AMQP connection {} ended: {}", peer_addr, e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         consecutive_accept_errors += 1;
@@ -623,7 +627,13 @@ impl Session {
                 self.protocol.set_frame_max(self.frame_max);
 
                 if self.heartbeat > 0 {
-                    spawn_heartbeat(self.out_tx.clone(), self.heartbeat);
+                    spawn_heartbeat(
+                        self.out_tx.clone(),
+                        self.heartbeat,
+                        self.app_state.clone(),
+                        self.server_id,
+                    )
+                    .await;
                 }
                 Log::new(Some(&self.status_tx)).debug(format!(
                     "AMQP tuned for {}: frame_max={} heartbeat={}s",
@@ -1358,16 +1368,25 @@ enum HandlerOutcome {
 
 /// Periodically emit a heartbeat frame, at half the negotiated interval as the spec
 /// recommends. The task ends when the connection's writer channel is dropped.
-fn spawn_heartbeat(out_tx: mpsc::UnboundedSender<Vec<u8>>, heartbeat_secs: u16) {
+async fn spawn_heartbeat(
+    out_tx: mpsc::UnboundedSender<Vec<u8>>,
+    heartbeat_secs: u16,
+    app_state: Arc<AppState>,
+    server_id: crate::state::ServerId,
+) {
     let period = std::time::Duration::from_secs((heartbeat_secs as u64).max(2) / 2);
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(period).await;
-            if out_tx.send(heartbeat_frame()).is_err() {
-                break;
+    // Tracked, not detached: stop_server must abort this task too.
+    let task_owner = app_state.clone();
+    task_owner
+        .spawn_server_task(server_id, async move {
+            loop {
+                tokio::time::sleep(period).await;
+                if out_tx.send(heartbeat_frame()).is_err() {
+                    break;
+                }
             }
-        }
-    });
+        })
+        .await;
 }
 
 /// `Connection.Start` arguments: version, server properties, SASL mechanisms, locales.

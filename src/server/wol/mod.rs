@@ -355,87 +355,91 @@ impl WolServer {
                 let status_clone = status_tx.clone();
                 let protocol_clone = protocol.clone();
 
-                tokio::spawn(async move {
-                    let event = Event::new(
-                        &WOL_MAGIC_PACKET_RECEIVED_EVENT,
-                        serde_json::json!({
-                            "target_mac": target_mac,
-                            "source_address": peer_addr.to_string(),
-                            "has_password": packet.has_password(),
-                            "password_length": packet.password_len,
-                            "transport": packet.transport.as_str(),
-                            "sync_offset": packet.sync_offset,
-                        }),
-                    );
+                // Tracked, not detached: stop_server must abort this task too.
+                let task_owner = app_state.clone();
+                task_owner
+                    .spawn_server_task(server_id, async move {
+                        let event = Event::new(
+                            &WOL_MAGIC_PACKET_RECEIVED_EVENT,
+                            serde_json::json!({
+                                "target_mac": target_mac,
+                                "source_address": peer_addr.to_string(),
+                                "has_password": packet.has_password(),
+                                "password_length": packet.password_len,
+                                "transport": packet.transport.as_str(),
+                                "sync_offset": packet.sync_offset,
+                            }),
+                        );
 
-                    match call_llm(
-                        &llm_clone,
-                        &state_clone,
-                        server_id,
-                        Some(connection_id),
-                        &event,
-                        protocol_clone.as_ref(),
-                    )
-                    .await
-                    {
-                        Ok(execution_result) => {
-                            for message in &execution_result.messages {
-                                info!("{}", message);
-                                let _ = status_clone.send(format!("[INFO] {}", message));
-                            }
+                        match call_llm(
+                            &llm_clone,
+                            &state_clone,
+                            server_id,
+                            Some(connection_id),
+                            &event,
+                            protocol_clone.as_ref(),
+                        )
+                        .await
+                        {
+                            Ok(execution_result) => {
+                                for message in &execution_result.messages {
+                                    info!("{}", message);
+                                    let _ = status_clone.send(format!("[INFO] {}", message));
+                                }
 
-                            let decision = Self::decision_tag(&execution_result);
-                            info!(
-                                "Wake-on-LAN magic packet for {} from {} decision={} \
+                                let decision = Self::decision_tag(&execution_result);
+                                info!(
+                                    "Wake-on-LAN magic packet for {} from {} decision={} \
                                  ({} action(s), {} failed)",
-                                target_mac,
-                                peer_addr,
-                                decision,
-                                execution_result.raw_actions.len(),
-                                execution_result.failures.len()
-                            );
-                            let _ = status_clone.send(format!(
-                                "[INFO] Wake-on-LAN {} from {} decision={}",
-                                target_mac, peer_addr, decision
-                            ));
+                                    target_mac,
+                                    peer_addr,
+                                    decision,
+                                    execution_result.raw_actions.len(),
+                                    execution_result.failures.len()
+                                );
+                                let _ = status_clone.send(format!(
+                                    "[INFO] Wake-on-LAN {} from {} decision={}",
+                                    target_mac, peer_addr, decision
+                                ));
 
-                            Self::process_announcements(
-                                &execution_result.raw_actions,
-                                allow_non_standard_ack,
-                                peer_addr,
-                                &target_mac,
-                                &status_clone,
-                            )
-                            .await;
-                        }
-                        Err(e) => {
-                            // Nothing goes on the wire, and that is protocol-correct rather
-                            // than a compromise: Wake-on-LAN defines no reply of any kind, so
-                            // there is no error form to send and no peer waiting for one.
-                            // What must NOT happen is that this silence looks identical to a
-                            // deliberate `ignore_magic_packet` afterwards - hence the
-                            // distinct tag, and the category split so an overload is
-                            // distinguishable from a hard failure.
-                            let category = crate::utils::WireFailure::classify(&e);
-                            let category_tag = if category.is_overloaded() {
-                                "overloaded"
-                            } else {
-                                "unavailable"
-                            };
-                            error!(
-                                "Wake-on-LAN magic packet for {} from {} \
+                                Self::process_announcements(
+                                    &execution_result.raw_actions,
+                                    allow_non_standard_ack,
+                                    peer_addr,
+                                    &target_mac,
+                                    &status_clone,
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                // Nothing goes on the wire, and that is protocol-correct rather
+                                // than a compromise: Wake-on-LAN defines no reply of any kind, so
+                                // there is no error form to send and no peer waiting for one.
+                                // What must NOT happen is that this silence looks identical to a
+                                // deliberate `ignore_magic_packet` afterwards - hence the
+                                // distinct tag, and the category split so an overload is
+                                // distinguishable from a hard failure.
+                                let category = crate::utils::WireFailure::classify(&e);
+                                let category_tag = if category.is_overloaded() {
+                                    "overloaded"
+                                } else {
+                                    "unavailable"
+                                };
+                                error!(
+                                    "Wake-on-LAN magic packet for {} from {} \
                                  decision=fail_closed_llm_error category={} \
                                  (no reply possible: Wake-on-LAN defines no response): {}",
-                                target_mac, peer_addr, category_tag, e
-                            );
-                            let _ = status_clone.send(format!(
-                                "✗ Wake-on-LAN {} from {} decision=fail_closed_llm_error \
+                                    target_mac, peer_addr, category_tag, e
+                                );
+                                let _ = status_clone.send(format!(
+                                    "✗ Wake-on-LAN {} from {} decision=fail_closed_llm_error \
                                  category={}: {}",
-                                target_mac, peer_addr, category_tag, e
-                            ));
+                                    target_mac, peer_addr, category_tag, e
+                                ));
+                            }
                         }
-                    }
-                });
+                    })
+                    .await;
             }
         });
 

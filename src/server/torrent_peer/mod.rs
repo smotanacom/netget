@@ -145,27 +145,31 @@ impl TorrentPeerServer {
                             .await;
                         let _ = status_clone.send("__UPDATE_UI__".to_string());
 
-                        tokio::spawn(async move {
-                            // Held for the life of the connection, so the cap counts live
-                            // peers rather than accepts.
-                            let _permit = permit;
-                            if let Err(e) = Self::handle_connection(
-                                read_half,
-                                write_half,
-                                peer_addr,
-                                local_addr,
-                                connection_id,
-                                llm_clone,
-                                state_clone,
-                                status_clone,
-                                server_id,
-                                protocol_clone,
-                            )
-                            .await
-                            {
-                                error!("BitTorrent Peer connection error: {}", e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // peers rather than accepts.
+                                let _permit = permit;
+                                if let Err(e) = Self::handle_connection(
+                                    read_half,
+                                    write_half,
+                                    peer_addr,
+                                    local_addr,
+                                    connection_id,
+                                    llm_clone,
+                                    state_clone,
+                                    status_clone,
+                                    server_id,
+                                    protocol_clone,
+                                )
+                                .await
+                                {
+                                    error!("BitTorrent Peer connection error: {}", e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

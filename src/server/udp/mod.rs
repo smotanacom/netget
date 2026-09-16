@@ -106,7 +106,9 @@ impl UdpServer {
                         let socket_clone = socket.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             let log = Log::new(Some(&status_clone));
                             // Render the payload the way the model will have to reply in.
                             //
@@ -362,7 +364,7 @@ impl UdpServer {
                                     }
                                 }
                             }
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("UDP receive error: {}", e));

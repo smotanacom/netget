@@ -1049,9 +1049,13 @@ impl TunTapServer {
             ctx.status_tx.clone(),
             ctx.server_id,
         );
-        tokio::spawn(async move {
-            engine.run(ingress_rx, egress_tx).await;
-        });
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = ctx.state.clone();
+        task_owner
+            .spawn_server_task(ctx.server_id, async move {
+                engine.run(ingress_rx, egress_tx).await;
+            })
+            .await;
 
         // Registered only now that the device is genuinely up: `stop_server` aborts this
         // parked task, which trips `stop` and ends the blocking read loop.

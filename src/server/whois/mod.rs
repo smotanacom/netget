@@ -108,19 +108,23 @@ impl WhoisServer {
                         let protocol_clone = protocol.clone();
                         let connection_id_clone = connection_id;
 
-                        tokio::spawn(async move {
-                            handle_whois_connection(
-                                socket,
-                                peer_addr,
-                                llm_clone,
-                                state_clone,
-                                status_clone,
-                                server_id,
-                                protocol_clone,
-                                connection_id_clone,
-                            )
-                            .await
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                handle_whois_connection(
+                                    socket,
+                                    peer_addr,
+                                    llm_clone,
+                                    state_clone,
+                                    status_clone,
+                                    server_id,
+                                    protocol_clone,
+                                    connection_id_clone,
+                                )
+                                .await
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("WHOIS accept error: {}", e));

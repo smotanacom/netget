@@ -87,224 +87,235 @@ impl SipServer {
                         let socket_clone = socket.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
-                            let log = Log::new(Some(&status_clone));
-                            // Parse SIP message
-                            let sip_message = match Self::parse_sip_message(&data) {
-                                Ok(msg) => msg,
-                                Err(e) => {
-                                    log.warn(format!(
-                                        "SIP failed to parse message from {}: {}",
-                                        peer_addr, e
-                                    ));
-                                    return;
-                                }
-                            };
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let log = Log::new(Some(&status_clone));
+                                // Parse SIP message
+                                let sip_message = match Self::parse_sip_message(&data) {
+                                    Ok(msg) => msg,
+                                    Err(e) => {
+                                        log.warn(format!(
+                                            "SIP failed to parse message from {}: {}",
+                                            peer_addr, e
+                                        ));
+                                        return;
+                                    }
+                                };
 
-                            // Request summary FileOnly: the sip_* event template renders
-                            // the equivalent line to the TUI.
-                            log.debug(format!(
-                                "SIP {} request from {} (Call-ID: {})",
-                                sip_message.method, peer_addr, sip_message.call_id
-                            ));
+                                // Request summary FileOnly: the sip_* event template renders
+                                // the equivalent line to the TUI.
+                                log.debug(format!(
+                                    "SIP {} request from {} (Call-ID: {})",
+                                    sip_message.method, peer_addr, sip_message.call_id
+                                ));
 
-                            // Create event based on SIP method
-                            let event = Self::create_event(
-                                &sip_message,
-                                peer_addr,
-                                local_addr,
-                                connection_id,
-                            );
+                                // Create event based on SIP method
+                                let event = Self::create_event(
+                                    &sip_message,
+                                    peer_addr,
+                                    local_addr,
+                                    connection_id,
+                                );
 
-                            // Call LLM with SIP event
-                            match call_llm(
-                                &llm_clone,
-                                &state_clone,
-                                server_id,
-                                Some(connection_id),
-                                &event,
-                                protocol_clone.as_ref(),
-                            )
-                            .await
-                            {
-                                Ok(execution_result) => {
-                                    // ACK takes no response at all (RFC 3261 §17), so the
-                                    // whole reply path is skipped for it - including the
-                                    // no-answer refusal below. Answering an ACK is a protocol
-                                    // violation whatever the model said.
-                                    if sip_message.method == "ACK" {
-                                        log.debug(format!(
+                                // Call LLM with SIP event
+                                match call_llm(
+                                    &llm_clone,
+                                    &state_clone,
+                                    server_id,
+                                    Some(connection_id),
+                                    &event,
+                                    protocol_clone.as_ref(),
+                                )
+                                .await
+                                {
+                                    Ok(execution_result) => {
+                                        // ACK takes no response at all (RFC 3261 §17), so the
+                                        // whole reply path is skipped for it - including the
+                                        // no-answer refusal below. Answering an ACK is a protocol
+                                        // violation whatever the model said.
+                                        if sip_message.method == "ACK" {
+                                            log.debug(format!(
                                             "SIP ACK from {} (Call-ID {}) decision=model_answer; \
                                              ACK takes no response",
                                             peer_addr, sip_message.call_id
                                         ));
-                                        return;
-                                    }
+                                            return;
+                                        }
 
-                                    // Pick the action that is actually a SIP response. The model
-                                    // may legitimately return a common action (set_memory,
-                                    // schedule_task, ...) alongside - or ahead of - its reply, and
-                                    // taking `raw_actions.first()` blindly turned that into a
-                                    // fabricated status line while the real answer was ignored.
-                                    let response_action = execution_result
-                                        .raw_actions
-                                        .iter()
-                                        .find(|a| is_sip_response_action(a));
+                                        // Pick the action that is actually a SIP response. The model
+                                        // may legitimately return a common action (set_memory,
+                                        // schedule_task, ...) alongside - or ahead of - its reply, and
+                                        // taking `raw_actions.first()` blindly turned that into a
+                                        // fabricated status line while the real answer was ignored.
+                                        let response_action = execution_result
+                                            .raw_actions
+                                            .iter()
+                                            .find(|a| is_sip_response_action(a));
 
-                                    let Some(action) = response_action else {
-                                        // The model was reachable and produced no SIP response.
-                                        // That is not an accept: on REGISTER or INVITE, staying
-                                        // silent leaves the UAC retransmitting for 32 seconds and
-                                        // tells the operator nothing, so refuse explicitly and
-                                        // keep the decision distinguishable from a backend
-                                        // failure (radius' decision= shape).
-                                        log.warn(format!(
+                                        let Some(action) = response_action else {
+                                            // The model was reachable and produced no SIP response.
+                                            // That is not an accept: on REGISTER or INVITE, staying
+                                            // silent leaves the UAC retransmitting for 32 seconds and
+                                            // tells the operator nothing, so refuse explicitly and
+                                            // keep the decision distinguishable from a backend
+                                            // failure (radius' decision= shape).
+                                            log.warn(format!(
                                             "SIP {} from {} (Call-ID {}) decision=model_silent; \
                                              refusing with 500 (the model returned no SIP \
                                              response action)",
                                             sip_message.method, peer_addr, sip_message.call_id
                                         ));
-                                        let refusal = Self::build_sip_response(
-                                            &sip_message,
-                                            &serde_json::json!({
-                                                "status_code": 500,
-                                                "reason_phrase": "Server Internal Error"
-                                            }),
-                                        );
-                                        if let Err(e) =
-                                            socket_clone.send_to(&refusal, peer_addr).await
-                                        {
-                                            log.error(format!(
-                                                "SIP failed to send 500 to {}: {}",
-                                                peer_addr, e
-                                            ));
-                                        }
-                                        return;
-                                    };
+                                            let refusal = Self::build_sip_response(
+                                                &sip_message,
+                                                &serde_json::json!({
+                                                    "status_code": 500,
+                                                    "reason_phrase": "Server Internal Error"
+                                                }),
+                                            );
+                                            if let Err(e) =
+                                                socket_clone.send_to(&refusal, peer_addr).await
+                                            {
+                                                log.error(format!(
+                                                    "SIP failed to send 500 to {}: {}",
+                                                    peer_addr, e
+                                                ));
+                                            }
+                                            return;
+                                        };
 
-                                    // An explicit non-2xx is the model refusing, which must stay
-                                    // separable in the log from the silence above and from a
-                                    // backend outage below.
-                                    let decision = match action
-                                        .get("status_code")
-                                        .and_then(|v| v.as_u64())
-                                    {
-                                        Some(code) if !(200..300).contains(&code) => "model_reject",
-                                        Some(_) => "model_answer",
-                                        // build_sip_response answers 500 for this; naming it
-                                        // here keeps "the model forgot a field" apart from
-                                        // "the model chose 500".
-                                        None => "fail_closed_malformed_action",
-                                    };
-                                    log.debug(format!(
-                                        "SIP {} from {} (Call-ID {}) decision={}",
-                                        sip_message.method,
-                                        peer_addr,
-                                        sip_message.call_id,
-                                        decision
-                                    ));
-
-                                    // Build SIP response from action JSON
-                                    let response = Self::build_sip_response(&sip_message, action);
-
-                                    // Send SIP response
-                                    match socket_clone.send_to(&response, peer_addr).await {
-                                        Ok(sent) => {
-                                            // Summary FileOnly: the send action template
-                                            // already reports the send to the TUI.
-                                            log.debug(format!(
-                                                "SIP sent {} byte response to {}",
-                                                sent, peer_addr
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            log.error(format!(
-                                                "SIP failed to send response: {}",
-                                                e
-                                            ));
-                                        }
-                                    }
-
-                                    // Media flow: SIP is signaling only, but when built with
-                                    // the `rtp` feature and the accept action carries an
-                                    // `rtp_audio` description, we honour the SDP we just
-                                    // negotiated by streaming real RTP to the caller's
-                                    // advertised media address. This is what makes a SIP INVITE
-                                    // result in RTP actually arriving, rather than a 200 OK with
-                                    // an SDP that points at nothing.
-                                    #[cfg(feature = "rtp")]
-                                    {
-                                        // No `unwrap_or(200)`: a missing status_code was answered
-                                        // 500 above, and treating it as 200 here would stream
-                                        // media for a call that was never accepted.
-                                        let status_code = action
+                                        // An explicit non-2xx is the model refusing, which must stay
+                                        // separable in the log from the silence above and from a
+                                        // backend outage below.
+                                        let decision = match action
                                             .get("status_code")
                                             .and_then(|v| v.as_u64())
-                                            .unwrap_or(0);
-                                        if sip_message.method == "INVITE" && status_code == 200 {
-                                            if let Some(rtp_audio) = action.get("rtp_audio") {
-                                                Self::stream_invite_media(
-                                                    sip_message.body.as_deref(),
-                                                    peer_addr,
-                                                    rtp_audio.clone(),
-                                                    status_clone.clone(),
-                                                );
+                                        {
+                                            Some(code) if !(200..300).contains(&code) => {
+                                                "model_reject"
+                                            }
+                                            Some(_) => "model_answer",
+                                            // build_sip_response answers 500 for this; naming it
+                                            // here keeps "the model forgot a field" apart from
+                                            // "the model chose 500".
+                                            None => "fail_closed_malformed_action",
+                                        };
+                                        log.debug(format!(
+                                            "SIP {} from {} (Call-ID {}) decision={}",
+                                            sip_message.method,
+                                            peer_addr,
+                                            sip_message.call_id,
+                                            decision
+                                        ));
+
+                                        // Build SIP response from action JSON
+                                        let response =
+                                            Self::build_sip_response(&sip_message, action);
+
+                                        // Send SIP response
+                                        match socket_clone.send_to(&response, peer_addr).await {
+                                            Ok(sent) => {
+                                                // Summary FileOnly: the send action template
+                                                // already reports the send to the TUI.
+                                                log.debug(format!(
+                                                    "SIP sent {} byte response to {}",
+                                                    sent, peer_addr
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                log.error(format!(
+                                                    "SIP failed to send response: {}",
+                                                    e
+                                                ));
+                                            }
+                                        }
+
+                                        // Media flow: SIP is signaling only, but when built with
+                                        // the `rtp` feature and the accept action carries an
+                                        // `rtp_audio` description, we honour the SDP we just
+                                        // negotiated by streaming real RTP to the caller's
+                                        // advertised media address. This is what makes a SIP INVITE
+                                        // result in RTP actually arriving, rather than a 200 OK with
+                                        // an SDP that points at nothing.
+                                        #[cfg(feature = "rtp")]
+                                        {
+                                            // No `unwrap_or(200)`: a missing status_code was answered
+                                            // 500 above, and treating it as 200 here would stream
+                                            // media for a call that was never accepted.
+                                            let status_code = action
+                                                .get("status_code")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0);
+                                            if sip_message.method == "INVITE" && status_code == 200
+                                            {
+                                                if let Some(rtp_audio) = action.get("rtp_audio") {
+                                                    Self::stream_invite_media(
+                                                        sip_message.body.as_deref(),
+                                                        peer_addr,
+                                                        rtp_audio.clone(),
+                                                        status_clone.clone(),
+                                                        state_clone.clone(),
+                                                        server_id,
+                                                    )
+                                                    .await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // Non-fatal: a 503 (wire fallback) is built and sent
+                                        // below for everything except ACK, so this is WARN.
+                                        log.warn(format!(
+                                            "SIP LLM error for {} from {} (Call-ID {}): {}",
+                                            sip_message.method, peer_addr, sip_message.call_id, e
+                                        ));
+
+                                        // ACK is the one method that must never be answered
+                                        // (RFC 3261 §17: ACK is not a transaction that takes a
+                                        // response), so silence is correct there and only there.
+                                        if sip_message.method == "ACK" {
+                                            log.debug("SIP ACK needs no response; nothing sent");
+                                            return;
+                                        }
+
+                                        // Everything else gets a 503 Service Unavailable built
+                                        // from the request, so the Via/From/To/Call-ID/CSeq match
+                                        // and the client's transaction actually completes. Left
+                                        // silent, the UAC retransmits on timers A/E and only gives
+                                        // up after Timer B/F (32s).
+                                        if crate::llm::is_overload_error(&e) {
+                                            log.warn(format!(
+                                            "SIP 503 to {} (Call-ID {}): LLM capacity exhausted",
+                                            peer_addr, sip_message.call_id
+                                        ));
+                                        }
+                                        let response = Self::build_sip_response(
+                                            &sip_message,
+                                            &serde_json::json!({
+                                                "status_code": 503,
+                                                "reason_phrase": "Service Unavailable",
+                                                "retry_after": 5
+                                            }),
+                                        );
+                                        match socket_clone.send_to(&response, peer_addr).await {
+                                            Ok(sent) => {
+                                                log.debug(format!(
+                                                    "SIP 503 Service Unavailable to {} ({} bytes)",
+                                                    peer_addr, sent
+                                                ));
+                                            }
+                                            Err(send_err) => {
+                                                log.error(format!(
+                                                    "SIP failed to send 503 to {}: {}",
+                                                    peer_addr, send_err
+                                                ));
                                             }
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    // Non-fatal: a 503 (wire fallback) is built and sent
-                                    // below for everything except ACK, so this is WARN.
-                                    log.warn(format!(
-                                        "SIP LLM error for {} from {} (Call-ID {}): {}",
-                                        sip_message.method, peer_addr, sip_message.call_id, e
-                                    ));
-
-                                    // ACK is the one method that must never be answered
-                                    // (RFC 3261 §17: ACK is not a transaction that takes a
-                                    // response), so silence is correct there and only there.
-                                    if sip_message.method == "ACK" {
-                                        log.debug("SIP ACK needs no response; nothing sent");
-                                        return;
-                                    }
-
-                                    // Everything else gets a 503 Service Unavailable built
-                                    // from the request, so the Via/From/To/Call-ID/CSeq match
-                                    // and the client's transaction actually completes. Left
-                                    // silent, the UAC retransmits on timers A/E and only gives
-                                    // up after Timer B/F (32s).
-                                    if crate::llm::is_overload_error(&e) {
-                                        log.warn(format!(
-                                            "SIP 503 to {} (Call-ID {}): LLM capacity exhausted",
-                                            peer_addr, sip_message.call_id
-                                        ));
-                                    }
-                                    let response = Self::build_sip_response(
-                                        &sip_message,
-                                        &serde_json::json!({
-                                            "status_code": 503,
-                                            "reason_phrase": "Service Unavailable",
-                                            "retry_after": 5
-                                        }),
-                                    );
-                                    match socket_clone.send_to(&response, peer_addr).await {
-                                        Ok(sent) => {
-                                            log.debug(format!(
-                                                "SIP 503 Service Unavailable to {} ({} bytes)",
-                                                peer_addr, sent
-                                            ));
-                                        }
-                                        Err(send_err) => {
-                                            log.error(format!(
-                                                "SIP failed to send 503 to {}: {}",
-                                                peer_addr, send_err
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        });
+                            })
+                            .await;
                     }
                     Err(e) => {
                         log.error(format!("SIP recv error: {}", e));
@@ -611,11 +622,13 @@ impl SipServer {
     /// (`crate::server::rtp::media`) owns the samples and RTP framing. A fresh ephemeral UDP
     /// socket is used because RTP must not share the SIP signaling port.
     #[cfg(feature = "rtp")]
-    fn stream_invite_media(
+    async fn stream_invite_media(
         caller_sdp: Option<&str>,
         caller_addr: SocketAddr,
         rtp_audio: serde_json::Value,
         status_tx: mpsc::UnboundedSender<String>,
+        app_state: Arc<AppState>,
+        server_id: crate::state::ServerId,
     ) {
         use crate::server::rtp::media::{self, AudioCodec, RtpPacketizer};
 
@@ -656,11 +669,16 @@ impl SipServer {
             .and_then(|v| v.as_u64())
             .unwrap_or(2000);
 
-        tokio::spawn(async move {
-            let log = Log::new(Some(&status_tx));
-            let socket =
-                match tokio::net::UdpSocket::bind(std::net::SocketAddr::from(([0u8, 0, 0, 0], 0)))
-                    .await
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = app_state.clone();
+        task_owner
+            .spawn_server_task(server_id, async move {
+                let log = Log::new(Some(&status_tx));
+                let socket = match tokio::net::UdpSocket::bind(std::net::SocketAddr::from((
+                    [0u8, 0, 0, 0],
+                    0,
+                )))
+                .await
                 {
                     Ok(s) => s,
                     Err(e) => {
@@ -668,31 +686,32 @@ impl SipServer {
                         return;
                     }
                 };
-            let payload = match media::synthesize(codec, &content, duration_ms) {
-                Ok(p) => p,
-                Err(e) => {
-                    log.warn(format!("SIP RTP synthesis: {}", e));
-                    return;
+                let payload = match media::synthesize(codec, &content, duration_ms) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log.warn(format!("SIP RTP synthesis: {}", e));
+                        return;
+                    }
+                };
+                let mut packetizer =
+                    RtpPacketizer::new(rand::random(), codec.payload_type(), None, None);
+                let packets = packetizer.packetize(&payload, media::G711_SAMPLES_PER_FRAME);
+                let mut sent = 0u64;
+                for pkt in &packets {
+                    if socket.send_to(pkt, target).await.is_err() {
+                        break;
+                    }
+                    sent += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
-            };
-            let mut packetizer =
-                RtpPacketizer::new(rand::random(), codec.payload_type(), None, None);
-            let packets = packetizer.packetize(&payload, media::G711_SAMPLES_PER_FRAME);
-            let mut sent = 0u64;
-            for pkt in &packets {
-                if socket.send_to(pkt, target).await.is_err() {
-                    break;
-                }
-                sent += 1;
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-            log.info(format!(
-                "SIP call media: {} RTP {} packet(s) to {}",
-                sent,
-                codec.rtpmap_name(),
-                target
-            ));
-        });
+                log.info(format!(
+                    "SIP call media: {} RTP {} packet(s) to {}",
+                    sent,
+                    codec.rtpmap_name(),
+                    target
+                ));
+            })
+            .await;
     }
 }
 

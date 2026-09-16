@@ -88,7 +88,9 @@ impl SyslogServer {
                         let protocol_clone = protocol.clone();
 
                         // Spawn task to handle message with LLM
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             // Create syslog_message event
                             let event = Event::new(
                                 &SYSLOG_MESSAGE_EVENT,
@@ -176,7 +178,7 @@ impl SyslogServer {
                                     ));
                                 }
                             }
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         console_error!(status_tx, "Syslog receive error: {}", e);

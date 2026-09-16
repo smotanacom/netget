@@ -90,23 +90,27 @@ impl TorrentTrackerServer {
                             .await;
                         let _ = status_clone.send("__UPDATE_UI__".to_string());
 
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                peer_addr,
-                                local_addr,
-                                connection_id,
-                                llm_clone,
-                                state_clone,
-                                status_clone,
-                                server_id,
-                                protocol_clone,
-                            )
-                            .await
-                            {
-                                error!("BitTorrent Tracker connection error: {}", e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    peer_addr,
+                                    local_addr,
+                                    connection_id,
+                                    llm_clone,
+                                    state_clone,
+                                    status_clone,
+                                    server_id,
+                                    protocol_clone,
+                                )
+                                .await
+                                {
+                                    error!("BitTorrent Tracker connection error: {}", e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

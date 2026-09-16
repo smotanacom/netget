@@ -416,17 +416,21 @@ impl EapolServer {
                     peer,
                 };
                 let task_cx = cx.clone();
-                tokio::spawn(async move {
-                    Self::handle_eapol(
-                        supplicant_mac,
-                        codec::PAE_GROUP_ADDRESS,
-                        payload,
-                        transmit,
-                        peer,
-                        task_cx,
-                    )
+                // Tracked, not detached: stop_server must abort this task too.
+                let task_owner = cx.state.clone();
+                task_owner
+                    .spawn_server_task(cx.server_id, async move {
+                        Self::handle_eapol(
+                            supplicant_mac,
+                            codec::PAE_GROUP_ADDRESS,
+                            payload,
+                            transmit,
+                            peer,
+                            task_cx,
+                        )
+                        .await;
+                    })
                     .await;
-                });
             }
         });
 

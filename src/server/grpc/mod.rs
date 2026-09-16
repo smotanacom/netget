@@ -338,47 +338,50 @@ impl GrpcServer {
         // Spawn server loop
         let service = Arc::new(dynamic_service);
         let task_registrar = app_state.clone();
-        let accept_handle = tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
-                        let connection_id = crate::server::connection::ConnectionId::new(
-                            service.app_state.get_next_unified_id().await,
-                        );
-                        debug!("gRPC connection {} from {}", connection_id, remote_addr);
-                        Log::new(Some(&status_tx))
-                            .debug(format!("gRPC connection from {}", remote_addr));
+        let accept_handle =
+            tokio::spawn(async move {
+                loop {
+                    match listener.accept().await {
+                        Ok((stream, remote_addr)) => {
+                            let connection_id = crate::server::connection::ConnectionId::new(
+                                service.app_state.get_next_unified_id().await,
+                            );
+                            debug!("gRPC connection {} from {}", connection_id, remote_addr);
+                            Log::new(Some(&status_tx))
+                                .debug(format!("gRPC connection from {}", remote_addr));
 
-                        // Add connection to server state
-                        use crate::state::server::{
-                            ConnectionState as ServerConnectionState, ConnectionStatus,
-                            ProtocolConnectionInfo,
-                        };
-                        let now = crate::utils::clock::Instant::now();
-                        let conn_state = ServerConnectionState {
-                            id: connection_id,
-                            remote_addr,
-                            local_addr: actual_addr,
-                            bytes_sent: 0,
-                            bytes_received: 0,
-                            packets_sent: 0,
-                            packets_received: 0,
-                            last_activity: now,
-                            status: ConnectionStatus::Active,
-                            status_changed_at: now,
-                            protocol_info: ProtocolConnectionInfo::empty(),
-                        };
-                        app_state
-                            .add_connection_to_server(server_id, conn_state)
-                            .await;
-                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                            // Add connection to server state
+                            use crate::state::server::{
+                                ConnectionState as ServerConnectionState, ConnectionStatus,
+                                ProtocolConnectionInfo,
+                            };
+                            let now = crate::utils::clock::Instant::now();
+                            let conn_state = ServerConnectionState {
+                                id: connection_id,
+                                remote_addr,
+                                local_addr: actual_addr,
+                                bytes_sent: 0,
+                                bytes_received: 0,
+                                packets_sent: 0,
+                                packets_received: 0,
+                                last_activity: now,
+                                status: ConnectionStatus::Active,
+                                status_changed_at: now,
+                                protocol_info: ProtocolConnectionInfo::empty(),
+                            };
+                            app_state
+                                .add_connection_to_server(server_id, conn_state)
+                                .await;
+                            let _ = status_tx.send("__UPDATE_UI__".to_string());
 
-                        let service_clone = service.clone();
-                        let app_state_clone = app_state.clone();
-                        let status_tx_clone = status_tx.clone();
+                            let service_clone = service.clone();
+                            let app_state_clone = app_state.clone();
+                            let status_tx_clone = status_tx.clone();
 
-                        // Spawn connection handler
-                        tokio::spawn(async move {
+                            // Spawn connection handler
+                            // Tracked, not detached: stop_server must abort this task too.
+                            let task_owner = app_state.clone();
+                            task_owner.spawn_server_task(server_id, async move {
                             let io = hyper_util::rt::TokioIo::new(stream);
 
                             // Create service function for this connection
@@ -404,15 +407,15 @@ impl GrpcServer {
                                 .remove_connection_from_server(server_id, connection_id)
                                 .await;
                             let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                        });
-                    }
-                    Err(e) => {
-                        console_error!(status_tx, "Failed to accept gRPC connection: {}", e);
-                        break;
+                        }).await;
+                        }
+                        Err(e) => {
+                            console_error!(status_tx, "Failed to accept gRPC connection: {}", e);
+                            break;
+                        }
                     }
                 }
-            }
-        });
+            });
 
         task_registrar
             .register_server_task(server_id, accept_handle)

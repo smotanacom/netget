@@ -98,7 +98,9 @@ impl RipServer {
                         let socket_clone = socket.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             let log = Log::new(Some(&status_clone));
                             // Parse RIP message type
                             let message_type = match command {
@@ -324,7 +326,7 @@ impl RipServer {
                                     ));
                                 }
                             }
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         log.error(format!("RIP receive error: {}", e));

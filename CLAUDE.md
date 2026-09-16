@@ -1595,7 +1595,28 @@ Read before assuming a subsystem is sound:
   flag leaks idle entries until its server stops — mild; the old default was the dangerous one.
   Connection-oriented servers should still call `update_connection_stats` on every read and
   write: it is what the rail's `↓/↑` counters and connection-scoped task prompts read.
-- Per-connection tasks are untracked, so `stop_server` does not cancel in-flight connections.
+- **Per-connection tasks are tracked now, and the reason it took a sweep is the useful part.**
+  `stop_server` used to release the listening socket and leave every open connection running —
+  still reading, still calling the model, still answering, on a server the operator had stopped.
+  It *looked* stopped: port free, instance gone from state. `AppState::spawn_server_task` /
+  `spawn_client_task` spawn and register in one call, and 145 sites across 113 server protocols and 2 clients were
+  converted to them in September 2026. `tests/stop_server_stops_connections_test.rs` is the
+  contract (asserted from the **peer's** side, which is the only vantage that distinguishes a
+  live connection from an aborted one) and `tests/detached_task_drift_test.rs` is the ratchet.
+
+  **Every call must end `.await`.** An unawaited `spawn_server_task` constructs the future and
+  never polls it, so the task never runs at all — and that compiles, because an unawaited future
+  is a warning rather than an error. Two of the three sites in the original TCP conversion had
+  this, and the existing suite stayed green because those tests did not depend on the task.
+  Build with `-D unused_must_use`; the compiler is the only thing that finds it.
+
+  What is still detached, and why: the per-connection **writer** tasks (`amqp`, `mqtt`,
+  `websocket`, `webrtc`, `webrtc_signaling`, `bgp`) are `.await`ed on the exit path so they need
+  a `JoinHandle`, and they already end when the registered reader is aborted and drops their
+  channel; `bluetooth_ble`'s radio dispatcher is process-wide by design; and the USB/IP session
+  tasks and `postgresql`'s pgwire task are awaited inside a `select!`, so they are children of a
+  registered connection task that **aborting does not reach** — that gap is real and stated
+  rather than quietly closed.
 - `AppState` is one global `RwLock` over everything — a throughput ceiling, not a deadlock.
 - **The root markdown clutter is gone** — the ~50 one-off session/status reports this entry used
   to warn about were deleted. Ten files remain and all are durable: `README.md`, `CLAUDE.md`,

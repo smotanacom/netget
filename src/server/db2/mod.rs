@@ -137,17 +137,21 @@ impl Db2Server {
                         };
 
                         let conn_owner = app_state.clone();
-                        tokio::spawn(async move {
-                            // Held for the life of the connection, so the cap counts live
-                            // sessions rather than accepts.
-                            let _permit = permit;
-                            if let Err(e) = handler.run(stream).await {
-                                debug!("Db2 connection {} ended: {}", connection_id, e);
-                            }
-                            conn_owner
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // sessions rather than accepts.
+                                let _permit = permit;
+                                if let Err(e) = handler.run(stream).await {
+                                    debug!("Db2 connection {} ended: {}", connection_id, e);
+                                }
+                                conn_owner
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("Db2 accept error: {}", e);

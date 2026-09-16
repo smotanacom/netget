@@ -191,12 +191,16 @@ impl StpServer {
                         let status = status_tx.clone();
                         let proto = protocol.clone();
                         let cfg = config.clone();
-                        tokio::spawn(async move {
-                            Self::handle_frame(
-                                frame, llm, state, status, proto, cfg, responder, server_id,
-                            )
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                Self::handle_frame(
+                                    frame, llm, state, status, proto, cfg, responder, server_id,
+                                )
+                                .await;
+                            })
                             .await;
-                        });
                     }
                     Err(e) => {
                         console_error!(status_tx, "STP UDP receive error: {}", e);

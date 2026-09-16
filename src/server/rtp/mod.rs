@@ -227,22 +227,26 @@ impl RtpServer {
                         let protocol_clone = protocol.clone();
                         let budget_clone = budget.clone();
 
-                        tokio::spawn(async move {
-                            Self::handle_datagram(
-                                &data,
-                                peer_addr,
-                                local_addr,
-                                connection_id,
-                                server_id,
-                                &llm_clone,
-                                &state_clone,
-                                &status_clone,
-                                &socket_clone,
-                                protocol_clone.as_ref(),
-                                &budget_clone,
-                            )
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                Self::handle_datagram(
+                                    &data,
+                                    peer_addr,
+                                    local_addr,
+                                    connection_id,
+                                    server_id,
+                                    &llm_clone,
+                                    &state_clone,
+                                    &status_clone,
+                                    &socket_clone,
+                                    protocol_clone.as_ref(),
+                                    &budget_clone,
+                                )
+                                .await;
+                            })
                             .await;
-                        });
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("RTP recv error: {}", e));

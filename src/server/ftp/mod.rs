@@ -69,52 +69,56 @@ impl FtpServer {
                         let protocol_clone = protocol.clone();
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
 
-                        tokio::spawn(async move {
-                            // Register the connection so it shows up in the TUI and in
-                            // list_connections, and so stop_server accounts for it.
-                            use crate::state::server::{
-                                ConnectionState as ServerConnectionState, ConnectionStatus,
-                                ProtocolConnectionInfo,
-                            };
-                            let now = crate::utils::clock::Instant::now();
-                            let conn_state = ServerConnectionState {
-                                id: connection_id,
-                                remote_addr,
-                                local_addr: local_addr_conn,
-                                bytes_sent: 0,
-                                bytes_received: 0,
-                                packets_sent: 0,
-                                packets_received: 0,
-                                last_activity: now,
-                                status: ConnectionStatus::Active,
-                                status_changed_at: now,
-                                protocol_info: ProtocolConnectionInfo::empty(),
-                            };
-                            state_clone
-                                .add_connection_to_server(server_id, conn_state)
-                                .await;
-                            let _ = status_clone.send("__UPDATE_UI__".to_string());
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Register the connection so it shows up in the TUI and in
+                                // list_connections, and so stop_server accounts for it.
+                                use crate::state::server::{
+                                    ConnectionState as ServerConnectionState, ConnectionStatus,
+                                    ProtocolConnectionInfo,
+                                };
+                                let now = crate::utils::clock::Instant::now();
+                                let conn_state = ServerConnectionState {
+                                    id: connection_id,
+                                    remote_addr,
+                                    local_addr: local_addr_conn,
+                                    bytes_sent: 0,
+                                    bytes_received: 0,
+                                    packets_sent: 0,
+                                    packets_received: 0,
+                                    last_activity: now,
+                                    status: ConnectionStatus::Active,
+                                    status_changed_at: now,
+                                    protocol_info: ProtocolConnectionInfo::empty(),
+                                };
+                                state_clone
+                                    .add_connection_to_server(server_id, conn_state)
+                                    .await;
+                                let _ = status_clone.send("__UPDATE_UI__".to_string());
 
-                            if let Err(e) = FtpSession::handle_session(
-                                stream,
-                                connection_id,
-                                server_id,
-                                llm_clone,
-                                state_clone.clone(),
-                                status_clone.clone(),
-                                protocol_clone,
-                            )
-                            .await
-                            {
-                                Log::new(Some(&status_clone))
-                                    .error(format!("FTP session error: {}", e));
-                            }
+                                if let Err(e) = FtpSession::handle_session(
+                                    stream,
+                                    connection_id,
+                                    server_id,
+                                    llm_clone,
+                                    state_clone.clone(),
+                                    status_clone.clone(),
+                                    protocol_clone,
+                                )
+                                .await
+                                {
+                                    Log::new(Some(&status_clone))
+                                        .error(format!("FTP session error: {}", e));
+                                }
 
-                            state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            let _ = status_clone.send("__UPDATE_UI__".to_string());
-                        });
+                                state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

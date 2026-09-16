@@ -183,38 +183,41 @@ impl KubernetesServer {
                         let app_state_for_close = app_state.clone();
                         let status_for_close = status_tx.clone();
 
-                        tokio::spawn(async move {
-                            match tls_acceptor {
-                                Some(acceptor) => match acceptor.accept(stream).await {
-                                    Ok(tls_stream) => {
-                                        debug!(
-                                            "Kubernetes TLS handshake complete with {}",
-                                            remote_addr
-                                        );
-                                        serve_connection(TokioIo::new(tls_stream), ctx).await;
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                match tls_acceptor {
+                                    Some(acceptor) => match acceptor.accept(stream).await {
+                                        Ok(tls_stream) => {
+                                            debug!(
+                                                "Kubernetes TLS handshake complete with {}",
+                                                remote_addr
+                                            );
+                                            serve_connection(TokioIo::new(tls_stream), ctx).await;
+                                        }
+                                        Err(e) => {
+                                            console_error!(
+                                                status_for_close,
+                                                "Kubernetes TLS handshake failed with {}: {}",
+                                                remote_addr,
+                                                e
+                                            );
+                                        }
+                                    },
+                                    None => {
+                                        serve_connection(TokioIo::new(stream), ctx).await;
                                     }
-                                    Err(e) => {
-                                        console_error!(
-                                            status_for_close,
-                                            "Kubernetes TLS handshake failed with {}: {}",
-                                            remote_addr,
-                                            e
-                                        );
-                                    }
-                                },
-                                None => {
-                                    serve_connection(TokioIo::new(stream), ctx).await;
                                 }
-                            }
 
-                            app_state_for_close
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            let _ = status_for_close.send(format!(
-                                "[INFO] Kubernetes API connection {connection_id} closed"
-                            ));
-                            let _ = status_for_close.send("__UPDATE_UI__".to_string());
-                        });
+                                app_state_for_close
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_for_close.send(format!(
+                                    "[INFO] Kubernetes API connection {connection_id} closed"
+                                ));
+                                let _ = status_for_close.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         console_error!(

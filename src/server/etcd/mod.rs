@@ -462,34 +462,38 @@ impl EtcdServer {
                         let protocol_clone = protocol.clone();
                         let conn_owner = app_state.clone();
 
-                        tokio::spawn(async move {
-                            // Held for the life of the connection, so the cap counts live
-                            // clients rather than accepts.
-                            let _permit = permit;
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                peer_addr,
-                                local_addr,
-                                connection_id,
-                                llm_clone,
-                                state_clone,
-                                status_clone,
-                                server_id,
-                                meta_clone,
-                                protocol_clone,
-                            )
-                            .await
-                            {
-                                error!("etcd connection error: {}", e);
-                            }
-                            // Every exit of `serve_connection` lands here - a clean GOAWAY, a
-                            // reset, or an error - so the rail stops showing a dead HTTP/2
-                            // connection. etcd is not `.connectionless()`, so nothing else
-                            // would ever reap it.
-                            conn_owner
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // clients rather than accepts.
+                                let _permit = permit;
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    peer_addr,
+                                    local_addr,
+                                    connection_id,
+                                    llm_clone,
+                                    state_clone,
+                                    status_clone,
+                                    server_id,
+                                    meta_clone,
+                                    protocol_clone,
+                                )
+                                .await
+                                {
+                                    error!("etcd connection error: {}", e);
+                                }
+                                // Every exit of `serve_connection` lands here - a clean GOAWAY, a
+                                // reset, or an error - so the rail stops showing a dead HTTP/2
+                                // connection. etcd is not `.connectionless()`, so nothing else
+                                // would ever reap it.
+                                conn_owner
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                            })
+                            .await;
                     }
                     Err(e) => {
                         // A persistent accept error (EMFILE, listener torn down) recurs

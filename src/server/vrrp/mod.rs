@@ -246,7 +246,8 @@ impl VrrpServer {
                             server_id,
                             local_addr,
                             peer,
-                        );
+                        )
+                        .await;
                     }
                     Err(e) => {
                         console_error!(status_tx, "VRRP UDP receive error: {}", e);
@@ -397,7 +398,8 @@ impl VrrpServer {
                     server_id,
                     SocketAddr::new(IpAddr::V4(interface_ip), 0),
                     SocketAddr::new(IpAddr::V4(source), 0),
-                );
+                )
+                .await;
             }
             warn!("VRRP raw receive loop terminated");
         });
@@ -414,7 +416,7 @@ impl VrrpServer {
     // -----------------------------------------------------------------------
 
     #[allow(clippy::too_many_arguments)]
-    fn spawn_handler(
+    async fn spawn_handler(
         packet: Vec<u8>,
         source: Ipv4Addr,
         inbound_pseudo: PseudoHeader,
@@ -434,22 +436,26 @@ impl VrrpServer {
         let status = status_tx.clone();
         let proto = protocol.clone();
         let cfg = config.clone();
-        tokio::spawn(async move {
-            Self::record_connection(&state, server_id, local_addr, peer_addr, bytes).await;
-            Self::handle_packet(
-                packet,
-                source,
-                inbound_pseudo,
-                responder,
-                llm,
-                state,
-                status,
-                proto,
-                cfg,
-                server_id,
-            )
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = app_state.clone();
+        task_owner
+            .spawn_server_task(server_id, async move {
+                Self::record_connection(&state, server_id, local_addr, peer_addr, bytes).await;
+                Self::handle_packet(
+                    packet,
+                    source,
+                    inbound_pseudo,
+                    responder,
+                    llm,
+                    state,
+                    status,
+                    proto,
+                    cfg,
+                    server_id,
+                )
+                .await;
+            })
             .await;
-        });
     }
 
     /// Per-remote-address bookkeeping so the dashboard shows who is advertising.

@@ -222,32 +222,36 @@ impl UsbSmartCardServer {
                 let card = card.clone();
                 let protocol = protocol.clone();
                 let card_type = card_type.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = Self::handle_connection(
-                        stream,
-                        connection_id,
-                        server_id,
-                        card,
-                        card_type,
-                        llm_client,
-                        conn_app_state.clone(),
-                        status_tx.clone(),
-                        protocol,
-                    )
-                    .await
-                    {
-                        console_error!(
-                            status_tx,
-                            "USB smart card connection {} error: {}",
+                // Tracked, not detached: stop_server must abort this task too.
+                let task_owner = app_state.clone();
+                task_owner
+                    .spawn_server_task(server_id, async move {
+                        if let Err(e) = Self::handle_connection(
+                            stream,
                             connection_id,
-                            e
-                        );
-                    }
-                    conn_app_state
-                        .close_connection_on_server(server_id, connection_id)
-                        .await;
-                    let _ = status_tx.send("__UPDATE_UI__".to_string());
-                });
+                            server_id,
+                            card,
+                            card_type,
+                            llm_client,
+                            conn_app_state.clone(),
+                            status_tx.clone(),
+                            protocol,
+                        )
+                        .await
+                        {
+                            console_error!(
+                                status_tx,
+                                "USB smart card connection {} error: {}",
+                                connection_id,
+                                e
+                            );
+                        }
+                        conn_app_state
+                            .close_connection_on_server(server_id, connection_id)
+                            .await;
+                        let _ = status_tx.send("__UPDATE_UI__".to_string());
+                    })
+                    .await;
             }
         });
 

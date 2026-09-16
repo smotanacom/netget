@@ -335,6 +335,7 @@ impl NdpServer {
 
         let receive_ctx = ctx.clone();
         let receive_sink = sink.clone();
+        let loop_state = app_state.clone();
         let receive_handle = tokio::spawn(async move {
             let mut buffer = vec![0u8; 65535];
             loop {
@@ -346,9 +347,13 @@ impl NdpServer {
                         let datagram = buffer[..n].to_vec();
                         let ctx = receive_ctx.clone();
                         let sink = receive_sink.clone();
-                        tokio::spawn(async move {
-                            Self::handle_datagram(&datagram, peer, local_addr, ctx, sink).await;
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = loop_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                Self::handle_datagram(&datagram, peer, local_addr, ctx, sink).await;
+                            })
+                            .await;
                     }
                     Err(e) => {
                         console_error!(receive_ctx.status_tx, "NDP UDP receive error: {}", e);

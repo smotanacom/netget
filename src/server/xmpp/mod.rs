@@ -112,7 +112,9 @@ impl XmppServer {
                             connection_id, remote_addr
                         ));
 
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             let (read_half, write_half) = tokio::io::split(stream);
                             let write_half_arc = Arc::new(tokio::sync::Mutex::new(write_half));
 
@@ -412,7 +414,7 @@ impl XmppServer {
                                 .close_connection_on_server(server_id, connection_id)
                                 .await;
                             let _ = status_clone.send("__UPDATE_UI__".to_string());
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

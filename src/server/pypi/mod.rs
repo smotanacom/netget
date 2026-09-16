@@ -92,46 +92,50 @@ impl PypiServer {
                         let protocol_clone = protocol.clone();
 
                         // Spawn a task to handle this connection
-                        tokio::spawn(async move {
-                            let io = TokioIo::new(stream);
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let io = TokioIo::new(stream);
 
-                            // Clone for service closure
-                            let status_for_service = status_tx_clone.clone();
-                            let app_state_for_service = app_state_clone.clone();
+                                // Clone for service closure
+                                let status_for_service = status_tx_clone.clone();
+                                let app_state_for_service = app_state_clone.clone();
 
-                            // Create a service that handles requests with LLM
-                            let service = service_fn(move |req: Request<Incoming>| {
-                                let llm_clone = llm_client_clone.clone();
-                                let state_clone = app_state_for_service.clone();
-                                let status_clone = status_for_service.clone();
-                                let protocol_clone = protocol_clone.clone();
-                                handle_pypi_request_with_llm_actions(
-                                    req,
-                                    connection_id,
-                                    server_id,
-                                    llm_clone,
-                                    state_clone,
-                                    status_clone,
-                                    protocol_clone,
-                                )
-                            });
+                                // Create a service that handles requests with LLM
+                                let service = service_fn(move |req: Request<Incoming>| {
+                                    let llm_clone = llm_client_clone.clone();
+                                    let state_clone = app_state_for_service.clone();
+                                    let status_clone = status_for_service.clone();
+                                    let protocol_clone = protocol_clone.clone();
+                                    handle_pypi_request_with_llm_actions(
+                                        req,
+                                        connection_id,
+                                        server_id,
+                                        llm_clone,
+                                        state_clone,
+                                        status_clone,
+                                        protocol_clone,
+                                    )
+                                });
 
-                            // Serve HTTP/1 on this connection
-                            if let Err(err) =
-                                http1::Builder::new().serve_connection(io, service).await
-                            {
+                                // Serve HTTP/1 on this connection
+                                if let Err(err) =
+                                    http1::Builder::new().serve_connection(io, service).await
+                                {
+                                    Log::new(Some(&status_tx_clone))
+                                        .error(format!("Error serving PyPI connection: {:?}", err));
+                                }
+
+                                // Mark connection as closed
+                                app_state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
                                 Log::new(Some(&status_tx_clone))
-                                    .error(format!("Error serving PyPI connection: {:?}", err));
-                            }
-
-                            // Mark connection as closed
-                            app_state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            Log::new(Some(&status_tx_clone))
-                                .info(format!("PyPI connection {connection_id} closed"));
-                            let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                        });
+                                    .info(format!("PyPI connection {connection_id} closed"));
+                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

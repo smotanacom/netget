@@ -276,26 +276,31 @@ impl ProxyServer {
         if let Some(ref cache) = cert_cache {
             let cache_weak = Arc::downgrade(cache);
             let status_tx_clone = status_tx.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3600)); // 1 hour
-                loop {
-                    interval.tick().await;
-                    let Some(cache_clone) = cache_weak.upgrade() else {
-                        debug!("Proxy server stopped, ending certificate cache cleanup task");
-                        break;
-                    };
-                    debug!("Running periodic certificate cache cleanup");
-                    cache_clone.cleanup_expired().await;
-                    let stats = cache_clone.get_stats().await;
-                    // Hourly cache stats are a summary: file-only DEBUG.
-                    Log::new(Some(&status_tx_clone)).debug(format!(
-                        "Certificate cache stats: {} total, {} valid, {} expired",
-                        stats.total_certificates,
-                        stats.valid_certificates,
-                        stats.expired_certificates
-                    ));
-                }
-            });
+            // Tracked, not detached: stop_server must abort this task too.
+            let task_owner = app_state.clone();
+            task_owner
+                .spawn_server_task(server_id, async move {
+                    let mut interval =
+                        tokio::time::interval(tokio::time::Duration::from_secs(3600)); // 1 hour
+                    loop {
+                        interval.tick().await;
+                        let Some(cache_clone) = cache_weak.upgrade() else {
+                            debug!("Proxy server stopped, ending certificate cache cleanup task");
+                            break;
+                        };
+                        debug!("Running periodic certificate cache cleanup");
+                        cache_clone.cleanup_expired().await;
+                        let stats = cache_clone.get_stats().await;
+                        // Hourly cache stats are a summary: file-only DEBUG.
+                        Log::new(Some(&status_tx_clone)).debug(format!(
+                            "Certificate cache stats: {} total, {} valid, {} expired",
+                            stats.total_certificates,
+                            stats.valid_certificates,
+                            stats.expired_certificates
+                        ));
+                    }
+                })
+                .await;
             Log::new(Some(&status_tx)).info("Certificate cache cleanup task started (hourly)");
         }
 
@@ -345,35 +350,39 @@ impl ProxyServer {
                         let cert_cache_clone = cert_cache.clone();
 
                         // Handle each proxy connection in a separate task
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_proxy_connection(
-                                stream,
-                                peer_addr,
-                                connection_id,
-                                server_id,
-                                cert_cache_clone,
-                                config_clone,
-                                llm_clone,
-                                app_clone.clone(),
-                                status_clone.clone(),
-                                protocol_clone,
-                            )
-                            .await
-                            {
-                                Log::new(Some(&status_clone)).error(format!(
-                                    "Proxy connection {} error: {}",
-                                    connection_id, e
-                                ));
-                            }
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_proxy_connection(
+                                    stream,
+                                    peer_addr,
+                                    connection_id,
+                                    server_id,
+                                    cert_cache_clone,
+                                    config_clone,
+                                    llm_clone,
+                                    app_clone.clone(),
+                                    status_clone.clone(),
+                                    protocol_clone,
+                                )
+                                .await
+                                {
+                                    Log::new(Some(&status_clone)).error(format!(
+                                        "Proxy connection {} error: {}",
+                                        connection_id, e
+                                    ));
+                                }
 
-                            // Mark connection as closed
-                            app_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            Log::new(Some(&status_clone))
-                                .info(format!("Proxy connection {} closed", connection_id));
-                            let _ = status_clone.send("__UPDATE_UI__".to_string());
-                        });
+                                // Mark connection as closed
+                                app_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                Log::new(Some(&status_clone))
+                                    .info(format!("Proxy connection {} closed", connection_id));
+                                let _ = status_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

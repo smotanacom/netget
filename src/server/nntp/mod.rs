@@ -49,20 +49,24 @@ impl NntpServer {
                         let status_clone = status_tx.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
-                            Self::handle_connection(
-                                stream,
-                                connection_id,
-                                remote_addr,
-                                local_addr_conn,
-                                server_id,
-                                llm_clone,
-                                state_clone,
-                                status_clone,
-                                protocol_clone,
-                            )
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                Self::handle_connection(
+                                    stream,
+                                    connection_id,
+                                    remote_addr,
+                                    local_addr_conn,
+                                    server_id,
+                                    llm_clone,
+                                    state_clone,
+                                    status_clone,
+                                    protocol_clone,
+                                )
+                                .await;
+                            })
                             .await;
-                        });
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

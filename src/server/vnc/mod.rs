@@ -191,25 +191,29 @@ impl VncServer {
                         Log::new(Some(&status_clone))
                             .info(format!("VNC client connected from {}", remote_addr));
 
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                connection_id,
-                                remote_addr,
-                                local_addr_conn,
-                                server_id,
-                                state_clone,
-                                status_clone,
-                                llm_clone,
-                                width,
-                                height,
-                                &name_clone,
-                            )
-                            .await
-                            {
-                                error!("VNC connection error: {}", e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    connection_id,
+                                    remote_addr,
+                                    local_addr_conn,
+                                    server_id,
+                                    state_clone,
+                                    status_clone,
+                                    llm_clone,
+                                    width,
+                                    height,
+                                    &name_clone,
+                                )
+                                .await
+                                {
+                                    error!("VNC connection error: {}", e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         // Break rather than continue: a persistent accept error (EMFILE, the

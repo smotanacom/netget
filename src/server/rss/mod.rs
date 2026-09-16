@@ -90,40 +90,44 @@ impl RssServer {
                         let status = status_tx.clone();
                         let proto = Arc::clone(&protocol);
 
-                        tokio::spawn(async move {
-                            let io = TokioIo::new(stream);
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let io = TokioIo::new(stream);
 
-                            let conn_state = Arc::clone(&state);
-                            let service = service_fn(move |req: Request<hyper::body::Incoming>| {
-                                let llm = Arc::clone(&llm);
-                                let state = Arc::clone(&state);
-                                let status = status.clone();
-                                let proto = Arc::clone(&proto);
+                                let conn_state = Arc::clone(&state);
+                                let service =
+                                    service_fn(move |req: Request<hyper::body::Incoming>| {
+                                        let llm = Arc::clone(&llm);
+                                        let state = Arc::clone(&state);
+                                        let status = status.clone();
+                                        let proto = Arc::clone(&proto);
 
-                                async move {
-                                    Self::handle_request(
-                                        req,
-                                        llm,
-                                        state,
-                                        status,
-                                        server_id,
-                                        connection_id,
-                                        proto,
-                                    )
-                                    .await
+                                        async move {
+                                            Self::handle_request(
+                                                req,
+                                                llm,
+                                                state,
+                                                status,
+                                                server_id,
+                                                connection_id,
+                                                proto,
+                                            )
+                                            .await
+                                        }
+                                    });
+
+                                if let Err(e) =
+                                    http1::Builder::new().serve_connection(io, service).await
+                                {
+                                    error!("RSS connection error: {}", e);
                                 }
-                            });
 
-                            if let Err(e) =
-                                http1::Builder::new().serve_connection(io, service).await
-                            {
-                                error!("RSS connection error: {}", e);
-                            }
-
-                            conn_state
-                                .remove_connection_from_server(server_id, connection_id)
-                                .await;
-                        });
+                                conn_state
+                                    .remove_connection_from_server(server_id, connection_id)
+                                    .await;
+                            })
+                            .await;
                     }
                     Err(e) => {
                         // Break rather than continue: a persistent accept error (EMFILE, the

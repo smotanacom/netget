@@ -191,10 +191,14 @@ impl RadiusServer {
                 let sock = socket.clone();
                 let sec = secret.clone();
 
-                tokio::spawn(async move {
-                    Self::handle_request(request, peer_addr, sock, llm, st, tx, server_id, sec)
-                        .await;
-                });
+                // Tracked, not detached: stop_server must abort this task too.
+                let task_owner = state.clone();
+                task_owner
+                    .spawn_server_task(server_id, async move {
+                        Self::handle_request(request, peer_addr, sock, llm, st, tx, server_id, sec)
+                            .await;
+                    })
+                    .await;
             }
         });
 

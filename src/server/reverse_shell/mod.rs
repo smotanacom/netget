@@ -89,22 +89,26 @@ impl ReverseShellServer {
                         let llm_clone = llm_client.clone();
                         let state_clone = app_state.clone();
                         let status_clone = status_tx.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                connection_id,
-                                remote_addr,
-                                local_addr_conn,
-                                server_id,
-                                state_clone,
-                                status_clone,
-                                llm_clone,
-                            )
-                            .await
-                            {
-                                error!("Reverse-shell connection error: {}", e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    connection_id,
+                                    remote_addr,
+                                    local_addr_conn,
+                                    server_id,
+                                    state_clone,
+                                    status_clone,
+                                    llm_clone,
+                                )
+                                .await
+                                {
+                                    error!("Reverse-shell connection error: {}", e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         // Break rather than spin: a persistent accept error (EMFILE, socket

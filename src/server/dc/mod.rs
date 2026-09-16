@@ -130,87 +130,91 @@ impl DcServer {
                         let protocol_clone = protocol.clone();
                         let hub_announcement = hub_announcement.clone();
 
-                        tokio::spawn(async move {
-                            let (read_half, write_half) = tokio::io::split(stream);
-                            let write_half_arc = Arc::new(tokio::sync::Mutex::new(write_half));
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let (read_half, write_half) = tokio::io::split(stream);
+                                let write_half_arc = Arc::new(tokio::sync::Mutex::new(write_half));
 
-                            // Add connection to ServerInstance
-                            use crate::state::server::{
-                                ConnectionState as ServerConnectionState, ConnectionStatus,
-                                ProtocolConnectionInfo,
-                            };
-                            let now = crate::utils::clock::Instant::now();
-                            let conn_state = ServerConnectionState {
-                                id: connection_id,
-                                remote_addr,
-                                local_addr: local_addr_conn,
-                                bytes_sent: 0,
-                                bytes_received: 0,
-                                packets_sent: 0,
-                                packets_received: 0,
-                                last_activity: now,
-                                status: ConnectionStatus::Active,
-                                status_changed_at: now,
-                                protocol_info: ProtocolConnectionInfo::empty(),
-                            };
-                            state_clone
-                                .add_connection_to_server(server_id, conn_state)
+                                // Add connection to ServerInstance
+                                use crate::state::server::{
+                                    ConnectionState as ServerConnectionState, ConnectionStatus,
+                                    ProtocolConnectionInfo,
+                                };
+                                let now = crate::utils::clock::Instant::now();
+                                let conn_state = ServerConnectionState {
+                                    id: connection_id,
+                                    remote_addr,
+                                    local_addr: local_addr_conn,
+                                    bytes_sent: 0,
+                                    bytes_received: 0,
+                                    packets_sent: 0,
+                                    packets_received: 0,
+                                    last_activity: now,
+                                    status: ConnectionStatus::Active,
+                                    status_changed_at: now,
+                                    protocol_info: ProtocolConnectionInfo::empty(),
+                                };
+                                state_clone
+                                    .add_connection_to_server(server_id, conn_state)
+                                    .await;
+                                let _ = status_clone.send("__UPDATE_UI__".to_string());
+
+                                // Register the client in the protocol's own state map. This was
+                                // never called from anywhere, so `DcProtocol::clients` stayed
+                                // permanently empty and every accessor that goes through
+                                // `get_mut` - set_nickname, set_client_info, set_operator - was a
+                                // silent no-op, while get_nickname always returned None.
+                                protocol_clone.add_connection(connection_id).await;
+
+                                // Peer messaging: the dashboard's "message this peer" /
+                                // "disconnect this peer" inject actions into THIS connection
+                                // through the same executor the LLM path uses. Registered
+                                // before the $Lock goes out so the operator can reach the
+                                // connection from its first moment, including while a manual
+                                // `*` rule parks the first command's answer.
+                                let peer_rx = crate::server::peer_support::register_peer_channel(
+                                    &state_clone,
+                                    server_id,
+                                    connection_id.as_u32(),
+                                )
                                 .await;
-                            let _ = status_clone.send("__UPDATE_UI__".to_string());
+                                crate::server::peer_support::spawn_peer_command_task(
+                                    peer_rx,
+                                    protocol_clone.clone(),
+                                    state_clone.clone(),
+                                    server_id,
+                                    connection_id.as_u32(),
+                                    write_half_arc.clone(),
+                                    status_clone.clone(),
+                                );
 
-                            // Register the client in the protocol's own state map. This was
-                            // never called from anywhere, so `DcProtocol::clients` stayed
-                            // permanently empty and every accessor that goes through
-                            // `get_mut` - set_nickname, set_client_info, set_operator - was a
-                            // silent no-op, while get_nickname always returned None.
-                            protocol_clone.add_connection(connection_id).await;
+                                Self::run_connection(
+                                    read_half,
+                                    &write_half_arc,
+                                    connection_id,
+                                    server_id,
+                                    &llm_clone,
+                                    &state_clone,
+                                    &status_clone,
+                                    &protocol_clone,
+                                    hub_announcement.as_deref(),
+                                )
+                                .await;
 
-                            // Peer messaging: the dashboard's "message this peer" /
-                            // "disconnect this peer" inject actions into THIS connection
-                            // through the same executor the LLM path uses. Registered
-                            // before the $Lock goes out so the operator can reach the
-                            // connection from its first moment, including while a manual
-                            // `*` rule parks the first command's answer.
-                            let peer_rx = crate::server::peer_support::register_peer_channel(
-                                &state_clone,
-                                server_id,
-                                connection_id.as_u32(),
-                            )
+                                // Every exit path - EOF, read error, close_connection, a failed
+                                // $Lock write - lands here.
+                                state_clone
+                                    .remove_peer_handle(server_id, connection_id.as_u32())
+                                    .await;
+                                protocol_clone.remove_connection(&connection_id).await;
+                                state_clone
+                                    .remove_connection_from_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_clone.send("__UPDATE_UI__".to_string());
+                            })
                             .await;
-                            crate::server::peer_support::spawn_peer_command_task(
-                                peer_rx,
-                                protocol_clone.clone(),
-                                state_clone.clone(),
-                                server_id,
-                                connection_id.as_u32(),
-                                write_half_arc.clone(),
-                                status_clone.clone(),
-                            );
-
-                            Self::run_connection(
-                                read_half,
-                                &write_half_arc,
-                                connection_id,
-                                server_id,
-                                &llm_clone,
-                                &state_clone,
-                                &status_clone,
-                                &protocol_clone,
-                                hub_announcement.as_deref(),
-                            )
-                            .await;
-
-                            // Every exit path - EOF, read error, close_connection, a failed
-                            // $Lock write - lands here.
-                            state_clone
-                                .remove_peer_handle(server_id, connection_id.as_u32())
-                                .await;
-                            protocol_clone.remove_connection(&connection_id).await;
-                            state_clone
-                                .remove_connection_from_server(server_id, connection_id)
-                                .await;
-                            let _ = status_clone.send("__UPDATE_UI__".to_string());
-                        });
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

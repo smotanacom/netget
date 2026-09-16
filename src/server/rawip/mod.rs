@@ -854,7 +854,8 @@ impl RawIpServer {
                             status_tx.clone(),
                             state.clone(),
                             server_id,
-                        );
+                        )
+                        .await;
                     }
                     Ok(Err(e)) => error!("rawip recv error: {e}"),
                     Err(_would_block) => continue,
@@ -912,7 +913,8 @@ impl RawIpServer {
                             status_tx.clone(),
                             state.clone(),
                             server_id,
-                        );
+                        )
+                        .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))
@@ -929,7 +931,7 @@ impl RawIpServer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn spawn_packet_task(
+    async fn spawn_packet_task(
         bytes: Vec<u8>,
         peer: Option<SocketAddr>,
         llm_client: OllamaClient,
@@ -938,15 +940,19 @@ impl RawIpServer {
         state: Arc<RawIpState>,
         server_id: crate::state::ServerId,
     ) {
-        tokio::spawn(async move {
-            if let Err(e) = Self::handle_packet(
-                bytes, peer, llm_client, app_state, status_tx, state, server_id,
-            )
-            .await
-            {
-                error!("rawip packet handling failed: {e}");
-            }
-        });
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = app_state.clone();
+        task_owner
+            .spawn_server_task(server_id, async move {
+                if let Err(e) = Self::handle_packet(
+                    bytes, peer, llm_client, app_state, status_tx, state, server_id,
+                )
+                .await
+                {
+                    error!("rawip packet handling failed: {e}");
+                }
+            })
+            .await;
     }
 
     #[allow(clippy::too_many_arguments)]

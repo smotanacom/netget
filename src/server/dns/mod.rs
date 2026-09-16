@@ -88,200 +88,206 @@ impl DnsServer {
                         let socket_clone = socket.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
-                            let log = Log::new(Some(&status_clone));
-                            // Parse DNS query using hickory-proto
-                            match DnsMessage::from_vec(&data) {
-                                Ok(query) => {
-                                    // Extract query information
-                                    let query_id = query.id();
-                                    let queries = query.queries();
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let log = Log::new(Some(&status_clone));
+                                // Parse DNS query using hickory-proto
+                                match DnsMessage::from_vec(&data) {
+                                    Ok(query) => {
+                                        // Extract query information
+                                        let query_id = query.id();
+                                        let queries = query.queries();
 
-                                    let mut query_descriptions = Vec::new();
-                                    for q in queries {
-                                        let qname = q.name().to_string();
-                                        let qtype = q.query_type();
-                                        let qclass = q.query_class();
-                                        query_descriptions.push(format!(
-                                            "{} {} {} (ID: {})",
-                                            qname, qtype, qclass, query_id
-                                        ));
-
-                                        // Parsed-query summary (FileOnly; the dns_query
-                                        // event template covers the TUI).
-                                        log.debug(format!(
-                                            "DNS query: {} {} {}",
-                                            qname, qtype, qclass
-                                        ));
-                                    }
-
-                                    // Create DNS query event
-                                    let first_query = queries.first();
-                                    let domain = first_query
-                                        .map(|q| q.name().to_string())
-                                        .unwrap_or_default();
-                                    let query_type = first_query
-                                        .map(|q| q.query_type().to_string())
-                                        .unwrap_or_default();
-
-                                    let event = Event::new(
-                                        &DNS_QUERY_EVENT,
-                                        serde_json::json!({
-                                            "query_id": query_id,
-                                            "domain": domain,
-                                            "query_type": query_type
-                                        }),
-                                    );
-
-                                    log.debug(format!(
-                                        "DNS calling LLM for query from {}",
-                                        peer_addr
-                                    ));
-
-                                    // `Some(connection_id)`, not `None`. The connection was
-                                    // registered above, and this argument is what
-                                    // `call_llm_inner` uses to look up the peer address for
-                                    // `EventLogContext` — so with `None` the `dns_query`
-                                    // event's own INFO template, "DNS {query_type} {domain}
-                                    // from {client_ip}", rendered every access-log line as
-                                    // "... from " with nothing after it. It is also what
-                                    // scopes connection-scoped handlers and tasks.
-                                    match call_llm(
-                                        &llm_clone,
-                                        &state_clone,
-                                        server_id,
-                                        Some(connection_id),
-                                        &event,
-                                        protocol_clone.as_ref(),
-                                    )
-                                    .await
-                                    {
-                                        Ok(execution_result) => {
-                                            // Display messages from LLM
-                                            for message in &execution_result.messages {
-                                                log.info(message);
-                                            }
-
-                                            log.debug(format!(
-                                                "DNS got {} protocol results",
-                                                execution_result.protocol_results.len()
+                                        let mut query_descriptions = Vec::new();
+                                        for q in queries {
+                                            let qname = q.name().to_string();
+                                            let qtype = q.query_type();
+                                            let qclass = q.query_class();
+                                            query_descriptions.push(format!(
+                                                "{} {} {} (ID: {})",
+                                                qname, qtype, qclass, query_id
                                             ));
 
-                                            for protocol_result in execution_result.protocol_results
-                                            {
-                                                if let Some(output_data) =
-                                                    protocol_result.get_all_output().first()
+                                            // Parsed-query summary (FileOnly; the dns_query
+                                            // event template covers the TUI).
+                                            log.debug(format!(
+                                                "DNS query: {} {} {}",
+                                                qname, qtype, qclass
+                                            ));
+                                        }
+
+                                        // Create DNS query event
+                                        let first_query = queries.first();
+                                        let domain = first_query
+                                            .map(|q| q.name().to_string())
+                                            .unwrap_or_default();
+                                        let query_type = first_query
+                                            .map(|q| q.query_type().to_string())
+                                            .unwrap_or_default();
+
+                                        let event = Event::new(
+                                            &DNS_QUERY_EVENT,
+                                            serde_json::json!({
+                                                "query_id": query_id,
+                                                "domain": domain,
+                                                "query_type": query_type
+                                            }),
+                                        );
+
+                                        log.debug(format!(
+                                            "DNS calling LLM for query from {}",
+                                            peer_addr
+                                        ));
+
+                                        // `Some(connection_id)`, not `None`. The connection was
+                                        // registered above, and this argument is what
+                                        // `call_llm_inner` uses to look up the peer address for
+                                        // `EventLogContext` — so with `None` the `dns_query`
+                                        // event's own INFO template, "DNS {query_type} {domain}
+                                        // from {client_ip}", rendered every access-log line as
+                                        // "... from " with nothing after it. It is also what
+                                        // scopes connection-scoped handlers and tasks.
+                                        match call_llm(
+                                            &llm_clone,
+                                            &state_clone,
+                                            server_id,
+                                            Some(connection_id),
+                                            &event,
+                                            protocol_clone.as_ref(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(execution_result) => {
+                                                // Display messages from LLM
+                                                for message in &execution_result.messages {
+                                                    log.info(message);
+                                                }
+
+                                                log.debug(format!(
+                                                    "DNS got {} protocol results",
+                                                    execution_result.protocol_results.len()
+                                                ));
+
+                                                for protocol_result in
+                                                    execution_result.protocol_results
                                                 {
-                                                    let _ = socket_clone
-                                                        .send_to(output_data, peer_addr)
-                                                        .await;
+                                                    if let Some(output_data) =
+                                                        protocol_result.get_all_output().first()
+                                                    {
+                                                        let _ = socket_clone
+                                                            .send_to(output_data, peer_addr)
+                                                            .await;
 
-                                                    // Keep the connection counters shown in the
-                                                    // TUI in step with what was actually sent.
-                                                    state_clone
-                                                        .update_connection_stats(
-                                                            server_id,
-                                                            connection_id,
-                                                            None,
-                                                            Some(output_data.len() as u64),
-                                                            None,
-                                                            Some(1),
-                                                        )
-                                                        .await;
+                                                        // Keep the connection counters shown in the
+                                                        // TUI in step with what was actually sent.
+                                                        state_clone
+                                                            .update_connection_stats(
+                                                                server_id,
+                                                                connection_id,
+                                                                None,
+                                                                Some(output_data.len() as u64),
+                                                                None,
+                                                                Some(1),
+                                                            )
+                                                            .await;
 
-                                                    // Sent summary + payload are FileOnly;
-                                                    // the access line below carries the TUI.
-                                                    log.debug(format!(
-                                                        "DNS sent {} bytes to {}",
-                                                        output_data.len(),
-                                                        peer_addr
-                                                    ));
-                                                    log.trace(format!(
-                                                        "DNS sent (hex): {}",
-                                                        hex::encode(output_data)
-                                                    ));
+                                                        // Sent summary + payload are FileOnly;
+                                                        // the access line below carries the TUI.
+                                                        log.debug(format!(
+                                                            "DNS sent {} bytes to {}",
+                                                            output_data.len(),
+                                                            peer_addr
+                                                        ));
+                                                        log.trace(format!(
+                                                            "DNS sent (hex): {}",
+                                                            hex::encode(output_data)
+                                                        ));
 
-                                                    log.info(format!(
-                                                        "DNS response to {} ({} bytes)",
-                                                        peer_addr,
-                                                        output_data.len()
-                                                    ));
-                                                } else {
-                                                    log.debug(
+                                                        log.info(format!(
+                                                            "DNS response to {} ({} bytes)",
+                                                            peer_addr,
+                                                            output_data.len()
+                                                        ));
+                                                    } else {
+                                                        log.debug(
                                                         "DNS protocol result has no output data",
                                                     );
+                                                    }
                                                 }
                                             }
-                                        }
-                                        Err(e) => {
-                                            // Answer SERVFAIL rather than dropping the query.
-                                            //
-                                            // Silence here costs the client its full per-server
-                                            // timeout (5s in glibc) before it tries anywhere
-                                            // else; SERVFAIL makes it move on at once. The
-                                            // query ID and question section are echoed, without
-                                            // which a stub resolver discards the packet and we
-                                            // are back to silence.
-                                            // `decision=` tag, as `src/server/radius/`
-                                            // does it: SERVFAIL is the same bytes whatever
-                                            // went wrong, so the log is the only place the
-                                            // distinction can survive.
-                                            let decision = if crate::llm::is_overload_error(&e) {
-                                                "fail_closed_llm_overload"
-                                            } else {
-                                                "fail_closed_llm_error"
-                                            };
-                                            log.warn(format!(
-                                                "DNS LLM call failed for query from {} ({}) \
+                                            Err(e) => {
+                                                // Answer SERVFAIL rather than dropping the query.
+                                                //
+                                                // Silence here costs the client its full per-server
+                                                // timeout (5s in glibc) before it tries anywhere
+                                                // else; SERVFAIL makes it move on at once. The
+                                                // query ID and question section are echoed, without
+                                                // which a stub resolver discards the packet and we
+                                                // are back to silence.
+                                                // `decision=` tag, as `src/server/radius/`
+                                                // does it: SERVFAIL is the same bytes whatever
+                                                // went wrong, so the log is the only place the
+                                                // distinction can survive.
+                                                let decision = if crate::llm::is_overload_error(&e)
+                                                {
+                                                    "fail_closed_llm_overload"
+                                                } else {
+                                                    "fail_closed_llm_error"
+                                                };
+                                                log.warn(format!(
+                                                    "DNS LLM call failed for query from {} ({}) \
                                                  decision={}: {}",
-                                                peer_addr, connection_id, decision, e
-                                            ));
+                                                    peer_addr, connection_id, decision, e
+                                                ));
 
-                                            match actions::build_servfail(&query) {
-                                                Ok(packet) => {
-                                                    let _ = socket_clone
-                                                        .send_to(&packet, peer_addr)
-                                                        .await;
-                                                    state_clone
-                                                        .update_connection_stats(
-                                                            server_id,
-                                                            connection_id,
-                                                            None,
-                                                            Some(packet.len() as u64),
-                                                            None,
-                                                            Some(1),
-                                                        )
-                                                        .await;
-                                                    log.info(format!(
-                                                        "DNS SERVFAIL to {} ({} bytes)",
-                                                        peer_addr,
-                                                        packet.len()
-                                                    ));
-                                                }
-                                                Err(build_err) => {
-                                                    log.error(format!(
+                                                match actions::build_servfail(&query) {
+                                                    Ok(packet) => {
+                                                        let _ = socket_clone
+                                                            .send_to(&packet, peer_addr)
+                                                            .await;
+                                                        state_clone
+                                                            .update_connection_stats(
+                                                                server_id,
+                                                                connection_id,
+                                                                None,
+                                                                Some(packet.len() as u64),
+                                                                None,
+                                                                Some(1),
+                                                            )
+                                                            .await;
+                                                        log.info(format!(
+                                                            "DNS SERVFAIL to {} ({} bytes)",
+                                                            peer_addr,
+                                                            packet.len()
+                                                        ));
+                                                    }
+                                                    Err(build_err) => {
+                                                        log.error(format!(
                                                         "DNS failed to build SERVFAIL for {}: {}",
                                                         peer_addr, build_err
                                                     ));
+                                                    }
                                                 }
                                             }
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    log.warn(format!("Failed to parse DNS query: {e}"));
+                                    Err(e) => {
+                                        log.warn(format!("Failed to parse DNS query: {e}"));
 
-                                    // Fall back to hex representation for malformed queries
-                                    let hex_str = hex::encode(&data);
-                                    log.debug(format!(
-                                        "DNS malformed query from {} ({} bytes, hex: {})",
-                                        peer_addr,
-                                        data.len(),
-                                        hex_str
-                                    ));
+                                        // Fall back to hex representation for malformed queries
+                                        let hex_str = hex::encode(&data);
+                                        log.debug(format!(
+                                            "DNS malformed query from {} ({} bytes, hex: {})",
+                                            peer_addr,
+                                            data.len(),
+                                            hex_str
+                                        ));
+                                    }
                                 }
-                            }
-                        });
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("DNS receive error: {}", e));

@@ -127,38 +127,41 @@ impl WebDavServer {
                         let app_for_close = app_state.clone();
                         let status_for_close = status_tx.clone();
 
-                        tokio::spawn(async move {
-                            let io = TokioIo::new(stream);
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let io = TokioIo::new(stream);
 
-                            let service = service_fn(move |req: Request<Incoming>| {
-                                let llm = llm_clone.clone();
-                                let state = app_clone.clone();
-                                let status = status_clone.clone();
-                                let proto = protocol_clone.clone();
-                                handle_webdav_request(
-                                    req,
-                                    connection_id,
-                                    server_id,
-                                    llm,
-                                    state,
-                                    status,
-                                    proto,
-                                )
-                            });
+                                let service = service_fn(move |req: Request<Incoming>| {
+                                    let llm = llm_clone.clone();
+                                    let state = app_clone.clone();
+                                    let status = status_clone.clone();
+                                    let proto = protocol_clone.clone();
+                                    handle_webdav_request(
+                                        req,
+                                        connection_id,
+                                        server_id,
+                                        llm,
+                                        state,
+                                        status,
+                                        proto,
+                                    )
+                                });
 
-                            if let Err(err) =
-                                http1::Builder::new().serve_connection(io, service).await
-                            {
-                                error!("WebDAV connection error: {:?}", err);
-                            }
+                                if let Err(err) =
+                                    http1::Builder::new().serve_connection(io, service).await
+                                {
+                                    error!("WebDAV connection error: {:?}", err);
+                                }
 
-                            app_for_close
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            Log::new(Some(&status_for_close))
-                                .info(format!("WebDAV connection {} closed", connection_id));
-                            let _ = status_for_close.send("__UPDATE_UI__".to_string());
-                        });
+                                app_for_close
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                Log::new(Some(&status_for_close))
+                                    .info(format!("WebDAV connection {} closed", connection_id));
+                                let _ = status_for_close.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx))

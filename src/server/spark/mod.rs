@@ -105,42 +105,45 @@ impl SparkServer {
                         let protocol_clone = protocol.clone();
                         let version_clone = version.clone();
 
-                        tokio::spawn(async move {
-                            let io = TokioIo::new(stream);
-                            let status_for_service = status_tx_clone.clone();
-                            let app_state_for_service = app_state_clone.clone();
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let io = TokioIo::new(stream);
+                                let status_for_service = status_tx_clone.clone();
+                                let app_state_for_service = app_state_clone.clone();
 
-                            let service = service_fn(move |req: Request<Incoming>| {
-                                let llm_clone = llm_client_clone.clone();
-                                let state_clone = app_state_for_service.clone();
-                                let status_clone = status_for_service.clone();
-                                let protocol_clone = protocol_clone.clone();
-                                let version_clone = version_clone.clone();
-                                handle_spark_request(
-                                    req,
-                                    connection_id,
-                                    llm_clone,
-                                    state_clone,
-                                    status_clone,
-                                    protocol_clone,
-                                    server_id,
-                                    version_clone,
-                                )
-                            });
+                                let service = service_fn(move |req: Request<Incoming>| {
+                                    let llm_clone = llm_client_clone.clone();
+                                    let state_clone = app_state_for_service.clone();
+                                    let status_clone = status_for_service.clone();
+                                    let protocol_clone = protocol_clone.clone();
+                                    let version_clone = version_clone.clone();
+                                    handle_spark_request(
+                                        req,
+                                        connection_id,
+                                        llm_clone,
+                                        state_clone,
+                                        status_clone,
+                                        protocol_clone,
+                                        server_id,
+                                        version_clone,
+                                    )
+                                });
 
-                            if let Err(err) =
-                                http1::Builder::new().serve_connection(io, service).await
-                            {
-                                error!("Error serving Spark connection: {:?}", err);
-                            }
+                                if let Err(err) =
+                                    http1::Builder::new().serve_connection(io, service).await
+                                {
+                                    error!("Error serving Spark connection: {:?}", err);
+                                }
 
-                            app_state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            Log::new(Some(&status_tx_clone))
-                                .info(format!("Spark connection {} closed", connection_id));
-                            let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
-                        });
+                                app_state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                Log::new(Some(&status_tx_clone))
+                                    .info(format!("Spark connection {} closed", connection_id));
+                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         console_error!(status_tx, "Failed to accept Spark connection: {}", e);

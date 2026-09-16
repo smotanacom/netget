@@ -186,27 +186,31 @@ impl SmbServer {
                         let protocol = protocol.clone();
                         let status_tx = status_tx.clone();
 
-                        tokio::spawn(async move {
-                            // Held for the life of the connection, so the cap counts live
-                            // peers rather than accepts.
-                            let _permit = permit;
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                peer_addr,
-                                llm_client,
-                                app_state,
-                                server_id,
-                                protocol,
-                                status_tx.clone(),
-                            )
-                            .await
-                            {
-                                Log::new(Some(&status_tx)).error(format!(
-                                    "SMB connection error from {}: {}",
-                                    peer_addr, e
-                                ));
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // peers rather than accepts.
+                                let _permit = permit;
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    peer_addr,
+                                    llm_client,
+                                    app_state,
+                                    server_id,
+                                    protocol,
+                                    status_tx.clone(),
+                                )
+                                .await
+                                {
+                                    Log::new(Some(&status_tx)).error(format!(
+                                        "SMB connection error from {}: {}",
+                                        peer_addr, e
+                                    ));
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("SMB accept error: {}", e));

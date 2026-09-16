@@ -85,67 +85,71 @@ impl Pop3Server {
                         let protocol_clone = protocol.clone();
                         let tls_acceptor_clone = tls_acceptor.clone();
 
-                        tokio::spawn(async move {
-                            // Optionally perform TLS handshake
-                            if let Some(ref acceptor) = tls_acceptor_clone {
-                                match acceptor.accept(stream).await {
-                                    Ok(tls_stream) => {
-                                        debug!(
-                                            "TLS handshake completed for connection {}",
-                                            connection_id
-                                        );
-                                        let _ = status_clone.send(format!(
-                                            "[DEBUG] TLS handshake completed for connection {}",
-                                            connection_id
-                                        ));
-                                        if let Err(e) = Pop3Session::handle_session(
-                                            tls_stream,
-                                            connection_id,
-                                            remote_addr,
-                                            local_addr_conn,
-                                            server_id,
-                                            llm_clone,
-                                            state_clone,
-                                            status_clone,
-                                            protocol_clone,
-                                        )
-                                        .await
-                                        {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Optionally perform TLS handshake
+                                if let Some(ref acceptor) = tls_acceptor_clone {
+                                    match acceptor.accept(stream).await {
+                                        Ok(tls_stream) => {
+                                            debug!(
+                                                "TLS handshake completed for connection {}",
+                                                connection_id
+                                            );
+                                            let _ = status_clone.send(format!(
+                                                "[DEBUG] TLS handshake completed for connection {}",
+                                                connection_id
+                                            ));
+                                            if let Err(e) = Pop3Session::handle_session(
+                                                tls_stream,
+                                                connection_id,
+                                                remote_addr,
+                                                local_addr_conn,
+                                                server_id,
+                                                llm_clone,
+                                                state_clone,
+                                                status_clone,
+                                                protocol_clone,
+                                            )
+                                            .await
+                                            {
+                                                error!(
+                                                    "POP3S session error for connection {}: {}",
+                                                    connection_id, e
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
                                             error!(
-                                                "POP3S session error for connection {}: {}",
+                                                "TLS handshake failed for connection {}: {}",
                                                 connection_id, e
                                             );
                                         }
                                     }
-                                    Err(e) => {
+                                } else {
+                                    // Plain text POP3
+                                    if let Err(e) = Pop3Session::handle_session(
+                                        stream,
+                                        connection_id,
+                                        remote_addr,
+                                        local_addr_conn,
+                                        server_id,
+                                        llm_clone,
+                                        state_clone,
+                                        status_clone,
+                                        protocol_clone,
+                                    )
+                                    .await
+                                    {
                                         error!(
-                                            "TLS handshake failed for connection {}: {}",
+                                            "POP3 session error for connection {}: {}",
                                             connection_id, e
                                         );
                                     }
                                 }
-                            } else {
-                                // Plain text POP3
-                                if let Err(e) = Pop3Session::handle_session(
-                                    stream,
-                                    connection_id,
-                                    remote_addr,
-                                    local_addr_conn,
-                                    server_id,
-                                    llm_clone,
-                                    state_clone,
-                                    status_clone,
-                                    protocol_clone,
-                                )
-                                .await
-                                {
-                                    error!(
-                                        "POP3 session error for connection {}: {}",
-                                        connection_id, e
-                                    );
-                                }
-                            }
-                        });
+                            })
+                            .await;
                     }
                     Err(e) => {
                         // Do not continue: an accept() error here is persistent (the listener

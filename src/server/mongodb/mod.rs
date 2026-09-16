@@ -133,11 +133,15 @@ impl MongodbServer {
                             addr,
                         );
 
-                        tokio::spawn(async move {
-                            if let Err(e) = handler.handle_connection(stream).await {
-                                error!("MongoDB connection error: {:?}", e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = handler.handle_connection(stream).await {
+                                    error!("MongoDB connection error: {:?}", e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         console_error!(status_tx, "MongoDB accept error: {}", e);

@@ -15,7 +15,6 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::llm::action_helper::call_llm;
@@ -47,7 +46,11 @@ struct Session {
     rtp_socket: Option<Arc<UdpSocket>>,
     client_rtp_addr: Option<SocketAddr>,
     server_rtp_port: Option<u16>,
-    play_task: Option<JoinHandle<()>>,
+    /// Abort handle, not a `JoinHandle`: dropping a `JoinHandle` only detaches the task,
+    /// so a PLAY stream survived the session it belonged to. Registered with the server as
+    /// well, so `stop_server` ends it — RTP leaves over a separate UDP socket, and nothing
+    /// about closing the RTSP connection would otherwise stop the packets.
+    play_task: Option<tokio::task::AbortHandle>,
 }
 
 pub struct RtspServer;
@@ -105,23 +108,27 @@ impl RtspServer {
                         let state = app_state.clone();
                         let stx = status_tx.clone();
                         let proto = protocol.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                remote_addr,
-                                connection_id,
-                                server_id,
-                                llm,
-                                state,
-                                stx.clone(),
-                                proto,
-                            )
-                            .await
-                            {
-                                Log::new(Some(&stx))
-                                    .debug(format!("RTSP connection closed: {}", e));
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    remote_addr,
+                                    connection_id,
+                                    server_id,
+                                    llm,
+                                    state,
+                                    stx.clone(),
+                                    proto,
+                                )
+                                .await
+                                {
+                                    Log::new(Some(&stx))
+                                        .debug(format!("RTSP connection closed: {}", e));
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("RTSP accept error: {}", e));
@@ -620,45 +627,48 @@ impl RtspServer {
 
         let stx = status_tx.clone();
         let state_clone = state.clone();
-        let task = tokio::spawn(async move {
-            let payload = match media::synthesize(codec, &content, duration_ms) {
-                Ok(p) => p,
-                Err(e) => {
-                    Log::new(Some(&stx)).warn(format!("RTSP PLAY synthesis: {}", e));
-                    return;
+        let task_owner = state.clone();
+        let task = task_owner
+            .spawn_server_task(server_id, async move {
+                let payload = match media::synthesize(codec, &content, duration_ms) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        Log::new(Some(&stx)).warn(format!("RTSP PLAY synthesis: {}", e));
+                        return;
+                    }
+                };
+                let mut packetizer = RtpPacketizer::new(ssrc, codec.payload_type(), None, None);
+                let packets = packetizer.packetize(&payload, media::G711_SAMPLES_PER_FRAME);
+                let mut sent = 0u64;
+                let mut bytes = 0u64;
+                for pkt in &packets {
+                    if socket.send_to(pkt, client_addr).await.is_err() {
+                        break;
+                    }
+                    sent += 1;
+                    bytes += pkt.len() as u64;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
-            };
-            let mut packetizer = RtpPacketizer::new(ssrc, codec.payload_type(), None, None);
-            let packets = packetizer.packetize(&payload, media::G711_SAMPLES_PER_FRAME);
-            let mut sent = 0u64;
-            let mut bytes = 0u64;
-            for pkt in &packets {
-                if socket.send_to(pkt, client_addr).await.is_err() {
-                    break;
-                }
-                sent += 1;
-                bytes += pkt.len() as u64;
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-            // Count the streamed RTP against THIS connection (the media leaves over a
-            // separate UDP socket, but it belongs to this RTSP session).
-            state_clone
-                .update_connection_stats(
-                    server_id,
-                    connection_id,
-                    None,
-                    Some(bytes),
-                    None,
-                    Some(sent),
-                )
-                .await;
-            // FileOnly: analogous to rtp's send_rtp_audio summary, kept off the TUI to avoid
-            // adding a second line alongside the PLAY response's own INFO log_template.
-            Log::new(Some(&stx)).debug(format!(
-                "RTSP PLAY streamed {} RTP packet(s) to {} ({} bytes)",
-                sent, client_addr, bytes
-            ));
-        });
+                // Count the streamed RTP against THIS connection (the media leaves over a
+                // separate UDP socket, but it belongs to this RTSP session).
+                state_clone
+                    .update_connection_stats(
+                        server_id,
+                        connection_id,
+                        None,
+                        Some(bytes),
+                        None,
+                        Some(sent),
+                    )
+                    .await;
+                // FileOnly: analogous to rtp's send_rtp_audio summary, kept off the TUI to avoid
+                // adding a second line alongside the PLAY response's own INFO log_template.
+                Log::new(Some(&stx)).debug(format!(
+                    "RTSP PLAY streamed {} RTP packet(s) to {} ({} bytes)",
+                    sent, client_addr, bytes
+                ));
+            })
+            .await;
         session.play_task = Some(task);
 
         debug!("RTSP PLAY session={} → {}", session_id, client_addr);

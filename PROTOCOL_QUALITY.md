@@ -90,6 +90,11 @@ once these exist.
   *Verify:* start, connect a peer that never sends, stop, assert the peer reads EOF within 1s.
   *Effort:* M — the registration is one line per protocol, but there are ~140 of them; do the
   shared accept-loop helpers first so most inherit it.
+  **Done 15 Sep 2026**: mechanism plus the whole sweep (145 sites, 115 protocols), the
+  peer-side contract on four protocols, and `tests/detached_task_drift_test.rs` as the ratchet.
+  What is still detached is enumerated with a reason in Done, below — the one open gap is a
+  task awaited inside a `select!` by a registered parent, because aborting a parent does not
+  abort its children.
 
 - [x] **`decision=` tagging on the 27 servers that have an LLM path and no tag.** The list is
   in the measurement script; `ftp`, `http`, `telnet`, `udp`, `mqtt`, `ntp` and `tftp` are the
@@ -215,7 +220,8 @@ declare, whether or not anyone has looked at it.
   `connectionless` sweep and the peer-handle removal paths are the kind of thing that leaks one
   entry per connection and is invisible until production. *Effort:* M for the harness.
 
-- [x] **Stop releases the port, every protocol.** *(the generic test exists; TCP is converted, ~101 protocols still to adopt `spawn_server_task` — see Done)* A generic test: start on port 0, read the
+- [x] **Stop releases the port, every protocol.** *(the generic test exists, and the
+  `spawn_server_task` sweep landed 15 Sep 2026 — 145 sites, 115 protocols; see Done)* A generic test: start on port 0, read the
   bound port, stop, bind that port again within 1s. *Why:* `register_server_task` is
   "required for `stop_server` to actually release the socket" and adoption has never been
   measured. *Effort:* S — one parametrised test over the registry.
@@ -452,9 +458,26 @@ Move items here with the date and the commit or PR that verified them.
   because those tests do not depend on the accept loop spawning the reader. Only an assertion
   from the **peer's** side distinguishes a live connection from an aborted one.
 
-  **Still open:** ~101 protocols have not adopted `spawn_server_task` (301 `tokio::spawn` vs 159
-  `register_server_task`, measured 15 Sep). TCP is the reference; the sweep is a follow-up,
-  deliberately not run while other agents hold most `src/server/*/mod.rs` files.
+  **The sweep landed the same day.** 145 sites converted across 113 server protocols and 2 clients — every bare
+  `tokio::spawn` *statement* in `src/{server,client}/*/mod.rs` that had a `server_id` or
+  `client_id` to register against. The flagging rule was measured before it became a gate: it
+  named 136 sites, 135 of which were the defect, so the false-positive rate is 0.7% and the
+  baseline in `tests/detached_task_drift_test.rs` has exactly one entry (SSH's
+  `Option<ServerId>`, whose `None` arm has no server to own the task).
+
+  `tests/stop_server_stops_connections_test.rs` now covers `telnet`, `whois` and `http` beside
+  TCP — a reader netget wrote, a session with its own read deadline, and hyper's
+  `serve_connection`, which is the shape ~30 protocols share.
+
+  **Deliberately still detached, each with a reason** (all recorded in the commit and in
+  `CLAUDE.md`): the per-connection **writer** tasks are `.await`ed on the exit path, so they
+  need a `JoinHandle` — and they already end when the registered reader is aborted and drops
+  their channel; `bluetooth_ble`'s radio dispatcher is process-wide and must outlive any one
+  server, the only task in either tree detached by design; and the USB/IP session tasks plus
+  `postgresql`'s pgwire task are awaited inside a `select!`, so registering them means
+  restructuring a shutdown handshake rather than wrapping a spawn. Those last are children of a
+  registered connection task, and **aborting a parent does not abort its children**, so that
+  gap is open rather than closed.
 
 - **15 Sep 2026 — Tier 1, "hard-fail the skip-when-missing gates".** Six real gates converted
   (`websocket`/websocat, `memcached`/libmemcached, `pypi`/pip, `grpc` client/protoc, plus the

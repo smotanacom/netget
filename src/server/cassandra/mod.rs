@@ -182,6 +182,7 @@ impl CassandraServer {
 
         // Spawn the accept loop
         let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
+        let loop_state = app_state.clone();
         let accept_handle = tokio::spawn(async move {
             loop {
                 match crate::server::accept_bounded::accept_bounded(
@@ -200,17 +201,21 @@ impl CassandraServer {
                         let server_clone = server.clone();
                         let status_tx_clone = status_tx.clone();
 
-                        tokio::spawn(async move {
-                            // Held for the life of the connection, so the cap counts live
-                            // clients rather than accepts.
-                            let _permit = permit;
-                            if let Err(e) = server_clone
-                                .handle_connection(stream, addr, status_tx_clone)
-                                .await
-                            {
-                                error!("Cassandra connection error: {}", e);
-                            }
-                        });
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = loop_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // clients rather than accepts.
+                                let _permit = permit;
+                                if let Err(e) = server_clone
+                                    .handle_connection(stream, addr, status_tx_clone)
+                                    .await
+                                {
+                                    error!("Cassandra connection error: {}", e);
+                                }
+                            })
+                            .await;
                     }
                     Err(e) => {
                         // A persistent accept error (EMFILE, listener torn down) recurs

@@ -330,39 +330,43 @@ impl KafkaServer {
                             .await;
                         let _ = status_clone.send("__UPDATE_UI__".to_string());
 
-                        tokio::spawn(async move {
-                            // Held for the life of the connection, so the cap counts live
-                            // clients rather than accepts.
-                            let _permit = permit;
-                            let result = Self::handle_connection(
-                                stream,
-                                peer_addr,
-                                local_addr,
-                                connection_id,
-                                server_clone,
-                                llm_clone,
-                                state_clone.clone(),
-                                status_clone.clone(),
-                                server_id,
-                                protocol_clone,
-                            )
-                            .await;
-
-                            if let Err(e) = result {
-                                error!("Kafka connection error: {}", e);
-                            }
-
-                            // Connections used to be added and never removed, so the
-                            // TUI accumulated Active entries for dead sockets.
-                            state_clone
-                                .update_connection_status(
-                                    server_id,
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection, so the cap counts live
+                                // clients rather than accepts.
+                                let _permit = permit;
+                                let result = Self::handle_connection(
+                                    stream,
+                                    peer_addr,
+                                    local_addr,
                                     connection_id,
-                                    crate::state::server::ConnectionStatus::Closed,
+                                    server_clone,
+                                    llm_clone,
+                                    state_clone.clone(),
+                                    status_clone.clone(),
+                                    server_id,
+                                    protocol_clone,
                                 )
                                 .await;
-                            let _ = status_clone.send("__UPDATE_UI__".to_string());
-                        });
+
+                                if let Err(e) = result {
+                                    error!("Kafka connection error: {}", e);
+                                }
+
+                                // Connections used to be added and never removed, so the
+                                // TUI accumulated Active entries for dead sockets.
+                                state_clone
+                                    .update_connection_status(
+                                        server_id,
+                                        connection_id,
+                                        crate::state::server::ConnectionStatus::Closed,
+                                    )
+                                    .await;
+                                let _ = status_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         // Without a break this spun a hot loop on a persistent

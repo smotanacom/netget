@@ -101,7 +101,9 @@ impl StunServer {
                         let socket_clone = socket.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             // Parse STUN message to extract transaction ID and message type
                             let (transaction_id, message_type, is_valid) =
                                 Self::parse_stun_header(&data);
@@ -300,7 +302,7 @@ impl StunServer {
                                     .await;
                                 }
                             }
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("STUN receive error: {}", e));

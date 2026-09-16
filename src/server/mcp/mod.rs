@@ -309,8 +309,9 @@ impl McpServer {
             }
         });
 
+        let relay_state = task_registrar.clone();
         let accept_handle = tokio::spawn(async move {
-            serve_screened_mcp(listener, backend_addr, status_tx).await;
+            serve_screened_mcp(listener, backend_addr, status_tx, relay_state, server_id).await;
         });
 
         // Both tasks are registered: aborting only the front one would leave axum holding the
@@ -1105,6 +1106,8 @@ async fn serve_screened_mcp(
     listener: tokio::net::TcpListener,
     backend_addr: SocketAddr,
     status_tx: mpsc::UnboundedSender<String>,
+    app_state: std::sync::Arc<crate::state::app_state::AppState>,
+    server_id: crate::state::ServerId,
 ) {
     let limiter = crate::server::accept_bounded::ConnectionLimiter::new(MAX_CONNECTIONS);
     loop {
@@ -1125,10 +1128,14 @@ async fn serve_screened_mcp(
         };
 
         let status = status_tx.clone();
-        tokio::spawn(async move {
-            let _permit = permit;
-            relay_mcp_connection(peer_stream, peer_addr, backend_addr, status).await;
-        });
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = app_state.clone();
+        task_owner
+            .spawn_server_task(server_id, async move {
+                let _permit = permit;
+                relay_mcp_connection(peer_stream, peer_addr, backend_addr, status).await;
+            })
+            .await;
     }
 }
 

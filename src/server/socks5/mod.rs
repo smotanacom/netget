@@ -238,38 +238,42 @@ impl Socks5Server {
                         let protocol_clone = protocol.clone();
                         let config_clone = config.clone();
 
-                        tokio::spawn(async move {
-                            Log::new(Some(&status_clone)).info(format!(
-                                "SOCKS5 connection {} from {}",
-                                connection_id, remote_addr
-                            ));
-
-                            if let Err(e) = Self::handle_connection(
-                                stream,
-                                connection_id,
-                                remote_addr,
-                                local_addr_conn,
-                                llm_clone,
-                                state_clone.clone(),
-                                status_clone.clone(),
-                                protocol_clone,
-                                server_id,
-                                config_clone,
-                            )
-                            .await
-                            {
-                                Log::new(Some(&status_clone)).error(format!(
-                                    "SOCKS5 connection {} error: {}",
-                                    connection_id, e
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                Log::new(Some(&status_clone)).info(format!(
+                                    "SOCKS5 connection {} from {}",
+                                    connection_id, remote_addr
                                 ));
-                            }
 
-                            // Connection closed - mark as closed
-                            state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            let _ = status_clone.send("__UPDATE_UI__".to_string());
-                        });
+                                if let Err(e) = Self::handle_connection(
+                                    stream,
+                                    connection_id,
+                                    remote_addr,
+                                    local_addr_conn,
+                                    llm_clone,
+                                    state_clone.clone(),
+                                    status_clone.clone(),
+                                    protocol_clone,
+                                    server_id,
+                                    config_clone,
+                                )
+                                .await
+                                {
+                                    Log::new(Some(&status_clone)).error(format!(
+                                        "SOCKS5 connection {} error: {}",
+                                        connection_id, e
+                                    ));
+                                }
+
+                                // Connection closed - mark as closed
+                                state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_clone.send("__UPDATE_UI__".to_string());
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("Failed to accept SOCKS5 connection: {}", e);

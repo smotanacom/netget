@@ -163,7 +163,9 @@ impl Dhcpv6Server {
                             event_data,
                         } = parsed;
 
-                        tokio::spawn(async move {
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner.spawn_server_task(server_id, async move {
                             // One protocol instance per datagram. The instance carries the
                             // transaction id, client DUID and IAIDs used to build the reply, so
                             // two clients whose LLM calls overlap can never echo each other's.
@@ -298,7 +300,7 @@ impl Dhcpv6Server {
                                     peer_addr
                                 ));
                             }
-                        });
+                        }).await;
                     }
                     Err(e) => {
                         Log::new(Some(&status_tx)).error(format!("DHCPv6 receive error: {}", e));

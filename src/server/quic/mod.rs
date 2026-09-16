@@ -141,137 +141,147 @@ impl QuicServer {
                 let status_tx_clone = status_tx.clone();
                 let protocol_clone = protocol.clone();
 
-                tokio::spawn(async move {
-                    match connecting.await {
-                        Ok(connection) => {
-                            let remote_addr = connection.remote_address();
-                            Log::new(Some(&status_tx_clone)).info(format!(
-                                "Accepted QUIC connection {} from {}",
-                                connection_id, remote_addr
-                            ));
+                // Tracked, not detached: stop_server must abort this task too.
+                let task_owner = app_state.clone();
+                task_owner
+                    .spawn_server_task(server_id, async move {
+                        match connecting.await {
+                            Ok(connection) => {
+                                let remote_addr = connection.remote_address();
+                                Log::new(Some(&status_tx_clone)).info(format!(
+                                    "Accepted QUIC connection {} from {}",
+                                    connection_id, remote_addr
+                                ));
 
-                            // Add connection to ServerInstance
-                            use crate::state::server::{
-                                ConnectionState as ServerConnectionState, ConnectionStatus,
-                                ProtocolConnectionInfo,
-                            };
-                            let now = crate::utils::clock::Instant::now();
-                            let conn_state = ServerConnectionState {
-                                id: connection_id,
-                                remote_addr,
-                                local_addr,
-                                bytes_sent: 0,
-                                bytes_received: 0,
-                                packets_sent: 0,
-                                packets_received: 0,
-                                last_activity: now,
-                                status: ConnectionStatus::Active,
-                                status_changed_at: now,
-                                protocol_info: ProtocolConnectionInfo::new(serde_json::json!({
-                                    "stream_count": 0
-                                })),
-                            };
-                            app_state_clone
-                                .add_connection_to_server(server_id, conn_state)
-                                .await;
-                            let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                // Add connection to ServerInstance
+                                use crate::state::server::{
+                                    ConnectionState as ServerConnectionState, ConnectionStatus,
+                                    ProtocolConnectionInfo,
+                                };
+                                let now = crate::utils::clock::Instant::now();
+                                let conn_state = ServerConnectionState {
+                                    id: connection_id,
+                                    remote_addr,
+                                    local_addr,
+                                    bytes_sent: 0,
+                                    bytes_received: 0,
+                                    packets_sent: 0,
+                                    packets_received: 0,
+                                    last_activity: now,
+                                    status: ConnectionStatus::Active,
+                                    status_changed_at: now,
+                                    protocol_info: ProtocolConnectionInfo::new(serde_json::json!({
+                                        "stream_count": 0
+                                    })),
+                                };
+                                app_state_clone
+                                    .add_connection_to_server(server_id, conn_state)
+                                    .await;
+                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
 
-                            // Notify LLM of new connection
-                            let event =
-                                Event::new(&QUIC_CONNECTION_OPENED_EVENT, serde_json::json!({}));
-                            match call_llm(
-                                &llm_client_clone,
-                                &app_state_clone,
-                                server_id,
-                                Some(connection_id),
-                                &event,
-                                protocol_clone.as_ref(),
-                            )
-                            .await
-                            {
-                                Ok(execution_result) => {
-                                    for msg in execution_result.messages {
-                                        let _ = status_tx_clone.send(msg);
-                                    }
-                                }
-                                Err(e) => {
-                                    // Non-fatal, and correctly silent on the wire:
-                                    // `quic_connection_opened` carries `.with_no_actions()`
-                                    // because no stream exists yet, so the model could not
-                                    // have put a byte anywhere even on success. The peer is
-                                    // waiting for nothing and will open its own stream.
-                                    Log::new(Some(&status_tx_clone)).warn(format!(
-                                        "LLM error on connection opened (decision=llm_error, \
-                                         no wire response possible before a stream exists): {}",
-                                        e
-                                    ));
-                                }
-                            }
-
-                            // Handle streams on this connection
-                            let streams = Arc::new(Mutex::new(HashMap::new()));
-                            loop {
-                                match connection.accept_bi().await {
-                                    Ok((send_stream, recv_stream)) => {
-                                        let stream_id = ConnectionId::new(
-                                            app_state_clone.get_next_unified_id().await,
-                                        );
-                                        Log::new(Some(&status_tx_clone)).info(format!(
-                                            "Accepted QUIC stream {} on connection {}",
-                                            stream_id, connection_id
-                                        ));
-
-                                        let llm_clone = llm_client_clone.clone();
-                                        let state_clone = app_state_clone.clone();
-                                        let status_clone = status_tx_clone.clone();
-                                        let streams_clone = streams.clone();
-                                        let protocol_clone = protocol_clone.clone();
-
-                                        tokio::spawn(async move {
-                                            Self::handle_stream_with_actions(
-                                                stream_id,
-                                                connection_id,
-                                                server_id,
-                                                send_stream,
-                                                recv_stream,
-                                                llm_clone,
-                                                state_clone,
-                                                status_clone,
-                                                streams_clone,
-                                                protocol_clone,
-                                            )
-                                            .await;
-                                        });
-                                    }
-                                    Err(quinn::ConnectionError::ApplicationClosed(_)) => {
-                                        Log::new(Some(&status_tx_clone)).info(format!(
-                                            "QUIC connection {} closed by peer",
-                                            connection_id
-                                        ));
-                                        break;
+                                // Notify LLM of new connection
+                                let event = Event::new(
+                                    &QUIC_CONNECTION_OPENED_EVENT,
+                                    serde_json::json!({}),
+                                );
+                                match call_llm(
+                                    &llm_client_clone,
+                                    &app_state_clone,
+                                    server_id,
+                                    Some(connection_id),
+                                    &event,
+                                    protocol_clone.as_ref(),
+                                )
+                                .await
+                                {
+                                    Ok(execution_result) => {
+                                        for msg in execution_result.messages {
+                                            let _ = status_tx_clone.send(msg);
+                                        }
                                     }
                                     Err(e) => {
-                                        Log::new(Some(&status_tx_clone)).error(format!(
-                                            "Error accepting stream on {}: {}",
-                                            connection_id, e
+                                        // Non-fatal, and correctly silent on the wire:
+                                        // `quic_connection_opened` carries `.with_no_actions()`
+                                        // because no stream exists yet, so the model could not
+                                        // have put a byte anywhere even on success. The peer is
+                                        // waiting for nothing and will open its own stream.
+                                        Log::new(Some(&status_tx_clone)).warn(format!(
+                                            "LLM error on connection opened (decision=llm_error, \
+                                         no wire response possible before a stream exists): {}",
+                                            e
                                         ));
-                                        break;
                                     }
                                 }
-                            }
 
-                            // Connection closed
-                            app_state_clone
-                                .close_connection_on_server(server_id, connection_id)
-                                .await;
-                            let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                                // Handle streams on this connection
+                                let streams = Arc::new(Mutex::new(HashMap::new()));
+                                loop {
+                                    match connection.accept_bi().await {
+                                        Ok((send_stream, recv_stream)) => {
+                                            let stream_id = ConnectionId::new(
+                                                app_state_clone.get_next_unified_id().await,
+                                            );
+                                            Log::new(Some(&status_tx_clone)).info(format!(
+                                                "Accepted QUIC stream {} on connection {}",
+                                                stream_id, connection_id
+                                            ));
+
+                                            let llm_clone = llm_client_clone.clone();
+                                            let state_clone = app_state_clone.clone();
+                                            let status_clone = status_tx_clone.clone();
+                                            let streams_clone = streams.clone();
+                                            let protocol_clone = protocol_clone.clone();
+
+                                            // Tracked, not detached: stop_server must abort this task too.
+                                            let task_owner = app_state_clone.clone();
+                                            task_owner
+                                                .spawn_server_task(server_id, async move {
+                                                    Self::handle_stream_with_actions(
+                                                        stream_id,
+                                                        connection_id,
+                                                        server_id,
+                                                        send_stream,
+                                                        recv_stream,
+                                                        llm_clone,
+                                                        state_clone,
+                                                        status_clone,
+                                                        streams_clone,
+                                                        protocol_clone,
+                                                    )
+                                                    .await;
+                                                })
+                                                .await;
+                                        }
+                                        Err(quinn::ConnectionError::ApplicationClosed(_)) => {
+                                            Log::new(Some(&status_tx_clone)).info(format!(
+                                                "QUIC connection {} closed by peer",
+                                                connection_id
+                                            ));
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            Log::new(Some(&status_tx_clone)).error(format!(
+                                                "Error accepting stream on {}: {}",
+                                                connection_id, e
+                                            ));
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                // Connection closed
+                                app_state_clone
+                                    .close_connection_on_server(server_id, connection_id)
+                                    .await;
+                                let _ = status_tx_clone.send("__UPDATE_UI__".to_string());
+                            }
+                            Err(e) => {
+                                Log::new(Some(&status_tx_clone))
+                                    .error(format!("Connection error on {}: {}", connection_id, e));
+                            }
                         }
-                        Err(e) => {
-                            Log::new(Some(&status_tx_clone))
-                                .error(format!("Connection error on {}: {}", connection_id, e));
-                        }
-                    }
-                });
+                    })
+                    .await;
             }
         });
 

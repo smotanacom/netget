@@ -308,9 +308,13 @@ impl GtpServer {
 
             let data = buffer[..n].to_vec();
             let shared = shared.clone();
-            tokio::spawn(async move {
-                Self::handle_datagram(shared, data, peer_addr, plane).await;
-            });
+            // Tracked, not detached: stop_server must abort this task too.
+            let task_owner = shared.state.clone();
+            task_owner
+                .spawn_server_task(shared.server_id, async move {
+                    Self::handle_datagram(shared, data, peer_addr, plane).await;
+                })
+                .await;
         }
     }
 

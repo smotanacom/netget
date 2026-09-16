@@ -412,19 +412,23 @@ impl OpenvpnServer {
         // Ask the model before answering. The decision can take seconds, so it
         // runs off the receive loop.
         let this = self.clone();
-        tokio::spawn(async move {
-            this.decide_and_answer(
-                peer_addr,
-                connection_id,
-                frame,
-                key_id,
-                client_packet_id,
-                app_state,
-                server_id,
-                status_tx,
-            )
+        // Tracked, not detached: stop_server must abort this task too.
+        let task_owner = app_state.clone();
+        task_owner
+            .spawn_server_task(server_id, async move {
+                this.decide_and_answer(
+                    peer_addr,
+                    connection_id,
+                    frame,
+                    key_id,
+                    client_packet_id,
+                    app_state,
+                    server_id,
+                    status_tx,
+                )
+                .await;
+            })
             .await;
-        });
     }
 
     /// Raise `openvpn_peer_reset` and act on the answer.
@@ -799,17 +803,21 @@ impl OpenvpnServer {
                 let this = self.clone();
                 let state = app_state.clone();
                 let status = status_tx.clone();
-                tokio::spawn(async move {
-                    this.decide_key_exchange(
-                        peer_addr,
-                        connection_id,
-                        km2,
-                        state,
-                        server_id,
-                        status,
-                    )
+                // Tracked, not detached: stop_server must abort this task too.
+                let task_owner = app_state.clone();
+                task_owner
+                    .spawn_server_task(server_id, async move {
+                        this.decide_key_exchange(
+                            peer_addr,
+                            connection_id,
+                            km2,
+                            state,
+                            server_id,
+                            status,
+                        )
+                        .await;
+                    })
                     .await;
-                });
             }
             SessionEvent::ControlMessage(message) => {
                 if message.starts_with("PUSH_REQUEST") {

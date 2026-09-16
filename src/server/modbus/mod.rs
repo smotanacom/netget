@@ -215,82 +215,102 @@ impl ModbusServer {
                         let conns_clone = connections.clone();
                         let protocol_clone = protocol.clone();
 
-                        tokio::spawn(async move {
-                            let mut read_buf = vec![0u8; 4096];
-                            let log = Log::new(Some(&status_clone));
-                            loop {
-                                match read_half.read(&mut read_buf).await {
-                                    Ok(0) => {
-                                        conns_clone.lock().await.remove(&connection_id);
-                                        state_clone
-                                            .remove_peer_handle(server_id, connection_id.as_u32())
-                                            .await;
-                                        state_clone
-                                            .close_connection_on_server(server_id, connection_id)
-                                            .await;
-                                        log.info(format!(
-                                            "Modbus connection {connection_id} closed"
-                                        ));
-                                        let _ = status_clone.send("__UPDATE_UI__".to_string());
-                                        break;
-                                    }
-                                    Ok(n) => {
-                                        let data = read_buf[..n].to_vec();
-                                        // Summary + full payload FileOnly: the modbus_* event
-                                        // templates render the equivalent line to the TUI.
-                                        log.debug(format!(
-                                            "Modbus received {} bytes on {}",
-                                            n, connection_id
-                                        ));
-                                        log.trace(format!(
-                                            "Modbus received (hex): {}",
-                                            hex::encode(&data)
-                                        ));
-                                        state_clone
-                                            .update_connection_stats(
-                                                server_id,
-                                                connection_id,
-                                                Some(n as u64),
-                                                None,
-                                                Some(1),
-                                                None,
-                                            )
-                                            .await;
+                        // Tracked, not detached: stop_server must abort this task too.
+                        let task_owner = app_state.clone();
+                        task_owner
+                            .spawn_server_task(server_id, async move {
+                                let mut read_buf = vec![0u8; 4096];
+                                let log = Log::new(Some(&status_clone));
+                                loop {
+                                    match read_half.read(&mut read_buf).await {
+                                        Ok(0) => {
+                                            conns_clone.lock().await.remove(&connection_id);
+                                            state_clone
+                                                .remove_peer_handle(
+                                                    server_id,
+                                                    connection_id.as_u32(),
+                                                )
+                                                .await;
+                                            state_clone
+                                                .close_connection_on_server(
+                                                    server_id,
+                                                    connection_id,
+                                                )
+                                                .await;
+                                            log.info(format!(
+                                                "Modbus connection {connection_id} closed"
+                                            ));
+                                            let _ = status_clone.send("__UPDATE_UI__".to_string());
+                                            break;
+                                        }
+                                        Ok(n) => {
+                                            let data = read_buf[..n].to_vec();
+                                            // Summary + full payload FileOnly: the modbus_* event
+                                            // templates render the equivalent line to the TUI.
+                                            log.debug(format!(
+                                                "Modbus received {} bytes on {}",
+                                                n, connection_id
+                                            ));
+                                            log.trace(format!(
+                                                "Modbus received (hex): {}",
+                                                hex::encode(&data)
+                                            ));
+                                            state_clone
+                                                .update_connection_stats(
+                                                    server_id,
+                                                    connection_id,
+                                                    Some(n as u64),
+                                                    None,
+                                                    Some(1),
+                                                    None,
+                                                )
+                                                .await;
 
-                                        let llm = llm_clone.clone();
-                                        let st = state_clone.clone();
-                                        let stx = status_clone.clone();
-                                        let cs = conns_clone.clone();
-                                        let pr = protocol_clone.clone();
-                                        tokio::spawn(async move {
-                                            Self::handle_data(
-                                                connection_id,
-                                                server_id,
-                                                data,
-                                                unit_id_filter,
-                                                llm,
-                                                st,
-                                                stx,
-                                                cs,
-                                                pr,
-                                            )
-                                            .await;
-                                        });
-                                    }
-                                    Err(e) => {
-                                        error!("Modbus read error on {}: {}", connection_id, e);
-                                        conns_clone.lock().await.remove(&connection_id);
-                                        state_clone
-                                            .remove_peer_handle(server_id, connection_id.as_u32())
-                                            .await;
-                                        state_clone
-                                            .close_connection_on_server(server_id, connection_id)
-                                            .await;
-                                        break;
+                                            let llm = llm_clone.clone();
+                                            let st = state_clone.clone();
+                                            let stx = status_clone.clone();
+                                            let cs = conns_clone.clone();
+                                            let pr = protocol_clone.clone();
+                                            // Tracked, not detached: stop_server must abort this task too.
+                                            let task_owner = state_clone.clone();
+                                            task_owner
+                                                .spawn_server_task(server_id, async move {
+                                                    Self::handle_data(
+                                                        connection_id,
+                                                        server_id,
+                                                        data,
+                                                        unit_id_filter,
+                                                        llm,
+                                                        st,
+                                                        stx,
+                                                        cs,
+                                                        pr,
+                                                    )
+                                                    .await;
+                                                })
+                                                .await;
+                                        }
+                                        Err(e) => {
+                                            error!("Modbus read error on {}: {}", connection_id, e);
+                                            conns_clone.lock().await.remove(&connection_id);
+                                            state_clone
+                                                .remove_peer_handle(
+                                                    server_id,
+                                                    connection_id.as_u32(),
+                                                )
+                                                .await;
+                                            state_clone
+                                                .close_connection_on_server(
+                                                    server_id,
+                                                    connection_id,
+                                                )
+                                                .await;
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("Modbus accept error: {}", e);
