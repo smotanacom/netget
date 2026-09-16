@@ -458,7 +458,7 @@ the protocol at all — and the mock never tells you, because the mock is script
   within 5s, for every protocol that needs no system library. *Why:* ten BLE examples were
   inert for a reason no shape check can see. *Effort:* M.
 
-- [ ] **Peer handles on every connection-oriented server.** **13 of 32 TCP servers have one**
+- [x] **Peer handles on every connection-oriented server.** **13 of 32 TCP servers have one**
   (re-derived 15 Sep; the earlier figure of 32 counted every `peer_support::` mention, including
   removal calls and prose). Missing: `cassandra`, `doh`, `dot`, `etcd`, `kafka`, `llmnr`, `mcp`,
   `mongodb`, `mssql`, `mysql`, `nfs`, `postgresql`, `proxy`, `smb`, `tls`, `tor_relay`,
@@ -756,3 +756,58 @@ eval see past it.
 3. That ratchet then caught **its own comment**: prose quoting `let _send_first = …` was
    reported as the defect it documents. Third time this repository has hit the
    matching-prose-about-the-pattern false positive.
+
+**16 September 2026 — the second wave, and the defects it surfaced.**
+
+Six agents closed the remaining tracker items; four more closed what those six found. The
+pattern worth noting is that **most of the value came from the second set** — the defects were
+surfaced by doing the work, not by planning it.
+
+- **78 orphaned `netget` processes** were found alive, accumulated over ten hours, holding ports
+  and quietly oversubscribing the machine *while load-sensitive test failures were being
+  investigated on it*. The harness now ties each child to its parent's lifetime with a pipe held
+  `FD_CLOEXEC` and a shell blocked on `read` — macOS has no `PR_SET_PDEATHSIG`, and every obvious
+  substitute fails because **the thing that would do the killing is the process that died**.
+
+  Why they accumulated *slowly*: a chatty netget usually died within a second because it
+  **panicked writing a status line to a stdout pipe with no reader**, while a quiet one never
+  wrote and never learned. Which orphans persisted was a lottery. That panic is now fixed — it
+  killed the servers doing work and spared the ones merely holding a port.
+
+- **`helpers/common.rs::cleanup_stray_processes` was `pkill -f "target/.*/netget"`** — the exact
+  command `CLAUDE.md` forbids, matching the maintainer's own `--mcp` session. **It had no
+  callers, which is the only reason it never fired.**
+
+- **A bare TCP connect to a USB/IP server cost two model calls.** Attach fired on `accept()` and
+  detach on close, so three silent connects plus an `OP_REQ_DEVLIST` cost seven. USB/IP
+  authenticates nothing. Now zero: the attach event hangs off the first *admitted*
+  `OP_REQ_IMPORT`, and deliberately not off `OP_REQ_DEVLIST`, which is what a scanner sends.
+
+- **`ipp` refused correctly and the peer never saw it.** Closing a socket with unread data sends
+  `RST`, which discards the response bytes already written — so all the care IPP takes to
+  express a refusal twice was spent on a message nobody received. It now drains before closing
+  (nginx's `lingering_close`). The test had to use a raw socket rather than `reqwest`: a hyper
+  client polls the read side while writing and can parse the 413 before the RST lands, which was
+  5 failures in 8 runs versus 5 in 5.
+
+- **The `reqwest` build cost was mis-diagnosed in `CLAUDE.md` for a long time.** Measured: not
+  the keychain, not the root store, not TLS at all — it is the **system-proxy probe** through
+  configd, 657 ms at 100 concurrent processes, 0.090 ms with `.no_proxy()`. And it was a
+  *correctness* bug too: with a proxy configured, loopback requests went to the proxy.
+
+  The agent sent to add a client cache **measured and refused it**, which was the right call.
+
+**Three items of my own measurement were wrong**, all the same shape — counting a token rather
+than the thing:
+
+| I said | Actually | Because |
+|---|---|---|
+| 19 TCP servers lack peer handles | 52 of 92 | anchored on the literal `TcpListener`; 62 servers bind through a helper |
+| 81 protocols lack a size bound | 59, of which ~10 need one | the pattern missed `MAX_COMMAND_LINE`, `BGP_MAX_MESSAGE_LEN`, … |
+| 5 orphaned netget processes | 78 | looked in one target dir |
+
+And one process failure worth keeping: **a "final sweep" I reported as running had died with
+`ld: write() failed, errno=28` and exited 0, having run zero tests.** Six concurrent
+`--all-features` target dirs is ~150 GiB and I started a seventh. `CLAUDE.md` warns about
+exactly this; the guard is to parse for a non-zero *target count*, never to grep only for
+failures.
