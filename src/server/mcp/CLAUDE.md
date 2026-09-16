@@ -245,3 +245,21 @@ TFTP evicted live transfers because "idle" was measured wrongly.
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
 `tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
 connection is never reported as idle.
+
+## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+
+This server is a **relay**. NetGet binds the public listener and `axum::serve` runs on a
+loopback-only ephemeral port behind it, so the connection the axum handler sees comes from the
+relay, not from the client — the cost `mod.rs` already states out loud. A peer handle over the
+public half would be a handle over a socket nothing interprets, and one over the backend half
+would address the relay.
+
+Even without the relay, `axum::serve` owns its own accept loop and its own framing, and
+`McpProtocol`'s actions are `ActionResult::Custom` shaped as JSON-RPC replies to a request that
+is in flight. There is no free-standing message to inject.
+
+The dashboard renders that as a dim button reading "this protocol cannot message a peer from
+here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
+source on every run, so if the mechanism changes the build fails rather than the file going
+quietly stale.

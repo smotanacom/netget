@@ -486,3 +486,25 @@ The client must then trust `./netget-ca.crt` (e.g. `curl --cacert ./netget-ca.cr
 - RFC 5246: TLS 1.2 (for HTTPS interception)
 - Common Log Format: https://en.wikipedia.org/wiki/Common_Log_Format
 - rcgen documentation: https://docs.rs/rcgen/
+
+## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+
+A proxy connection has two phases and neither admits an injected message.
+
+**During the tunnel** — the phase that lasts — the client socket is moved whole into
+`tokio::io::copy_bidirectional` (see `tunnel_bidirectional`). There is no write half left to
+share, and bytes injected into a CONNECT tunnel would arrive inside whatever protocol the tunnel
+carries, usually in the middle of a TLS record. The peer on the other end of that tunnel is not
+speaking to NetGet at all.
+
+**Before the tunnel**, during the request head, the socket is a plain `&mut TcpStream` that could
+be split — but an injected `ActionResult::Output` there is an unsolicited HTTP response on a
+connection the proxy is about to hand to another protocol, which is the same corruption a moment
+earlier. "Message this peer" on a forwarder is not a restricted version of messaging a peer; it
+is a category error.
+
+The dashboard renders that as a dim button reading "this protocol cannot message a peer from
+here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
+source on every run, so if the mechanism changes the build fails rather than the file going
+quietly stale.

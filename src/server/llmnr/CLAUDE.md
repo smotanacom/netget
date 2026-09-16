@@ -255,3 +255,27 @@ three different paths, and TCP framing works.
 **Unverified, and named in `metadata().notes`:** multicast reception on a real link (the test
 is unicast to loopback), interoperability with a Windows or systemd-resolved querier, the TCP
 transport against anything but itself, and IPv6 entirely.
+
+## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+
+LLMNR declares `.connectionless()` — correctly: one query, one answer, no session. That makes
+`AppState::cleanup_old_connections` evict its connection rows after ten seconds of silence **by
+design** (the sweep is what reaps them; see the comment on `serve_tcp_connection`). A peer handle
+would be registered against a row the sweep is about to remove, so the affordance would appear
+and vanish rather than being reliably there when a parked query needs answering.
+
+The TCP reply is also length-prefixed by the session (RFC 4795 §2.4 inherits RFC 1035 §4.2.2),
+exactly as `dot`'s is, so an injected `ActionResult::Output` would be written without its prefix
+and desynchronise the connection. And an LLMNR response carries the querier's transaction id, so
+there is no unsolicited message worth sending.
+
+**Worth knowing rather than fixing here:** a TCP querier whose event is parked for a human is
+swept out of `AppState` after ten seconds while its socket is alive, because `connectionless` is
+declared per protocol and LLMNR serves both transports from one declaration. The project
+`CLAUDE.md` describes exactly this hazard for the general case.
+
+The dashboard renders that as a dim button reading "this protocol cannot message a peer from
+here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
+source on every run, so if the mechanism changes the build fails rather than the file going
+quietly stale.

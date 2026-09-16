@@ -12,13 +12,21 @@ use actions::{MssqlProtocol, MSSQL_QUERY_EVENT};
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace, warn};
 
 /// TDS packet size we advertise in the login ENVCHANGE and honour when writing.
 const TDS_PACKET_SIZE: usize = 4096;
+
+/// The write half of one connection, shared between the session loop and the dashboard's
+/// peer-command task (`server::peer_support`).
+///
+/// Every handler below that used to take `&mut TcpStream` only ever *wrote* through it — the
+/// reads all happen in the top-level loop — so they take this instead. The mutex is what keeps
+/// an injected write from landing between the continuation packets of a TDS message.
+type SharedWrite = Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>;
 
 /// How long to wait for a peer's first TDS packet after it has connected.
 ///
@@ -235,12 +243,53 @@ impl MssqlHandler {
     }
 
     /// Run the connection, then always mark it closed in `AppState`.
+    ///
+    /// The socket is split here rather than inside the loop, because the write half has two
+    /// owners: the loop's own TDS replies and the dashboard's peer-command task. Registration
+    /// happens **before the first read** — TDS is client-speaks-first, so this server says
+    /// nothing until PRELOGIN arrives, and a `manual` rule can then park the login (or any
+    /// later batch) for minutes. The operator has to be able to reach, or hang up, a
+    /// connection that is waiting on their own answer.
     async fn handle_connection(self, stream: TcpStream) -> Result<()> {
         let server_id = self.server_id;
         let connection_id = self.connection_id;
         let app_state = self.app_state.clone();
 
-        let result = self.run(stream).await;
+        // Owning split, never a clone: the write half outlives this stack frame inside the
+        // peer-command task.
+        let (mut reader, write_half) = tokio::io::split(stream);
+        let write_half: SharedWrite = Arc::new(Mutex::new(write_half));
+
+        if let Some(server_id) = server_id {
+            let peer_rx = crate::server::peer_support::register_peer_channel(
+                &app_state,
+                server_id,
+                connection_id.as_u32(),
+            )
+            .await;
+            crate::server::peer_support::spawn_peer_command_task(
+                peer_rx,
+                self.protocol.clone(),
+                app_state.clone(),
+                server_id,
+                connection_id.as_u32(),
+                write_half.clone(),
+                self.status_tx.clone(),
+            );
+        }
+
+        let result = self.run_session(&mut reader, &write_half).await;
+
+        // Every exit path — EOF, a read timeout, a refused login, an attention, a write error,
+        // an injected disconnect — lands here, and none of them may `?` past it. Dropping the
+        // handle also ends the peer command task, which releases its clone of the write half;
+        // the explicit shutdown makes the FIN immediate rather than waiting on it.
+        if let Some(server_id) = server_id {
+            app_state
+                .remove_peer_handle(server_id, connection_id.as_u32())
+                .await;
+        }
+        let _ = write_half.lock().await.shutdown().await;
 
         if let Some(server_id) = server_id {
             app_state
@@ -251,7 +300,13 @@ impl MssqlHandler {
         result
     }
 
-    async fn run(self, mut stream: TcpStream) -> Result<()> {
+    /// The read/dispatch/reply loop. Reads come off `reader`; every write goes through the
+    /// shared `write_half`, which the peer-command task also holds.
+    async fn run_session(
+        &self,
+        reader: &mut ReadHalf<TcpStream>,
+        write_half: &SharedWrite,
+    ) -> Result<()> {
         info!("MSSQL connection established");
 
         // Set only by an `mssql_login_ack`. Nothing else in this loop may set it, so the
@@ -280,7 +335,7 @@ impl MssqlHandler {
             };
 
             // Read TDS packet header (8 bytes)
-            let header = match self.read_tds_header(&mut stream, read_timeout).await {
+            let header = match self.read_tds_header(reader, read_timeout).await {
                 Ok(h) => h,
                 Err(e) => {
                     debug!("Error reading TDS header: {}", e);
@@ -296,7 +351,7 @@ impl MssqlHandler {
             // Read packet data
             let data_len = header.length - 8;
             let mut data = vec![0u8; data_len as usize];
-            match tokio::time::timeout(read_timeout, stream.read_exact(&mut data)).await {
+            match tokio::time::timeout(read_timeout, reader.read_exact(&mut data)).await {
                 Ok(read) => read?,
                 Err(_) => {
                     debug!(
@@ -336,13 +391,13 @@ impl MssqlHandler {
                 0x12 => {
                     // Pre-Login
                     debug!("Received Pre-Login packet (length: {})", header.length);
-                    self.send_prelogin_response(&mut stream).await?;
+                    self.send_prelogin_response(write_half).await?;
                     debug!("Pre-Login response sent");
                 }
                 0x10 => {
                     // TDS7/TDS8 Login
                     debug!("Received Login packet");
-                    if !self.handle_login(&mut stream, &data).await? {
+                    if !self.handle_login(write_half, &data).await? {
                         // Refused. The ERROR token is already on the wire; TDS has no way to
                         // continue a session whose login failed, so close.
                         break;
@@ -359,7 +414,7 @@ impl MssqlHandler {
                             .to_string(),
                     );
                     self.send_error(
-                        &mut stream,
+                        write_half,
                         LOGIN_FAILED_ERROR,
                         "Login failed. The login is from an untrusted domain and cannot be \
                          used with Windows authentication.",
@@ -373,7 +428,7 @@ impl MssqlHandler {
                     debug!("Received SQL Batch packet");
                     let query = self.parse_sql_batch(&data)?;
                     debug!("SQL Query: {}", query);
-                    if self.handle_query(&mut stream, &query).await? {
+                    if self.handle_query(write_half, &query).await? {
                         break;
                     }
                 }
@@ -383,19 +438,19 @@ impl MssqlHandler {
                     let query = self.parse_rpc_request(&data)?;
                     if !query.is_empty() {
                         debug!("RPC Query: {}", query);
-                        if self.handle_query(&mut stream, &query).await? {
+                        if self.handle_query(write_half, &query).await? {
                             break;
                         }
                     } else {
                         debug!("RPC call without extractable query (ignoring)");
                         // Send empty result set for RPCs we can't parse
-                        self.send_empty_result(&mut stream).await?;
+                        self.send_empty_result(write_half).await?;
                     }
                 }
                 0x0E => {
                     // Bulk Load
                     debug!("Received Bulk Load (not implemented)");
-                    self.send_error(&mut stream, 40002, "Bulk load not supported", 16)
+                    self.send_error(write_half, 40002, "Bulk load not supported", 16)
                         .await?;
                 }
                 0x07 => {
@@ -405,7 +460,7 @@ impl MssqlHandler {
                 }
                 _ => {
                     debug!("Unknown TDS packet type: 0x{:02x}", header.packet_type);
-                    self.send_error(&mut stream, 40002, "Unknown packet type", 16)
+                    self.send_error(write_half, 40002, "Unknown packet type", 16)
                         .await?;
                 }
             }
@@ -417,11 +472,11 @@ impl MssqlHandler {
     /// Read TDS packet header (8 bytes)
     async fn read_tds_header(
         &self,
-        stream: &mut TcpStream,
+        reader: &mut ReadHalf<TcpStream>,
         read_timeout: std::time::Duration,
     ) -> Result<TdsHeader> {
         let mut header_bytes = [0u8; 8];
-        match tokio::time::timeout(read_timeout, stream.read_exact(&mut header_bytes)).await {
+        match tokio::time::timeout(read_timeout, reader.read_exact(&mut header_bytes)).await {
             Ok(read) => read?,
             Err(_) => {
                 anyhow::bail!(
@@ -442,7 +497,7 @@ impl MssqlHandler {
     }
 
     /// Send Pre-Login response
-    async fn send_prelogin_response(&self, stream: &mut TcpStream) -> Result<()> {
+    async fn send_prelogin_response(&self, write_half: &SharedWrite) -> Result<()> {
         // Simplified Pre-Login response
         // Version: 16.0.0.0 (SQL Server 2022)
         // Encryption: NOT_SUP (0x02)
@@ -484,7 +539,7 @@ impl MssqlHandler {
         // ThreadID: 0
         response.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
 
-        self.send_tds_packet(stream, 0x04, &response).await
+        self.send_tds_packet(write_half, 0x04, &response).await
     }
 
     /// Ask the model whether to admit this login, and refuse unless it says yes.
@@ -498,7 +553,7 @@ impl MssqlHandler {
     /// `mssql_login_ack`; a model rejection (`mssql_error_response`), an answer containing
     /// neither, and a backend failure all refuse — and are kept apart in the log, because the
     /// wire cannot distinguish them beyond the error number.
-    async fn handle_login(&self, stream: &mut TcpStream, data: &[u8]) -> Result<bool> {
+    async fn handle_login(&self, write_half: &SharedWrite, data: &[u8]) -> Result<bool> {
         let (username, database, app_name) = parse_login7(data);
 
         let event = Event::new(
@@ -538,7 +593,8 @@ impl MssqlHandler {
                                     "MSSQL login accepted for user '{}' (decision=model_accept)",
                                     username
                                 ));
-                                self.send_login_response_with_database(stream, db).await?;
+                                self.send_login_response_with_database(write_half, db)
+                                    .await?;
                                 return Ok(true);
                             }
                             "mssql_error" => {
@@ -555,7 +611,7 @@ impl MssqlHandler {
                                     "MSSQL login refused for user '{}' (decision=model_reject): {}",
                                     username, message
                                 ));
-                                self.send_error(stream, number, message, 14).await?;
+                                self.send_error(write_half, number, message, 14).await?;
                                 return Ok(false);
                             }
                             _ => {}
@@ -571,7 +627,7 @@ impl MssqlHandler {
                     username
                 ));
                 self.send_error(
-                    stream,
+                    write_half,
                     LOGIN_FAILED_ERROR,
                     &format!("Login failed for user '{}'.", username),
                     14,
@@ -591,7 +647,7 @@ impl MssqlHandler {
                     "MSSQL login refused for user '{}' (decision=fail_closed_llm_error)",
                     username
                 ));
-                self.send_error(stream, LOGIN_FAILED_ERROR, failure.text(), 14)
+                self.send_error(write_half, LOGIN_FAILED_ERROR, failure.text(), 14)
                     .await?;
                 Ok(false)
             }
@@ -603,7 +659,7 @@ impl MssqlHandler {
     /// Only reachable from `handle_login` once the model has explicitly accepted.
     async fn send_login_response_with_database(
         &self,
-        stream: &mut TcpStream,
+        write_half: &SharedWrite,
         db_name: &str,
     ) -> Result<()> {
         let mut response = Vec::new();
@@ -685,7 +741,7 @@ impl MssqlHandler {
         response.extend_from_slice(&[0x00, 0x00]); // CurCmd
         response.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // DoneRowCount
 
-        self.send_tds_packet(stream, 0x04, &response).await
+        self.send_tds_packet(write_half, 0x04, &response).await
     }
 
     /// Parse SQL Batch packet
@@ -786,7 +842,7 @@ impl MssqlHandler {
     /// Handle SQL query with LLM.
     ///
     /// Returns `true` when the LLM asked to close the connection.
-    async fn handle_query(&self, stream: &mut TcpStream, query: &str) -> Result<bool> {
+    async fn handle_query(&self, write_half: &SharedWrite, query: &str) -> Result<bool> {
         trace!("Calling LLM for MSSQL query: {}", query);
 
         // Create query event
@@ -847,7 +903,7 @@ impl MssqlHandler {
                                     .cloned()
                                     .unwrap_or_default();
 
-                                self.send_result_set(stream, columns, rows).await?;
+                                self.send_result_set(write_half, columns, rows).await?;
                                 responded = true;
                             }
                             "mssql_error" => {
@@ -871,7 +927,7 @@ impl MssqlHandler {
                                     "MSSQL query decision=model_reject error={} severity={}",
                                     error_number, severity
                                 ));
-                                self.send_error(stream, error_number, message, severity)
+                                self.send_error(write_half, error_number, message, severity)
                                     .await?;
                                 responded = true;
                             }
@@ -881,7 +937,7 @@ impl MssqlHandler {
                                     .and_then(|v| v.as_u64())
                                     .unwrap_or(0);
 
-                                self.send_done(stream, rows_affected).await?;
+                                self.send_done(write_half, rows_affected).await?;
                                 responded = true;
                             }
                             other => {
@@ -907,7 +963,7 @@ impl MssqlHandler {
                     if close_requested {
                         Log::new(Some(&self.status_tx))
                             .info("MSSQL query decision=model_close (closing without a result)");
-                        self.send_done(stream, 0).await?;
+                        self.send_done(write_half, 0).await?;
                     } else {
                         let message = crate::utils::WireFailure::Unavailable.prefixed_text();
                         Log::new(Some(&self.status_tx)).warn(format!(
@@ -915,7 +971,7 @@ impl MssqlHandler {
                             MSSQL_ERROR_GENERIC, message
                         ));
                         warn!("MSSQL: no response action produced for query {:?}", query);
-                        self.send_error(stream, MSSQL_ERROR_GENERIC, message, 16)
+                        self.send_error(write_half, MSSQL_ERROR_GENERIC, message, 16)
                             .await?;
                     }
                 }
@@ -948,7 +1004,7 @@ impl MssqlHandler {
                     "MSSQL query decision=fail_closed_llm_error ({}); replying error {number}: {message}",
                     if overloaded { "overloaded" } else { "unavailable" }
                 ));
-                self.send_error(stream, number, message, 16).await?;
+                self.send_error(write_half, number, message, 16).await?;
                 Ok(false)
             }
         }
@@ -964,7 +1020,7 @@ impl MssqlHandler {
     /// malformed tokens on the wire.
     async fn send_result_set(
         &self,
-        stream: &mut TcpStream,
+        write_half: &SharedWrite,
         columns: Vec<serde_json::Value>,
         rows: Vec<serde_json::Value>,
     ) -> Result<()> {
@@ -1031,11 +1087,11 @@ impl MssqlHandler {
         response.extend_from_slice(&(rows.len() as u64).to_le_bytes());
 
         debug!("Sending result set: {} bytes", response.len());
-        self.send_tds_packet(stream, 0x04, &response).await
+        self.send_tds_packet(write_half, 0x04, &response).await
     }
 
     /// Send empty result set (just DONE token)
-    async fn send_empty_result(&self, stream: &mut TcpStream) -> Result<()> {
+    async fn send_empty_result(&self, write_half: &SharedWrite) -> Result<()> {
         let mut response = Vec::new();
 
         // DONE token
@@ -1044,13 +1100,13 @@ impl MssqlHandler {
         response.extend_from_slice(&[0x00, 0x00]); // CurCmd
         response.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // DoneRowCount
 
-        self.send_tds_packet(stream, 0x04, &response).await
+        self.send_tds_packet(write_half, 0x04, &response).await
     }
 
     /// Send error response
     async fn send_error(
         &self,
-        stream: &mut TcpStream,
+        write_half: &SharedWrite,
         error_number: u32,
         message: &str,
         severity: u8,
@@ -1081,11 +1137,11 @@ impl MssqlHandler {
         response.extend_from_slice(&[0x00, 0x00]); // CurCmd
         response.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
 
-        self.send_tds_packet(stream, 0x04, &response).await
+        self.send_tds_packet(write_half, 0x04, &response).await
     }
 
     /// Send DONE token
-    async fn send_done(&self, stream: &mut TcpStream, rows_affected: u64) -> Result<()> {
+    async fn send_done(&self, write_half: &SharedWrite, rows_affected: u64) -> Result<()> {
         let mut response = Vec::new();
 
         response.push(0xFD); // DONE token
@@ -1095,7 +1151,7 @@ impl MssqlHandler {
         response.extend_from_slice(&0x00C1u16.to_le_bytes()); // CurCmd
         response.extend_from_slice(&rows_affected.to_le_bytes());
 
-        self.send_tds_packet(stream, 0x04, &response).await
+        self.send_tds_packet(write_half, 0x04, &response).await
     }
 
     /// Send a TDS message, split across packets of the negotiated size.
@@ -1104,44 +1160,36 @@ impl MssqlHandler {
     /// emit a packet whose declared length was far shorter than its payload. TDS solves this
     /// with continuation packets: every packet but the last carries status 0x00, the last
     /// carries 0x01 (EOM).
+    ///
+    /// The whole message is framed first and written under **one** lock on the shared write
+    /// half. Locking per packet would let an injected write from the dashboard's peer task
+    /// land between two continuation packets of the same message, which no TDS client can
+    /// resynchronise from.
     async fn send_tds_packet(
         &self,
-        stream: &mut TcpStream,
+        write_half: &SharedWrite,
         packet_type: u8,
         data: &[u8],
     ) -> Result<()> {
         let max_payload = TDS_PACKET_SIZE - 8;
         let mut packet_id: u8 = 1;
         let mut offset = 0;
+        let mut framed: Vec<u8> = Vec::with_capacity(data.len() + 8);
+        let mut packets: u64 = 0;
 
         loop {
             let end = std::cmp::min(offset + max_payload, data.len());
             let chunk = &data[offset..end];
             let is_last = end == data.len();
 
-            let mut packet = Vec::with_capacity(8 + chunk.len());
-            packet.push(packet_type); // Type
-            packet.push(if is_last { 0x01 } else { 0x00 }); // Status: EOM on the last packet
-            packet.extend_from_slice(&((8 + chunk.len()) as u16).to_be_bytes()); // Length
-            packet.extend_from_slice(&[0x00, 0x00]); // SPID
-            packet.push(packet_id); // PacketID
-            packet.push(0x00); // Window
-            packet.extend_from_slice(chunk);
-
-            stream.write_all(&packet).await?;
-
-            if let Some(server_id) = self.server_id {
-                self.app_state
-                    .update_connection_stats(
-                        server_id,
-                        self.connection_id,
-                        None,
-                        Some(packet.len() as u64),
-                        None,
-                        Some(1),
-                    )
-                    .await;
-            }
+            framed.push(packet_type); // Type
+            framed.push(if is_last { 0x01 } else { 0x00 }); // Status: EOM on the last packet
+            framed.extend_from_slice(&((8 + chunk.len()) as u16).to_be_bytes()); // Length
+            framed.extend_from_slice(&[0x00, 0x00]); // SPID
+            framed.push(packet_id); // PacketID
+            framed.push(0x00); // Window
+            framed.extend_from_slice(chunk);
+            packets += 1;
 
             if is_last {
                 break;
@@ -1150,9 +1198,53 @@ impl MssqlHandler {
             packet_id = packet_id.wrapping_add(1).max(1);
         }
 
-        stream.flush().await?;
+        write_counted(
+            write_half,
+            &framed,
+            packets,
+            &self.app_state,
+            self.server_id,
+            self.connection_id,
+        )
+        .await?;
         Ok(())
     }
+}
+
+/// Write one framed TDS message to the shared write half and count it.
+///
+/// `packets` is the number of TDS packets inside `data`, which is why this takes a count
+/// rather than assuming one: a message over [`TDS_PACKET_SIZE`] is several packets in a
+/// single write, and the rail's `↑` packet counter has always counted TDS packets.
+///
+/// The guard is dropped before `update_connection_stats`, so nothing awaits `AppState` — let
+/// alone an LLM call — while holding the write half.
+async fn write_counted(
+    write_half: &SharedWrite,
+    data: &[u8],
+    packets: u64,
+    app_state: &AppState,
+    server_id: Option<crate::state::ServerId>,
+    connection_id: ConnectionId,
+) -> std::io::Result<()> {
+    {
+        let mut writer = write_half.lock().await;
+        writer.write_all(data).await?;
+        writer.flush().await?;
+    }
+    if let Some(server_id) = server_id {
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                None,
+                Some(data.len() as u64),
+                None,
+                Some(packets),
+            )
+            .await;
+    }
+    Ok(())
 }
 
 /// TDS packet header

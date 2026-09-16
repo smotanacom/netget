@@ -108,8 +108,45 @@ Connections tracked in ServerInstance state:
   `ProtocolConnectionInfo::Smb { authenticated, username, session_id, open_files }` variant;
   no such variant exists (`ProtocolConnectionInfo` is a generic JSON wrapper), the connection
   is registered with `ProtocolConnectionInfo::empty()`, and the update site is a `TODO`.
-- Stats: bytes_sent, bytes_received, packets_sent, packets_received
+- Stats: bytes_sent, bytes_received, packets_sent, packets_received. One SMB2 message is read
+  in two places — the 64-byte header in the session loop, the body the header implies inside
+  `handle_smb2_command` — and only the header used to be counted, so a 64 KiB WRITE showed as
+  64 bytes received. `SmbReader` accumulates both and the loop flushes them.
 - Status updated on connection close
+
+### Dashboard injection (peer handle)
+
+Every connection registers a peer handle (`server::peer_support`) **before its first read**.
+SMB2 is client-speaks-first, so a manual `*` rule parks the very first NEGOTIATE for a human —
+the operator has to be able to reach, or hang up, a peer that has said nothing yet. The socket
+is split with `tokio::io::split` and the write half shared as an `Arc<Mutex<WriteHalf>>` between
+the session and the peer-command task, so an injected write cannot interleave with a response
+half-way through a frame. The handle is removed on every exit path, including the error ones.
+
+**What an injected action can and cannot do here, honestly:**
+
+| Action | Effect |
+|---|---|
+| `close_connection` | Half-closes the write half. This is `[ disconnect this peer ]`, and it works. |
+| any wire verb (`smb_read_file`, `smb_list_directory`, …) | Executes and **writes nothing**. The outcome is `ClientSendOutcome::Executed`, not `Sent`. |
+
+The second row is a property of SMB2, not a gap in the plumbing: every response echoes the
+request's MessageId, TreeId and SessionId, so a response cannot be encoded without a request to
+correlate with. `SmbProtocol::execute_action` therefore returns an `ActionResult::Custom` for
+every wire verb and the server's own loop is what turns it into a frame against the request in
+hand — `grep -c 'ActionResult::Output' src/server/smb/actions.rs` is 0. Injected from outside a
+request there is nothing to correlate with. `[ message this peer ]` on an SMB peer is
+consequently of limited use; `[ disconnect this peer ]` is the affordance that matters, which is
+exactly the case where a parked request leaves an operator deciding about a connection they
+would otherwise have no way to reach.
+
+`close_connection` is the one action `execute_action` resolves itself, and it is deliberately
+**not** advertised in `get_sync_actions()` or on `smb_operation` — adding it there would change
+the model's tool list. The dashboard injects a bare `{"type": "close_connection"}` whatever a
+protocol calls its own close verb, so the arm has to exist for the button to do anything.
+
+`tests/server/smb/peer_inject_test.rs` pins both rows, and that the session's own exit path
+releases the handle, with zero LLM calls.
 
 ### Per-Connection State
 

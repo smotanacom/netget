@@ -261,6 +261,36 @@ impl TlsServer {
                                     },
                                 );
 
+                                // Peer messaging: the dashboard's "message this peer" /
+                                // "disconnect this peer" inject actions into THIS connection
+                                // through the same executor the LLM path uses, and the bytes
+                                // go out over the same `Arc<Mutex<WriteHalf<TlsStream>>>` the
+                                // session writes through - so an injected `send_tls_data` is
+                                // encrypted by rustls exactly like a modelled one.
+                                //
+                                // Registered here, before the banner task and before the
+                                // reader, for the same reason the connection map entry is:
+                                // a `manual` rule can park the very first record for a human
+                                // (300s by default), and that is precisely the window in
+                                // which an operator needs to reach the peer. Registering it
+                                // from inside the reader would lose the same race the
+                                // comment above describes.
+                                let peer_rx = crate::server::peer_support::register_peer_channel(
+                                    &app_state_clone,
+                                    server_id,
+                                    connection_id.as_u32(),
+                                )
+                                .await;
+                                crate::server::peer_support::spawn_peer_command_task(
+                                    peer_rx,
+                                    protocol_clone.clone(),
+                                    app_state_clone.clone(),
+                                    server_id,
+                                    connection_id.as_u32(),
+                                    write_half_arc.clone(),
+                                    status_tx_clone.clone(),
+                                );
+
                                 // Send the greeting banner, if this server was asked for one.
                                 if send_first {
                                     let llm_client_for_conn = llm_client_clone.clone();
@@ -487,6 +517,19 @@ impl TlsServer {
                                                 }
                                             }
                                         }
+
+                                        // Every exit from the read loop — EOF, the idle
+                                        // deadline, a read error — lands here, so the handle
+                                        // goes away with the connection rather than leaving
+                                        // the rail offering a dead peer. The peer-command
+                                        // task ends when the handle is dropped, releasing its
+                                        // clone of the write half. Idempotent with
+                                        // `peer_support`'s own close path, which runs when an
+                                        // injected `close_connection` half-closes from
+                                        // outside this task.
+                                        app_state_for_read
+                                            .remove_peer_handle(server_id, connection_id.as_u32())
+                                            .await;
                                     })
                                     .await;
                             })
@@ -649,6 +692,13 @@ impl TlsServer {
                         }
                     }
                     connections.lock().await.remove(&connection_id);
+                    // The reader task is still parked in `read()` and will only notice once
+                    // the peer closes its own side, so retire the peer handle here rather
+                    // than leaving the rail offering a connection this task has already
+                    // ended. Idempotent with the reader's own removal.
+                    app_state
+                        .remove_peer_handle(server_id, connection_id.as_u32())
+                        .await;
                     app_state
                         .close_connection_on_server(server_id, connection_id)
                         .await;
@@ -973,6 +1023,13 @@ impl TlsServer {
                         }
                     }
                     connections.lock().await.remove(&connection_id);
+                    // The reader task is still parked in `read()` and will only notice once
+                    // the peer closes its own side, so retire the peer handle here rather
+                    // than leaving the rail offering a connection this task has already
+                    // ended. Idempotent with the reader's own removal.
+                    app_state
+                        .remove_peer_handle(server_id, connection_id.as_u32())
+                        .await;
                     app_state
                         .close_connection_on_server(server_id, connection_id)
                         .await;

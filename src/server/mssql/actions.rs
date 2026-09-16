@@ -226,6 +226,12 @@ impl Server for MssqlProtocol {
                 })
             }
             "close_this_connection" => Ok(ActionResult::CloseConnection),
+            // Deliberately not advertised (it is in neither `get_sync_actions()` nor any
+            // event's action list, so the model's tool list is unchanged): the dashboard's
+            // `[ disconnect this peer ]` injects a bare `{"type": "close_connection"}` through
+            // the peer handle, and without this arm that button fails as an unknown action.
+            // `tcp` accepts both names for the same reason.
+            "close_connection" => Ok(ActionResult::CloseConnection),
             _ => Err(anyhow::anyhow!("Unknown MSSQL action: {}", action_type)),
         }
     }

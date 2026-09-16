@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::error;
 
 use crate::llm::action_helper::call_llm;
@@ -27,6 +27,12 @@ use actions::TorrentTrackerProtocol;
 /// was no bound at all, so a peer that connected and said nothing held a task and a
 /// connection-map entry indefinitely — which is a slow-loris for free.
 const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The connection's write half, shared between the session and the peer-command task.
+///
+/// Both write to the same socket, so the lock is what keeps an injected `[ send message ]`
+/// from interleaving its bytes with the announce reply the session is in the middle of.
+type SharedWrite = Arc<Mutex<tokio::io::WriteHalf<tokio::net::TcpStream>>>;
 
 /// BitTorrent Tracker server
 pub struct TorrentTrackerServer;
@@ -127,6 +133,13 @@ impl TorrentTrackerServer {
         Ok(local_addr)
     }
 
+    /// Set up the connection, run one announce/scrape exchange, then tear everything down.
+    ///
+    /// The session body lives in [`Self::run_session`] so that **every** exit path — a read
+    /// timeout, a malformed request, a write error, an LLM failure, an injected disconnect —
+    /// comes back through this function's teardown. An early `?` out of the session would
+    /// otherwise leave a peer handle registered against a socket that is gone.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_connection(
         stream: tokio::net::TcpStream,
         peer_addr: SocketAddr,
@@ -138,9 +151,112 @@ impl TorrentTrackerServer {
         server_id: crate::state::ServerId,
         protocol: Arc<TorrentTrackerProtocol>,
     ) -> Result<()> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
-        let (mut read_half, mut write_half) = tokio::io::split(stream);
+        let (read_half, write_half) = tokio::io::split(stream);
+        let write_half: SharedWrite = Arc::new(Mutex::new(write_half));
+
+        // Peer messaging: the dashboard's "message this peer" / "disconnect this peer" inject
+        // actions into THIS connection through the same executor the LLM path uses.
+        //
+        // Registered before the first read, because that is the window that matters here. A
+        // tracker says nothing until the announce arrives, and a `manual` rule parks that
+        // announce for a human (`src/state/intercepts.rs`, 300s by default) — so for almost
+        // the whole life of a parked connection the peer has spoken and this server has not.
+        // Registering after the exchange would offer the affordance only once it was useless.
+        let peer_rx = crate::server::peer_support::register_peer_channel(
+            &app_state,
+            server_id,
+            connection_id.as_u32(),
+        )
+        .await;
+        crate::server::peer_support::spawn_peer_command_task(
+            peer_rx,
+            protocol.clone(),
+            app_state.clone(),
+            server_id,
+            connection_id.as_u32(),
+            write_half.clone(),
+            status_tx.clone(),
+        );
+
+        let result = Self::run_session(
+            read_half,
+            &write_half,
+            peer_addr,
+            connection_id,
+            llm_client,
+            &app_state,
+            &status_tx,
+            server_id,
+            &protocol,
+        )
+        .await;
+
+        // Dropping the handle also ends the peer command task, which releases its clone of
+        // the write half; the explicit shutdown makes the FIN immediate rather than waiting
+        // on it.
+        app_state
+            .remove_peer_handle(server_id, connection_id.as_u32())
+            .await;
+        let _ = write_half.lock().await.shutdown().await;
+
+        // The connection entry was never closed at all before: a tracker connection serves
+        // one request and ends, but the row stayed Active for the life of the server, and
+        // torrent_tracker is not `.connectionless()`, so the idle sweep never collected it
+        // either. Every peer this server ever served accumulated as a live row.
+        app_state
+            .close_connection_on_server(server_id, connection_id)
+            .await;
+        let _ = status_tx.send("__UPDATE_UI__".to_string());
+
+        result
+    }
+
+    /// Write to the connection's shared write half and count the bytes.
+    ///
+    /// The guard is dropped before the stats update so nothing awaits `AppState`'s lock while
+    /// holding the socket.
+    async fn write_counted(
+        write_half: &SharedWrite,
+        data: &[u8],
+        app_state: &AppState,
+        server_id: crate::state::ServerId,
+        connection_id: ConnectionId,
+    ) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        {
+            let mut writer = write_half.lock().await;
+            writer.write_all(data).await?;
+            writer.flush().await?;
+        }
+        app_state
+            .update_connection_stats(
+                server_id,
+                connection_id,
+                None,
+                Some(data.len() as u64),
+                None,
+                Some(1),
+            )
+            .await;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_session(
+        mut read_half: tokio::io::ReadHalf<tokio::net::TcpStream>,
+        write_half: &SharedWrite,
+        peer_addr: SocketAddr,
+        connection_id: ConnectionId,
+        llm_client: OllamaClient,
+        app_state: &Arc<AppState>,
+        status_tx: &mpsc::UnboundedSender<String>,
+        server_id: crate::state::ServerId,
+        protocol: &Arc<TorrentTrackerProtocol>,
+    ) -> Result<()> {
+        use tokio::io::AsyncReadExt;
+
         let mut buffer = vec![0u8; 8192];
 
         // Read HTTP request, bounded.
@@ -154,19 +270,20 @@ impl TorrentTrackerServer {
         {
             Ok(result) => result?,
             Err(_) => {
-                Log::new(Some(&status_tx)).warn(format!(
+                Log::new(Some(status_tx)).warn(format!(
                     "BitTorrent Tracker {} sent no request within {}s, closing \
                      decision=fail_closed_read_timeout",
                     peer_addr,
                     REQUEST_READ_TIMEOUT.as_secs()
                 ));
                 let body = b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                let _ = write_half.write_all(body).await;
+                let _ = Self::write_counted(write_half, body, app_state, server_id, connection_id)
+                    .await;
                 return Ok(());
             }
         };
         if n == 0 {
-            Log::new(Some(&status_tx)).debug("BitTorrent Tracker connection closed by peer");
+            Log::new(Some(status_tx)).debug("BitTorrent Tracker connection closed by peer");
             return Ok(());
         }
 
@@ -187,15 +304,14 @@ impl TorrentTrackerServer {
             .await;
 
         // DEBUG: Log summary
-        Log::new(Some(&status_tx)).debug(format!(
+        Log::new(Some(status_tx)).debug(format!(
             "BitTorrent Tracker received {} bytes from {}",
             n, peer_addr
         ));
 
         // TRACE: Log full request
         if let Ok(request_str) = std::str::from_utf8(&request_data) {
-            Log::new(Some(&status_tx))
-                .trace(format!("BitTorrent Tracker request: {}", request_str));
+            Log::new(Some(status_tx)).trace(format!("BitTorrent Tracker request: {}", request_str));
         }
 
         // Parse HTTP request. A malformed request used to propagate out of this function
@@ -205,25 +321,15 @@ impl TorrentTrackerServer {
         let (request_type, request_params) = match Self::parse_http_request(&request_str) {
             Ok(parsed) => parsed,
             Err(e) => {
-                Log::new(Some(&status_tx)).warn(format!("BitTorrent Tracker bad request: {}", e));
+                Log::new(Some(status_tx)).warn(format!("BitTorrent Tracker bad request: {}", e));
                 let body =
                     b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                write_half.write_all(body).await?;
-                app_state
-                    .update_connection_stats(
-                        server_id,
-                        connection_id,
-                        None,
-                        Some(body.len() as u64),
-                        None,
-                        Some(1),
-                    )
-                    .await;
+                Self::write_counted(write_half, body, app_state, server_id, connection_id).await?;
                 return Ok(());
             }
         };
 
-        Log::new(Some(&status_tx))
+        Log::new(Some(status_tx))
             .debug(format!("BitTorrent Tracker request type: {}", request_type));
 
         // Create event for LLM
@@ -245,7 +351,7 @@ impl TorrentTrackerServer {
         };
         let event = Event::new(event_type, serde_json::json!(request_params));
 
-        Log::new(Some(&status_tx)).debug(format!(
+        Log::new(Some(status_tx)).debug(format!(
             "BitTorrent Tracker calling LLM for {} request",
             request_type
         ));
@@ -253,7 +359,7 @@ impl TorrentTrackerServer {
         // Call LLM
         match call_llm(
             &llm_client,
-            &app_state,
+            app_state,
             server_id,
             Some(connection_id),
             &event,
@@ -264,10 +370,10 @@ impl TorrentTrackerServer {
             Ok(execution_result) => {
                 // Display messages from LLM
                 for message in &execution_result.messages {
-                    Log::new(Some(&status_tx)).info(format!("{}", message));
+                    Log::new(Some(status_tx)).info(format!("{}", message));
                 }
 
-                Log::new(Some(&status_tx)).debug(format!(
+                Log::new(Some(status_tx)).debug(format!(
                     "BitTorrent Tracker got {} protocol results",
                     execution_result.protocol_results.len()
                 ));
@@ -285,19 +391,16 @@ impl TorrentTrackerServer {
                 for protocol_result in execution_result.protocol_results {
                     if let Some(output_data) = protocol_result.get_all_output().first() {
                         sent_any = true;
-                        write_half.write_all(output_data).await?;
-                        app_state
-                            .update_connection_stats(
-                                server_id,
-                                connection_id,
-                                None,
-                                Some(output_data.len() as u64),
-                                None,
-                                Some(1),
-                            )
-                            .await;
+                        Self::write_counted(
+                            write_half,
+                            output_data,
+                            app_state,
+                            server_id,
+                            connection_id,
+                        )
+                        .await?;
 
-                        Log::new(Some(&status_tx)).debug(format!(
+                        Log::new(Some(status_tx)).debug(format!(
                             "BitTorrent Tracker sent {} bytes to {}",
                             output_data.len(),
                             peer_addr
@@ -305,14 +408,14 @@ impl TorrentTrackerServer {
 
                         // TRACE: Log full response
                         if let Ok(response_str) = std::str::from_utf8(output_data) {
-                            Log::new(Some(&status_tx))
+                            Log::new(Some(status_tx))
                                 .trace(format!("BitTorrent Tracker response: {}", response_str));
                         }
                     }
                 }
 
                 if sent_any {
-                    Log::new(Some(&status_tx)).debug(format!(
+                    Log::new(Some(status_tx)).debug(format!(
                         "BitTorrent Tracker {} from {} decision={}",
                         request_type,
                         peer_addr,
@@ -327,16 +430,16 @@ impl TorrentTrackerServer {
                     // request/response exchange, so silence leaves the client waiting out
                     // its own timeout and then marking this tracker dead — answer with a
                     // category instead.
-                    Log::new(Some(&status_tx)).warn(format!(
+                    Log::new(Some(status_tx)).warn(format!(
                         "BitTorrent Tracker {} from {} decision=fail_closed_no_action",
                         request_type, peer_addr
                     ));
                     Self::write_failure_response(
-                        &mut write_half,
+                        write_half,
                         WireFailure::Unavailable,
                         connection_id,
                         server_id,
-                        &app_state,
+                        app_state,
                     )
                     .await?;
                 }
@@ -346,17 +449,17 @@ impl TorrentTrackerServer {
                 // gets a status code and a fixed category string — never the backend URL,
                 // the model name or an `anyhow` context chain.
                 let failure = WireFailure::classify(&e);
-                Log::new(Some(&status_tx)).error(format!(
+                Log::new(Some(status_tx)).error(format!(
                     "BitTorrent Tracker {} from {} decision=fail_closed_llm_error \
                      category={:?}: {}",
                     request_type, peer_addr, failure, e
                 ));
                 Self::write_failure_response(
-                    &mut write_half,
+                    write_half,
                     failure,
                     connection_id,
                     server_id,
-                    &app_state,
+                    app_state,
                 )
                 .await?;
             }
@@ -378,14 +481,12 @@ impl TorrentTrackerServer {
     /// defines and the only thing a BitTorrent client will actually display. Its text is
     /// [`WireFailure::text`], a `&'static str`.
     async fn write_failure_response(
-        write_half: &mut tokio::io::WriteHalf<tokio::net::TcpStream>,
+        write_half: &SharedWrite,
         failure: WireFailure,
         connection_id: ConnectionId,
         server_id: crate::state::ServerId,
         app_state: &Arc<AppState>,
     ) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
-
         let mut body_dict = std::collections::HashMap::new();
         body_dict.insert(
             b"failure reason".to_vec(),
@@ -410,17 +511,7 @@ impl TorrentTrackerServer {
 
         let mut response = head.into_bytes();
         response.extend_from_slice(&body);
-        write_half.write_all(&response).await?;
-        app_state
-            .update_connection_stats(
-                server_id,
-                connection_id,
-                None,
-                Some(response.len() as u64),
-                None,
-                Some(1),
-            )
-            .await;
+        Self::write_counted(write_half, &response, app_state, server_id, connection_id).await?;
         Ok(())
     }
 

@@ -8,9 +8,20 @@ on:
   pull_request:
   push:
     branches: [master]
+  # Nightly, for `single-feature-full` only - it checks all 133 standalone-buildable
+  # protocol features one at a time and takes hours, far past what a PR gate can hold.
+  # Every other job carries `if: github.event_name != 'schedule'` so the nightly run is
+  # that one job and nothing else.
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
+# The event name is part of the group on purpose. Without it the nightly run and a
+# push-to-master run share `ci-CI-refs/heads/master`, and `cancel-in-progress` makes each
+# kill the other - a push would abort a multi-hour single-feature-full run partway through
+# and report nothing.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -41,10 +52,36 @@ env:
     jsonrpc,saml,saml-idp,saml-sp,wireguard,ipsec,bgp,rip,bitcoin,mcp,mcp-stdio,
     mcp-http,xmlrpc,tor,vnc,openapi,openid,git,mercurial,torrent-tracker,
     torrent-dht,torrent-peer,webdav,nfs,smb,mdns,ipp,rss,dc,webrtc,amqp
+  # The two halves of the standalone-build check (`single-feature` /
+  # `single-feature-full`). Space-separated, one feature per loop iteration. Together
+  # they are the complete set of features verified to build with
+  # `--no-default-features --features <f> --tests` and nothing else - see the long
+  # comment on the `single-feature` job for what that catches and what is excluded.
+  #
+  # CORE is the blocking half: the transports and the protocols most likely to be
+  # touched, plus one representative of each dependency shape that has broken before
+  # (h2, quinn+rustls, tungstenite, rasn, rusqlite, rmcp). Sized to the runner's
+  # 30-minute timeout, not to importance - REST is checked nightly.
+  SINGLE_FEATURE_CORE: >-
+    tcp udp dns http http2 redis tls telnet ftp ldap syslog ntp tftp socks5 mqtt quic
+    websocket smtp imap postgresql snmp whois sqlite mcp-stdio
+  # The other 109. Nightly only.
+  SINGLE_FEATURE_REST: >-
+    socket_file named_pipe pty stdio pypi maven icmp ndp dhcpv6 tuntap rawip gtp m3ua
+    vrrp hsrp wol dc dot doh dhcp bootp nfc nats stomp ident gopher finger ssdp llmnr
+    netbios-ns igmp ssh ssh-agent svn irc xmpp mdns mysql mssql snowflake db2 ipp
+    mongodb-server mongodb memcached radius rss proxy http_proxy webdav nfs cassandra
+    smb stun turn webrtc sip rtp rtsp hls pop3 nntp modbus coap amqp elasticsearch
+    couchdb yarn spark dynamo dynamodb s3 sqs npm oci-registry openai ollama oauth2
+    jsonrpc saml-idp saml-sp saml wireguard openvpn ipsec bgp ospf rip bitcoin mcp
+    zookeeper xmlrpc tor vnc reverse-shell rdp openapi openid openidconnect kubernetes
+    kubernetes-server git mercurial kafka http3 torrent-tracker torrent-dht
+    torrent-peer mcp-http
 
 jobs:
   lint:
     name: Lint
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
@@ -118,6 +155,7 @@ jobs:
   # Until then this exists so the number is visible instead of unknown.
   clippy-wide:
     name: Clippy (wide feature set, advisory)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     continue-on-error: true
@@ -166,6 +204,7 @@ jobs:
   # several unrelated protocols at once.
   ratchets:
     name: Whole-tree ratchets
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
@@ -200,6 +239,7 @@ jobs:
 
   registry-audit:
     name: Registry-wide audits (--all-features, advisory)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     continue-on-error: true
@@ -335,6 +375,7 @@ jobs:
 
   test:
     name: Test
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -376,6 +417,7 @@ jobs:
 
   single-feature:
     name: Single-feature build
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -402,22 +444,113 @@ jobs:
       # visibly. Three test targets were found in exactly that state (stale arity
       # after a parameter was added, an E0282 on an all-feature-gated vec).
       #
-      # One job looping rather than a 14-way matrix: the iterations share a single
-      # cargo cache and target dir, so later features reuse the earlier builds'
-      # dependencies instead of each matrix leg paying for its own cold start.
+      # One job looping rather than a matrix: the iterations share a single cargo cache
+      # and target dir, so later features reuse the earlier builds' dependencies instead
+      # of each matrix leg paying for its own cold start. At this many features that is
+      # the difference between a job that fits in the runner's timeout and one that does
+      # not.
       #
-      # Every feature listed here was verified to build standalone. Keep it that way:
+      # WHY THIS IS SPLIT IN TWO. 133 features were verified; a `cargo check --tests` run
+      # is ~20s each locally with a warm cache and considerably more on a 2-core runner,
+      # so the full list does not fit in 30 minutes and never will. SINGLE_FEATURE_CORE
+      # is the blocking half, sized to the timeout; `single-feature-full` below runs
+      # CORE + REST nightly with hours to spare. A regression in REST is therefore caught
+      # within a day rather than on the PR - which is the trade the timeout forces, and
+      # is still infinitely better than the 14 features this job checked before.
+      #
+      # Every feature in either list was verified to build standalone. Keep it that way:
       # add a protocol only after checking it, and only if it needs no system library
-      # this runner lacks (protoc, libpcap, dbus, libusb, pcsclite - see CLAUDE.md).
+      # this runner lacks.
+      #
+      # WHY THIS JOB INSTALLS NO SYSTEM LIBRARIES, unlike registry-audit. The excluded
+      # features are not merely "unbuilt here" - they are unverifiable:
+      #   * libpcap    - datalink, arp, isis, lldp, cdp, stp, eapol. Note this is SEVEN
+      #                  features, not the three CLAUDE.md's table names: lldp, cdp, stp
+      #                  and eapol all carry `dep:pcap` too. Derive the set from
+      #                  Cargo.toml, not from that table.
+      #   * dbus/bluer - the 18 bluetooth-ble* features. Verifying these on a developer
+      #                  machine proves nothing: ble-peripheral-rust uses CoreBluetooth on
+      #                  macOS and bluer/D-Bus on Linux, so the code that would compile in
+      #                  CI is code no local build ever sees.
+      #   * pcsclite   - nfc-client (plain `nfc` needs none and IS checked)
+      #   * protoc     - grpc, etcd (build.rs compiles the etcd protos). NOT zookeeper:
+      #                  CLAUDE.md's table lists it under protoc and that has never been
+      #                  true - zookeeper-async pulls no protobuf build step, it is in
+      #                  SINGLE_FEATURE_REST, and it builds standalone.
+      #   * libusb     - the 7 usb* features, per CLAUDE.md
+      #   * libsmbclient - smb-client
+      #   * Linux-only - `can` (socketcan) cannot be built on a macOS dev machine at all
+      # Adding an apt step would let some of those compile, but this job's rule is that a
+      # feature is listed only after somebody built it, and for these nobody can. They are
+      # not unwatched: registry-audit builds --all-features with those libraries. What it
+      # cannot see is an under-declared *feature*, so that gap is real and stated here
+      # rather than papered over with an install step and an unverified list.
       - name: cargo check --tests, one protocol feature at a time
         shell: bash
         run: |
           set -uo pipefail
-          FEATURES="tcp udp dns http redis tls telnet ftp ldap syslog ntp tftp socks5 mqtt"
+          FEATURES="$SINGLE_FEATURE_CORE"
           status=0
           failed=""
           for f in $FEATURES; do
             echo "::group::cargo check --tests --features $f"
+            if cargo check --locked --no-default-features --features "$f" --tests; then
+              echo "OK: $f builds standalone"
+            else
+              echo "::error::Feature '$f' does not build standalone (--no-default-features --features $f --tests)."
+              failed="$failed $f"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$status" != "0" ]; then
+            echo "::error::Under-declared feature(s):$failed"
+            echo "Each listed feature builds under --all-features but not on its own, which means"
+            echo "its Cargo.toml entry is missing a dependency that another feature happens to"
+            echo "supply. Add the missing optional dep to that feature's list in Cargo.toml."
+          fi
+          exit $status
+
+  # The other 109 features, nightly. Same check, same rule, same failure message - the
+  # only differences are the list and that it has time to finish. `if:` restricts it to
+  # the cron and to a manual dispatch, so it never runs on a PR; every other job in this
+  # file carries the mirror-image `if` so the nightly run is this job alone.
+  #
+  # Dispatch it by hand after anything that touches Cargo.toml's [features] table or a
+  # widely-shared module - that is when a dependency goes missing from exactly one
+  # feature and nothing else notices.
+  single-feature-full:
+    name: Single-feature build (all 133, nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    # Generous on purpose: 133 iterations, each compiling the lib and ~160 test targets.
+    # A cold cache is the worst case and this is the job that pays for it.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # A cache key distinct from `single-feature`: this job's target dir accumulates
+      # every feature's dependency graph, which is far larger than the core's and would
+      # otherwise evict it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: single-feature-full
+
+      - name: cargo check --tests, one protocol feature at a time (full list)
+        shell: bash
+        run: |
+          set -uo pipefail
+          FEATURES="$SINGLE_FEATURE_CORE $SINGLE_FEATURE_REST"
+          total=$(echo $FEATURES | wc -w | tr -d ' ')
+          echo "::notice::Checking $total features standalone."
+          status=0
+          failed=""
+          n=0
+          for f in $FEATURES; do
+            n=$((n + 1))
+            echo "::group::[$n/$total] cargo check --tests --features $f"
             if cargo check --locked --no-default-features --features "$f" --tests; then
               echo "OK: $f builds standalone"
             else
@@ -442,6 +575,7 @@ jobs:
   # for the web, and only a build on that target can show it still does.
   wasm-web:
     name: Browser build
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -473,6 +607,7 @@ jobs:
 
   orphaned-tests:
     name: Orphaned test check
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:

@@ -351,3 +351,26 @@ Excellent scripting candidate:
 - [hickory-proto Documentation](https://docs.rs/hickory-proto/latest/hickory_proto/)
 - [tokio-rustls Documentation](https://docs.rs/tokio-rustls/latest/tokio_rustls/)
 - [rustls Documentation](https://docs.rs/rustls/latest/rustls/)
+
+## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+
+Two reasons, and the first is the one that would bite silently.
+
+**The framing is the session's, not the action's.** RFC 7858 carries each DNS message with a
+two-byte big-endian length prefix, and `serve_connection` writes that prefix itself around the
+bytes an action produced. `peer_support` writes `ActionResult::Output` verbatim, so an injected
+`send_dns_a_response` would put a bare DNS message on the wire with no prefix — which does not
+fail, it *desynchronises*: the resolver reads the first two bytes of the DNS header as a length
+and every subsequent message is garbage.
+
+**And there is nothing to say.** A DNS response carries the transaction id of a query. Nobody
+is waiting on an id the operator made up, so even correctly framed it would be discarded.
+
+DoT delegates its action set to `DnsProtocol`, so this is not a gap in what the protocol
+advertises — it is that the transport adds a layer the generic peer writer does not know about.
+
+The dashboard renders that as a dim button reading "this protocol cannot message a peer from
+here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
+source on every run, so if the mechanism changes the build fails rather than the file going
+quietly stale.

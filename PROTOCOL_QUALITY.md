@@ -64,6 +64,8 @@ and drift.
 | `overflow-checks` in release | off | **on** |
 | Panic hook | terminal-restore only, TUI only | **logs every panic, every mode** |
 | Blocking CI jobs covering the whole tree | 0 | **1** (16 source-reading ratchets) |
+| Client maturity | 1 Beta · 97 Experimental | **unchanged, now on a written bar** — audited 16 Sep, nothing qualified |
+| Soak coverage | none | **4 protocol shapes × 10 000 connections**, nightly, no leak found |
 
 One correction to my own derivation above: the timeout scan reported `nfs` as having none, because
 its bounds live in `guard.rs` rather than `mod.rs`. `FIRST_RECORD_READ_TIMEOUT` and
@@ -271,10 +273,49 @@ declare, whether or not anyone has looked at it.
   numbers — a generic test has to know how to open a session and what a refusal looks like in
   each protocol's vocabulary, which is exactly what the per-protocol tests encode by hand.
 
-- [ ] **A soak test per protocol family.** Ten thousand short connections against a running
-  server; assert `AppState` connection count returns to zero and RSS is flat. *Why:* the
-  `connectionless` sweep and the peer-handle removal paths are the kind of thing that leaks one
-  entry per connection and is invisible until production. *Effort:* M for the harness.
+- [x] **A soak test per protocol family.** *(16 September 2026 —
+  `tests/connection_soak_test.rs`, `.github/workflows/nightly-soak.yml`.)* Ten thousand short
+  connections against each of four shapes: `tcp` (a reader NetGet wrote), `http` (hyper's
+  `serve_connection`, the shape ~30 protocols share), `redis` (a session with its own framing)
+  and `dns` (datagram, `.connectionless()`). ~25 s each by construction, ~100 s for the four,
+  `#[ignore]`d with a reason and run serially by the nightly.
+
+  Asserted: the tracked-connection map does not grow with connections served, the registered-task
+  count stays a function of *live* connections, RSS is flat, the map returns to zero once traffic
+  stops, `recent_connections` holds its cap, and the port rebinds after stop. Measured across two
+  full runs: map slope **0.000–0.005** entries per connection, RSS **0–73 B/conn**, peak
+  registered tasks **5–33** against ten thousand served. No leak found — the
+  `spawn_server_task` sweep's `retain`-on-register pruning holds at the ten thousandth
+  connection.
+
+  **Three things it taught, each of which nearly made it a bad test.**
+
+  1. **The reaper is part of the system under test.** With no cleanup tick running, all three
+     stream protocols grow the connection map at **exactly 1.0 entries per connection served**,
+     and RSS by ~1.4 KB per connection — 34 MiB to 48 MiB over ten thousand HTTP connections.
+     That is not a leak, it is the ten-second retention window with nothing reaping it, and a
+     test calling it a leak would have been `ospf`'s mistake in a new place. The harness runs the
+     reaper at the production values and paces the load to outlast it, so the question becomes
+     the one worth asking: steady state, or total ever served? It is steady state, at
+     rate × retention. **The 1.0 is still worth knowing** — between two ticks a busy server holds
+     one entry per connection in that window, all of it under the single global `AppState` lock,
+     and nothing bounds it but the tick.
+  2. **RSS steps; it does not slope.** A single ~0.9 MiB allocator arena step between adjacent
+     samples reads as ~300 B/conn spread over the measurement window, above any honest rate
+     budget, with the map perfectly flat either side. The verdict therefore needs a rate **and**
+     an absolute floor, which puts the real sensitivity of the RSS check at about 1 KB/conn
+     against a ~1.4 KB/conn defect. The counters are the sharp instruments; RSS is the backstop
+     for what they cannot count.
+  3. **An abrupt `drop` on a socket is not a close.** The first version wrote, half-closed and
+     dropped, and both ends logged `ECONNRESET` after a few hundred connections — the kernel
+     sends RST rather than FIN when a socket with unread inbound data is closed. It presented
+     exactly as a server defect. Draining to EOF before dropping made it vanish; the server was
+     never at fault.
+
+  Pacing is load-bearing and not a throughput knob: a clean close leaves the *test* in
+  `TIME_WAIT` for 2·MSL, and macOS has 16 384 ephemeral ports against a 15-second MSL, so an
+  unpaced soak exhausts the range and reports `EADDRNOTAVAIL` — a kernel bookkeeping limit
+  wearing a leak's clothes.
 
 - [x] **Stop releases the port, every protocol.** *(the generic test exists, and the
   `spawn_server_task` sweep landed 15 Sep 2026 — 145 sites, 115 protocols; see Done)* A generic test: start on port 0, read the
@@ -329,12 +370,50 @@ declare, whether or not anyone has looked at it.
   `wakeonlan`, `bitcoin` (large), `aria2`. Record each in `ci.yml` as it lands. *Effort:* S
   each; the install is the work.
 
-- [ ] **Client maturity.** 97 of 98 clients are Experimental and the rubric barely touched
-  the question of what a client *proves*. Define the bar: a client is Beta when it completes a
-  real session against a **real third-party server** (not NetGet's own — that is circular in
-  the other direction), hard-failing when the server is absent. Local servers are cheap for
-  most: `redis-server`, `postgres`, `mysqld`, `mosquitto`, `nats-server`, `nginx`, `bind`,
-  `sshd`, `vsftpd`. *Effort:* L overall.
+- [x] **Client maturity — the bar is written down; applying it promoted nothing.**
+  *(16 September 2026. The bar is in `CLAUDE.md`'s maturity section, beside the server one.)*
+  Four conditions: a real third-party **server** as the peer, and not the crate NetGet's client
+  is built on; the test fails rather than skips or `#[ignore]`s when that peer is absent; a real
+  session rather than a connect; and the client's use of the model's answer asserted **on the
+  wire**, because `client_event_wiring_test` exists for the six that discarded it.
+
+  **Audited all 98. No promotion. `nats` remains the only Beta, and that is the finding.** Five
+  *servers* had sat at Experimental with the evidence already in the tree, so the same was
+  expected here; the client tree is simply not in that state. It divides four ways:
+
+  - **Circular, ~60 protocols** — `redis`, `postgresql`, `mysql`, `mongodb`, `imap`, `ftp`,
+    `irc`, `http`, `whois` and the rest drive NetGet's own server of the same protocol.
+    `jsonrpc`, `openapi`, `bitcoin`, `elasticsearch` and `rss` drive NetGet's *HTTP* server —
+    same-project *and* generic HTTP, two disqualifications at once.
+  - **Real peer, unreachable evidence** — `mqtt` (Mosquitto in Docker), `smtp` (Python `smtpd`),
+    `ssh` (external `sshd`), `smb`, `xmpp`, `ldap`, `s3`, `dynamodb`, `sqs`, `tor`. Each names a
+    genuine third-party server and **every one of those tests is `#[ignore]`d**. This is the
+    cheapest path to a second Beta client, and the work is un-ignoring them — which means
+    standing the peer up wherever the suite runs.
+  - **Real peer, wrong peer** — `tls` (a `tokio_rustls::TlsAcceptor` against a client that *is* a
+    `tokio_rustls::TlsConnector`: rustls agreeing with rustls, the `ssh`/russh case) and `oauth2`
+    (an `axum` router, generic HTTP and in this script's own `INFRASTRUCTURE` set).
+  - **Public internet** — `dot`, `git`, `npm`, `pypi`, `maven`, `ntp`, all `#[ignore]`d for the
+    right reason: localhost only. A local mirror makes these evidence; the public endpoint never
+    will.
+
+  Zero skip-and-pass gates exist under `tests/client/` — the only two `SKIP` hits are prose in
+  `nats`' header explaining why one was refused. So the client tree does not have the server
+  tree's silent-pass problem. It has an `#[ignore]` problem, which is at least visible.
+
+  **Installed on this machine**, so the remaining cost is a number rather than a guess:
+  `nats-server`, `redis-server` (valkey), `postgres`, `mysqld`, `nginx`, `sshd`, `httpd`,
+  `unbound`, `smbd`, `tor`, `openvpn`, `slapd`, libmemcached's tools. **Missing:** `mosquitto`,
+  `vsftpd`, `memcached`, `etcd`, `mongod`, and MinIO or LocalStack for the AWS clients. Nothing
+  was installed — hard-failing a gate makes that binary a requirement wherever the suite runs,
+  which belongs to whoever owns the CI image.
+
+- [ ] **Make `beta_evidence_table.py` client-aware.** It hard-codes `src/server` and
+  `tests/server` in exactly four places — `declared_states()`, `test_directory()`, `rows()`'s
+  `src_crates` and `http_native()` — plus the title string. The scanning machinery is already
+  side-agnostic, so `--side {server,client}` threaded through those five is the whole change.
+  *Why:* the client audit above is hand-derived, and every hand-derived list in this repository
+  has drifted, in both directions. *Effort:* S.
 
 - [x] **Re-derive the "not promoted" list in `CLAUDE.md`.** *(15 September 2026.)*
   `scripts/beta_evidence_table.py` generates it: per protocol, the binaries and crates its
@@ -415,8 +494,29 @@ The suite is the evidence. Where it lies, the ratings lie.
   family so each job stays under the runner's memory; keep the six-protocol job as the fast
   gate. Make `registry-audit` blocking once it is green three runs in a row. *Effort:* M.
 
-- [ ] **`single-feature` over all 116, not 14.** *Why:* it is the only check that finds an
-  under-declared dependency, and it costs one `cargo check` each. Run nightly. *Effort:* S.
+- [x] **`single-feature` over all 116, not 14.** *(16 September 2026.)* **133 features verified
+  standalone** with `cargo check --locked --no-default-features --features <f> --tests`, one at
+  a time, every one of them green — so there is no under-declared feature in the tree today.
+  The job is split because the check does not fit a PR gate: `single-feature` keeps 24 in
+  `SINGLE_FEATURE_CORE` under the 30-minute timeout, and `single-feature-full` runs all 133
+  nightly (cron + `workflow_dispatch`, `timeout-minutes: 300`). Both loop rather than matrix,
+  so each feature reuses the previous one's dependency graph.
+
+  **Two things the sweep corrected in `CLAUDE.md`'s system-library table**, both in the
+  direction of under-counting protocols that *are* checkable: `zookeeper` is listed under
+  `protoc` and needs none — `build.rs` compiles protos only under `#[cfg(feature = "etcd")]`,
+  the same error the table already records for `kubernetes` — and the `libpcap` row names
+  three features when seven carry `dep:pcap` (`lldp`, `cdp`, `stp` and `eapol` as well).
+
+  **Still unverified, and deliberately not in either list:** the 7 `libpcap` features, the 18
+  `bluetooth-ble*`, `nfc-client`, `smb-client`, `grpc`, `etcd`, the 7 `usb*` and `can` — 36 in
+  all. The rule the job states is that a feature is listed only after somebody built it, and
+  for these nobody on a macOS machine can: `ble-peripheral-rust` compiles CoreBluetooth there
+  and bluer/D-Bus in CI, so a local green proves nothing about the code the runner would see,
+  and `can`/socketcan does not build at all. Installing the libraries in CI would compile some
+  of them but would put unverified entries in a blocking gate. They are not unwatched —
+  `registry-audit` builds `--all-features` with those libraries — but what it cannot see is a
+  *standalone* dependency gap, so that hole is real and stated rather than closed.
 
 - [ ] **Five consecutive full sweeps at `--test-threads=100`, any failure investigated.** Not
   labelled — investigated. The tuntap/rawip 60s failures turned out to be build contention;

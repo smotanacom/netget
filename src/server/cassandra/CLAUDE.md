@@ -176,10 +176,45 @@ the point of issuing a deliberately-bogus statement id, and the assertions are a
 opcodes and four-byte codes. 11 in total, all passing.
 
 The authentication path is exercised by no test — it is reachable now, but has not been driven
-end to end by a real driver. **Connection stats are not updated**: `update_connection_stats` is
-never called, so the rail's `↓ ↑` counters stay at zero for a live session. Fixing it means
-threading `connection_id` into eight independent frame senders; it was left alone deliberately
-rather than half-done.
+end to end by a real driver.
+
+## Dashboard injection (peer handle)
+
+Every connection registers a peer handle (`server::peer_support`) **before its first read**,
+so the dashboard shows `[ message this peer ]` / `[ disconnect this peer ]` on a live CQL
+connection. Before the first read is the point that matters: CQL is client-speaks-first and
+this server says nothing until the driver sends OPTIONS/STARTUP, so a `*` manual rule parks
+the connection's very first event — and the operator being asked to answer it must be able to
+reach, or hang up, the connection while it waits.
+
+The socket is split with `tokio::io::split` (never cloned) and the write half is an
+`Arc<Mutex<WriteHalf>>` shared by the session and the peer-command task, so an injected send
+and a reply cannot interleave bytes into the middle of each other's frame. All eight frame
+senders now write through one `ConnWrite::write`, which locks, writes, flushes, drops the
+guard and then counts the bytes.
+
+- **`[ disconnect this peer ]`** works: it injects a bare `{"type": "close_connection"}`,
+  which `execute_action` maps to `ActionResult::CloseConnection`. (That name is an
+  unadvertised alias for `close_this_connection`, because the dashboard's button sends the
+  bare name whatever a protocol calls its own close verb.) The generic peer task half-closes
+  the write side; the reader's `read() == 0` path runs the normal teardown and the peer reads
+  EOF.
+- **Custom-result gap:** every Cassandra wire verb (`cassandra_ready`, `cassandra_supported`,
+  `cassandra_result_rows`, `cassandra_prepared`, `cassandra_authenticate`,
+  `cassandra_auth_success`, `cassandra_error`) returns `ActionResult::Custom`, never
+  `ActionResult::Output`, because a CQL response frame is stamped with the **stream id of the
+  request it answers** and an out-of-band injection is answering none. The generic peer task
+  therefore reports an injected wire verb as `Executed` and writes nothing. No bespoke path is
+  provided, because a frame carrying an invented stream id would be matched against the wrong
+  pending request by the driver, or dropped — worse than not writing. Wire replies stay driven
+  by the read loop, where the stream id is known.
+- Connection counters (`update_connection_stats`) are updated on every read and every write
+  the session makes, so the rail's `↓/↑` byte and packet counts move. **They did not before**
+  — this server called `update_connection_stats` nowhere at all, so the counters sat at zero
+  for the life of a session. Bytes written by the generic peer task are not counted here
+  (that is `peer_support.rs`'s job).
+
+`tests/server/cassandra/peer_inject_test.rs` proves all of it with zero LLM calls.
 
 ## References
 

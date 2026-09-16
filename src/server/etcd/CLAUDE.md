@@ -223,3 +223,20 @@ TFTP evicted live transfers because "idle" was measured wrongly.
 `tests/tcp_server_bounds_ratchet_test.rs` fails the build if either bound is removed;
 `tests/accept_bounded_test.rs` drives the shared helper, including the guarantee that a busy
 connection is never reported as idle.
+
+## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+
+etcd is gRPC over HTTP/2, and `handle_connection` hands the socket to hyper's
+`serve_connection` after the first-byte `peek`. From that point hyper owns every read and write,
+so there is no `Arc<Mutex<WriteHalf>>` to share with a peer-command task, and raw bytes written
+beside hyper's framing would corrupt the HTTP/2 stream rather than reach the client.
+
+What the protocol *could* offer is also nothing: `EtcdProtocol`'s actions return
+`ActionResult::Custom`, which `mod.rs` turns into a protobuf reply for the RPC that is in
+flight. An injected one has no RPC to answer.
+
+The dashboard renders that as a dim button reading "this protocol cannot message a peer from
+here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
+source on every run, so if the mechanism changes the build fails rather than the file going
+quietly stale.

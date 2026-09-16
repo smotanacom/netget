@@ -247,3 +247,22 @@ this code.
 - [WebRTC Data Channels (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Using_data_channels)
 - [Signalling and video calling (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Signaling_and_video_calling)
 - Tests and their rationale: `tests/server/webrtc/CLAUDE.md`
+
+## No peer handle — `[ message this peer ]` / `[ disconnect this peer ]` stay disabled
+
+The signalling channel is a WebSocket (`tokio-tungstenite`), and its write side is a
+`SplitSink` driven by a writer task through a channel — deliberately, as the `PeerHandle` comment
+in `mod.rs` says. It is not an `AsyncWrite`, and `peer_support` writes `ActionResult::Output`
+bytes straight to the socket, so an injected message would land on the wire as an unframed
+payload in the middle of a WebSocket stream and the peer would close the connection.
+
+The *media* side is worse: once ICE and DTLS complete, the peer is reached over SCTP data
+channels inside a webrtc-rs `RTCPeerConnection`, and there is no per-peer socket NetGet holds at
+all. A handle keyed on the signalling connection would also be keyed on the wrong thing — the
+signalling socket can close while the data channel lives.
+
+The dashboard renders that as a dim button reading "this protocol cannot message a peer from
+here yet", which is the honest rendering. `tests/peer_handle_coverage_ratchet_test.rs` carries
+this protocol on its shrink-only baseline with the reason above, and re-derives the reason from
+source on every run, so if the mechanism changes the build fails rather than the file going
+quietly stale.

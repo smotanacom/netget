@@ -293,6 +293,12 @@ impl Server for MongodbProtocol {
             "delete_response" => self.execute_delete_response(action),
             "error_response" => self.execute_error_response(action),
             "close_this_connection" => Ok(ActionResult::CloseConnection),
+            // Deliberately not advertised (it is in neither `get_sync_actions()` nor any
+            // event's action list, so the model's tool list is unchanged): the dashboard's
+            // `[ disconnect this peer ]` injects a bare `{"type": "close_connection"}` through
+            // the peer handle, and without this arm that button fails as an unknown action.
+            // `tcp` accepts both names for the same reason.
+            "close_connection" => Ok(ActionResult::CloseConnection),
             _ => Err(anyhow::anyhow!("Unknown MongoDB action: {}", action_type)),
         }
     }

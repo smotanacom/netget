@@ -162,6 +162,13 @@ impl Server for TorrentTrackerProtocol {
             "send_announce_response" => self.execute_send_announce_response(action),
             "send_scrape_response" => self.execute_send_scrape_response(action),
             "send_error_response" => self.execute_send_error_response(action),
+            // Not advertised to the model — a tracker response already carries
+            // `Connection: close` and the session ends on its own, so there is nothing for
+            // the model to decide here. It exists because the dashboard's
+            // `[ disconnect this peer ]` runs the protocol's **own** `close_connection`
+            // through the peer handle, and without an arm the operator's only way to reach a
+            // parked announce would fail as an unknown action.
+            "close_connection" => Ok(ActionResult::CloseConnection),
             _ => Err(anyhow::anyhow!(
                 "Unknown BitTorrent Tracker action: {}",
                 action_type

@@ -30,7 +30,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, trace, warn};
 
 /// Largest frame body accepted, matching the native protocol's own 256 MiB maximum.
@@ -143,6 +143,45 @@ struct CassandraConnectionState {
     username: Option<String>,
 }
 
+/// The write half of one live connection, plus what counting a write needs.
+///
+/// Every reply goes through this rather than through the socket: the write half is shared with
+/// the dashboard's peer-command task (`server::peer_support`), so it lives behind a `Mutex`,
+/// and an injected send and the server's own reply cannot interleave bytes into the middle of
+/// each other's frame. `bytes_sent`/`packets_sent` are updated here — they were updated
+/// nowhere before, so the rail's arrow counters sat at zero for the life of a CQL session.
+struct ConnWrite {
+    write_half: Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
+    app_state: Arc<AppState>,
+    server_id: Option<crate::state::ServerId>,
+    connection_id: ConnectionId,
+}
+
+impl ConnWrite {
+    /// Write one whole CQL frame and count it. The guard is dropped before the stats update,
+    /// so nothing awaits on `AppState`'s lock while holding the write half.
+    async fn write(&self, data: &[u8]) -> Result<()> {
+        {
+            let mut writer = self.write_half.lock().await;
+            writer.write_all(data).await?;
+            writer.flush().await?;
+        }
+        if let Some(server_id) = self.server_id {
+            self.app_state
+                .update_connection_stats(
+                    server_id,
+                    self.connection_id,
+                    None,
+                    Some(data.len() as u64),
+                    None,
+                    Some(1),
+                )
+                .await;
+        }
+        Ok(())
+    }
+}
+
 impl CassandraServer {
     /// Create a new Cassandra server
     pub fn new(
@@ -237,14 +276,15 @@ impl CassandraServer {
         Ok(actual_addr)
     }
 
-    /// Handle a single Cassandra connection
+    /// Set one Cassandra connection up, run it, and tear it down on every exit path.
     async fn handle_connection(
         &self,
-        mut stream: TcpStream,
+        stream: TcpStream,
         addr: SocketAddr,
         status_tx: mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         let connection_id = ConnectionId::new(self.app_state.get_next_unified_id().await);
+        let local_addr = stream.local_addr().unwrap_or(addr);
 
         // Track the connection
         if let Some(server_id) = self.server_id {
@@ -252,7 +292,7 @@ impl CassandraServer {
             let conn_state = ConnectionState {
                 id: connection_id,
                 remote_addr: addr,
-                local_addr: stream.local_addr().unwrap_or(addr),
+                local_addr,
                 bytes_sent: 0,
                 bytes_received: 0,
                 packets_sent: 0,
@@ -268,6 +308,77 @@ impl CassandraServer {
                 .await;
         }
 
+        // Split (never clone) so the write half can be shared with the peer-command task.
+        let (reader, write_half) = tokio::io::split(stream);
+        let write_half = Arc::new(Mutex::new(write_half));
+        let out = ConnWrite {
+            write_half: write_half.clone(),
+            app_state: self.app_state.clone(),
+            server_id: self.server_id,
+            connection_id,
+        };
+
+        // Peer messaging, registered BEFORE the first read. CQL is client-speaks-first and the
+        // server says nothing until the driver sends OPTIONS/STARTUP, so a `*` manual rule
+        // parks the very first event this connection produces - and the operator being asked to
+        // decide about it must be able to reach, or hang up, the connection while it waits.
+        if let Some(server_id) = self.server_id {
+            let peer_rx = crate::server::peer_support::register_peer_channel(
+                &self.app_state,
+                server_id,
+                connection_id.as_u32(),
+            )
+            .await;
+            let protocol = Arc::new(CassandraProtocol::new(
+                connection_id,
+                self.app_state.clone(),
+                status_tx.clone(),
+            ));
+            crate::server::peer_support::spawn_peer_command_task(
+                peer_rx,
+                protocol,
+                self.app_state.clone(),
+                server_id,
+                connection_id.as_u32(),
+                write_half.clone(),
+                status_tx.clone(),
+            );
+        }
+
+        let result = self
+            .run_session(reader, &out, addr, connection_id, &status_tx)
+            .await;
+
+        // Every exit path lands here - EOF, a read error, an oversized frame, a handler's
+        // close, an injected disconnect. Dropping the handle also ends the peer command task,
+        // which releases its clone of the write half; the explicit shutdown makes the FIN
+        // immediate rather than waiting on it.
+        if let Some(server_id) = self.server_id {
+            self.app_state
+                .remove_peer_handle(server_id, connection_id.as_u32())
+                .await;
+        }
+        let _ = write_half.lock().await.shutdown().await;
+
+        // Close connection
+        if let Some(server_id) = self.server_id {
+            self.app_state
+                .close_connection_on_server(server_id, connection_id)
+                .await;
+        }
+
+        result
+    }
+
+    /// The read/parse/dispatch loop. Replies go out through `out`, never through the socket.
+    async fn run_session(
+        &self,
+        mut reader: tokio::io::ReadHalf<TcpStream>,
+        out: &ConnWrite,
+        addr: SocketAddr,
+        connection_id: ConnectionId,
+        status_tx: &mpsc::UnboundedSender<String>,
+    ) -> Result<()> {
         let mut conn_state = CassandraConnectionState {
             ready: false,
             protocol_version: 4,
@@ -295,12 +406,12 @@ impl CassandraServer {
                 FIRST_FRAME_READ_TIMEOUT
             };
 
-            // Read data from stream
-            let read = match tokio::time::timeout(read_timeout, stream.read_buf(&mut buffer)).await
+            // Read data from the read half
+            let read = match tokio::time::timeout(read_timeout, reader.read_buf(&mut buffer)).await
             {
                 Ok(read) => read,
                 Err(_) => {
-                    Log::new(Some(&status_tx)).debug(format!(
+                    Log::new(Some(status_tx)).debug(format!(
                         "Cassandra client {} sent nothing for {}s; closing idle connection",
                         addr,
                         read_timeout.as_secs()
@@ -310,7 +421,7 @@ impl CassandraServer {
             };
             let n = match read {
                 Ok(0) => {
-                    Log::new(Some(&status_tx))
+                    Log::new(Some(status_tx))
                         .debug(format!("Cassandra client {} disconnected", addr));
                     break;
                 }
@@ -320,6 +431,21 @@ impl CassandraServer {
                     break;
                 }
             };
+
+            // Counted on every read, as `ConnWrite::write` counts every write. Nothing
+            // updated these before, so a CQL connection's arrow counters never moved.
+            if let Some(server_id) = self.server_id {
+                self.app_state
+                    .update_connection_stats(
+                        server_id,
+                        connection_id,
+                        Some(n as u64),
+                        None,
+                        Some(1),
+                        None,
+                    )
+                    .await;
+            }
 
             trace!("Read {} bytes from Cassandra client {}", n, addr);
 
@@ -344,7 +470,7 @@ impl CassandraServer {
                 // so a client that declares a huge frame and then dribbles data grows the
                 // process without limit. 256 MiB is the protocol's own maximum frame size.
                 if length > MAX_FRAME_BODY_BYTES {
-                    Log::new(Some(&status_tx)).error(format!(
+                    Log::new(Some(status_tx)).error(format!(
                         "Cassandra frame too large ({} bytes, limit {}), closing {}",
                         length, MAX_FRAME_BODY_BYTES, addr
                     ));
@@ -366,13 +492,7 @@ impl CassandraServer {
                 let frame_bytes = buffer.split_to(9 + length);
 
                 match self
-                    .handle_frame(
-                        &frame_bytes,
-                        &mut conn_state,
-                        &mut stream,
-                        connection_id,
-                        &status_tx,
-                    )
+                    .handle_frame(&frame_bytes, &mut conn_state, out, connection_id, status_tx)
                     .await
                 {
                     Ok(should_continue) => {
@@ -394,7 +514,7 @@ impl CassandraServer {
                         // nothing else about the frame could be understood. The peer gets the
                         // category only — a fixed string, never `e`, which carries anyhow
                         // context and library messages.
-                        Log::new(Some(&status_tx)).error(format!(
+                        Log::new(Some(status_tx)).error(format!(
                             "Cassandra connection {} decision=fail_closed_protocol_error: {}",
                             connection_id, e
                         ));
@@ -404,8 +524,8 @@ impl CassandraServer {
                                 stream_id,
                                 CASSANDRA_ERROR_PROTOCOL,
                                 "netget: malformed CQL frame",
-                                &mut stream,
-                                &status_tx,
+                                out,
+                                status_tx,
                             )
                             .await
                         {
@@ -425,13 +545,6 @@ impl CassandraServer {
             }
         }
 
-        // Close connection
-        if let Some(server_id) = self.server_id {
-            self.app_state
-                .close_connection_on_server(server_id, connection_id)
-                .await;
-        }
-
         Ok(())
     }
 
@@ -440,7 +553,7 @@ impl CassandraServer {
         &self,
         frame_bytes: &[u8],
         conn_state: &mut CassandraConnectionState,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         connection_id: ConnectionId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<bool> {
@@ -456,27 +569,27 @@ impl CassandraServer {
 
         match frame.opcode {
             Opcode::Startup => {
-                self.handle_startup(frame, conn_state, stream, connection_id, status_tx)
+                self.handle_startup(frame, conn_state, out, connection_id, status_tx)
                     .await
             }
             Opcode::Options => {
-                self.handle_options(frame, stream, connection_id, status_tx)
+                self.handle_options(frame, out, connection_id, status_tx)
                     .await
             }
             Opcode::Query => {
-                self.handle_query(frame, stream, connection_id, status_tx)
+                self.handle_query(frame, out, connection_id, status_tx)
                     .await
             }
             Opcode::Prepare => {
-                self.handle_prepare(frame, conn_state, stream, connection_id, status_tx)
+                self.handle_prepare(frame, conn_state, out, connection_id, status_tx)
                     .await
             }
             Opcode::Execute => {
-                self.handle_execute(frame, conn_state, stream, connection_id, status_tx)
+                self.handle_execute(frame, conn_state, out, connection_id, status_tx)
                     .await
             }
             Opcode::AuthResponse => {
-                self.handle_auth_response(frame, conn_state, stream, connection_id, status_tx)
+                self.handle_auth_response(frame, conn_state, out, connection_id, status_tx)
                     .await
             }
             Opcode::Register => {
@@ -484,7 +597,7 @@ impl CassandraServer {
                 // We don't support server events, but respond with READY to acknowledge
                 Log::new(Some(status_tx))
                     .debug("Cassandra: Client registered for events (not supported, no-op)");
-                self.send_ready(frame.stream_id, stream, status_tx).await?;
+                self.send_ready(frame.stream_id, out, status_tx).await?;
                 Ok(true)
             }
             _ => {
@@ -495,7 +608,7 @@ impl CassandraServer {
                     frame.stream_id,
                     0x000A,
                     "Unsupported operation",
-                    stream,
+                    out,
                     status_tx,
                 )
                 .await?;
@@ -509,7 +622,7 @@ impl CassandraServer {
         &self,
         frame: Envelope,
         conn_state: &mut CassandraConnectionState,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         connection_id: ConnectionId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<bool> {
@@ -548,7 +661,7 @@ impl CassandraServer {
                     frame.stream_id,
                     "STARTUP",
                     &e,
-                    stream,
+                    out,
                     connection_id,
                     status_tx,
                 )
@@ -568,7 +681,7 @@ impl CassandraServer {
                 ActionResult::Custom { name, data } => match name.as_str() {
                     "cassandra_ready" => {
                         conn_state.ready = true;
-                        self.send_ready(frame.stream_id, stream, status_tx).await?;
+                        self.send_ready(frame.stream_id, out, status_tx).await?;
                         return Ok(true);
                     }
                     // Answering STARTUP with AUTHENTICATE is the only way a driver is ever
@@ -580,7 +693,7 @@ impl CassandraServer {
                             .get("authenticator")
                             .and_then(|v| v.as_str())
                             .unwrap_or("org.apache.cassandra.auth.PasswordAuthenticator");
-                        self.send_authenticate(frame.stream_id, authenticator, stream, status_tx)
+                        self.send_authenticate(frame.stream_id, authenticator, out, status_tx)
                             .await?;
                         return Ok(true);
                     }
@@ -598,7 +711,7 @@ impl CassandraServer {
                             "STARTUP",
                             error_code,
                             message,
-                            stream,
+                            out,
                             connection_id,
                             status_tx,
                         )
@@ -620,7 +733,7 @@ impl CassandraServer {
         // `cassandra_authenticate` and by nothing else. Falling through to READY here handed
         // out an unauthenticated session on silence, so the model had no way to make a refusal
         // distinguishable from a backend outage.
-        self.send_no_answer_error(frame.stream_id, "STARTUP", stream, connection_id, status_tx)
+        self.send_no_answer_error(frame.stream_id, "STARTUP", out, connection_id, status_tx)
             .await?;
         Ok(false)
     }
@@ -629,7 +742,7 @@ impl CassandraServer {
     async fn handle_options(
         &self,
         frame: Envelope,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         connection_id: ConnectionId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<bool> {
@@ -661,7 +774,7 @@ impl CassandraServer {
                     frame.stream_id,
                     "OPTIONS",
                     &e,
-                    stream,
+                    out,
                     connection_id,
                     status_tx,
                 )
@@ -685,7 +798,7 @@ impl CassandraServer {
                             .and_then(|v| v.as_object())
                             .cloned()
                             .unwrap_or_default();
-                        self.send_supported(frame.stream_id, options, stream, status_tx)
+                        self.send_supported(frame.stream_id, options, out, status_tx)
                             .await?;
                         return Ok(true);
                     }
@@ -703,7 +816,7 @@ impl CassandraServer {
                             "OPTIONS",
                             error_code,
                             message,
-                            stream,
+                            out,
                             connection_id,
                             status_tx,
                         )
@@ -722,7 +835,7 @@ impl CassandraServer {
         }
 
         // If no action was executed, send default SUPPORTED
-        self.send_supported(frame.stream_id, serde_json::Map::new(), stream, status_tx)
+        self.send_supported(frame.stream_id, serde_json::Map::new(), out, status_tx)
             .await?;
         Ok(true)
     }
@@ -731,7 +844,7 @@ impl CassandraServer {
     async fn handle_query(
         &self,
         frame: Envelope,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         connection_id: ConnectionId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<bool> {
@@ -772,7 +885,7 @@ impl CassandraServer {
                     frame.stream_id,
                     "QUERY",
                     &e,
-                    stream,
+                    out,
                     connection_id,
                     status_tx,
                 )
@@ -801,7 +914,7 @@ impl CassandraServer {
                             .and_then(|v| v.as_array())
                             .cloned()
                             .unwrap_or_default();
-                        self.send_result_rows(frame.stream_id, columns, rows, stream, status_tx)
+                        self.send_result_rows(frame.stream_id, columns, rows, out, status_tx)
                             .await?;
                         return Ok(true);
                     }
@@ -819,7 +932,7 @@ impl CassandraServer {
                             "QUERY",
                             error_code,
                             message,
-                            stream,
+                            out,
                             connection_id,
                             status_tx,
                         )
@@ -839,7 +952,7 @@ impl CassandraServer {
 
         // Fail closed: an empty RESULT/Rows frame means "no rows matched", which is an
         // answer about the data. A missing handler answer is not that.
-        self.send_no_answer_error(frame.stream_id, "QUERY", stream, connection_id, status_tx)
+        self.send_no_answer_error(frame.stream_id, "QUERY", out, connection_id, status_tx)
             .await?;
         Ok(true)
     }
@@ -886,7 +999,7 @@ impl CassandraServer {
     async fn send_ready(
         &self,
         stream_id: i16,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         let response = Envelope {
@@ -901,7 +1014,7 @@ impl CassandraServer {
         };
 
         let bytes = response.encode_with(Compression::None)?;
-        stream.write_all(&bytes).await?;
+        out.write(&bytes).await?;
 
         Log::new(Some(status_tx)).trace(format!("Cassandra → READY ({} bytes)", bytes.len()));
 
@@ -913,7 +1026,7 @@ impl CassandraServer {
         &self,
         stream_id: i16,
         options: serde_json::Map<String, serde_json::Value>,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         // Build SUPPORTED body: string multimap
@@ -957,7 +1070,7 @@ impl CassandraServer {
         };
 
         let bytes = response.encode_with(Compression::None)?;
-        stream.write_all(&bytes).await?;
+        out.write(&bytes).await?;
 
         Log::new(Some(status_tx)).trace(format!("Cassandra → SUPPORTED ({} bytes)", bytes.len()));
 
@@ -970,7 +1083,7 @@ impl CassandraServer {
         stream_id: i16,
         columns: Vec<serde_json::Value>,
         rows: Vec<serde_json::Value>,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         // Build RESULT body (kind=ROWS)
@@ -1064,7 +1177,7 @@ impl CassandraServer {
         };
 
         let bytes = response.encode_with(Compression::None)?;
-        stream.write_all(&bytes).await?;
+        out.write(&bytes).await?;
 
         Log::new(Some(status_tx)).trace(format!(
             "Cassandra → RESULT ({} rows, {} bytes)",
@@ -1149,7 +1262,7 @@ impl CassandraServer {
         &self,
         frame: Envelope,
         conn_state: &mut CassandraConnectionState,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         connection_id: ConnectionId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<bool> {
@@ -1184,7 +1297,7 @@ impl CassandraServer {
                 frame.stream_id,
                 0x2200,
                 "Too many prepared statements on this connection",
-                stream,
+                out,
                 status_tx,
             )
             .await?;
@@ -1230,7 +1343,7 @@ impl CassandraServer {
                     frame.stream_id,
                     "PREPARE",
                     &e,
-                    stream,
+                    out,
                     connection_id,
                     status_tx,
                 )
@@ -1261,7 +1374,7 @@ impl CassandraServer {
                             columns,
                             params,
                             param_count,
-                            stream,
+                            out,
                             status_tx,
                         )
                         .await?;
@@ -1281,7 +1394,7 @@ impl CassandraServer {
                             "PREPARE",
                             error_code,
                             message,
-                            stream,
+                            out,
                             connection_id,
                             status_tx,
                         )
@@ -1301,7 +1414,7 @@ impl CassandraServer {
 
         // Fail closed: handing back a valid statement id would let a later EXECUTE run off a
         // preparation nobody approved.
-        self.send_no_answer_error(frame.stream_id, "PREPARE", stream, connection_id, status_tx)
+        self.send_no_answer_error(frame.stream_id, "PREPARE", out, connection_id, status_tx)
             .await?;
         Ok(true)
     }
@@ -1311,7 +1424,7 @@ impl CassandraServer {
         &self,
         frame: Envelope,
         conn_state: &mut CassandraConnectionState,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         connection_id: ConnectionId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<bool> {
@@ -1342,7 +1455,7 @@ impl CassandraServer {
                 hex::encode(&statement_id),
                 CASSANDRA_ERROR_UNPREPARED
             ));
-            self.send_unprepared_error(frame.stream_id, &statement_id, stream, status_tx)
+            self.send_unprepared_error(frame.stream_id, &statement_id, out, status_tx)
                 .await?;
             return Ok(true);
         };
@@ -1356,7 +1469,7 @@ impl CassandraServer {
                 expected_param_count,
                 params.len()
             );
-            self.send_error(frame.stream_id, 0x2200, &err_msg, stream, status_tx)
+            self.send_error(frame.stream_id, 0x2200, &err_msg, out, status_tx)
                 .await?;
             return Ok(true);
         }
@@ -1393,7 +1506,7 @@ impl CassandraServer {
                     frame.stream_id,
                     "EXECUTE",
                     &e,
-                    stream,
+                    out,
                     connection_id,
                     status_tx,
                 )
@@ -1422,7 +1535,7 @@ impl CassandraServer {
                             .and_then(|v| v.as_array())
                             .cloned()
                             .unwrap_or_default();
-                        self.send_result_rows(frame.stream_id, columns, rows, stream, status_tx)
+                        self.send_result_rows(frame.stream_id, columns, rows, out, status_tx)
                             .await?;
                         return Ok(true);
                     }
@@ -1440,7 +1553,7 @@ impl CassandraServer {
                             "EXECUTE",
                             error_code,
                             message,
-                            stream,
+                            out,
                             connection_id,
                             status_tx,
                         )
@@ -1460,7 +1573,7 @@ impl CassandraServer {
 
         // Fail closed: an empty RESULT/Rows frame means "no rows matched", which is an
         // answer about the data. A missing handler answer is not that.
-        self.send_no_answer_error(frame.stream_id, "EXECUTE", stream, connection_id, status_tx)
+        self.send_no_answer_error(frame.stream_id, "EXECUTE", out, connection_id, status_tx)
             .await?;
         Ok(true)
     }
@@ -1554,7 +1667,7 @@ impl CassandraServer {
         columns: Vec<serde_json::Value>,
         params: Option<Vec<serde_json::Value>>,
         param_count: usize,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         let mut body = Vec::new();
@@ -1667,7 +1780,7 @@ impl CassandraServer {
         };
 
         let bytes = response.encode_with(Compression::None)?;
-        stream.write_all(&bytes).await?;
+        out.write(&bytes).await?;
 
         Log::new(Some(status_tx)).trace(format!(
             "Cassandra → RESULT (Prepared: {} params, {} bytes)",
@@ -1699,7 +1812,7 @@ impl CassandraServer {
         stream_id: i16,
         stage: &str,
         err: &anyhow::Error,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         connection_id: ConnectionId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
@@ -1714,7 +1827,7 @@ impl CassandraServer {
             "Cassandra connection {} answering {} with ERROR 0x{:04X} ({}): {}",
             connection_id, stage, code, label, message
         ));
-        self.send_error(stream_id, code, &message, stream, status_tx)
+        self.send_error(stream_id, code, &message, out, status_tx)
             .await
     }
 
@@ -1737,7 +1850,7 @@ impl CassandraServer {
         &self,
         stream_id: i16,
         stage: &str,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         connection_id: ConnectionId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
@@ -1750,7 +1863,7 @@ impl CassandraServer {
             stream_id,
             CASSANDRA_ERROR_SERVER_ERROR,
             "netget: no handler answer for this request",
-            stream,
+            out,
             status_tx,
         )
         .await
@@ -1766,7 +1879,7 @@ impl CassandraServer {
         stage: &str,
         error_code: u32,
         message: &str,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         connection_id: ConnectionId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
@@ -1774,7 +1887,7 @@ impl CassandraServer {
             "Cassandra connection {} decision=model_reject stage={}: ERROR 0x{:04X}",
             connection_id, stage, error_code
         ));
-        self.send_error(stream_id, error_code, message, stream, status_tx)
+        self.send_error(stream_id, error_code, message, out, status_tx)
             .await
     }
 
@@ -1788,7 +1901,7 @@ impl CassandraServer {
         &self,
         stream_id: i16,
         statement_id: &[u8],
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         let message = "netget: statement not prepared on this connection";
@@ -1815,7 +1928,7 @@ impl CassandraServer {
         };
 
         let bytes = response.encode_with(Compression::None)?;
-        stream.write_all(&bytes).await?;
+        out.write(&bytes).await?;
 
         Log::new(Some(status_tx)).trace(format!(
             "Cassandra → ERROR 0x{:04X} UNPREPARED id={}",
@@ -1832,7 +1945,7 @@ impl CassandraServer {
         stream_id: i16,
         error_code: u32,
         message: &str,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         let mut body = Vec::new();
@@ -1857,7 +1970,7 @@ impl CassandraServer {
         };
 
         let bytes = response.encode_with(Compression::None)?;
-        stream.write_all(&bytes).await?;
+        out.write(&bytes).await?;
 
         Log::new(Some(status_tx)).trace(format!(
             "Cassandra → ERROR 0x{:04X} - {}",
@@ -1872,7 +1985,7 @@ impl CassandraServer {
         &self,
         frame: Envelope,
         conn_state: &mut CassandraConnectionState,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         connection_id: ConnectionId,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<bool> {
@@ -1916,7 +2029,7 @@ impl CassandraServer {
                     frame.stream_id,
                     "AUTH_RESPONSE",
                     &e,
-                    stream,
+                    out,
                     connection_id,
                     status_tx,
                 )
@@ -1938,7 +2051,7 @@ impl CassandraServer {
                         "cassandra_auth_success" => {
                             conn_state.authenticated = true;
                             conn_state.username = Some(username);
-                            self.send_auth_success(frame.stream_id, stream, status_tx)
+                            self.send_auth_success(frame.stream_id, out, status_tx)
                                 .await?;
                             return Ok(true);
                         }
@@ -1956,7 +2069,7 @@ impl CassandraServer {
                                 "AUTH_RESPONSE",
                                 error_code,
                                 message,
-                                stream,
+                                out,
                                 connection_id,
                                 status_tx,
                             )
@@ -1980,7 +2093,7 @@ impl CassandraServer {
             frame.stream_id,
             0x0100,
             "Authentication failed",
-            stream,
+            out,
             status_tx,
         )
         .await?;
@@ -2029,7 +2142,7 @@ impl CassandraServer {
         &self,
         stream_id: i16,
         authenticator: &str,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         let mut body = Vec::new();
@@ -2051,7 +2164,7 @@ impl CassandraServer {
         };
 
         let bytes = response.encode_with(Compression::None)?;
-        stream.write_all(&bytes).await?;
+        out.write(&bytes).await?;
 
         Log::new(Some(status_tx)).trace(format!("Cassandra → AUTHENTICATE ({})", authenticator));
 
@@ -2062,7 +2175,7 @@ impl CassandraServer {
     async fn send_auth_success(
         &self,
         stream_id: i16,
-        stream: &mut TcpStream,
+        out: &ConnWrite,
         status_tx: &mpsc::UnboundedSender<String>,
     ) -> Result<()> {
         // AUTH_SUCCESS body can contain optional token (we send empty for SASL PLAIN)
@@ -2080,7 +2193,7 @@ impl CassandraServer {
         };
 
         let bytes = response.encode_with(Compression::None)?;
-        stream.write_all(&bytes).await?;
+        out.write(&bytes).await?;
 
         Log::new(Some(status_tx)).trace("Cassandra → AUTH_SUCCESS");
 

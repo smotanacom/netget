@@ -715,6 +715,14 @@ impl Server for KafkaProtocol {
                 name: action_type.to_string(),
                 data: action,
             }),
+            // The dashboard's "[ disconnect this peer ]" injects a bare
+            // `{"type": "close_connection"}` through the peer handle, whatever a protocol
+            // calls its own close verb. Deliberately NOT advertised in `get_sync_actions`
+            // or `get_async_actions`: Kafka has no close message, so the model has nothing
+            // to gain from it, and adding it to the tool list would change what the model
+            // sees. The generic peer-command task half-closes the write side; the reader's
+            // `UnexpectedEof` path then runs the normal teardown.
+            "close_connection" => Ok(ActionResult::CloseConnection),
             _ => Err(anyhow!("Unknown Kafka action type: {}", action_type)),
         }
     }

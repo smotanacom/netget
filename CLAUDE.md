@@ -331,6 +331,72 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   with their errors swallowed into a `println!("[INFO] …")`, so those two verbs were named in
   the Beta claim while asserted by nothing. The rating was right; two fifths of its evidence
   was decorative.
+- **The client bar is the mirror of the Beta bar above, and it is genuinely different.** Written
+  down 16 September 2026, because 97 of 98 clients sit at Experimental and nothing in this file
+  said what the ninety-eighth had that the others did not.
+
+  A server proves itself against a third-party **client**. A client proves itself against a
+  third-party **server** — never NetGet's own server of the same protocol. That is the
+  circular-evidence case this section names for `ssh`/russh, wearing the other hat: pointing
+  NetGet's redis client at NetGet's redis server proves the two agree, which is what they were
+  both written to do.
+
+  A client is **Beta** when all four hold:
+
+  1. **The peer is a real third-party server** — a binary (`nats-server`, `redis-server`,
+     `postgres`, `mysqld`, `mosquitto`, `nginx`, `sshd`, `unbound`) or a third-party crate in
+     server role, and **not the crate NetGet's client is built on**. That last clause is what
+     disqualifies `tls`: its test is driven by a `tokio_rustls::TlsAcceptor` while NetGet's TLS
+     client *is* a `tokio_rustls::TlsConnector`, so the exchange proves that rustls interoperates
+     with rustls. Contrast `quic`/quinn and `webrtc`/webrtc-rs, accepted on the server side:
+     there NetGet authors real protocol logic above the crate and the crate is transport. Where
+     the crate **is** the protocol, using it at both ends measures nothing.
+  2. **The test fails rather than skips when the peer is absent**, naming the binary and how to
+     install it. `npm`'s reasoning, which `nats`' test states in as many words. A
+     skip-when-missing gate is a silent pass, so a rating resting on one rests on nothing
+     wherever the suite actually runs — and `#[ignore]` fails this the same way, because
+     unreachable evidence is not evidence however good the reason for parking it.
+  3. **A real session, not a connect.** The client completes the protocol's own exchange —
+     authenticate, ask, parse the answer — rather than proving that a socket opened.
+  4. **The client acts on the model's answer, asserted on the wire.**
+     `tests/client_event_wiring_test.rs` exists because six clients asked the model what to do
+     and discarded the reply, and that defect is silent: the client connects, reports success and
+     does nothing. Asserting that the LLM was *called* does not cover it. Asserting the effect of
+     an action the model produced does.
+
+  **Applied 16 September 2026: nothing was promoted, and `nats` remains the only Beta client.**
+  That is the finding rather than a failure to find one. Five *servers* had been sitting at
+  Experimental with the evidence already in the tree, and the same was expected here; it is not
+  the case. The clients fall into four groups and only one is near the bar:
+
+  - **Circular** — the overwhelming majority, ~60 protocols. `redis`, `postgresql`, `mysql`,
+    `mongodb`, `imap`, `ftp`, `irc`, `http`, `whois` and the rest drive NetGet's own server of the
+    same protocol. Several more (`jsonrpc`, `openapi`, `bitcoin`, `elasticsearch`, `rss`) drive
+    NetGet's *HTTP* server, which is same-project **and** generic HTTP — two disqualifications.
+  - **Real peer, unreachable evidence** — `mqtt` (Mosquitto in Docker), `smtp` (Python `smtpd`),
+    `ssh` (an external `sshd`), `smb`, `xmpp`, `ldap`, `s3`, `dynamodb`, `sqs`, `tor`. Each names
+    a genuine third-party server and **every one of those tests is `#[ignore]`d**, so none of it
+    runs. These are the cheapest promotions available, and the work is un-ignoring them — which
+    means standing the peer up wherever the suite runs.
+  - **Real peer, wrong peer** — `tls` (rustls at both ends, above) and `oauth2` (an `axum`
+    router, which is generic HTTP and is in `beta_evidence_table.py`'s own `INFRASTRUCTURE` set).
+  - **Public internet** — `dot`, `git`, `npm`, `pypi`, `maven`, `ntp` reach real third-party
+    servers and are `#[ignore]`d for the right reason: this file requires localhost only. A local
+    mirror would turn these into evidence; the public endpoint never will.
+
+  **What is installed on this machine**, so the remaining cost is a number rather than a guess:
+  `nats-server` (already in use), `redis-server` (valkey), `postgres`, `mysqld`, `nginx`, `sshd`,
+  `httpd`, `unbound`, `smbd`, `tor`, `openvpn`, `slapd` (under openldap's `libexec`) and
+  libmemcached's tools. Missing, for the list above: `mosquitto`, `vsftpd`, `memcached`, `etcd`,
+  `mongod`, and a MinIO or LocalStack for the AWS clients. **Nothing was installed** — hard-failing
+  a gate makes that binary a requirement everywhere the suite runs, which is a decision for
+  whoever owns the CI image, not one to take unilaterally.
+
+  `scripts/beta_evidence_table.py` **does not cover clients**: `declared_states()`,
+  `test_directory()`, `rows()` and `http_native()` each hard-code `src/server` / `tests/server`.
+  The scanning machinery is side-agnostic, so a `--side {server,client}` threaded through those
+  four is all it needs. Until that exists the list above is hand-derived, and will drift exactly
+  the way every other hand-derived list in this file has.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
   majority (100 of the 136 `src/server/*/actions.rs` the script below walks). Note the script
   reports one `NONE`: `src/server/http_common/actions.rs`, which is a shared response helper
@@ -808,13 +874,21 @@ after a long period when no CI job ran `cargo test` at all:
 |---|---|---|
 | `lint` | yes | `cargo fmt --check`; `clippy -D correctness -D suspicious`. A full default clippy runs advisory-only — ~50 style/complexity warnings predate the gate |
 | `test` | yes | `cargo test` on `tcp,http,dns,udp,redis,mcp-stdio` |
-| `single-feature` | yes | `cargo check --tests` on 14 protocol features **one at a time** — catches a feature whose deps are under-declared, which no multi-feature build can |
+| `single-feature` | yes | `cargo check --tests` on `SINGLE_FEATURE_CORE` (24 features) **one at a time** — catches a feature whose deps are under-declared, which no multi-feature build can |
+| `single-feature-full` | nightly | The same check over all **133** features that build standalone (`SINGLE_FEATURE_CORE` + `SINGLE_FEATURE_REST`). Cron + `workflow_dispatch` only, never on a PR; the 30-minute runner timeout is why it is not blocking |
 | `orphaned-tests` | yes | Fails if a test dir on disk is undeclared in `mod.rs` (see the footgun above) |
 | `clippy-wide` | **no** (`continue-on-error`) | Clippy over a wide feature set. Advisory because at `--all-features` the lib alone emits ~495 warnings |
 | `registry-audit` | **no** (`continue-on-error`) | The registry-walking audits at `--all-features`, with the system libraries installed. This is the only job that sees more than 6 of 116 protocols — and it cannot fail the build, so **a green PR is not evidence the audits passed**. Read its log |
 
-Six jobs, not four: `clippy-wide` and `registry-audit` are easy to miss because both are
-`continue-on-error` and so report green regardless of outcome.
+Nine jobs, not the six tabulated: `ratchets` and `wasm-web` are blocking and missing from the
+table above, and `clippy-wide` and `registry-audit` are easy to miss because both are
+`continue-on-error` and so report green regardless of outcome. Derive the list from
+`.github/workflows/ci.yml`; this table has been short before.
+
+Every job except `single-feature-full` carries `if: github.event_name != 'schedule'`, so the
+nightly cron runs that one job and nothing else. The workflow's `concurrency` group includes
+`github.event_name` for the same reason: without it a push to master and the nightly run share
+a group and `cancel-in-progress` makes each kill the other.
 
 ### Terminal (PTY) tests
 
