@@ -45,6 +45,17 @@ async fn an_oversized_request_body_is_refused_without_reaching_the_model() -> E2
         });
 
     let server = helpers::start_netget_server(config).await?;
+
+    // Wait for the bind before sending. Without this the request races the listener: under a
+    // 100-thread run it is refused at connect, which surfaces as a transport error rather
+    // than an assertion, so the failure reads as "the body limit is broken" when the server
+    // had simply not finished starting.
+    //
+    // Same defect the September hygiene sweep removed from 74 sites; this file and
+    // elasticsearch's refusal_test were written after it, in different waves, and
+    // reintroduced it independently.
+    crate::helpers::common::wait_for_server_listening(&server, std::time::Duration::from_secs(30))
+        .await?;
     let url = format!("http://127.0.0.1:{}/v1/chat/completions", server.port);
 
     // 9 MiB of message content, one megabyte past the 8 MiB cap.
@@ -110,6 +121,17 @@ async fn a_backend_failure_tells_the_peer_nothing_about_netget() -> E2EResult<()
         });
 
     let server = helpers::start_netget_server(config).await?;
+
+    // Wait for the bind before sending. Without this the request races the listener: under a
+    // 100-thread run it is refused at connect, which surfaces as a transport error rather
+    // than an assertion, so the failure reads as "the body limit is broken" when the server
+    // had simply not finished starting.
+    //
+    // Same defect the September hygiene sweep removed from 74 sites; this file and
+    // elasticsearch's refusal_test were written after it, in different waves, and
+    // reintroduced it independently.
+    crate::helpers::common::wait_for_server_listening(&server, std::time::Duration::from_secs(30))
+        .await?;
 
     let response = reqwest::Client::new()
         .post(format!(

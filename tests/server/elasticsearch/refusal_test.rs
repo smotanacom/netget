@@ -45,6 +45,20 @@ async fn an_oversized_body_is_refused_with_413_before_any_llm_call() -> E2EResul
     let test_state = start_netget_server(config).await?;
     let port = test_state.port;
 
+    // Wait for the bind before sending. Without this the POST races the listener: under a
+    // 100-thread run it is refused at connect, which surfaces as a transport error rather
+    // than an assertion, so the failure reads as "the body limit is broken" when the server
+    // had simply not finished starting.
+    //
+    // This is the same defect the September hygiene sweep removed from 74 sites; these two
+    // test files were written after it, in different waves, and reintroduced it
+    // independently — which is why the helper is the thing to reach for rather than a sleep.
+    crate::helpers::common::wait_for_server_listening(
+        &test_state,
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
+
     let oversized = "x".repeat(9 * 1024 * 1024);
     let body = format!("{{\"index\":{{\"_index\":\"big\"}}}}\n{{\"blob\":\"{oversized}\"}}\n");
 
