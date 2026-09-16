@@ -1,0 +1,120 @@
+# Connection soak — nightly, and blocking within this workflow.
+#
+# `tests/connection_soak_test.rs` opens ten thousand short connections against each of four
+# protocol shapes and asserts that nothing grows with the number served: not the tracked
+# connection map, not the registered-task vector, not RSS.
+#
+# It is `#[ignore]`d in the normal suite for two reasons, both in that file's header. Each test
+# is paced to last ~25 seconds, because it has to outlast the ten-second connection-retention
+# window or it measures the ramp instead of the steady state. And each clean close leaves the
+# test side in TIME_WAIT for 2·MSL, so two of these running at once exhaust the ephemeral port
+# range and fail with EADDRNOTAVAIL — a kernel bookkeeping limit that looks exactly like a leak.
+#
+# `PROTOCOL_QUALITY.md` is explicit that a soak test nobody runs is worse than none, which is
+# what this file is for. Unlike `nightly-eval.yml` there is no `continue-on-error` here: the
+# eval measures a model and a threshold on it would flap, while this measures a counter and a
+# failure is a defect.
+#
+# --test-threads=1 is not a performance choice. It is the ephemeral port range.
+
+name: nightly-soak
+
+on:
+  schedule:
+    # 03:00 UTC, before nightly-eval so the two never contend for the machine.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      features:
+        description: "Protocol features to soak (must match the tests compiled in)"
+        required: false
+        default: "tcp,http,dns,redis"
+
+concurrency:
+  group: nightly-soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: nightly-soak
+
+      - name: Raise the file-descriptor limit
+        # IN_FLIGHT is 16, so the default 1024 is already ample — this is headroom for the
+        # accepted ends plus whatever else the runner holds, so that a failure is never a
+        # descriptor limit wearing a leak's clothes.
+        run: ulimit -n 4096 || true
+
+      - name: Record the ephemeral port range
+        # Printed, not enforced. If a run ever does fail with EADDRNOTAVAIL, this is the first
+        # thing anyone reading the log will want, and it costs nothing to have it there.
+        run: |
+          echo "port range: $(cat /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null || echo unknown)"
+          echo "tcp_fin_timeout: $(cat /proc/sys/net/ipv4/tcp_fin_timeout 2>/dev/null || echo unknown)"
+
+      - name: Build the soak tests
+        env:
+          CARGO_TARGET_DIR: /tmp/netget-soak-target
+        run: |
+          cargo test --no-default-features \
+            --features "${{ github.event.inputs.features || 'tcp,http,dns,redis' }}" \
+            --test connection_soak_test --no-run
+
+      - name: Soak
+        id: soak
+        env:
+          CARGO_TARGET_DIR: /tmp/netget-soak-target
+        run: |
+          set -o pipefail
+          cargo test --no-default-features \
+            --features "${{ github.event.inputs.features || 'tcp,http,dns,redis' }}" \
+            --test connection_soak_test \
+            -- --ignored --test-threads=1 --nocapture 2>&1 | tee soak.log
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Connection soak"
+            echo
+            if [ ! -f soak.log ]; then
+              echo "No log — the job did not reach the soak step."
+              exit 0
+            fi
+            echo '```'
+            grep '^\[soak\]' soak.log || echo "no [soak] lines: the tests did not run"
+            echo '```'
+            echo
+            grep -E '^test result' soak.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail if nothing ran
+        # The failure mode this repository keeps rediscovering: a suite that reports success
+        # having executed nothing. `--ignored` plus a filter that matches no test exits 0.
+        if: always()
+        run: |
+          test -f soak.log || { echo "::error::no soak log"; exit 1; }
+          n=$(grep -c '^\[soak\]' soak.log || true)
+          if [ "$n" -lt 4 ]; then
+            echo "::error::only $n soak results in the log; expected one per protocol. A soak \
+          test that measures nothing is the failure mode this job exists to avoid."
+            exit 1
+          fi
+
+      - name: Publish the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-log
+          path: soak.log
+          if-no-files-found: error
+          retention-days: 30

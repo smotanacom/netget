@@ -331,6 +331,72 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   with their errors swallowed into a `println!("[INFO] …")`, so those two verbs were named in
   the Beta claim while asserted by nothing. The rating was right; two fifths of its evidence
   was decorative.
+- **The client bar is the mirror of the Beta bar above, and it is genuinely different.** Written
+  down 16 September 2026, because 97 of 98 clients sit at Experimental and nothing in this file
+  said what the ninety-eighth had that the others did not.
+
+  A server proves itself against a third-party **client**. A client proves itself against a
+  third-party **server** — never NetGet's own server of the same protocol. That is the
+  circular-evidence case this section names for `ssh`/russh, wearing the other hat: pointing
+  NetGet's redis client at NetGet's redis server proves the two agree, which is what they were
+  both written to do.
+
+  A client is **Beta** when all four hold:
+
+  1. **The peer is a real third-party server** — a binary (`nats-server`, `redis-server`,
+     `postgres`, `mysqld`, `mosquitto`, `nginx`, `sshd`, `unbound`) or a third-party crate in
+     server role, and **not the crate NetGet's client is built on**. That last clause is what
+     disqualifies `tls`: its test is driven by a `tokio_rustls::TlsAcceptor` while NetGet's TLS
+     client *is* a `tokio_rustls::TlsConnector`, so the exchange proves that rustls interoperates
+     with rustls. Contrast `quic`/quinn and `webrtc`/webrtc-rs, accepted on the server side:
+     there NetGet authors real protocol logic above the crate and the crate is transport. Where
+     the crate **is** the protocol, using it at both ends measures nothing.
+  2. **The test fails rather than skips when the peer is absent**, naming the binary and how to
+     install it. `npm`'s reasoning, which `nats`' test states in as many words. A
+     skip-when-missing gate is a silent pass, so a rating resting on one rests on nothing
+     wherever the suite actually runs — and `#[ignore]` fails this the same way, because
+     unreachable evidence is not evidence however good the reason for parking it.
+  3. **A real session, not a connect.** The client completes the protocol's own exchange —
+     authenticate, ask, parse the answer — rather than proving that a socket opened.
+  4. **The client acts on the model's answer, asserted on the wire.**
+     `tests/client_event_wiring_test.rs` exists because six clients asked the model what to do
+     and discarded the reply, and that defect is silent: the client connects, reports success and
+     does nothing. Asserting that the LLM was *called* does not cover it. Asserting the effect of
+     an action the model produced does.
+
+  **Applied 16 September 2026: nothing was promoted, and `nats` remains the only Beta client.**
+  That is the finding rather than a failure to find one. Five *servers* had been sitting at
+  Experimental with the evidence already in the tree, and the same was expected here; it is not
+  the case. The clients fall into four groups and only one is near the bar:
+
+  - **Circular** — the overwhelming majority, ~60 protocols. `redis`, `postgresql`, `mysql`,
+    `mongodb`, `imap`, `ftp`, `irc`, `http`, `whois` and the rest drive NetGet's own server of the
+    same protocol. Several more (`jsonrpc`, `openapi`, `bitcoin`, `elasticsearch`, `rss`) drive
+    NetGet's *HTTP* server, which is same-project **and** generic HTTP — two disqualifications.
+  - **Real peer, unreachable evidence** — `mqtt` (Mosquitto in Docker), `smtp` (Python `smtpd`),
+    `ssh` (an external `sshd`), `smb`, `xmpp`, `ldap`, `s3`, `dynamodb`, `sqs`, `tor`. Each names
+    a genuine third-party server and **every one of those tests is `#[ignore]`d**, so none of it
+    runs. These are the cheapest promotions available, and the work is un-ignoring them — which
+    means standing the peer up wherever the suite runs.
+  - **Real peer, wrong peer** — `tls` (rustls at both ends, above) and `oauth2` (an `axum`
+    router, which is generic HTTP and is in `beta_evidence_table.py`'s own `INFRASTRUCTURE` set).
+  - **Public internet** — `dot`, `git`, `npm`, `pypi`, `maven`, `ntp` reach real third-party
+    servers and are `#[ignore]`d for the right reason: this file requires localhost only. A local
+    mirror would turn these into evidence; the public endpoint never will.
+
+  **What is installed on this machine**, so the remaining cost is a number rather than a guess:
+  `nats-server` (already in use), `redis-server` (valkey), `postgres`, `mysqld`, `nginx`, `sshd`,
+  `httpd`, `unbound`, `smbd`, `tor`, `openvpn`, `slapd` (under openldap's `libexec`) and
+  libmemcached's tools. Missing, for the list above: `mosquitto`, `vsftpd`, `memcached`, `etcd`,
+  `mongod`, and a MinIO or LocalStack for the AWS clients. **Nothing was installed** — hard-failing
+  a gate makes that binary a requirement everywhere the suite runs, which is a decision for
+  whoever owns the CI image, not one to take unilaterally.
+
+  `scripts/beta_evidence_table.py` **does not cover clients**: `declared_states()`,
+  `test_directory()`, `rows()` and `http_native()` each hard-code `src/server` / `tests/server`.
+  The scanning machinery is side-agnostic, so a `--side {server,client}` threaded through those
+  four is all it needs. Until that exists the list above is hand-derived, and will drift exactly
+  the way every other hand-derived list in this file has.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
   majority (100 of the 136 `src/server/*/actions.rs` the script below walks). Note the script
   reports one `NONE`: `src/server/http_common/actions.rs`, which is a shared response helper
