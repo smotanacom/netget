@@ -265,13 +265,66 @@ declare, whether or not anyone has looked at it.
   (opensrv-mysql has no max-packet check at all) and `tls` (`conn.queued_data` grows uncapped
   while an LLM call is in flight, which a manual intercept holds open for 300s).
 
-- [ ] **A generic bound+1 test over the registry.** Each bound landed above has a hand-written
-  test that sends bound+1 and asserts the refusal *and* zero model calls, verified by removing
-  the bound and watching it fail. What does not exist is the *generic* version the item
-  originally imagined: one parametrised test that reads `max_inbound_bytes` off the registry and
-  does this for every protocol. It is worth having, and it is a different job from declaring the
-  numbers — a generic test has to know how to open a session and what a refusal looks like in
-  each protocol's vocabulary, which is exactly what the per-protocol tests encode by hand.
+- [x] **A generic bound+1 test over the registry.** *(16 September 2026 —
+  `tests/max_inbound_bytes_bound_plus_one_test.rs`.)* It reads `max_inbound_bytes` off the
+  registry, starts each declaring protocol on port 0, sends `bound + 1` bytes and asserts the
+  server **decided** — closed the connection or wrote something back — with **zero model calls
+  attributable to the message**. At `--all-features`: **54 probed, 28 skipped, 3 findings**.
+
+  The item predicted the hard part correctly and it turned out to have two answers rather than
+  none. A generic test cannot know each protocol's refusal vocabulary, so it asserts the thing
+  every protocol shares — *the bytes past the bound do not reach the model and do not leave the
+  connection parked holding them* — and two shapes are enough to reach the bound at all: raw
+  bytes for a framed or line-oriented protocol, and a well-formed HTTP request whose
+  `Content-Length` declares `bound + 1` for the ~25 whose number is `MAX_REQUEST_BODY_BYTES`
+  (raw junk would be refused at the request line, passing while asserting the HTTP parser). It
+  does **not** prove the declared number is the one that fired, which is why it is an addition
+  to the per-protocol tests and not a replacement.
+
+  **Skipped, all enumerated by the test on every run:** 19 not a TCP stream (UDP, SCTP,
+  link-level, USB, NFC — derived from `stack_name()`, not listed by hand), 6 whose bound is past
+  the 8 MiB probe cap (`cassandra` 256 MiB, `kafka` 100 MiB, `redis` and `websocket` 64 MiB,
+  `mongodb` 48 MiB, `mqtt` 16 MiB), and `grpc`, which will not start without a `proto_schema`.
+
+  **Three real findings, baselined shrink-only rather than exempted** (all outside the boundary
+  of the pass that wrote the test, so reported):
+
+  - **`bitcoin`** — a decode error leaves the peer connected with nothing written.
+    `try_parse_bitcoin_message` correctly returns `Err` for bad magic, and its own doc comment
+    says the caller "drops the connection instead of buffering forever" — but the `Err` arm in
+    the read loop logs, sets `ConnectionState::Idle` and returns, leaving the socket open. 4 MB
+    of junk is neither answered nor refused. The comment describes the fix that was not made.
+  - **`xmpp`** — one 256 KiB write buys ~50 model calls. The read loop's own comment says "for
+    simplicity, we'll pass the entire buffer to LLM for parsing", so every read raises
+    `xmpp_data_received` carrying the whole accumulated buffer, whose prompt grows toward
+    256 KiB. `MAX_XMPP_BUFFER_BYTES` does fire and close the connection — after all of those
+    round trips. **The bound caps memory and not the model bill**, which is the half its
+    declaration implies it has.
+  - **`proxy`** — one model call lands after an over-bound request head. The bound itself fires;
+    what the probe cannot settle from outside is whether that call is the connection's own
+    arriving late or one the refused head provoked. Needs a human read.
+
+  **Four traps it was built around, three of which it fell into first** — recorded because each
+  produced a confident wrong answer:
+
+  1. **Count from a baseline, not from zero.** NNTP and SVN *generate their greeting*, so the
+     first run charged a connect-time model call to the payload and reported five protocols as
+     enforcing nothing. All five were correct.
+  2. **A privileged default port is not a reason to skip.** Everything starts on port 0, so
+     `PrivilegedPort(80)` never applies — treating it as a skip cost seventeen protocols
+     including `http`, `imap`, `ftp`, `smtp`, `ssh`, `telnet` and `whois`, which is exactly the
+     quiet under-coverage the item was written against.
+  3. **The registry's name is the display form** (`"Bitcoin P2P"`, `"XML-RPC"`, `"SSH Agent"`),
+     not the source directory. Keyed on the directory, every exemption table matched nothing —
+     and the USB/NFC entries *appeared* to work only because the transport rule caught them
+     first. They are deleted; a reason nothing reaches is a stale reason.
+  4. **Wait for the listener.** A connect refused in the gap between bind and accept reads
+     exactly like the refusal being probed for — a false pass.
+
+  One exemption is a claim rather than an accident and is documented as such: `tcp`'s
+  `MAX_QUEUED_BYTES` bounds data queued behind an *in-flight* LLM call, not one message, so TCP
+  answering each read is the design working. `STREAMING_BOUND` holds that, and only the
+  zero-calls half is waived — it is still required to decide about the connection.
 
 - [x] **A soak test per protocol family.** *(16 September 2026 —
   `tests/connection_soak_test.rs`, `.github/workflows/nightly-soak.yml`.)* Ten thousand short
