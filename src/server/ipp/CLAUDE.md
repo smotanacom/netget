@@ -147,10 +147,12 @@ attacker-controlled length arithmetic in it.
 ## The body is bounded before it is buffered
 
 `Incoming` has no default limit, so `req.into_body().collect()` let an unauthenticated `POST`
-to port 631 decide how much memory this server allocated. It is read through
-`http_body_util::Limited` at `MAX_IPP_BODY_BYTES` (8 MiB, the same figure `http_common` uses;
-spelled out locally because that module is gated behind the `http`/`http2` features and `ipp`
-implies neither).
+to port 631 decide how much memory this server allocated. `read_body_bounded` reads it frame by
+frame against `MAX_IPP_BODY_BYTES` (8 MiB, the same figure `http_common` uses; spelled out
+locally because that module is gated behind the `http`/`http2` features and `ipp` implies
+neither), and drops what it has buffered the moment the cap is passed — the refusal is already
+decided, so holding the partial body while draining would double what an oversized request
+costs.
 
 A refusal is expressed twice: HTTP **413** for a generic client, and
 `client-error-request-entity-too-large` (0x0408) in the body for one that reads only the IPP
@@ -158,6 +160,30 @@ layer. It costs **no LLM call**, and that is the assertion `tests/server/ipp/bod
 actually makes (`expect_calls(0)`), because the old code turned a read failure into
 `Bytes::new()` — which `parse_ipp_header` reports as the operation `Empty`, so the model would
 have been asked to answer a request nobody sent.
+
+### …and then drained, boundedly, so the peer can read the refusal
+
+Expressing the refusal twice buys nothing if the peer never receives it, and it did not. The
+server stops reading at 8 MiB; a peer sending more is still blocked in `write` when the 413 is
+produced, and **closing a socket with unread data in the receive queue sends `RST`** — which
+discards the response bytes already written along with it. The peer's `write` fails with
+`ECONNRESET` and it sees a connection error where a refusal was sent.
+
+That was this suite's own intermittent failure, and it was a server defect wearing a test's
+clothes: `body_limit_test` passed whenever the oversized write happened to fit in the socket
+buffers and failed when it did not. The old reading of it — "the server is right and the test
+should tolerate a reset" — would have kept a refusal nobody can read.
+
+`LINGER_DRAIN_BYTES` (8 MiB) and `LINGER_DRAIN_TIMEOUT` (5s) are nginx's `lingering_close`.
+Nothing is buffered: the octets are counted and dropped, so the cost is bandwidth. Both bounds
+are there because draining is politeness, not an obligation — a peer that keeps writing past
+either gets the abrupt close it earned. The deadline applies **only** to the drain; a body
+inside the cap is hyper's to time out, and borrowing this deadline for it would cap how long a
+legitimate 8 MiB `Print-Job` may take to arrive.
+
+The `decision=fail_closed_body_too_large` line carries how much was drained and whether the
+peer finished writing, which is the difference between "it read the refusal" and "it got a
+reset and we could not help it".
 
 Nothing recursive is decoded here, which is why there is no depth bound: only the 8-byte header
 is parsed. If request attribute groups are ever decoded, the walk must stay iterative — a Rust
@@ -250,7 +276,7 @@ with request-id `0x12345678` and version 1.1 came back with exactly that id and 
 
 ## Testing
 
-Four files, 12 tests, none `#[ignore]`d and none skip-when-missing:
+Four files, 14 tests, none `#[ignore]`d and none skip-when-missing:
 
 - `tests/server/ipp/test.rs` — Get-Printer-Attributes, Print-Job and a status-only reply, each
   decoded with a hand-written strict decoder. An earlier version asserted only HTTP 200 and
@@ -258,8 +284,14 @@ Four files, 12 tests, none `#[ignore]`d and none skip-when-missing:
 - `status_range_test.rs` — `http_status` refused rather than wrapped.
 - `attribute_range_test.rs` — attribute integers and lengths refused rather than narrowed or
   truncated, arrays included.
-- `body_limit_test.rs` — an oversized body refused with 413 and **zero** LLM calls, and a 1 MiB
-  one still served.
+- `body_limit_test.rs` — an oversized body refused with 413 and **zero** LLM calls, a 1 MiB one
+  still served, the refusal reaching a peer that is still writing, and the drain staying
+  bounded. The third of those uses a **raw socket** rather than `reqwest`, deliberately: a
+  hyper client polls the read side while it writes, so it can parse the 413 out of its receive
+  buffer before the `RST` lands and win the race in the test's favour. Measured with the drain
+  disabled — 5 failures in 8 runs through `reqwest`, 5 in 5 through a socket that finishes
+  writing first. If you make a test here tolerant of a transport error, it will stop being able
+  to see this defect.
 
 `ipptool` remains the check for spec compliance that no in-tree test covers; see Manual
 verification above.

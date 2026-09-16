@@ -21,8 +21,13 @@
 //!
 //! **The body is bounded before it is buffered.** `Incoming` has no default limit, so an
 //! unauthenticated `POST` used to be able to ask this server to buffer whatever it chose to
-//! send. It is read through `http_body_util::Limited` and anything larger is refused with a
-//! well-formed `client-error-request-entity-too-large` and no LLM call.
+//! send. It is read frame by frame against `MAX_IPP_BODY_BYTES` and anything larger is refused
+//! with a well-formed `client-error-request-entity-too-large` and no LLM call.
+//!
+//! **The refusal is then drained, boundedly, before it is sent.** Answering 413 and closing
+//! while the peer is still writing sends `RST`, which discards the response bytes already
+//! written — so the peer's `write` fails and it never reads the refusal at all. See
+//! `LINGER_DRAIN_BYTES`.
 
 pub mod actions;
 
@@ -32,7 +37,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -63,6 +68,115 @@ use actions::{build_ipp_response, ipp_status_code};
 /// that module is gated behind the `http`/`http2` features and `ipp` does not imply either,
 /// so referencing it would make `--features ipp` alone fail to build.
 const MAX_IPP_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// How many further octets are read and **discarded** after the cap is exceeded, so the peer
+/// can finish writing and then read the refusal.
+///
+/// A server that answers 413 and closes while the peer is still writing does not deliver its
+/// answer: closing a socket with unread data in the receive queue sends `RST`, which discards
+/// the response bytes already written along with it. The peer's `write` fails with
+/// `ECONNRESET` and it never learns why — so the care taken to express the refusal twice, at
+/// the HTTP layer *and* in the IPP status, is spent on a message nobody receives.
+///
+/// This is nginx's `lingering_close`, and it is bounded for the same reason: draining is
+/// politeness, not an obligation. Nothing is buffered — the octets are counted and dropped —
+/// so the cost is bandwidth and the deadline below, and a peer that keeps writing past either
+/// gets the abrupt close it earned.
+const LINGER_DRAIN_BYTES: usize = 8 * 1024 * 1024;
+
+/// Wall-clock bound on that drain, so a peer trickling one octet at a time cannot hold the
+/// connection open by staying under [`LINGER_DRAIN_BYTES`].
+const LINGER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Outcome of reading a request body under [`MAX_IPP_BODY_BYTES`].
+enum BodyRead {
+    /// The whole body arrived inside the cap.
+    Complete(Bytes),
+    /// The cap was passed. Never carries the partial body: handing the model the first 8 MiB
+    /// of a longer request is the truncated-body-looks-like-a-complete-one shape this cap
+    /// exists to avoid.
+    TooLarge { drained: usize, whole_body: bool },
+}
+
+/// Read a request body, refusing past the cap and then draining politely.
+///
+/// The read is frame-by-frame rather than `Limited::collect()`, which cannot distinguish
+/// "stop" from "stop and let the peer finish". Once the cap is passed the buffer is dropped
+/// immediately — the refusal is already decided, so holding 8 MiB while draining would double
+/// what an oversized request costs.
+async fn read_body_bounded(body: Incoming) -> BodyRead {
+    let mut body = std::pin::pin!(body);
+    let mut buffered: Vec<u8> = Vec::new();
+    let mut over = false;
+    let mut drained = 0usize;
+    let deadline = tokio::time::Instant::now() + LINGER_DRAIN_TIMEOUT;
+
+    loop {
+        let next = if over {
+            // Only the drain is deadlined. A body inside the cap is hyper's to time out, and
+            // borrowing this deadline for it would cap how long a legitimate 8 MiB Print-Job
+            // may take to arrive.
+            match tokio::time::timeout_at(deadline, body.frame()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    return BodyRead::TooLarge {
+                        drained,
+                        whole_body: false,
+                    }
+                }
+            }
+        } else {
+            body.frame().await
+        };
+
+        let Some(frame) = next else {
+            // End of body. Reached while draining, the peer finished writing and can read the
+            // refusal; reached inside the cap, this is the whole request.
+            return if over {
+                BodyRead::TooLarge {
+                    drained,
+                    whole_body: true,
+                }
+            } else {
+                BodyRead::Complete(Bytes::from(buffered))
+            };
+        };
+
+        let Ok(frame) = frame else {
+            // A transport error mid-body. Answering with what arrived would be answering a
+            // request nobody sent, so this is a refusal either way; `whole_body` is false
+            // because the peer is not in a state to read anything.
+            return BodyRead::TooLarge {
+                drained,
+                whole_body: false,
+            };
+        };
+
+        let Ok(data) = frame.into_data() else {
+            continue; // trailers carry no body octets
+        };
+
+        if over {
+            drained = drained.saturating_add(data.len());
+            if drained >= LINGER_DRAIN_BYTES {
+                return BodyRead::TooLarge {
+                    drained,
+                    whole_body: false,
+                };
+            }
+            continue;
+        }
+
+        if buffered.len() + data.len() > MAX_IPP_BODY_BYTES {
+            over = true;
+            // Free the partial body now rather than at the end of the drain.
+            buffered = Vec::new();
+            drained = data.len();
+            continue;
+        }
+        buffered.extend_from_slice(&data);
+    }
+}
 
 /// IPP server that delegates request handling to LLM
 pub struct IppServer;
@@ -216,20 +330,22 @@ async fn handle_ipp_request_with_llm(
     // A read failure is NOT treated as an empty body: `Bytes::new()` would be handed to the
     // model as the operation `Empty`, so it would answer a request it never saw. IPP has a
     // status for exactly this case and it is used.
-    let limited = Limited::new(req.into_body(), MAX_IPP_BODY_BYTES);
-    let body_bytes = match limited.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
+    let body_bytes = match read_body_bounded(req.into_body()).await {
+        BodyRead::Complete(bytes) => bytes,
+        BodyRead::TooLarge {
+            drained,
+            whole_body,
+        } => {
             console_error!(
                 status_tx,
-                "IPP {} refusing request body ({}); limit is {} bytes",
+                "IPP {} refusing request body; limit is {} bytes",
                 connection_id,
-                e,
                 MAX_IPP_BODY_BYTES
             );
             Log::new(Some(&status_tx)).warn(format!(
-                "IPP {} decision=fail_closed_body_too_large (limit {} bytes)",
-                connection_id, MAX_IPP_BODY_BYTES
+                "IPP {} decision=fail_closed_body_too_large (limit {} bytes, drained {} more, \
+                 peer finished writing: {})",
+                connection_id, MAX_IPP_BODY_BYTES, drained, whole_body
             ));
             // 413 at the HTTP layer and the matching IPP status in the body: a client that
             // reads either one learns the same thing. request-id is unknown - the header was
