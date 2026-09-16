@@ -285,13 +285,28 @@ Four files, 14 tests, none `#[ignore]`d and none skip-when-missing:
 - `attribute_range_test.rs` — attribute integers and lengths refused rather than narrowed or
   truncated, arrays included.
 - `body_limit_test.rs` — an oversized body refused with 413 and **zero** LLM calls, a 1 MiB one
-  still served, the refusal reaching a peer that is still writing, and the drain staying
-  bounded. The third of those uses a **raw socket** rather than `reqwest`, deliberately: a
-  hyper client polls the read side while it writes, so it can parse the 413 out of its receive
-  buffer before the `RST` lands and win the race in the test's favour. Measured with the drain
+  still served, the refusal reaching a peer that is still writing, and a peer that stops
+  writing being unable to hold the drain open.
+
+  The third of those uses a **raw socket** rather than `reqwest`, deliberately: a hyper client
+  polls the read side while it writes, so it can parse the 413 out of its receive buffer
+  before the `RST` lands and win the race in the test's favour. Measured with the drain
   disabled — 5 failures in 8 runs through `reqwest`, 5 in 5 through a socket that finishes
   writing first. If you make a test here tolerant of a transport error, it will stop being able
   to see this defect.
+
+  The fourth tests `LINGER_DRAIN_TIMEOUT` rather than `LINGER_DRAIN_BYTES`, and the choice is
+  the point: the byte bound only binds a peer that writes *fast*, which has already spent the
+  bandwidth, while a peer that declares 64 MiB, sends just past the cap and then says nothing
+  costs itself nothing at all. Without the deadline that test does not fail, it hangs.
+
+  **All three oversized-body tests hold `ONE_OVERSIZED_BODY_AT_A_TIME`.** Each makes the server
+  buffer a full 8 MiB and keeps a `netget` process alive for seconds; with three overlapping at
+  `--test-threads=100`, five `tuntap` tests timed out waiting for an in-process model in half
+  of all runs and the four-protocol binary went from 14s to 45s. The fragility is not here —
+  `OllamaClient` builds a `reqwest::Client` per instance, and on macOS that reads the keychain
+  through Security.framework, serialised across processes — but this file can avoid lengthening
+  that queue.
 
 `ipptool` remains the check for spec compliance that no in-tree test covers; see Manual
 verification above.

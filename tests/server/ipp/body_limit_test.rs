@@ -37,11 +37,34 @@ const OVERSIZED: usize = 9 * 1024 * 1024;
 /// decides: without the drain this fails every run rather than intermittently.
 const OVERSIZED_MID_WRITE: usize = 15 * 1024 * 1024;
 
+/// A Content-Length far past what the server will ever read, declared by a peer that then
+/// stops writing. Nothing is actually sent past `OVERSIZED`: the point is the promise.
+const DECLARED_BUT_NEVER_SENT: usize = 64 * 1024 * 1024;
+
+/// Only one oversized-body test runs at a time.
+///
+/// Not decoration, and not a way to make a flaky test pass — it is the smallest honest fix for
+/// something measured. Every test in this file that exceeds the cap makes the server buffer a
+/// full `MAX_IPP_BODY_BYTES` and keeps a `netget` process alive for seconds while it does.
+/// With three of them running concurrently at `--test-threads=100`, **five `tuntap` tests
+/// failed in half of all runs** — each timing out after 30 seconds waiting for an in-process
+/// model that was never reached — and the whole `--features amqp,ipp,eapol,tuntap` binary went
+/// from 14s to 45s. Removing any one of the three made it green again, which is what says the
+/// problem is their overlap rather than any one of them.
+///
+/// The underlying fragility is not in this file and is not fixed here: `OllamaClient` builds a
+/// `reqwest::Client` per instance, which on macOS reads the keychain through
+/// Security.framework, synchronously and **serialised across processes** — the mechanism the
+/// root `CLAUDE.md` records against the `doh` client failures. More concurrent, longer-lived
+/// `netget` processes make that queue longer. What this file can do is not lengthen it.
+static ONE_OVERSIZED_BODY_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// `client-error-request-entity-too-large`, RFC 8011 appendix B.
 const STATUS_ENTITY_TOO_LARGE: u16 = 0x0408;
 
 #[tokio::test]
 async fn an_oversized_body_is_refused_without_reaching_the_model() -> E2EResult<()> {
+    let _serialised = ONE_OVERSIZED_BODY_AT_A_TIME.lock().await;
     let config =
         NetGetConfig::new("Open IPP on port {AVAILABLE_PORT} as a printer.").with_mock(|mock| {
             mock.on_instruction_containing("Open IPP")
@@ -190,6 +213,7 @@ async fn a_body_under_the_cap_is_still_answered() -> E2EResult<()> {
 /// IPP client with a document to send does anyway, and it makes the reset unmissable.
 #[tokio::test]
 async fn the_refusal_reaches_a_peer_that_is_still_writing() -> E2EResult<()> {
+    let _serialised = ONE_OVERSIZED_BODY_AT_A_TIME.lock().await;
     let config =
         NetGetConfig::new("Open IPP on port {AVAILABLE_PORT} as a printer.").with_mock(|mock| {
             mock.on_instruction_containing("Open IPP")
@@ -279,16 +303,28 @@ async fn post_then_read(port: u16, body: &[u8]) -> Result<(u16, Vec<u8>), std::i
     Ok((status, raw[split + 4..].to_vec()))
 }
 
-/// The drain is politeness, not an obligation — it has to be bounded, or a peer that keeps
-/// writing holds a connection and a task for as long as it likes.
+/// The drain is politeness, not an obligation, so it is bounded in **time** as well as in
+/// bytes — and the deadline is the bound that matters, because it is the one a hostile peer
+/// cannot sidestep.
 ///
-/// A body past `MAX_IPP_BODY_BYTES + LINGER_DRAIN_BYTES` (8 + 8 MiB) exceeds what the server
-/// will read, so the peer gets the abrupt close it earned. Either outcome is acceptable here —
-/// a 413 if the peer happened to finish, a transport error if it did not — but the request must
-/// **end**, promptly, and the model must still never be asked. Without the bound this test does
-/// not fail, it hangs: an unbounded drain reads for as long as the peer writes.
+/// `LINGER_DRAIN_BYTES` only binds a peer that writes *fast*; such a peer has already spent
+/// the bandwidth, and it reaches the byte bound in a moment. A peer that declares 64 MiB,
+/// sends just past the cap and then says nothing costs it nothing at all, and without
+/// `LINGER_DRAIN_TIMEOUT` the drain waits for the rest of that 64 MiB forever — holding a
+/// connection, a task and an `AppState` row, which is the free denial of service every other
+/// bound in this tree exists to close.
+///
+/// Without the deadline this test does not fail, it **hangs**: the 20-second timeout below is
+/// the assertion. The model must still never be asked, whichever way the exchange ends.
+///
+/// Deliberately cheap. An earlier version proved the byte bound by actually sending
+/// cap + drain + slack — 24 MiB through a debug build — and that much loopback traffic starved
+/// the rest of the suite: five `tuntap` tests waiting on an in-process model timed out at 30s
+/// in half of all runs, and the whole binary went from 14s to 45s. A test that has to
+/// monopolise the machine to prove a bound is not worth the bound.
 #[tokio::test]
-async fn the_drain_is_bounded_so_a_peer_cannot_hold_the_connection() -> E2EResult<()> {
+async fn a_peer_that_stops_writing_cannot_hold_the_drain_open() -> E2EResult<()> {
+    let _serialised = ONE_OVERSIZED_BODY_AT_A_TIME.lock().await;
     let config =
         NetGetConfig::new("Open IPP on port {AVAILABLE_PORT} as a printer.").with_mock(|mock| {
             mock.on_instruction_containing("Open IPP")
@@ -312,27 +348,46 @@ async fn the_drain_is_bounded_so_a_peer_cannot_hold_the_connection() -> E2EResul
     let server = helpers::start_netget_server(config).await?;
     wait_until_listening(server.port).await?;
 
-    // 8 MiB cap + 8 MiB drain + 8 MiB the server must refuse to read.
-    let mut body = vec![0x01, 0x01, 0x00, 0x02, 0xAA, 0xBB, 0xCC, 0xDD];
-    body.resize(24 * 1024 * 1024, 0x00);
+    let ended = tokio::time::timeout(Duration::from_secs(20), async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let outcome = tokio::time::timeout(
-        Duration::from_secs(60),
-        reqwest::Client::new()
-            .post(format!("http://127.0.0.1:{}/printers/netget", server.port))
-            .header("Content-Type", "application/ipp")
-            .body(body)
-            .send(),
-    )
-    .await
-    .map_err(|_| "the server kept reading a body past its drain budget")?;
-
-    if let Ok(response) = outcome {
-        assert_eq!(
-            response.status(),
-            413,
-            "if the peer was answered at all, it must have been refused"
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", server.port)).await?;
+        let port = server.port;
+        let head = format!(
+            "POST /printers/netget HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+             Content-Type: application/ipp\r\nContent-Length: {DECLARED_BUT_NEVER_SENT}\r\n\
+             Connection: close\r\n\r\n"
         );
+        stream.write_all(head.as_bytes()).await?;
+
+        // Just past the cap, so the server is committed to draining, and then silence. The
+        // other 55 MiB it was promised never arrive.
+        let mut sent = vec![0x01, 0x01, 0x00, 0x02, 0xAA, 0xBB, 0xCC, 0xDD];
+        sent.resize(OVERSIZED, 0x00);
+        stream.write_all(&sent).await?;
+        stream.flush().await?;
+
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        Ok::<Vec<u8>, std::io::Error>(raw)
+    })
+    .await
+    .map_err(|_| {
+        "the server was still waiting for a body the peer had stopped sending; the drain \
+         deadline did not fire"
+    })?;
+
+    // Either way is acceptable — the deadline may end in a 413 the peer can still read, or in
+    // a close. What is not acceptable is the exchange never ending. When there is a status
+    // line, it must be the refusal and not an answer.
+    if let Ok(raw) = ended {
+        if let Some(split) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&raw[..split]).to_string();
+            assert!(
+                head.contains(" 413 "),
+                "if the peer was answered at all, it must have been refused, got {head:?}"
+            );
+        }
     }
 
     server.wait_for_mocks(5).await;
