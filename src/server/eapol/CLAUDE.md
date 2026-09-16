@@ -206,6 +206,29 @@ Declaring an event that never fires — or one whose only answer would be a lie 
 No action takes raw bytes or base64, and no event carries any. `type_data_length` is a count,
 not a payload: a model cannot read a wire payload reliably and must not be asked to.
 
+## Every length field refuses what it cannot describe
+
+Six layers sit inside 60 octets and four of them carry a length: EAPOL's Packet Body Length
+(16 bits), EAP's Length (16 bits, covering its own header), RFC 1994's `Value-Size` (8 bits)
+and the Ethernet frame itself. Each encoder returns `CodecResult` and refuses past its own
+bound rather than narrowing, because a narrowed length is worse than an oversize frame: the
+result is well-formed and self-consistent and describes a *different* packet, and a cast does
+not overflow-check in release — the half of the build where it would matter.
+
+`EapolFrame::encode` was the one that narrowed, `self.body.len() as u16`, so 65536 octets
+declared a length of **0**. It is the `m3ua` defect in miniature. Not reachable — `encode_eap_typed`
+already refuses past `u16::MAX`, so every body this tree wraps is smaller, and an Ethernet
+segment carries 1500 octets anyway — and fixed regardless, because `EapolFrame` is a `pub`
+struct with a `pub` body and a `pub` encoder, so the bound belongs to the function rather than
+to an argument about who calls it. `eapol_wrap_eap` returns `CodecResult` for the same reason.
+
+`tests/codec_property_test.rs`'s `eapol_props` states all four bounds at the bound as well as
+past it, and round-trips the whole stack — identity → EAP → EAPOL → and back — because an
+off-by-one in any one layer's length field surfaces as "the supplicant said nothing" rather
+than as an error. Two shapes there are worth knowing before adding a property: Ethernet pads to
+60 octets, so `parse(build(payload))` is not `payload`; and EAPOL decode ignores trailing
+octets, which is what lets it see past that pad.
+
 ## Sessions and the connection rail
 
 Sessions are keyed by supplicant MAC in a `std::sync::Mutex<HashMap<...>>`. The `std` mutex is

@@ -738,10 +738,13 @@ impl Server for EapolProtocol {
         let ctx = self.ctx()?;
 
         match action_type {
-            "send_eap_request_identity" => Ok(ActionResult::Output(codec::eapol_wrap_eap(
-                ctx.eapol_version,
-                &codec::eap_request_identity(ctx.request_identifier),
-            ))),
+            "send_eap_request_identity" => Ok(ActionResult::Output(
+                codec::eapol_wrap_eap(
+                    ctx.eapol_version,
+                    &codec::eap_request_identity(ctx.request_identifier),
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to encode EAPOL frame: {}", e))?,
+            )),
 
             "send_eap_request_method" => {
                 let eap_type = method_type_value(
@@ -760,10 +763,10 @@ impl Server for EapolProtocol {
                 }
                 .map_err(|e| anyhow::anyhow!("Failed to encode EAP-Request: {}", e))?;
 
-                Ok(ActionResult::Output(codec::eapol_wrap_eap(
-                    ctx.eapol_version,
-                    &eap,
-                )))
+                Ok(ActionResult::Output(
+                    codec::eapol_wrap_eap(ctx.eapol_version, &eap)
+                        .map_err(|e| anyhow::anyhow!("Failed to encode EAPOL frame: {}", e))?,
+                ))
             }
 
             "send_eap_notification" => {
@@ -776,10 +779,10 @@ impl Server for EapolProtocol {
                 }
                 let eap = codec::eap_request_notification(ctx.request_identifier, &text)
                     .map_err(|e| anyhow::anyhow!("Failed to encode EAP-Notification: {}", e))?;
-                Ok(ActionResult::Output(codec::eapol_wrap_eap(
-                    ctx.eapol_version,
-                    &eap,
-                )))
+                Ok(ActionResult::Output(
+                    codec::eapol_wrap_eap(ctx.eapol_version, &eap)
+                        .map_err(|e| anyhow::anyhow!("Failed to encode EAPOL frame: {}", e))?,
+                ))
             }
 
             // ---------------------------------------------------------------

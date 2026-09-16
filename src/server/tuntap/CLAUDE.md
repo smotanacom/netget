@@ -43,7 +43,12 @@ it is the parameter an operator actually tunes.
 
 Grammar (`src/server/tuntap/packet.rs`, `PacketFilter::parse`):
 
-* `all` — everything. `none` — nothing (the interface still runs and still counts).
+* `all` — everything. `none` — nothing (the interface still runs and still counts). **Both are
+  whole expressions, not terms**: they are matched before the expression is split, so
+  `tcp:80,all` is refused. The refusal used to list `all` and `none` among the valid terms,
+  which sent a model repairing its own filter straight into a second failure; the error now
+  says where the keyword belongs, and the list of terms no longer names them.
+  `tests/codec_property_test.rs`'s `tuntap_props` pins both halves.
 * otherwise comma-separated alternatives (OR) of `+`-separated terms (AND):
   `v4`, `v6`, a protocol name (`icmp`, `icmpv6`, `tcp`, `udp`, `gre`, `esp`, `ospf`, …),
   `ip-proto-<n>`, `tcp:<port>`, `udp:<port>`, `port:<n>`, `from:<addr>`, `to:<addr>`,

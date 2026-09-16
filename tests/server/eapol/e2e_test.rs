@@ -354,7 +354,7 @@ async fn the_full_exchange_admits_a_verified_supplicant() -> E2EResult<()> {
         .exchange(&codec::eapol_wrap_eap(
             2,
             &codec::eap_response_identity(identity_id, "alice")?,
-        ))
+        )?)
         .await?;
     let challenge_request = eap_of(&reply);
     assert_eq!(challenge_request.code, codec::EAP_CODE_REQUEST);
@@ -395,7 +395,9 @@ async fn the_full_exchange_admits_a_verified_supplicant() -> E2EResult<()> {
         codec::EAP_TYPE_MD5_CHALLENGE,
         &codec::encode_md5_value(&digest, "alice")?,
     )?;
-    let reply = alice.exchange(&codec::eapol_wrap_eap(2, &response)).await?;
+    let reply = alice
+        .exchange(&codec::eapol_wrap_eap(2, &response)?)
+        .await?;
 
     let success = eap_of(&reply);
     assert_eq!(
@@ -483,7 +485,7 @@ async fn silence_and_denial_both_deny_but_are_distinguishable() -> E2EResult<()>
         .exchange(&codec::eapol_wrap_eap(
             2,
             &codec::eap_response_identity(7, "alice")?,
-        ))
+        )?)
         .await?;
 
     assert_not_a_success(&reply, "an empty action list");
@@ -516,7 +518,7 @@ async fn silence_and_denial_both_deny_but_are_distinguishable() -> E2EResult<()>
         .exchange(&codec::eapol_wrap_eap(
             2,
             &codec::eap_response_identity(9, "mallory")?,
-        ))
+        )?)
         .await?;
 
     assert_not_a_success(&reply, "an explicit denial");
@@ -574,7 +576,7 @@ async fn an_llm_outage_denies_and_never_admits() -> E2EResult<()> {
         .exchange(&codec::eapol_wrap_eap(
             2,
             &codec::eap_response_identity(3, "alice")?,
-        ))
+        )?)
         .await?;
 
     assert_not_a_success(&reply, "an LLM outage");
@@ -655,7 +657,7 @@ async fn nothing_a_supplicant_sends_can_produce_a_success() -> E2EResult<()> {
         ("EAPOL-Start", codec::eapol_start_frame(2)),
         (
             "EAP-Response/Identity",
-            codec::eapol_wrap_eap(2, &codec::eap_response_identity(1, "alice")?),
+            codec::eapol_wrap_eap(2, &codec::eap_response_identity(1, "alice")?)?,
         ),
     ];
     for (name, frame) in answered {
@@ -685,7 +687,7 @@ async fn nothing_a_supplicant_sends_can_produce_a_success() -> E2EResult<()> {
         ),
         (
             "an EAP-Request from the supplicant",
-            codec::eapol_wrap_eap(2, &codec::eap_request_identity(1)),
+            codec::eapol_wrap_eap(2, &codec::eap_request_identity(1))?,
         ),
         (
             "EAPOL-Key",
@@ -716,7 +718,7 @@ async fn nothing_a_supplicant_sends_can_produce_a_success() -> E2EResult<()> {
         &codec::encode_md5_value(&[0xaa; 16], "alice")?,
     )?;
     let reply = alice
-        .exchange(&codec::eapol_wrap_eap(2, &unsolicited))
+        .exchange(&codec::eapol_wrap_eap(2, &unsolicited)?)
         .await?;
     assert_not_a_success(&reply, "an unsolicited MD5-Challenge response");
     assert_eq!(eap_of(&reply).code, codec::EAP_CODE_FAILURE);
@@ -789,7 +791,7 @@ async fn a_success_is_refused_until_an_identity_exists() -> E2EResult<()> {
         .exchange(&codec::eapol_wrap_eap(
             2,
             &codec::eap_response_identity(1, "alice")?,
-        ))
+        )?)
         .await?;
     let success = eap_of(&reply);
     assert_eq!(
@@ -850,7 +852,7 @@ async fn a_response_with_the_wrong_identifier_is_discarded() -> E2EResult<()> {
         .send(&codec::eapol_wrap_eap(
             2,
             &codec::eap_response_identity(wrong, "alice")?,
-        ))
+        )?)
         .await?;
     if let Some(reply) = alice.recv(2).await? {
         assert_not_a_success(&reply, "a Response with a mismatched identifier");
@@ -865,7 +867,7 @@ async fn a_response_with_the_wrong_identifier_is_discarded() -> E2EResult<()> {
         .exchange(&codec::eapol_wrap_eap(
             2,
             &codec::eap_response_identity(request.identifier, "alice")?,
-        ))
+        )?)
         .await?;
     assert_eq!(eap_of(&reply).code, codec::EAP_CODE_SUCCESS);
     Ok(())
@@ -907,7 +909,7 @@ async fn logoff_deauthorizes_before_asking_and_then_may_stay_silent() -> E2EResu
         .exchange(&codec::eapol_wrap_eap(
             2,
             &codec::eap_response_identity(1, "alice")?,
-        ))
+        )?)
         .await?;
     assert_eq!(eap_of(&reply).code, codec::EAP_CODE_SUCCESS);
     assert!(server
