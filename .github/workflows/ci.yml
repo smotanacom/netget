@@ -271,8 +271,11 @@ jobs:
       #   dnsutils (dig)    - dns
       #   ffmpeg (ffprobe)  - rtsp
       #   freeradius-utils  - radius (radclient)
+      #   libcoap2-bin      - coap (coap-client, libcoap's own C client)
       #   libmemcached-tools- memcached (memcat/memstat/memping)
       #   maven (mvn)       - maven
+      #   mbpoll            - modbus (libmodbus's CLI master)
+      #   mosquitto-clients - mqtt (mosquitto_pub / mosquitto_sub)
       #   npm               - npm
       #   openvpn           - openvpn
       #   python3-pip       - pypi, and oci_registry's script handler
@@ -280,13 +283,15 @@ jobs:
       - name: Install the third-party clients the real-client tests drive
         run: |
           sudo apt-get install -y --no-install-recommends \
-            curl bind9-dnsutils ffmpeg freeradius-utils libmemcached-tools \
-            maven npm openvpn python3-pip tor
+            curl bind9-dnsutils ffmpeg freeradius-utils libcoap2-bin \
+            libmemcached-tools maven mbpoll mosquitto-clients npm openvpn \
+            python3-pip tor
 
       # Not in apt on ubuntu-22.04.
       #   crane    - oci_registry
       #   websocat - websocket (rust-websocket, deliberately NOT tungstenite)
-      - name: Install crane and websocat
+      #   mongosh  - mongodb (MongoDB's own shell, on the Node.js driver)
+      - name: Install crane, websocat and mongosh
         run: |
           set -eux
           curl -fsSL -o /tmp/crane.tgz \
@@ -295,8 +300,26 @@ jobs:
           sudo curl -fsSL -o /usr/local/bin/websocat \
             https://github.com/vi/websocat/releases/download/v1.14.0/websocat.x86_64-unknown-linux-musl
           sudo chmod +x /usr/local/bin/websocat
+          curl -fsSL -o /tmp/mongosh.tgz \
+            https://downloads.mongodb.com/compass/mongosh-2.3.8-linux-x64.tgz
+          sudo tar -xzf /tmp/mongosh.tgz -C /usr/local --strip-components=1 \
+            mongosh-2.3.8-linux-x64/bin/mongosh
           crane version
           websocat --version
+          mongosh --version
+
+      # kcat drives the kafka real-client test. ubuntu-22.04 still ships it under the
+      # pre-rename package name `kafkacat`, whose binary may be either `kcat` or
+      # `kafkacat` depending on the build - the test invokes `kcat`, so symlink when
+      # only the old name is present rather than making the test guess.
+      - name: Install kcat (librdkafka CLI)
+        run: |
+          set -eux
+          sudo apt-get install -y --no-install-recommends kafkacat
+          if ! command -v kcat ; then
+            sudo ln -s "$(command -v kafkacat)" /usr/local/bin/kcat
+          fi
+          kcat -V
 
       # Each of these asserts something about EVERY registered protocol: that no event
       # is advertised without usable actions, that no response example is left as a
@@ -356,8 +379,10 @@ jobs:
           echo "::notice::These are the real-client tests behind the Beta ratings."
           failed=""
           for filter in \
-            dns::dig_test gopher::e2e_test hls::curl_test kubernetes::e2e_test \
-            maven::e2e_test memcached::real_client_test npm::e2e_test \
+            coap::real_client_test dns::dig_test gopher::e2e_test hls::curl_test \
+            kafka::real_client_test kubernetes::e2e_test maven::e2e_test \
+            memcached::real_client_test modbus::real_client_test \
+            mongodb::real_client_test mqtt::real_client_test npm::e2e_test \
             oci_registry::e2e_test openvpn:: pypi::e2e_test \
             radius::real_client_test rtsp::ffprobe_test websocket::e2e_test ; do
             echo "::group::$filter"

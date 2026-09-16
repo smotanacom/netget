@@ -178,7 +178,21 @@ impl Protocol for MongodbProtocol {
             .state(DevelopmentState::Beta)
             .implementation("bson v3.0 with manual OP_MSG parsing (section kind 0 only)")
             .llm_control("Query responses (documents, counts, errors)")
-            .e2e_testing("mongodb official client crate")
+            .e2e_testing(
+                "TWO independent clients, neither #[ignore]d and neither able to skip. \
+                 (1) the official mongodb Rust driver, covering handshake plus CRUD commands. \
+                 (2) mongosh 2.11 -- MongoDB's own shell on the Node.js driver -- in \
+                 tests/server/mongodb/real_client_test.rs::test_mongodb_find_against_mongosh, \
+                 which FAILS rather than skips when mongosh is absent: it completes the \
+                 handshake and a find on testdb.users, and the two documents the Node driver \
+                 decoded out of the cursor batch are asserted field by field. NOTE the shell \
+                 is run with `--apiVersion 1`, which is load-bearing: without it the Node \
+                 driver opens with the legacy OP_QUERY handshake, which this server answers by \
+                 closing the connection. UNPROVEN: authentication (none is implemented), \
+                 OP_COMPRESSED, OP_MSG section kind 1 document sequences (so bulk writes), \
+                 getMore/killCursors (every cursor id is 0, i.e. single batch), transactions, \
+                 change streams, and replica-set or sharded topology discovery.",
+            )
             .notes(
                 "No authentication, no compression, no storage. Only OP_MSG (2013) is \
                  implemented - a legacy OP_QUERY handshake is rejected. `hello`/`isMaster` \

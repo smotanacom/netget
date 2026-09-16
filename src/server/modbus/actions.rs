@@ -114,16 +114,33 @@ impl Protocol for ModbusProtocol {
                  exception to raise. Framing (transaction id, unit id, byte counts, write \
                  echo) is server-side",
             )
-            .e2e_testing("tokio-modbus 0.17, an independent implementation, in test_modbus_reads_writes_and_exceptions_against_tokio_modbus and not #[ignore]d: connect_slave, read_holding_registers, write_single_register and a spec exception path, all asserted on decoded values.")
+            .e2e_testing(
+                "TWO independent implementations, neither #[ignore]d and neither able to skip. \
+                 (1) tokio-modbus 0.17, in \
+                 test_modbus_reads_writes_and_exceptions_against_tokio_modbus: connect_slave, \
+                 read_holding_registers, write_single_register and a spec exception path, all \
+                 asserted on decoded values. (2) mbpoll on libmodbus -- a C implementation -- \
+                 in tests/server/modbus/real_client_test.rs::\
+                 test_modbus_reads_writes_and_exceptions_against_mbpoll, which FAILS rather \
+                 than skips when mbpoll is absent: FC 3 register values, FC 1 coil bits \
+                 asserted in order (so the bit packing is checked, not just the byte count), \
+                 an FC 6 write whose address+value echo libmodbus validates, and an FC 4 \
+                 illegal-data-address exception libmodbus reports as an error rather than as \
+                 data. UNPROVEN: Modbus RTU/ASCII (not implemented), function codes outside \
+                 1/2/3/4/5/6/15/16, request pipelining beyond the sequential case, and any \
+                 real PLC.",
+            )
             .notes(
                 "Validated against the tokio-modbus 0.17 client, which is a separate \
                  implementation from this server's hand-rolled codec: read_coils, \
                  read_discrete_inputs, read_holding_registers, read_input_registers, \
                  write_single_register, write_multiple_registers and an illegal-data-address \
-                 exception were all decoded by it. Untested: Modbus RTU/ASCII (not \
-                 implemented), function codes outside 1/2/3/4/5/6/15/16 (answered with \
+                 exception were all decoded by it, and against mbpoll on libmodbus, a C \
+                 implementation, which decoded register values, coil bits in order, an FC 6 \
+                 write echo and an illegal-data-address exception. Untested: Modbus RTU/ASCII \
+                 (not implemented), function codes outside 1/2/3/4/5/6/15/16 (answered with \
                  exception 0x01), request pipelining beyond the sequential case, and any \
-                 real PLC or mbpoll/pymodbus peer",
+                 real PLC or pymodbus peer",
             )
             .max_inbound_bytes(crate::server::modbus::codec::MAX_ADU_LEN)
             .build()

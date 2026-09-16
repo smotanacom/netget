@@ -585,7 +585,11 @@ impl Protocol for KafkaProtocol {
         use crate::protocol::metadata::{DevelopmentState, ProtocolMetadataV2};
 
         ProtocolMetadataV2::builder()
-            .state(DevelopmentState::Experimental)
+            // Beta since September 2026: librdkafka -- a separate C implementation, not the
+            // kafka-protocol crate this server frames with -- completes a produce and a fetch
+            // against it. Not Stable: that is one client, Stable wants two, and consumer
+            // groups do not work at all (see notes).
+            .state(DevelopmentState::Beta)
             .implementation(
                 "kafka-protocol v0.14 wire format. Implements ApiVersions v0-3 (answered by Rust), \
                  Metadata v0-8, Produce v0-8, Fetch v0-11, OffsetCommit v0-7",
@@ -596,9 +600,20 @@ impl Protocol for KafkaProtocol {
                  and exactly which records a fetch returns",
             )
             .e2e_testing(
-                "Mocked E2E: requests are built and responses decoded with kafka-protocol's own \
-                 client-side codecs, asserting correlation-id echo, ApiVersions negotiation, \
-                 metadata leadership, and a produced record round-tripping back through fetch",
+                "kcat 1.7 on librdkafka 2.15 -- a C implementation independent of the \
+                 kafka-protocol crate this server frames with -- in \
+                 tests/server/kafka/real_client_test.rs::\
+                 test_kafka_produce_and_fetch_against_kcat, which is NOT #[ignore]d and FAILS \
+                 rather than skips when kcat is absent. It completes ApiVersions -> Metadata -> \
+                 Produce, the server decodes the key and value out of librdkafka's v2 record \
+                 batch, and a second kcat run completes ApiVersions -> Metadata -> Fetch and \
+                 prints that key and value back, so librdkafka accepted the batch this server \
+                 encoded (CRC, varint framing, attributes and offset deltas included). Also \
+                 mocked E2E against kafka-protocol's own client-side codecs for correlation-id \
+                 echo and ApiVersions negotiation. UNPROVEN: consumer groups (the APIs do not \
+                 exist here), the Java client, compression, transactions, TLS/SASL, multi-broker \
+                 metadata, and any Fetch that must resolve an offset -- the kcat consumer is \
+                 pinned to an absolute offset precisely because ListOffsets is not implemented.",
             )
             .notes(
                 "Supports exactly five API keys: ApiVersions (18) v0-3, Metadata (3) v0-8, \
@@ -611,7 +626,8 @@ impl Protocol for KafkaProtocol {
                  only what the model supplies for that request and a committed offset is \
                  acknowledged but not remembered. When the model returns no usable action the \
                  client gets UNKNOWN_SERVER_ERROR (-1) in the correct response type, never a \
-                 fabricated success. Not validated against librdkafka or the Java client.",
+                 fabricated success. Validated against librdkafka (kcat) for produce and fetch; \
+                 not validated against the Java client.",
             )
             .max_inbound_bytes(crate::server::kafka::MAX_REQUEST_BYTES)
             .build()

@@ -99,9 +99,8 @@ data.
 
 ## Coverage gaps
 
-- **No real PLC, no `mbpoll`, no `pymodbus`.** The peer is a Rust crate. It is an independent
-  implementation, which is the important property, but it is not a field device and it is not a
-  second language's stack.
+- **No real PLC and no `pymodbus`.** `mbpoll` is covered as of September 2026 — see below — so
+  the second language's stack is no longer a gap, but a field device still is.
 - FC 2 (discrete inputs) and FC 5/15 (coil writes) are exercised through the codec tests and the
   shared event/action paths, but not through the `tokio-modbus` client.
 - No test for the `unit_id` startup parameter's 0x0B gateway exception.
@@ -127,3 +126,32 @@ None. The suite has been stable across repeated runs. The most likely future fla
 `wait_for_log("Modbus accept loop started", 15)` guard on a heavily loaded machine; the timeout
 is generous precisely because the alternative — sleeping a fixed interval — is what makes E2E
 suites flaky.
+
+## The second implementation: `mbpoll` on libmodbus
+
+`real_client_test.rs::test_modbus_reads_writes_and_exceptions_against_mbpoll` drives the real
+`mbpoll` binary, which is C on libmodbus — a different language and a different stack from both
+this server's hand-rolled codec and the `tokio-modbus` peer. It is **not** `#[ignore]`d, and it
+**fails** rather than skipping when mbpoll is absent: a skip that returns `Ok(())` is a silent
+pass on every machine without the binary, which is how a rating outlives its evidence.
+
+Four exchanges, each asserted on what libmodbus *decoded and printed*:
+
+| mbpoll invocation | FC | asserted |
+|---|---|---|
+| `-t 4 -r 0 -c 3` | 3 | the three register values, derived in the mock from the event's own `start_address`/`quantity` |
+| `-t 0 -r 0 -c 4` | 1 | the coil pattern **in order** (`1 0 0 1`), so bit packing is checked rather than just the byte count |
+| `-t 4 -r 7 <value>` | 6 | libmodbus validates the server's address+value echo before reporting the write |
+| `-t 3 -r 0 -c 2` | 4 | exception 0x02 surfaced as a Modbus error, not as data |
+
+Three things about the invocation are load-bearing:
+
+- **`-1`, always.** Without it mbpoll polls forever, and every poll is another event and
+  another mock call, so `expect_calls(1)` fails in a way that looks like a protocol bug.
+- **`-0`** puts mbpoll into PDU addressing, so `-r 0` is literally address 0 on the wire and
+  matches what the model is shown. mbpoll's default is 1-based and subtracts one.
+- **No `unit_id` startup parameter.** With it unset the server answers every unit id, which is
+  what lets mbpoll's default slave address 1 work untouched.
+
+The exception case is the one that keeps the other three honest: without a negative path, a
+server that answered every request with the same success frame would pass.
