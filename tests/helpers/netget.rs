@@ -22,7 +22,9 @@ use tokio::time::{sleep, timeout};
 ///
 /// `Deref`/`DerefMut` to the inner `Child` so every existing `self.child.wait()`,
 /// `self.child.id()` and `child.stdout.take()` reads the same as before.
-pub(crate) struct ManagedChild(Child);
+// `pub`, not `pub(crate)`: `NetGetInstance::child` is a public field, and a public field
+// whose type is less visible than itself trips the `private_interfaces` lint.
+pub struct ManagedChild(Child);
 
 impl std::ops::Deref for ManagedChild {
     type Target = Child;
@@ -56,7 +58,9 @@ impl Drop for ManagedChild {
 /// Same reasoning as [`ManagedChild`]: the teardown belongs to the field so the struct holding
 /// it does not need a `Drop`. A bare `JoinHandle` detaches on drop rather than aborting, and
 /// these tasks are parked on a pipe that may never close cleanly.
-pub(crate) struct AbortOnDrop(tokio::task::JoinHandle<()>);
+// `pub` for the same reason as `ManagedChild`, so the pair stay consistent even though the
+// reader-handle fields are only `pub(crate)` today.
+pub struct AbortOnDrop(tokio::task::JoinHandle<()>);
 
 impl std::ops::Deref for AbortOnDrop {
     type Target = tokio::task::JoinHandle<()>;
