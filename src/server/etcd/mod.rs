@@ -132,7 +132,7 @@ const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNEC
 const CONNECTION_CAP_REFUSAL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
     Content-Length: 0\r\nRetry-After: 5\r\nConnection: close\r\n\r\n";
 
-const MAX_REQUEST_BYTES: usize = 1_572_864;
+pub const MAX_REQUEST_BYTES: usize = 1_572_864;
 
 // gRPC status codes used by this server (google.rpc.Code).
 #[cfg(feature = "etcd")]

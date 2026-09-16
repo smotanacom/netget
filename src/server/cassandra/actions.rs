@@ -100,6 +100,7 @@ impl Protocol for CassandraProtocol {
                  compression or server events. No storage: the handler answers every query; \
                  only prepared-statement metadata is held, per connection and capped.",
             )
+            .max_inbound_bytes(crate::server::cassandra::MAX_FRAME_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

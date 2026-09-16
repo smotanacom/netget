@@ -55,7 +55,7 @@ const ALLOWED_METHODS: &str = "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPA
 /// how much memory this process allocated, and the whole of it was then interpolated into the
 /// model's prompt. 8 MiB is far past any real `PROPFIND`/`PROPPATCH` body and still bounded.
 /// A larger body gets `413 Payload Too Large` before any of it reaches the model.
-const MAX_REQUEST_BODY: usize = 8 * 1024 * 1024;
+pub const MAX_REQUEST_BODY: usize = 8 * 1024 * 1024;
 
 /// WebDAV server whose entire filesystem is supplied by the LLM
 pub struct WebDavServer;

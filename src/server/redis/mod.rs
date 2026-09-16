@@ -25,7 +25,7 @@ use tracing::{debug, error, trace, warn};
 /// that announces a huge bulk string (`$2000000000\r\n`) and then stalls would make the
 /// connection buffer grow without bound. Real Redis caps a bulk string at 512 MB; 64 MB is
 /// far more than any LLM-authored command needs.
-const MAX_PENDING_FRAME_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_PENDING_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 /// How long to wait for the first byte of the first command from a peer that has only
 /// connected.

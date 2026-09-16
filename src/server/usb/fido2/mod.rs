@@ -772,7 +772,7 @@ impl UsbFido2Server {
     /// Drive one USB/IP session and the approval round trips that hang off it.
     #[allow(clippy::too_many_arguments)]
     async fn handle_connection(
-        mut stream: tokio::net::TcpStream,
+        stream: tokio::net::TcpStream,
         connection_id: ConnectionId,
         remote_addr: SocketAddr,
         llm_client: OllamaClient,
@@ -822,8 +822,21 @@ impl UsbFido2Server {
         // Run the USB/IP session on the socket netget already accepted. Calling
         // `usbip::server(addr, ...)` here would try to *bind* a second listener and drop this
         // socket, which is what the previous version did.
+        // Not `usbip::handler(&mut stream, ...)` directly: the crate allocates from the peer's
+        // `transfer_buffer_length` and `number_of_packets` without checking either, on a socket
+        // USB/IP never authenticates. `run_guarded_usbip` screens both before a byte reaches it
+        // -- see `src/server/usb/guard.rs`.
+        let guard_status_tx = status_tx.clone();
         let mut usbip_task = tokio::spawn(async move {
-            match usbip::handler(&mut stream, usbip_server).await {
+            match crate::server::usb::guard::run_guarded_usbip(
+                stream,
+                usbip_server,
+                "USB FIDO2",
+                connection_id.to_string(),
+                guard_status_tx,
+            )
+            .await
+            {
                 Ok(()) => debug!(
                     "USB/IP session ended for FIDO2 connection {}",
                     connection_id

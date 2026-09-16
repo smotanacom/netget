@@ -141,6 +141,7 @@ impl Protocol for OpenApiProtocol {
             .llm_control("All API responses, spec compliance/violations")
             .e2e_testing("reqwest HTTP client")
             .notes("Dynamic spec loading, intentional violations for testing")
+            .max_inbound_bytes(crate::server::openapi::MAX_REQUEST_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

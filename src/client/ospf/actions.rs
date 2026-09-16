@@ -501,6 +501,11 @@ impl Protocol for OspfClientProtocol {
             // says nothing about OSPF either way — it is here because the struct is built by
             // literal rather than through the builder.
             failure_mode: FailureMode::Answers,
+            // Likewise the builder's default. `max_inbound_bytes` describes what a *server*
+            // buffers from a peer; this client reads each OSPF packet into one fixed-size raw
+            // socket buffer and accumulates nothing across reads, so there is no peer-chosen
+            // length to declare.
+            max_inbound_bytes: None,
         }
     }
     fn description(&self) -> &'static str {

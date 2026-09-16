@@ -235,3 +235,27 @@ See `tests/server/usb_msc/CLAUDE.md`.
 - **SCSI Commands Reference**: https://www.t10.org/ftp/t10/document.05/05-344r0.pdf
 - **USB/IP Protocol**: https://docs.kernel.org/usb/usbip_protocol.html
 - **jiegec/usbip crate**: https://github.com/jiegec/usbip
+
+## USB/IP is screened before the crate sees it
+
+This server does **not** call `usbip::handler` on the accepted socket. It calls
+`crate::server::usb::guard::run_guarded_usbip`, which relays the connection into the crate
+through an in-memory pipe and decides every inbound USB/IP message first.
+
+The reason is a pre-auth allocation bomb in `usbip` 0.9.0: `USBIP_CMD_SUBMIT` is 48 bytes of
+header, and the crate then does `vec![0; transfer_buffer_length as usize]` and
+`vec![0; 16 * number_of_packets as usize]` with no bound on either number. USB/IP authenticates
+nothing, and the session task is spawned before the attach LLM call, so 48 bytes from a peer
+that has not imported anything ask for 4 GiB.
+
+The screen refuses a declared `transfer_buffer_length` over
+`guard::MAX_TRANSFER_BUFFER_BYTES` (1 MiB, a NetGet policy choice) and a `number_of_packets`
+over `guard::MAX_ISO_PACKETS` (1024, the Linux kernel's own `USBIP_MAX_ISO_PACKETS`), along
+with unknown command words, a `direction` that is not a single bit, a non-zero `status`, and a
+payload the peer announces and then stalls on. A refusal closes the connection — the screen
+sits below the crate and cannot synthesise a `USBIP_RET_SUBMIT` for a sequence the crate never
+saw — and logs at ERROR with a `decision=fail_closed_*` tag.
+
+`MAX_TRANSFER_BUFFER_BYTES` is declared in `metadata()` via `.max_inbound_bytes(...)`.
+`src/server/usb/CLAUDE.md` has the full reasoning, the constants and what is still unguarded;
+`tests/server/usb_msc/guard_test.rs` is the wire-level test.

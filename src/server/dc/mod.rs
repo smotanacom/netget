@@ -28,7 +28,7 @@ const DEFAULT_HUB_NAME: &str = "NetGetHub";
 /// allows until the process dies. That is the whole attack: `nc host 411 < /dev/zero`. Real
 /// commands are tens of bytes; `$MyINFO` with a long description is the largest and stays well
 /// under a kilobyte, so 64 KiB is generous and still finite.
-const MAX_COMMAND_LEN: usize = 64 * 1024;
+pub const MAX_COMMAND_LEN: usize = 64 * 1024;
 
 /// Strip the NMDC framing characters from a value that goes inside a command.
 ///

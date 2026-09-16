@@ -1148,7 +1148,7 @@ async fn handle_admin(
 /// Same value and same reasoning as `http_common::handler::MAX_REQUEST_BODY_BYTES`, declared
 /// here rather than imported because the `ollama` feature does not pull in `http`, so that
 /// module is configured out of an `--features ollama` build.
-const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Read a request body, refusing anything over [`MAX_REQUEST_BODY_BYTES`] with 413.
 ///

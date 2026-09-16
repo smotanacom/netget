@@ -324,6 +324,25 @@ pub struct ProtocolMetadataV2 {
     /// [`FailureMode::DeliberatelySilent`] is an assertion that every frame this protocol could
     /// send would be a claim it cannot support — say why in `notes`.
     pub failure_mode: FailureMode,
+
+    /// The largest single inbound message this server will buffer from a peer, in bytes.
+    ///
+    /// `None` means the protocol reads nothing whose length a peer chooses: a fixed-size frame
+    /// (ARP, BOOTP), a single `recv_from` into a fixed buffer, or a profile that delegates its
+    /// whole read loop to another protocol. `None` is a claim, not an absence — a protocol that
+    /// *does* accumulate and declares `None` is the unbounded-read defect, and
+    /// `tests/max_inbound_bytes_declaration_test.rs` is the ratchet that says so.
+    ///
+    /// **The number must be the one the code enforces**, at the point the length is decided —
+    /// not an aspiration. The value exists to be greppable and testable: every declaration
+    /// should have a test that sends this many bytes plus one and asserts the refusal happens
+    /// *before* any model call. A bound nobody tested is a comment.
+    ///
+    /// Bound the size the peer **declared**, before doing arithmetic on it. NATS's `HPUB` limit
+    /// was applied to `total − header`, which leaves `header` unbounded and lets `header ==
+    /// total` pass every check with a zero-length body — thirty bytes on the wire buffering
+    /// toward 4 GB.
+    pub max_inbound_bytes: Option<usize>,
 }
 
 impl ProtocolMetadataV2 {
@@ -358,6 +377,7 @@ pub struct ProtocolMetadataV2Builder {
     notes: Option<&'static str>,
     connectionless: bool,
     failure_mode: FailureMode,
+    max_inbound_bytes: Option<usize>,
 }
 
 impl Default for ProtocolMetadataV2Builder {
@@ -377,6 +397,7 @@ impl ProtocolMetadataV2Builder {
             notes: None,
             connectionless: false,
             failure_mode: FailureMode::Answers,
+            max_inbound_bytes: None,
         }
     }
 
@@ -423,6 +444,16 @@ impl ProtocolMetadataV2Builder {
         self
     }
 
+    /// Declare the largest single inbound message this server buffers from a peer — see
+    /// [`ProtocolMetadataV2::max_inbound_bytes`].
+    ///
+    /// Pass the constant the code actually enforces, so the declaration moves when the bound
+    /// does: `.max_inbound_bytes(MAX_REQUEST_BYTES)`, never a literal repeated from it.
+    pub const fn max_inbound_bytes(mut self, bytes: usize) -> Self {
+        self.max_inbound_bytes = Some(bytes);
+        self
+    }
+
     pub const fn build(self) -> ProtocolMetadataV2 {
         ProtocolMetadataV2 {
             state: self.state,
@@ -433,6 +464,7 @@ impl ProtocolMetadataV2Builder {
             notes: self.notes,
             connectionless: self.connectionless,
             failure_mode: self.failure_mode,
+            max_inbound_bytes: self.max_inbound_bytes,
         }
     }
 }

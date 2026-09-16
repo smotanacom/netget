@@ -86,6 +86,7 @@ impl Protocol for NfsProtocol {
                  model round-trip, so real workloads are impractically slow - use script or \
                  static handlers for anything beyond a demo.",
             )
+            .max_inbound_bytes(crate::server::nfs::guard::MAX_RECORD_BYTES)
             .build()
     }
 

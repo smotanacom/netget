@@ -72,6 +72,7 @@ impl Protocol for SamlSpProtocol {
                  tells it to look, and it has no key to check a signature against. The session \
                  cookie is the bare user id with no server-side session store.",
             )
+            .max_inbound_bytes(crate::server::saml_sp::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

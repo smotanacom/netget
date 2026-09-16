@@ -415,6 +415,9 @@ impl Protocol for UsbFido2Protocol {
                  SHA-256 of the plaintext, with none of PIN protocol v1's ECDH shared secret. \
                  Credentials do not survive the USB/IP session.",
             )
+            // The USB/IP screen in `src/server/usb/guard.rs` refuses a `USBIP_CMD_SUBMIT`
+            // declaring more than this, before the crate allocates from the number.
+            .max_inbound_bytes(crate::server::usb::guard::MAX_TRANSFER_BUFFER_BYTES)
             .build()
     }
 

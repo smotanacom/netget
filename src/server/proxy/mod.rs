@@ -42,7 +42,7 @@ use serde_json::json;
 const MAX_UPSTREAM_RESPONSE: usize = 8 * 1024 * 1024;
 
 /// Largest client request head the proxy will read before giving up on it.
-const MAX_REQUEST_BYTES: usize = 64 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
 /// How long a client has to send its request line and headers after connecting.
 const REQUEST_READ_TIMEOUT_SECS: u64 = 30;

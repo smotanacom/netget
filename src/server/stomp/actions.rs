@@ -122,6 +122,7 @@ impl Protocol for StompProtocol {
                  version:1.2) and TLS. UNPROVEN: interop with brokers' own clients \
                  (ActiveMQ/RabbitMQ STOMP), and concurrent sessions.",
             )
+            .max_inbound_bytes(crate::server::stomp::frame::MAX_FRAME_BYTES)
             .build()
     }
 

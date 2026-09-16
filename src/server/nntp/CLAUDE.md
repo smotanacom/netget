@@ -533,3 +533,27 @@ This is the article body.
 - [RFC 4643: NNTP Authentication](https://datatracker.ietf.org/doc/html/rfc4643)
 - [Wikipedia: NNTP](https://en.wikipedia.org/wiki/Network_News_Transfer_Protocol)
 - [NNTP Command Reference](https://www.ietf.org/rfc/rfc3977.txt)
+
+## Max inbound message size
+
+`MAX_COMMAND_BYTES = 4096` (`mod.rs`), declared as `metadata().max_inbound_bytes`.
+
+RFC 3977 §3.1 fixes the NNTP command line at 512 octets including the CRLF. 4 KiB is eight
+times that, leaving room for the long wildmat arguments `NEWNEWS` and `LIST ACTIVE` carry while
+staying far below anything worth buffering from an unauthenticated peer.
+
+The bound exists because `AsyncBufReadExt::read_line` grows its `String` until it finds a `\n`
+and caps nothing: a peer that connected and streamed bytes with no newline made the server
+allocate without limit. The read now goes through
+`crate::utils::line_reader::read_bounded_line`, shared with POP3 and IMAP.
+
+An over-long line is answered `501 command line too long` — RFC 3977's syntax-error response —
+and the session closes, because the peer is mid-line and there is no resynchronisation point.
+Logged `decision=fail_closed_oversized_command`. Closing *without* a 501 would have made an
+oversized request indistinguishable from a dropped connection, and NNTP is strictly one
+response line per command, so a client that read the close would desynchronise rather than
+learn anything.
+
+The refusal happens **before** the `nntp_command_received` event is built, so an oversized line
+never reaches a prompt. `tests/server/nntp/line_limit_test.rs` asserts exactly that — zero
+model calls, not merely a 501 — and its second test asserts a 2 KiB command is still answered.

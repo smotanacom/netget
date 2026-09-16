@@ -52,7 +52,7 @@ use tracing::{debug, error, info, trace, warn};
 const DEFAULT_MAX_PACKET_SIZE: usize = 256 * 1024;
 
 /// Hard ceiling on the configurable `max_packet_size` startup parameter.
-const MAX_PACKET_SIZE_LIMIT: usize = 16 * 1024 * 1024;
+pub const MAX_PACKET_SIZE_LIMIT: usize = 16 * 1024 * 1024;
 
 // ============================================================================
 // Packet type constants (MQTT 3.1.1 section 2.2.1)

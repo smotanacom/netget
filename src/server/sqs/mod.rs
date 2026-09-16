@@ -32,7 +32,7 @@ use crate::{console_error, console_info};
 /// The body was read with an unbounded `req.into_body().collect()`, so a single request
 /// could grow the process without limit. A real SQS message is capped at 256 KiB and a
 /// SendMessageBatch carries ten of them, so 4 MiB is well clear of anything an SDK sends.
-const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 /// SQS server that delegates queue operations to LLM
 pub struct SqsServer;

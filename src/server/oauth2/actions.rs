@@ -73,6 +73,7 @@ impl Protocol for OAuth2Protocol {
                  registry, no PKCE, no TLS. Suitable for exercising OAuth2 clients and for \
                  honeypots, never for guarding anything real.",
             )
+            .max_inbound_bytes(crate::server::oauth2::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

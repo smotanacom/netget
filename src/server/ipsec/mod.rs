@@ -45,7 +45,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace};
 
 /// Maximum IKE packet size
-const MAX_PACKET_SIZE: usize = 65535;
+pub const MAX_PACKET_SIZE: usize = 65535;
 
 /// IKEv2 header minimum size (28 bytes)
 const IKE_HEADER_SIZE: usize = 28;

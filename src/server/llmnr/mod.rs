@@ -41,7 +41,7 @@ use tracing::{debug, error, info, trace, warn};
 ///
 /// LLMNR has no EDNS0 negotiation, but the DNS message format allows up to 64 KiB over TCP.
 /// 4 KiB covers every query a name resolver produces and bounds a hostile datagram.
-const MAX_MESSAGE_LEN: usize = 4096;
+pub const MAX_MESSAGE_LEN: usize = 4096;
 
 /// How long a TCP querier may hold a connection open without sending anything.
 ///

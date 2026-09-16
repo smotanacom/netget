@@ -452,6 +452,7 @@ impl Protocol for YarnProtocol {
                     statically; metrics/apps/nodes are LLM-driven. Fail-closed: LLM failure \
                     returns 503/500 RemoteException, never an empty-but-200 cluster.",
             )
+            .max_inbound_bytes(crate::server::yarn::MAX_REQUEST_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

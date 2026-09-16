@@ -717,6 +717,7 @@ impl Protocol for RadiusProtocol {
                  server refuses to start without one. Accounting-Request packets whose \
                  Authenticator does not verify are dropped.",
             )
+            .max_inbound_bytes(crate::server::radius::packet::MAX_PACKET_LEN)
             .build()
     }
 

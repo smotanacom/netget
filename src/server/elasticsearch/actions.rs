@@ -471,6 +471,7 @@ impl Protocol for ElasticsearchProtocol {
                 "Virtual data (no persistence). Request bodies are bounded at 8 MiB and a \
                  larger one is refused with 413 before any model call",
             )
+            .max_inbound_bytes(crate::server::elasticsearch::MAX_REQUEST_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

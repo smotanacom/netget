@@ -150,6 +150,7 @@ impl Protocol for DynamoProtocol {
             .llm_control("All DynamoDB operations (GetItem, PutItem, Query)")
             .e2e_testing("aws-sdk-dynamodb, the official AWS SDK, in tests/server/dynamo/e2e_aws_sdk_test.rs and not #[ignore]d: CreateTable, PutItem/GetItem and UpdateItem complete through the SDK, the same class of evidence that made sqs Beta.")
             .notes("Virtual data (no persistence)")
+            .max_inbound_bytes(crate::server::dynamo::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

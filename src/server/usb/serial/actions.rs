@@ -399,6 +399,9 @@ impl Protocol for UsbSerialProtocol {
                  the baud rate. There is no flow control and no serial-state notification on \
                  the interrupt endpoint (break, DCD, framing errors are never reported).",
             )
+            // The USB/IP screen in `src/server/usb/guard.rs` refuses a `USBIP_CMD_SUBMIT`
+            // declaring more than this, before the crate allocates from the number.
+            .max_inbound_bytes(crate::server::usb::guard::MAX_TRANSFER_BUFFER_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

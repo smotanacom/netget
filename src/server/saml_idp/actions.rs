@@ -71,6 +71,7 @@ impl Protocol for SamlIdpProtocol {
                  either, and there is no replay protection. Real SPs configured to require \
                  signed assertions will reject these.",
             )
+            .max_inbound_bytes(crate::server::saml_idp::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

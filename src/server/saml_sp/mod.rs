@@ -41,7 +41,7 @@ use actions::SAML_SP_REQUEST_EVENT;
 /// `req.collect()` let one anonymous POST grow the process without limit and drive an LLM
 /// call with megabytes of attacker-chosen prompt. A base64 SAMLResponse form is a few tens of
 /// KiB; 256 KiB is generous for even a large assertion with attributes.
-const MAX_REQUEST_BYTES: usize = 256 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
 
 /// Narrow a model-supplied HTTP status to `u16` without wrapping.
 ///

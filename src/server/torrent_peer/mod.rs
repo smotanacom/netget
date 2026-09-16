@@ -70,6 +70,17 @@ const MAX_CONNECTIONS: usize = crate::server::accept_bounded::DEFAULT_MAX_CONNEC
 /// refusal is in the log instead, and the log line is the diagnosis.
 const CONNECTION_CAP_REFUSAL: &[u8] = b"";
 
+/// Largest the inbound frame accumulator may grow before the peer is closed.
+///
+/// A peer that never completes a frame would otherwise grow this buffer without bound. The
+/// largest legitimate frame is a piece message, capped well under this by every client in use.
+/// Note the peer-supplied length prefix is never used to allocate — it only gates whether a
+/// whole frame has arrived — so this cap is what a `0xFFFFFFFF` prefix actually runs into.
+///
+/// Module level rather than inside the read loop, so `metadata()` can declare the constant the
+/// loop enforces instead of repeating the number.
+pub const MAX_PENDING: usize = 2 * 1024 * 1024;
+
 /// BitTorrent Peer Wire Protocol server
 pub struct TorrentPeerServer;
 
@@ -284,10 +295,6 @@ impl TorrentPeerServer {
 
                 pending.extend_from_slice(&chunk[..n]);
 
-                // A peer that never completes a frame would otherwise grow this buffer without
-                // bound. The largest legitimate frame is a piece message, capped well under
-                // this by every client in use.
-                const MAX_PENDING: usize = 2 * 1024 * 1024;
                 if pending.len() > MAX_PENDING {
                     Log::new(Some(&status_tx)).warn(format!(
                         "BitTorrent Peer {} buffered {} bytes without a complete message, closing",

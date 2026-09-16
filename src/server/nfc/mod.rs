@@ -66,7 +66,7 @@ pub use actions::NfcServerProtocol;
 /// extended form is usable only up to ~4089 data bytes. The cap is what makes
 /// the allocation bounded, so it wins over the parser's theoretical range; a
 /// reader needing more would have to raise this, not the parser.
-const MAX_FRAME_LEN: usize = 4096;
+pub const MAX_FRAME_LEN: usize = 4096;
 
 /// vpcd control codes (1-byte frames).
 const VPCD_CTRL_OFF: u8 = 0x00;

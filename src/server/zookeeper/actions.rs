@@ -475,6 +475,7 @@ impl Protocol for ZookeeperProtocol {
                  data_hex escape hatch still asks for hand-written Jute for opcodes with no \
                  structured action. No storage: the handler answers every request.",
             )
+            .max_inbound_bytes(crate::server::zookeeper::MAX_REQUEST_BYTES as usize)
             .build()
     }
 

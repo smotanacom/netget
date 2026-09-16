@@ -653,6 +653,7 @@ impl Protocol for StpProtocol {
                  topology, and a fabricated one can trigger a real re-convergence, so an LLM \
                  error emits nothing and records decision=fail_closed_* in the log instead.",
             )
+            .max_inbound_bytes(crate::server::stp::codec::MAX_8023_LENGTH)
             .build()
     }
 

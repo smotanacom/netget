@@ -24,7 +24,7 @@ pub(crate) const MAX_IRC_LINE: usize = 512;
 /// [`tokio::io::AsyncBufReadExt::read_line`] grows its buffer until it finds a newline, so an
 /// unauthenticated peer that connects and streams bytes with no `\n` is a one-connection
 /// out-of-memory.
-pub(crate) const MAX_IRC_READ_LINE: usize = 8704;
+pub const MAX_IRC_READ_LINE: usize = 8704;
 
 /// The result of trying to read one line from an IRC peer.
 pub(crate) enum IrcLine {

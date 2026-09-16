@@ -616,6 +616,7 @@ impl Protocol for BgpProtocol {
                  propagation between peers. IPv4 unicast only on the send path. Never peered \
                  against a live BGP daemon.",
             )
+            .max_inbound_bytes(crate::server::bgp::wire::BGP_MAX_MESSAGE_LEN)
             .build()
     }
 

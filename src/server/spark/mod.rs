@@ -64,7 +64,7 @@ fn status_or(value: Option<&serde_json::Value>, default: u16) -> u16 {
 /// The monitoring API is read-only, so a body is never needed — but it was read with an
 /// unbounded `req.into_body().collect()` and then used for nothing but a `trace!`, which
 /// made an unauthenticated POST of any size a way to grow the process. Small on purpose.
-const MAX_REQUEST_BYTES: usize = 64 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
 /// Apache Spark monitoring REST server.
 pub struct SparkServer;

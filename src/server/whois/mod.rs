@@ -36,7 +36,7 @@ use tokio::sync::{mpsc, Mutex};
 
 /// A WHOIS query is a domain, a handle or an IP. Anything past this is not one, and buffering
 /// it for a peer who may never send a newline is a memory hole reachable by anyone.
-const MAX_QUERY_BYTES: usize = 4096;
+pub const MAX_QUERY_BYTES: usize = 4096;
 
 /// How long to wait for the first query from a peer that has only connected.
 const FIRST_QUERY_READ_TIMEOUT: Duration = Duration::from_secs(30);

@@ -511,6 +511,7 @@ impl Protocol for MqttProtocol {
                  delivered automatically on publish. Non-UTF-8 payloads reach the model as a \
                  lossy string with payload_is_text=false.",
             )
+            .max_inbound_bytes(crate::server::mqtt::MAX_PACKET_SIZE_LIMIT)
             .build()
     }
 

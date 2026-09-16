@@ -62,7 +62,7 @@ use actions::{build_ipp_response, ipp_status_code};
 /// Spelled out rather than borrowed from `http_common::handler::MAX_REQUEST_BODY_BYTES`:
 /// that module is gated behind the `http`/`http2` features and `ipp` does not imply either,
 /// so referencing it would make `--features ipp` alone fail to build.
-const MAX_IPP_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_IPP_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// IPP server that delegates request handling to LLM
 pub struct IppServer;

@@ -104,6 +104,7 @@ impl Protocol for SnowflakeProtocol {
                  store, so tokens are not validated against issued ones. Fail-closed: an LLM outage on \
                  login is a refusal (no token issued), never a success-shaped empty result.",
             )
+            .max_inbound_bytes(crate::server::snowflake::MAX_REQUEST_BYTES)
             .build()
     }
 

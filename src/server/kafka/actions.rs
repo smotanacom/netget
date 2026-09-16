@@ -613,6 +613,7 @@ impl Protocol for KafkaProtocol {
                  client gets UNKNOWN_SERVER_ERROR (-1) in the correct response type, never a \
                  fabricated success. Not validated against librdkafka or the Java client.",
             )
+            .max_inbound_bytes(crate::server::kafka::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

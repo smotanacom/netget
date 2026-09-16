@@ -234,17 +234,42 @@ declare, whether or not anyone has looked at it.
   RESP `LOADING`) and a close where none does. *Why:* the NFS guard chose 256 for a reason;
   nothing else chose anything. *Effort:* M.
 
-- [ ] **Max message / frame size declared in metadata and asserted by a test.** **Measured
-  15 Sep: 72 of 152 server directories declare a `MAX_*_LEN`/`SIZE`/`BYTES` const; 81 do not.**
-  The names have converged on their own — `MAX_REQUEST_BYTES` (15) and `MAX_REQUEST_BODY_BYTES`
-  (12) already dominate — so the work is less "invent a scheme" than "finish and surface it".
-  Note before starting: many of the 81 genuinely have no message to bound (the 17 BLE profiles
-  delegate to the base; `arp`, `bootp`, `datalink` have fixed-size frames), so the real target
-  is smaller than 81 and the first task is to derive it rather than to sweep. Every server
-  states its bound (`ProtocolMetadataV2::max_inbound_bytes`), and a generic test sends
-  bound+1 and asserts a refusal before any model call. *Why:* the unbounded-body class
-  (kubernetes, ipp, openai, openapi, ollama, modbus's accumulator, fido2's assembly) was found
-  seven times by hand. A declared bound is greppable; an undeclared one is a guess. *Effort:* M.
+- [x] **Max message / frame size declared in metadata and asserted by a test.** *(16 September
+  2026.)* `ProtocolMetadataV2::max_inbound_bytes` with a builder method; **85 of 158 server
+  protocols declare one**, and `tests/max_inbound_bytes_declaration_test.rs` is the shrink-only
+  ratchet, with a reason on every baseline entry.
+
+  **The "81 do not" figure above was an artefact of the pattern used to derive it.** Anchoring
+  on `MAX_*_LEN|SIZE|BYTES` misses `ftp`'s `MAX_COMMAND_LINE`, `irc`'s `MAX_IRC_READ_LINE`,
+  `bgp`'s `BGP_MAX_MESSAGE_LEN`, `ldap`'s `MAX_LDAP_MESSAGE`, `webdav`'s `MAX_REQUEST_BODY` and
+  `torrent_peer`'s `MAX_PENDING`. Matching any `const MAX_*` gives 59, not 81. The inverse error
+  is in the same count: several of the 72 "declared" consts bound a *field* or a prompt
+  truncation rather than a message — `datalink`'s `MAX_HEX_BYTES_TO_MODEL`, `mcp`'s
+  `MAX_TRACE_BYTES`, `memcached`'s `MAX_VALUE_LEN`, `smb`'s `MAX_WRITE_LEN` — so declaring them
+  would have surfaced a number that is not the bound. Both directions are why the item said to
+  derive the target first.
+
+  Classifying all 59 by hand found **five protocols with a genuinely unbounded read**, and the
+  five do not resemble each other: `pop3`, `nntp` and `imap` each called
+  `AsyncBufReadExt::read_line`, which grows its `String` until it finds a `\n` and caps nothing
+  (bounded now, via a shared `utils::line_reader`, since `ftp`, `irc` and `smtp` had each
+  hand-rolled the same fix); `ssh`'s per-channel echo buffer accumulated across packets beneath
+  russh's per-packet bound; and the **USB/IP family** allocated `vec![0; transfer_buffer_length]`
+  from a peer u32 inside `usbip` 0.9.0 — 4 GiB from a 48-byte header, pre-auth, on six
+  protocols. That one needed a screening guard (`src/server/usb/guard.rs`), because the crate
+  owns the framing.
+
+  Two more remain, reported rather than fixed because another agent held those files: `mysql`
+  (opensrv-mysql has no max-packet check at all) and `tls` (`conn.queued_data` grows uncapped
+  while an LLM call is in flight, which a manual intercept holds open for 300s).
+
+- [ ] **A generic bound+1 test over the registry.** Each bound landed above has a hand-written
+  test that sends bound+1 and asserts the refusal *and* zero model calls, verified by removing
+  the bound and watching it fail. What does not exist is the *generic* version the item
+  originally imagined: one parametrised test that reads `max_inbound_bytes` off the registry and
+  does this for every protocol. It is worth having, and it is a different job from declaring the
+  numbers — a generic test has to know how to open a session and what a refusal looks like in
+  each protocol's vocabulary, which is exactly what the per-protocol tests encode by hand.
 
 - [ ] **A soak test per protocol family.** Ten thousand short connections against a running
   server; assert `AppState` connection count returns to zero and RSS is flat. *Why:* the

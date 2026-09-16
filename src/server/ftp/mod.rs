@@ -145,7 +145,7 @@ impl FtpServer {
 /// peer that opens a connection and streams bytes with no `\n` makes the server allocate
 /// without bound, which is a one-connection out-of-memory.
 #[cfg(feature = "ftp")]
-const MAX_COMMAND_LINE: usize = 8192;
+pub const MAX_COMMAND_LINE: usize = 8192;
 
 /// The result of trying to read one control line.
 #[cfg(feature = "ftp")]

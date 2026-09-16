@@ -99,6 +99,7 @@ impl Protocol for WhoisProtocol {
                  blocked on EOF until the 15s post-reply idle timeout closes it. Pair the answer \
                  with close_connection. Queries are read as lines, capped at 4 KiB.",
             )
+            .max_inbound_bytes(crate::server::whois::MAX_QUERY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

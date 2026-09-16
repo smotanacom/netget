@@ -41,6 +41,13 @@ struct ConnectionData {
     handshake_complete: bool,
 }
 
+/// Bitcoin Core's own cap on a P2P message body, and the largest single message this server
+/// will accept before closing the peer.
+///
+/// Module level rather than inside `try_parse_bitcoin_message`, so `metadata()` can declare
+/// the constant the parser actually enforces instead of repeating the number.
+pub const MAX_MESSAGE_BYTES: usize = 4_000_000;
+
 /// Bitcoin P2P protocol server
 pub struct BitcoinServer;
 
@@ -776,8 +783,6 @@ impl BitcoinServer {
     ) -> Result<Option<(RawNetworkMessage, Vec<u8>)>> {
         // magic(4) | command(12) | length(4) | checksum(4)
         const HEADER_LEN: usize = 24;
-        // Bitcoin Core's own cap on a P2P message body.
-        const MAX_MESSAGE_BYTES: usize = 4_000_000;
 
         if data.len() < HEADER_LEN {
             return Ok(None);

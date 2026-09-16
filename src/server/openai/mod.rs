@@ -161,7 +161,7 @@ impl OpenAiServer {
 /// Same value and same reasoning as `http_common::handler::MAX_REQUEST_BODY_BYTES`, declared
 /// here rather than imported because the `openai` feature does not pull in `http`, so that
 /// module is configured out of an `--features openai` build.
-const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// An OpenAI-shaped `{"error": {...}}` body at the given status.
 ///

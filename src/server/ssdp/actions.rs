@@ -670,6 +670,7 @@ impl Protocol for SsdpProtocol {
                  the join succeeds even from a 127.0.0.1 bind, but SENDING to the group \
                  from one fails with EADDRNOTAVAIL, which is what notify_target is for.",
             )
+            .max_inbound_bytes(crate::server::ssdp::message::MAX_MESSAGE_LEN)
             .build()
     }
 

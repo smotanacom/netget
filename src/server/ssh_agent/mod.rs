@@ -43,7 +43,7 @@ const SSH_AGENT_SIGN_RESPONSE: u8 = 14;
 ///
 /// The length prefix is attacker-controlled, so without a cap a client could make the server
 /// buffer arbitrary memory by announcing a huge message and never sending it.
-const MAX_AGENT_MESSAGE_LEN: usize = 256 * 1024;
+pub const MAX_AGENT_MESSAGE_LEN: usize = 256 * 1024;
 
 /// Pull one complete length-prefixed agent message off the front of `pending`.
 ///

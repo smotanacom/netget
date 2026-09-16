@@ -46,7 +46,7 @@ use serde_json::json;
 /// Largest request body buffered, before gRPC framing. Matches gRPC's own default
 /// `maxReceiveMessageLength` of 4 MiB.
 #[cfg(feature = "grpc")]
-const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 /// gRPC status codes (`google.rpc.Code`) this server produces.
 ///

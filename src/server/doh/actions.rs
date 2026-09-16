@@ -114,6 +114,7 @@ impl Protocol for DohProtocol {
             .llm_control("Same as DNS (delegates to DNS protocol)")
             .e2e_testing("tests/server/doh/e2e_test.rs, not #[ignore]d: reqwest (hyper + rustls) is an independent HTTP/2 and TLS implementation and exercises both RFC 8484 encodings - GET ?dns=base64url and POST application/dns-message, the latter sent with mixed case and a charset parameter. It asserts the 200 status, the Content-Type, that the transaction id and question are echoed, and the address by value. The DNS layer is decoded with hickory-proto, the same codec the server encodes with, so that half is inherited from the dns protocol (which dig now validates). What is NOT proved: ALPN, because the client connects with http2_prior_knowledge() - server_advertises_h2_alpn covers the config directly instead, and a client that both offers h2 and trusts a self-signed cert is what would close it.")
             .notes("GET/POST, HTTP/2 only (no HTTP/1.1), self-signed certs, any request path accepted. Advertises ALPN h2 - without it a negotiating client falls back to HTTP/1.1, which this server does not speak")
+            .max_inbound_bytes(crate::server::doh::MAX_DOH_BODY_BYTES as usize)
             .build()
     }
     fn description(&self) -> &'static str {

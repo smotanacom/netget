@@ -26,6 +26,21 @@ use actions::POP3_COMMAND_EVENT;
 #[cfg(feature = "pop3")]
 use tokio_rustls::TlsAcceptor;
 
+/// Largest single command line the server will buffer before refusing the peer.
+///
+/// RFC 2449 §4 fixes the POP3 command line at **255 octets** including the CRLF, and RFC 1939
+/// keeps every keyword to three or four characters. 1 KiB is four times the spec's own ceiling,
+/// so nothing a conforming client sends is refused, and the margin covers a long `USER` or an
+/// `APOP` digest without inviting anything larger.
+///
+/// The cap exists because `AsyncBufReadExt::read_line` grows its `String` until it finds a
+/// `\n` and bounds nothing: an unauthenticated peer that connects and streams bytes with no
+/// newline made the server allocate without limit, which is a one-connection out-of-memory.
+/// The refusal happens here, before the `pop3_command_received` event is built, so an
+/// oversized line never reaches a prompt.
+#[cfg(feature = "pop3")]
+pub const MAX_COMMAND_BYTES: usize = 1024;
+
 /// POP3 server that forwards mail retrieval to LLM
 pub struct Pop3Server;
 
@@ -285,7 +300,7 @@ impl Pop3Session {
         R: tokio::io::AsyncRead + Unpin,
         W: tokio::io::AsyncWrite + Unpin,
     {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         // Send initial greeting
         let greeting_event = Event::new(
@@ -352,117 +367,159 @@ impl Pop3Session {
         }
 
         // Main command loop
-        let mut line = String::new();
         loop {
-            line.clear();
-            match reader.read_line(&mut line).await {
-                Ok(0) => {
+            // Bounded: `read_line` would grow its `String` until it found a `\n`, so a peer
+            // that connects and never sends one was a one-connection OOM before any model
+            // call. `line.clear()` bounded accumulation *across* commands and nothing within
+            // one.
+            let (read, n) =
+                match crate::utils::line_reader::read_bounded_line(&mut reader, MAX_COMMAND_BYTES)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        debug!("POP3 read error on connection {}: {}", connection_id, e);
+                        break;
+                    }
+                };
+            let line = match read {
+                crate::utils::line_reader::BoundedLine::Line(line) => line,
+                crate::utils::line_reader::BoundedLine::Eof => {
                     debug!("POP3 connection {} closed by client", connection_id);
                     break;
                 }
-                Ok(n) => {
+                crate::utils::line_reader::BoundedLine::TooLong => {
+                    // No resynchronisation point: the peer is mid-line, so the next byte is
+                    // not the start of a command. Refuse in POP3's own vocabulary and close.
+                    // `[SYS/PERM]` rather than `[SYS/TEMP]` — retrying an oversized line
+                    // unchanged will fail again.
+                    let reply = format!(
+                        "-ERR [SYS/PERM] command line exceeds {MAX_COMMAND_BYTES} bytes\r\n"
+                    );
+                    error!(
+                        "POP3 connection {} sent a command line over {} bytes with no newline; \
+                         decision=fail_closed_oversized_command",
+                        connection_id, MAX_COMMAND_BYTES
+                    );
+                    let _ = status_tx.send(format!(
+                        "[ERROR] POP3 connection {} refused: {}",
+                        connection_id,
+                        reply.trim_end()
+                    ));
+                    {
+                        let mut writer = write_half.lock().await;
+                        let _ = writer.write_all(reply.as_bytes()).await;
+                        let _ = writer.flush().await;
+                    }
                     app_state
                         .update_connection_stats(
                             server_id,
                             connection_id,
                             Some(n as u64),
+                            Some(reply.len() as u64),
                             None,
                             Some(1),
-                            None,
                         )
                         .await;
-                    let command = line.trim().to_string();
-                    if command.is_empty() {
-                        continue;
-                    }
-                    // The verb alone, for log lines. Kept separately so nothing downstream
-                    // has to re-derive it from a `command` the event may have consumed.
-                    let verb = command
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("?")
-                        .to_uppercase();
+                    break;
+                }
+            };
+            app_state
+                .update_connection_stats(
+                    server_id,
+                    connection_id,
+                    Some(n as u64),
+                    None,
+                    Some(1),
+                    None,
+                )
+                .await;
+            let command = line.trim().to_string();
+            if command.is_empty() {
+                continue;
+            }
+            // The verb alone, for log lines. Kept separately so nothing downstream
+            // has to re-derive it from a `command` the event may have consumed.
+            let verb = command
+                .split_whitespace()
+                .next()
+                .unwrap_or("?")
+                .to_uppercase();
 
-                    console_debug!(
-                        status_tx,
-                        "POP3 connection {} received: {}",
-                        connection_id,
-                        command
-                    );
+            console_debug!(
+                status_tx,
+                "POP3 connection {} received: {}",
+                connection_id,
+                command
+            );
 
-                    let event = Event::new(
-                        &POP3_COMMAND_EVENT,
-                        serde_json::json!({
-                            "command": command,
-                            "connection_id": connection_id.to_string(),
-                        }),
-                    );
+            let event = Event::new(
+                &POP3_COMMAND_EVENT,
+                serde_json::json!({
+                    "command": command,
+                    "connection_id": connection_id.to_string(),
+                }),
+            );
 
-                    match Self::process_command(
-                        &event,
-                        llm_client,
-                        app_state,
-                        status_tx,
-                        protocol,
-                        server_id,
-                        connection_id,
-                        write_half,
-                    )
-                    .await
-                    {
-                        Ok(SessionControl::Continue) => {}
-                        Ok(SessionControl::Close) => {
-                            debug!("POP3 connection {} closed by server", connection_id);
-                            break;
-                        }
-                        Err(e) => {
-                            // Answer before hanging up. Silence here is indistinguishable from
-                            // a hung server, and for USER/PASS it is worse than that: the
-                            // client cannot tell a refused login from a lost connection.
-                            // `-ERR` is a refusal on every command POP3 has, so this fails
-                            // closed by construction - there is no `+OK` on this path.
-                            // `-ERR`, always. A backend outage and a model that denied the
-                            // login are indistinguishable on this wire, so the token is
-                            // what keeps them apart in the log.
-                            let token = if crate::utils::WireFailure::classify(&e).is_overloaded() {
-                                "fail_closed_llm_overloaded"
-                            } else {
-                                "fail_closed_llm_error"
-                            };
-                            error!(
-                                "POP3 {} on connection {} decision={}: {}",
-                                verb, connection_id, token, e
-                            );
-                            let _ = status_tx.send(format!(
-                                "[ERROR] POP3 {} on connection {} decision={}",
-                                verb, connection_id, token
-                            ));
-                            let reply = pop3_failure_reply(&e);
-                            let _ = status_tx.send(format!(
-                                "[ERROR] POP3 connection {} replying: {}",
-                                connection_id,
-                                reply.trim_end()
-                            ));
-                            let mut writer = write_half.lock().await;
-                            let _ = writer.write_all(reply.as_bytes()).await;
-                            let _ = writer.flush().await;
-                            drop(writer);
-                            app_state
-                                .update_connection_stats(
-                                    server_id,
-                                    connection_id,
-                                    None,
-                                    Some(reply.len() as u64),
-                                    None,
-                                    Some(1),
-                                )
-                                .await;
-                            break;
-                        }
-                    }
+            match Self::process_command(
+                &event,
+                llm_client,
+                app_state,
+                status_tx,
+                protocol,
+                server_id,
+                connection_id,
+                write_half,
+            )
+            .await
+            {
+                Ok(SessionControl::Continue) => {}
+                Ok(SessionControl::Close) => {
+                    debug!("POP3 connection {} closed by server", connection_id);
+                    break;
                 }
                 Err(e) => {
-                    error!("POP3 connection {} read error: {}", connection_id, e);
+                    // Answer before hanging up. Silence here is indistinguishable from
+                    // a hung server, and for USER/PASS it is worse than that: the
+                    // client cannot tell a refused login from a lost connection.
+                    // `-ERR` is a refusal on every command POP3 has, so this fails
+                    // closed by construction - there is no `+OK` on this path.
+                    // `-ERR`, always. A backend outage and a model that denied the
+                    // login are indistinguishable on this wire, so the token is
+                    // what keeps them apart in the log.
+                    let token = if crate::utils::WireFailure::classify(&e).is_overloaded() {
+                        "fail_closed_llm_overloaded"
+                    } else {
+                        "fail_closed_llm_error"
+                    };
+                    error!(
+                        "POP3 {} on connection {} decision={}: {}",
+                        verb, connection_id, token, e
+                    );
+                    let _ = status_tx.send(format!(
+                        "[ERROR] POP3 {} on connection {} decision={}",
+                        verb, connection_id, token
+                    ));
+                    let reply = pop3_failure_reply(&e);
+                    let _ = status_tx.send(format!(
+                        "[ERROR] POP3 connection {} replying: {}",
+                        connection_id,
+                        reply.trim_end()
+                    ));
+                    let mut writer = write_half.lock().await;
+                    let _ = writer.write_all(reply.as_bytes()).await;
+                    let _ = writer.flush().await;
+                    drop(writer);
+                    app_state
+                        .update_connection_stats(
+                            server_id,
+                            connection_id,
+                            None,
+                            Some(reply.len() as u64),
+                            None,
+                            Some(1),
+                        )
+                        .await;
                     break;
                 }
             }

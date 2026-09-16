@@ -45,7 +45,7 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// peer could POST gigabytes to `/dns-query` and NetGet would buffer all of it in memory
 /// before discovering it was not a DNS message. This is a hard cap with headroom, not a
 /// tuning knob.
-const MAX_DOH_BODY_BYTES: u64 = 65_535;
+pub const MAX_DOH_BODY_BYTES: u64 = 65_535;
 
 /// Pause after a failed `accept()` before trying again.
 ///

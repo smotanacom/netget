@@ -77,6 +77,7 @@ impl Protocol for Http2Protocol {
                 "Text bodies only, no streaming; ALPN is not negotiated, so a browser will not \
                  pick HTTP/2 over TLS on its own - clients must select h2 explicitly or use h2c",
             )
+            .max_inbound_bytes(crate::server::http_common::MAX_REQUEST_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

@@ -165,7 +165,7 @@ impl MavenServer {
 ///
 /// `Incoming` has no default limit, so without a cap the buffer is whatever the peer
 /// chooses to send.
-const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Parse Maven artifact path into components
 ///

@@ -48,7 +48,7 @@ use actions::{
 /// Largest datagram the UDP transport will read. An EAPOL frame is tiny; this is generous
 /// enough for a fragmented EAP-TLS record and small enough that a sender cannot make the
 /// server allocate on demand.
-const MAX_FRAME_LEN: usize = 4096;
+pub const MAX_FRAME_LEN: usize = 4096;
 
 // ---------------------------------------------------------------------------
 // Decisions

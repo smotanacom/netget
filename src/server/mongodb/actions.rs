@@ -186,6 +186,7 @@ impl Protocol for MongodbProtocol {
                  handler; every other command does, including ping, buildInfo and \
                  endSessions",
             )
+            .max_inbound_bytes(crate::server::mongodb::MAX_MESSAGE_SIZE as usize)
             .build()
     }
 

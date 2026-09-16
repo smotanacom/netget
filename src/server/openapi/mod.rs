@@ -198,7 +198,7 @@ fn validate_request(
 ///
 /// The body is buffered whole and then embedded in an LLM prompt, so there is no legitimate
 /// use for a large one. Matches `http_common::handler::MAX_REQUEST_BODY_BYTES`.
-const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Create immediate 413 response for a body past [`MAX_REQUEST_BODY_BYTES`].
 #[cfg(feature = "openapi")]

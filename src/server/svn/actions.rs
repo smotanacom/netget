@@ -68,6 +68,7 @@ impl Protocol for SvnProtocol {
                  no authentication beyond announcing ANONYMOUS. Usable as a honeypot or for \
                  protocol experiments, not by a real `svn checkout`.",
             )
+            .max_inbound_bytes(crate::server::svn::MAX_COMMAND_BYTES as usize)
             .build()
     }
     fn description(&self) -> &'static str {

@@ -33,7 +33,7 @@ use crate::{console_error, console_info};
 /// could grow the process without limit. DynamoDB caps an item at 400 KiB and a
 /// BatchWriteItem at 16 MiB; 4 MiB covers every single-item operation with headroom, and
 /// the model could not usefully read a larger body anyway.
-const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 /// DynamoDB server that delegates API operations to LLM
 pub struct DynamoServer;

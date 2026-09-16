@@ -261,3 +261,26 @@ tagging pass deliberately did not make; `decision=model_silent` is there so it c
 Tested by `tests/server/pop3/decision_tag_test.rs`, which pins both halves: a backend outage on
 `USER` is `-ERR` and `decision=fail_closed_llm_*` with no `model_reject` anywhere, and a model
 denial of the same command is `-ERR` and `decision=model_reject` with no `fail_closed` anywhere.
+
+## Max inbound message size
+
+`MAX_COMMAND_BYTES = 1024` (`mod.rs`), declared as `metadata().max_inbound_bytes`.
+
+RFC 2449 §4 fixes the POP3 command line at 255 octets including the CRLF, so 1 KiB is four
+times the spec's own ceiling and refuses nothing a conforming client sends.
+
+The bound exists because `AsyncBufReadExt::read_line` grows its `String` until it finds a `\n`
+and caps nothing: an unauthenticated peer that connected and streamed bytes with no newline
+made the server allocate without limit, which is a one-connection out-of-memory. `line.clear()`
+bounded accumulation *across* commands and did nothing within one. The read now goes through
+`crate::utils::line_reader::read_bounded_line`, shared with NNTP and IMAP.
+
+An over-long line is answered `-ERR [SYS/PERM] command line exceeds 1024 bytes` and the session
+closes — there is no resynchronisation point, because the peer is mid-line and the next byte is
+not the start of a command. `[SYS/PERM]` rather than `[SYS/TEMP]`: retrying the same oversized
+line will fail again. Logged `decision=fail_closed_oversized_command`.
+
+The refusal happens **before** the `pop3_command` event is built, so an oversized line never
+reaches a prompt. `tests/server/pop3/line_limit_test.rs` asserts exactly that — zero model
+calls, not merely a `-ERR` — and its second test asserts a 900-byte command is still answered,
+because a guard that refused everything would satisfy the first assertion.

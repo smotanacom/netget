@@ -84,6 +84,7 @@ impl Protocol for RdpProtocol {
                  session. No real RDP client (xfreerdp/mstsc) was available in this environment to \
                  test past negotiation; correctness is pinned against RFC-derived literal bytes.",
             )
+            .max_inbound_bytes(crate::server::rdp::MAX_X224_LEN)
             .build()
     }
 

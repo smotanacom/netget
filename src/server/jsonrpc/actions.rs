@@ -67,6 +67,7 @@ impl Protocol for JsonRpcProtocol {
                  expensive. Any path is accepted; there is no routing, auth or rate \
                  limiting, and non-POST gets an Invalid Request body rather than 405.",
             )
+            .max_inbound_bytes(crate::server::jsonrpc::MAX_REQUEST_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

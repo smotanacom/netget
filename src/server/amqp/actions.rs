@@ -882,6 +882,7 @@ impl Protocol for AmqpProtocol {
                  amqp_connection_open handler produces no decision is refused with 403, so an \
                  LLM outage cannot silently open the broker.",
             )
+            .max_inbound_bytes(crate::server::amqp::MAX_BODY_SIZE as usize)
             .build()
     }
 

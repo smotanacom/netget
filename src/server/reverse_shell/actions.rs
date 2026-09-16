@@ -100,6 +100,7 @@ impl Protocol for ReverseShellProtocol {
                  scripting layer (see CLAUDE.md). Verified with a raw TCP client; no framing, so \
                  nc/socat connect directly.",
             )
+            .max_inbound_bytes(crate::server::reverse_shell::MAX_LINE_LEN)
             .build()
     }
 

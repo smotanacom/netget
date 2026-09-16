@@ -523,6 +523,7 @@ impl Protocol for SshAgentProtocol {
                  cannot rest on one. ADD_IDENTITY parsing assumes the Ed25519 key layout. \
                  Lock/unlock and key constraints are reported but never enforced.",
             )
+            .max_inbound_bytes(crate::server::ssh_agent::MAX_AGENT_MESSAGE_LEN)
             .build()
     }
 

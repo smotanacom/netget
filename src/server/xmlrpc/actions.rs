@@ -331,6 +331,7 @@ impl Protocol for XmlRpcProtocol {
                  body with HTTP 200 rather than 405. Request bodies are capped at 4 MiB and \
                  value nesting at 64 levels.",
             )
+            .max_inbound_bytes(crate::server::xmlrpc::MAX_REQUEST_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

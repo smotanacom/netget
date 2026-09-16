@@ -22,6 +22,18 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace, warn};
 
+/// Largest shell line the server will accumulate on one channel before discarding it.
+///
+/// This is the only inbound buffer NetGet owns in this protocol: russh does the transport
+/// framing and bounds a single packet, but the per-channel echo buffer is flushed to the model
+/// only on a newline or a control byte, so it accumulates across arbitrarily many packets.
+///
+/// 64 KiB is a policy choice rather than a spec number — SSH defines no line limit. It is far
+/// above any command a person types or a script sends, and far below anything worth holding
+/// per channel. Note the buffer becomes an LLM prompt, where everything past a few kilobytes
+/// is cost with no benefit.
+pub const MAX_SHELL_LINE_BYTES: usize = 64 * 1024;
+
 /// SSH server configuration
 #[derive(Clone, Debug)]
 pub struct SshServerConfig {
@@ -946,6 +958,39 @@ impl russh::server::Handler for SshHandler {
                 // Get or create buffer for this channel
                 let mut buffers = self.shell_buffers.lock().await;
                 let buffer = buffers.entry(channel_id).or_insert_with(Vec::new);
+
+                // Bounded before anything is appended. This buffer is flushed to the model
+                // only when `should_process` sees a newline or a control byte, so a peer that
+                // opens a shell channel and sends `'A'` forever grows it across an unlimited
+                // number of SSH packets — one `Vec` per open channel, and russh replenishes
+                // the channel window for free. russh's own 256 KiB transport-packet limit and
+                // its 32 KiB `maximum_packet_size` bound each *packet* and give no protection
+                // against accumulation across packets.
+                //
+                // The line is dropped rather than the session, because an over-long line on an
+                // interactive shell is far more often a paste accident than an attack, and a
+                // newline is a natural resynchronisation point — unlike the line-oriented text
+                // protocols, where the peer is mid-frame and the connection must close. SSH
+                // has no size-refusal code, so the notice goes on the channel where a user
+                // will see it.
+                if buffer.len().saturating_add(data.len()) > MAX_SHELL_LINE_BYTES {
+                    buffer.clear();
+                    drop(buffers);
+                    tracing::error!(
+                        "SSH shell line on channel {} exceeded {} bytes; discarded. \
+                         decision=fail_closed_oversized_line",
+                        channel_id,
+                        MAX_SHELL_LINE_BYTES
+                    );
+                    Log::new(Some(&self.status_tx)).error(format!(
+                        "SSH channel {} sent a shell line over {} bytes; discarded",
+                        channel_id, MAX_SHELL_LINE_BYTES
+                    ));
+                    let notice =
+                        CryptoVec::from_slice(b"\r\n[netget] input line too long, discarded\r\n");
+                    session.data(channel_id, notice);
+                    return Ok(());
+                }
 
                 // Process each byte
                 for &byte in data {

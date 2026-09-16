@@ -20,6 +20,10 @@ pub mod common;
 #[cfg(feature = "usb-common")]
 pub mod descriptors;
 
+/// The USB/IP message screen every USB server runs the `usbip` crate behind.
+#[cfg(feature = "usb-common")]
+pub mod guard;
+
 #[cfg(feature = "usb-keyboard")]
 pub mod keyboard;
 

@@ -630,6 +630,7 @@ impl Protocol for ImapProtocol {
             .llm_control("Authentication + mailbox ops + FETCH")
             .e2e_testing("Raw TCP client issuing tagged IMAP commands")
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(143))
+            .max_inbound_bytes(crate::server::imap::MAX_COMMAND_BYTES)
             .notes(
                 "Tracks session state (NotAuthenticated/Authenticated/Selected/Logout) but stores \
                  no mailboxes or messages - the model answers every FETCH. No IMAPS, no STARTTLS, \

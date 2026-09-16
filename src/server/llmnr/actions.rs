@@ -203,6 +203,7 @@ impl Protocol for LlmnrProtocol {
                  a fabricated answer - an LLMNR response writes a name-to-address binding into \
                  the querier's resolver, so a guess is cache poisoning.",
             )
+            .max_inbound_bytes(crate::server::llmnr::MAX_MESSAGE_LEN)
             .build()
     }
 

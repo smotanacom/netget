@@ -69,6 +69,7 @@ impl Protocol for HttpProtocol {
                 "Text bodies only: no binary response bodies, no chunked/streaming responses, \
                  and request bodies are fully buffered before the LLM sees them",
             )
+            .max_inbound_bytes(crate::server::http_common::MAX_REQUEST_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

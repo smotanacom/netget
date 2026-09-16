@@ -428,6 +428,7 @@ impl Protocol for OllamaProtocol {
                  nothing validates an Authorization header (none is read, so the model \
                  cannot make that call either).",
             )
+            .max_inbound_bytes(crate::server::ollama::MAX_REQUEST_BODY_BYTES)
             .build()
     }
 

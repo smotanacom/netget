@@ -813,7 +813,7 @@ enum SessionStep {
 
 /// Largest LDAP message accepted, in bytes. A long-form length header can promise up to 4 GiB.
 #[cfg(feature = "ldap")]
-const MAX_LDAP_MESSAGE: usize = 1 << 20;
+pub const MAX_LDAP_MESSAGE: usize = 1 << 20;
 
 /// Socket read size. Unrelated to message size now that messages are reassembled.
 #[cfg(feature = "ldap")]

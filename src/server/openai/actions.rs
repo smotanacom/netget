@@ -122,6 +122,7 @@ impl Protocol for OpenAiProtocol {
                  untested.",
             )
             .notes("OpenAI-compatible API with LLM-driven responses")
+            .max_inbound_bytes(crate::server::openai::MAX_REQUEST_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

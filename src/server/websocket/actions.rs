@@ -733,6 +733,7 @@ impl Protocol for WebSocketProtocol {
                  (websocket_handshake, then websocket_connection_opened); use script or static \
                  handlers for deterministic endpoints.",
             )
+            .max_inbound_bytes(crate::server::websocket::MAX_SIZE_LIMIT)
             .build()
     }
 

@@ -125,6 +125,7 @@ impl Protocol for MercurialProtocol {
                  changegroup, so a clone produces an empty repository. No changegroup \
                  generation, no bundle2, no batch/known/lookup commands, no push.",
             )
+            .max_inbound_bytes(crate::server::mercurial::MAX_REQUEST_BODY_BYTES)
             .build()
     }
 

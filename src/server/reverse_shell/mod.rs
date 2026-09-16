@@ -42,7 +42,7 @@ use tracing::{debug, error, info, warn};
 ///
 /// The line accumulator grows until a newline arrives; without a cap a peer that never sends one
 /// could grow it without bound. A command line far longer than this is not a real shell command.
-const MAX_LINE_LEN: usize = 64 * 1024;
+pub const MAX_LINE_LEN: usize = 64 * 1024;
 
 /// Reverse-shell listener.
 pub struct ReverseShellServer;

@@ -61,7 +61,7 @@ const BASE_CAPABILITIES: &str = "no-progress agent=netget";
 /// single-commit repository sends a few hundred bytes. An unbounded `collect()` lets one
 /// unauthenticated client grow the process by whatever it cares to send, so the read is
 /// capped and an oversized body is refused with 413.
-const MAX_UPLOAD_PACK_BYTES: usize = 1024 * 1024;
+pub const MAX_UPLOAD_PACK_BYTES: usize = 1024 * 1024;
 
 /// Shared per-request context, so each handler does not take nine positional arguments.
 struct RequestContext {

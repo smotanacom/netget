@@ -234,6 +234,7 @@ impl Protocol for FingerProtocol {
                  close_connection is an early exit rather than a requirement. Nothing local is \
                  read: no passwd, no utmp, no .plan.",
             )
+            .max_inbound_bytes(crate::server::finger::actions::MAX_QUERY_BYTES)
             .build()
     }
 

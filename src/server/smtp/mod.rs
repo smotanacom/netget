@@ -37,7 +37,7 @@ use tokio_rustls::TlsAcceptor;
 /// a peer that connects and streams bytes without ever sending one allocates until the
 /// process dies — one unauthenticated socket, no credentials, no protocol state.
 #[cfg(feature = "smtp")]
-const MAX_LINE_BYTES: usize = 64 * 1024;
+pub const MAX_LINE_BYTES: usize = 64 * 1024;
 
 /// How long a session waits for the next line before it gives up on the peer.
 ///

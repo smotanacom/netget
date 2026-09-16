@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 /// `wait_for_more` deliberately keeps the buffer across events, so without a ceiling a peer
 /// that never completes a stanza - or a model that answers `wait_for_more` forever - grows it
 /// without limit, and every subsequent event re-sends the whole thing to the model.
-const MAX_XMPP_BUFFER_BYTES: usize = 256 * 1024;
+pub const MAX_XMPP_BUFFER_BYTES: usize = 256 * 1024;
 
 /// A fatal stream error to send when netget itself cannot answer, per RFC 6120 §4.9.
 ///

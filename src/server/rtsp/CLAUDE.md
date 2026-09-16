@@ -140,3 +140,24 @@ the `fail_closed_llm_*` pair.
 Transport header asked for. Interleaved (`RTP/AVP/TCP`) and multicast are not implemented, so a
 client that requests one gets a UDP session it did not ask for rather than `461 Unsupported
 Transport`.
+
+## Max inbound message size
+
+`MAX_REQUEST_BYTES = 1 MiB` (`mod.rs`), declared as `metadata().max_inbound_bytes`.
+
+The accumulator was already capped at this size; what it lacked was a name and a reply. The
+literal `1_048_576` is now a documented const, so the declaration in `metadata()` moves when
+the bound does rather than repeating the number.
+
+RTSP requests are control messages — `DESCRIBE`, `SETUP`, `PLAY` — and the largest thing one
+legitimately carries is an SDP body on `ANNOUNCE`, which is kilobytes. The parser needs a
+complete request before it can act, so until a `\r\n\r\n` arrives every byte is held.
+
+**The refusal is now `RTSP/1.0 413 Request Entity Too Large`.** Previously the cap raised an
+`anyhow::bail!` that propagated out of `handle_connection` and closed the socket without
+writing anything, so an oversized request was indistinguishable from a dropped connection and a
+client reported a transport fault instead of the refusal it was given. RTSP inherits HTTP's
+status vocabulary (RFC 2326 §11) and 413 is the answer.
+
+`CSeq` is not echoed on the refusal: the request head is exactly what did not arrive, so there
+is no sequence number to correlate to. Logged `decision=fail_closed_oversized_request`.

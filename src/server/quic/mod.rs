@@ -52,7 +52,7 @@ struct StreamData {
 /// Over the cap the stream is reset with `H3_EXCESSIVE_LOAD`, whose RFC 9114 meaning is
 /// exactly this ("the peer is exhibiting a behavior that might be generating excessive
 /// load"). The connection and its other streams are untouched.
-const MAX_STREAM_QUEUE_BYTES: usize = 1024 * 1024;
+pub const MAX_STREAM_QUEUE_BYTES: usize = 1024 * 1024;
 
 /// RFC 9114 `H3_INTERNAL_ERROR` — netget could not produce an answer.
 const H3_INTERNAL_ERROR: u32 = 0x0102;

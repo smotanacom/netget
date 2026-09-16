@@ -105,6 +105,7 @@ impl Protocol for CoapProtocol {
                  (RFC 7959), DTLS/CoAPS on 5684, separate (non-piggybacked) responses, \
                  retransmission of Confirmable responses, and multicast",
             )
+            .max_inbound_bytes(crate::server::coap::codec::MAX_PAYLOAD_LEN)
             .build()
     }
 

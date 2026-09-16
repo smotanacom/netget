@@ -45,7 +45,7 @@ use tracing::{debug, error, info, trace, warn};
 ///
 /// An HSRPv1 packet is 20 bytes and a v2 one with both authentication TLVs is under 100, so
 /// this is pure headroom for unknown TLVs while bounding a hostile datagram.
-const MAX_DATAGRAM_LEN: usize = 4096;
+pub const MAX_DATAGRAM_LEN: usize = 4096;
 
 /// How this speaker arrived at what it did (or did not) put on the wire.
 ///

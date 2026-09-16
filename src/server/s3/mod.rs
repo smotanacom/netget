@@ -32,7 +32,7 @@ use crate::state::app_state::AppState;
 /// grow the process without limit — nothing in HTTP/1.1 bounds a chunked body, and the
 /// content is never stored anyway (only its length reaches the model). `Limited` stops at
 /// the cap and errors, so the memory one request can claim is bounded by a constant.
-const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 
 /// S3 server that delegates API operations to LLM
 pub struct S3Server;

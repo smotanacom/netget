@@ -56,7 +56,7 @@ const CONNECTION_CAP_REFUSAL: &[u8] =
 /// negotiation, just an open socket. A real ra_svn command tuple is a few hundred bytes;
 /// 64 KiB is far above anything the subset implemented here can produce and far below a
 /// memory problem.
-const MAX_COMMAND_BYTES: u64 = 64 * 1024;
+pub const MAX_COMMAND_BYTES: u64 = 64 * 1024;
 
 pub struct SvnServer;
 

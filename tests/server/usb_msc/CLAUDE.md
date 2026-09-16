@@ -119,3 +119,48 @@ About 1 second for the suite. **Run it twice**: the first run after a source edi
   `resolve_handler`.
 - `Bulk-Only Mass Storage Reset` mid-transfer (the client can send it; nothing asserts on it).
 - Multi-sector transfers and short data phases.
+
+## `guard_test.rs` — the pre-auth allocation bomb
+
+Separate from the table above, and not part of its 10-call budget: two tests of
+`src/server/usb/guard.rs`, the USB/IP message screen every USB protocol now runs the `usbip`
+crate behind.
+
+Each sends **48 bytes and nothing else** — a `USBIP_CMD_SUBMIT` header with no payload behind
+it — over a bare `TcpStream`, without importing a device first, because the point is that the
+crate's `vec![0; transfer_buffer_length as usize]` and `vec![0; 16 * number_of_packets as usize]`
+are reachable before any attach and before any model call.
+
+| Test | Declares | Expects |
+|---|---|---|
+| `test_oversized_transfer_buffer_is_refused_before_allocation` | `transfer_buffer_length = 0xFFFFFFFF` | `decision=fail_closed_oversized_urb`, connection closed |
+| `test_oversized_iso_descriptor_count_is_refused` | `number_of_packets = 0xFFFFFFFE` | `decision=fail_closed_oversized_iso`, connection closed |
+
+`0xFFFFFFFE` rather than `0xFFFFFFFF` because that value and `0` are the two the protocol
+defines as "not isochronous" and both are exempt by design.
+
+The header is built by hand rather than through `helpers::usbip_client`: the helper only
+produces headers whose declared lengths match the bytes it goes on to send, which is exactly the
+invariant under attack.
+
+Three things each test asserts, and each is there for a different failure:
+
+- **The `decision=` tag** — the refusal happened, and happened for the stated reason. Without
+  the guard no tag appears and the test fails here.
+- **The connection closes.** Unguarded, the crate allocates the declared length and then parks
+  in `read_exact` waiting for bytes that never arrive, so the socket and the allocation are both
+  held; the 20s timeout is what catches that.
+- **A fresh client still enumerates the device.** The control. A refusal that killed the process
+  or the listener would satisfy both assertions above.
+
+`usb_msc_read`/`usb_msc_write` carry `expect_calls(0)`: a refused URB never reaches
+`handle_urb`, so it costs no model budget. That is a claim about price, not the discriminator —
+unguarded, the crate never reaches the handler either.
+
+Each test costs 3 LLM calls: startup, the attach call the attacking connection provokes on
+accept, and the attach call the control connection provokes. The attach call is unavoidable and
+predates the guard — it fires on TCP accept, not on `OP_REQ_IMPORT` — which is why each test
+waits for `"USB MSC LLM call completed (attach)"` before sending anything.
+
+**Verified by removing the guard**: pointing `msc/mod.rs` back at `usbip::handler(&mut stream,
+...)` makes both tests fail, on the missing tag and then on the 20s timeout.

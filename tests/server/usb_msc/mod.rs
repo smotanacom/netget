@@ -6,3 +6,6 @@ pub mod fat16;
 
 #[cfg(all(test, feature = "usb-msc"))]
 mod llm_failure_test;
+
+#[cfg(all(test, feature = "usb-msc"))]
+mod guard_test;

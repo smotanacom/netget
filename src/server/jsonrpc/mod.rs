@@ -47,7 +47,7 @@ const SERVER_BUSY: i32 = -32000;
 /// hyper imposes no limit of its own and the body was buffered whole, parsed into a
 /// `serde_json::Value` and then pretty-printed into the trace log — so one client could grow
 /// the process without bound.
-const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Largest batch accepted.
 ///

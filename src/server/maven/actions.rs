@@ -78,6 +78,7 @@ impl Protocol for MavenProtocol {
                  Untested: deploy/PUT (not implemented), SNAPSHOT resolution, GPG signatures, \
                  and any client other than mvn (Gradle and sbt are unproven)",
             )
+            .max_inbound_bytes(crate::server::maven::MAX_REQUEST_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

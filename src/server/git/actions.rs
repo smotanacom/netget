@@ -104,6 +104,7 @@ impl Protocol for GitProtocol {
                  the same snapshot from both the info/refs and the git-upload-pack event; a \
                  static or script handler guarantees that, an LLM answering twice does not.",
             )
+            .max_inbound_bytes(crate::server::git::MAX_UPLOAD_PACK_BYTES)
             .build()
     }
 

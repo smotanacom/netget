@@ -38,7 +38,7 @@ use crate::state::app_state::AppState;
 /// parsed and handed to the model as prompt text, so an unbounded `collect()` let one
 /// anonymous POST grow the process without limit. An OAuth2 form body is a handful of short
 /// parameters; 64 KiB is far past anything a conforming client sends.
-const MAX_REQUEST_BYTES: usize = 64 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
 /// Buffer a request body, refusing anything over [`MAX_REQUEST_BYTES`].
 ///

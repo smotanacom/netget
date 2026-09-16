@@ -91,6 +91,7 @@ impl Protocol for RedisProtocol {
             .llm_control("All Redis commands (GET, SET, INCR, etc.)")
             .e2e_testing("redis-rs client")
             .notes("RESP2 only (no RESP3), no AUTH/SELECT/MULTI/pub-sub, no inline commands")
+            .max_inbound_bytes(crate::server::redis::MAX_PENDING_FRAME_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

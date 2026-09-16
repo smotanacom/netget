@@ -66,6 +66,7 @@ impl Protocol for PypiProtocol {
                  it did not exist. No third-party client has installed a distribution from \
                  this server: that needs a real wheel, which the model cannot author",
             )
+            .max_inbound_bytes(crate::server::http_common::MAX_REQUEST_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

@@ -360,6 +360,7 @@ impl Protocol for EtcdProtocol {
                  Keys and values cross the action boundary as UTF-8 strings, so binary keys \
                  are lossy.",
             )
+            .max_inbound_bytes(crate::server::etcd::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

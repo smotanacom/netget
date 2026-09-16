@@ -329,6 +329,7 @@ impl Protocol for SparkProtocol {
                     Fail-closed: LLM failure returns 503/500 JSON error, never an empty-but-200 \
                     array.",
             )
+            .max_inbound_bytes(crate::server::spark::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

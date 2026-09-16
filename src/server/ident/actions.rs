@@ -225,6 +225,7 @@ impl Protocol for IdentProtocol {
                  ownership, no getpwuid. The model invents every userid, which is the only \
                  safe way to run a protocol whose purpose is disclosing account identity.",
             )
+            .max_inbound_bytes(crate::server::ident::MAX_QUERY_BYTES)
             .build()
     }
 

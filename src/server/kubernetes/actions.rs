@@ -189,6 +189,7 @@ impl Protocol for KubernetesProtocol {
                  event, so the model cannot make that decision either - every request is \
                  served), protobuf content negotiation, and server-side apply.",
             )
+            .max_inbound_bytes(crate::server::kubernetes::MAX_REQUEST_BODY_BYTES)
             .build()
     }
 

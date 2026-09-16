@@ -435,6 +435,7 @@ impl Protocol for NfcServerProtocol {
                  client (DEVICENAME /dev/null:<host>:<port>), which has not been tested against \
                  hardware. Frames are capped at 4096 bytes and malformed APDUs are answered 6700.",
             )
+            .max_inbound_bytes(crate::server::nfc::MAX_FRAME_LEN)
             .build()
     }
 

@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, Mutex};
 
 /// A selector line longer than this is not a Gopher request. RFC 1436 puts no limit on it,
 /// but an unbounded read is a memory hole reachable by anyone who can open a socket.
-const MAX_REQUEST_BYTES: usize = 8192;
+pub const MAX_REQUEST_BYTES: usize = 8192;
 
 /// How long to wait for the selector line.
 ///

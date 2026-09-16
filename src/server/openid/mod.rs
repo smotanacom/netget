@@ -36,7 +36,7 @@ use crate::state::app_state::AppState;
 /// and handed to the model as prompt text, so the previous unbounded `collect()` let one
 /// anonymous POST grow the process without limit. An OIDC form body is a handful of short
 /// parameters; 64 KiB is far past anything a conforming relying party sends.
-const MAX_REQUEST_BYTES: usize = 64 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
 /// Narrow a model-supplied HTTP status to `u16` without wrapping.
 ///

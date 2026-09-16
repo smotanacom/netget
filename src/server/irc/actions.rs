@@ -80,6 +80,7 @@ impl Protocol for IrcProtocol {
                 "Single-client view: no channel membership, no nick registry, no broadcast \
                  between connections, no TLS. The model tracks all of that itself.",
             )
+            .max_inbound_bytes(crate::server::irc::wire::MAX_IRC_READ_LINE)
             .build()
     }
     fn description(&self) -> &'static str {

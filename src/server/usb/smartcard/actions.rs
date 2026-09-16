@@ -484,6 +484,9 @@ impl Protocol for UsbSmartCardProtocol {
                  beyond that are refused. No T=0/T=1 transmission layer, no PPS, no time \
                  extension while the handler thinks.",
             )
+            // The USB/IP screen in `src/server/usb/guard.rs` refuses a `USBIP_CMD_SUBMIT`
+            // declaring more than this, before the crate allocates from the number.
+            .max_inbound_bytes(crate::server::usb::guard::MAX_TRANSFER_BUFFER_BYTES)
             .build()
     }
 

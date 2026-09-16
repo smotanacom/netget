@@ -1044,7 +1044,7 @@ impl ZookeeperServer {
 /// Smallest payload that can carry a request header (xid + opcode).
 const MIN_REQUEST_BYTES: i32 = 8;
 /// Matches ZooKeeper's own `jute.maxbuffer` default of 1 MiB.
-const MAX_REQUEST_BYTES: i32 = 1024 * 1024;
+pub const MAX_REQUEST_BYTES: i32 = 1024 * 1024;
 
 /// xid for an injected reply that names none. -1 is the watch-notification xid, the one frame a
 /// real server originates on its own; any other value would claim to answer a request.

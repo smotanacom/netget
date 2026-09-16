@@ -182,7 +182,8 @@ impl Protocol for DcProtocol {
                 .llm_control("Authentication (Lock/Key/Hello), chat messages, search results, user management (kick/redirect)")
                 .e2e_testing("tokio::net::TcpStream speaking NMDC by hand (tests/server/dc/): the $Lock handshake, chat, search, kick/redirect, the injected-peer path, and the fail-closed reply when the model is unreachable. No third-party DC++ client, so this stays Experimental")
                 .notes("NMDC protocol only (ADC not supported). No key validation or P2P connection handling. Commands are bounded at 64 KiB; interpolated action values have | \\r \\n stripped so one field cannot inject a second command.")
-                .build()
+                .max_inbound_bytes(crate::server::dc::MAX_COMMAND_LEN)
+            .build()
     }
     fn description(&self) -> &'static str {
         "DC (Direct Connect) hub server - peer-to-peer file sharing protocol with chat and search capabilities"

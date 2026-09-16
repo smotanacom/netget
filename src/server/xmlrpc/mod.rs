@@ -40,7 +40,7 @@ pub use actions::XmlRpcProtocol;
 /// Largest request body accepted, in bytes. hyper imposes no limit of its own, and
 /// the body is buffered whole, copied into a `String` and traced in full.
 #[cfg(feature = "xmlrpc")]
-const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// XML-RPC fault codes used for netget's own failures.
 ///

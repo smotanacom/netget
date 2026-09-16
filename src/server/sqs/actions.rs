@@ -183,6 +183,7 @@ impl Protocol for SqsProtocol {
             .llm_control("All SQS operations (SendMessage, ReceiveMessage, DeleteMessage)")
             .e2e_testing("aws-sdk-sqs client")
             .notes("Virtual queues (no persistence); no auth; visibility timeouts are the LLM's job, the server tracks nothing")
+            .max_inbound_bytes(crate::server::sqs::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

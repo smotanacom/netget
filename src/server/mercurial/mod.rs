@@ -56,7 +56,7 @@ const NULL_NODE: &str = "0000000000000000000000000000000000000000";
 /// long for a URL — kilobytes at most. An unbounded `collect()` lets one unauthenticated
 /// client grow the process by whatever it cares to send, so the read is capped and an
 /// oversized body is refused with 413.
-const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
 /// Shared per-request context.
 struct RequestContext {

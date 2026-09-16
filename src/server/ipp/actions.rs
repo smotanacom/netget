@@ -98,6 +98,7 @@ impl Protocol for IppProtocol {
                  model is told which operation was asked for but not what it asked for. No \
                  IPPS, no authentication, no CUPS extensions.",
             )
+            .max_inbound_bytes(crate::server::ipp::MAX_IPP_BODY_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

@@ -63,7 +63,7 @@ const CHANNEL_MAX: u16 = 2_047;
 const DEFAULT_HEARTBEAT: u16 = 60;
 /// Largest message body accepted from a publisher. The content header carries a 64-bit
 /// `body-size`; trusting it would let one client announce an 18 EiB message.
-const MAX_BODY_SIZE: u64 = 8 * 1024 * 1024;
+pub const MAX_BODY_SIZE: u64 = 8 * 1024 * 1024;
 /// Largest number of channels one connection may hold open at once.
 const MAX_OPEN_CHANNELS: usize = 256;
 /// How much of a declared `body-size` is reserved up front.

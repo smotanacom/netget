@@ -5,7 +5,7 @@ use crate::server::connection::ConnectionId;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 use crate::llm::action_helper::call_llm;
@@ -16,6 +16,18 @@ use crate::protocol::Event;
 use crate::server::NntpProtocol;
 use crate::state::app_state::AppState;
 use actions::NNTP_COMMAND_RECEIVED_EVENT;
+
+/// Largest single command line the server will buffer before refusing the peer.
+///
+/// RFC 3977 §3.1 fixes the NNTP command line at **512 octets** including the CRLF. 4 KiB is
+/// eight times that, which leaves room for the long arguments `NEWNEWS` and a wildmat
+/// `LIST ACTIVE` can carry while staying far below anything worth buffering.
+///
+/// The cap exists because `AsyncBufReadExt::read_line` grows its `String` until it finds a
+/// `\n` and bounds nothing: an unauthenticated peer that connects and streams bytes with no
+/// newline made the server allocate without limit. The refusal happens here, before the
+/// `nntp_command_received` event is built, so an oversized line never reaches a prompt.
+pub const MAX_COMMAND_BYTES: usize = 4096;
 
 /// NNTP server that forwards commands to LLM
 pub struct NntpServer;
@@ -334,13 +346,42 @@ impl NntpServer {
             }
         }
 
-        // Read commands from client
-        let mut line = String::new();
-
-        while let Ok(n) = reader.read_line(&mut line).await {
-            if n == 0 {
-                break;
-            }
+        // Read commands from client.
+        //
+        // Bounded: `read_line` would grow its `String` until it found a `\n`, so a peer that
+        // connects and never sends one was a one-connection OOM before any model call.
+        loop {
+            let (read, n) =
+                match crate::utils::line_reader::read_bounded_line(&mut reader, MAX_COMMAND_BYTES)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+            let line = match read {
+                crate::utils::line_reader::BoundedLine::Line(line) => line,
+                crate::utils::line_reader::BoundedLine::Eof => break,
+                crate::utils::line_reader::BoundedLine::TooLong => {
+                    // RFC 3977 §3.1 caps the command line at 512 octets, and 501 is the
+                    // syntax-error response. There is no resynchronisation point — the peer
+                    // is mid-line — so answer and close.
+                    log.error(format!(
+                        "NNTP connection {} sent a command line over {} bytes with no newline; \
+                         decision=fail_closed_oversized_command",
+                        connection_id, MAX_COMMAND_BYTES
+                    ));
+                    Self::write_counted(
+                        write_half_arc,
+                        app_state,
+                        server_id,
+                        connection_id,
+                        b"501 command line too long\r\n",
+                        true,
+                    )
+                    .await;
+                    break;
+                }
+            };
             app_state
                 .update_connection_stats(
                     server_id,
@@ -494,8 +535,6 @@ impl NntpServer {
                     }
                 }
             }
-
-            line.clear();
         }
 
         log.info(format!("NNTP connection {} closed", connection_id));

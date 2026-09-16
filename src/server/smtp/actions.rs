@@ -232,6 +232,7 @@ impl Protocol for SmtpProtocol {
                  STARTTLS, no PIPELINING. Every DATA body line costs one model call unless an \
                  event handler is configured.",
             )
+            .max_inbound_bytes(crate::server::smtp::MAX_LINE_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
 /// Largest frame body accepted, matching the native protocol's own 256 MiB maximum.
-const MAX_FRAME_BODY_BYTES: usize = 256 * 1024 * 1024;
+pub const MAX_FRAME_BODY_BYTES: usize = 256 * 1024 * 1024;
 
 /// How long to wait for a peer's first frame after it has connected.
 ///

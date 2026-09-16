@@ -19,7 +19,7 @@ pub mod actions;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace, warn};
 
@@ -47,6 +47,22 @@ use crate::state::server::{
 use actions::{IMAP_AUTH_EVENT, IMAP_COMMAND_EVENT, IMAP_CONNECTION_EVENT};
 #[cfg(feature = "imap")]
 use serde_json::json;
+
+/// Largest single command line the server will buffer before refusing the peer.
+///
+/// IMAP4rev1 sets no line limit of its own, so the reference point is what a real server
+/// chose: Dovecot's `imap_max_line_length` defaults to 64 KiB. 8 KiB is deliberately tighter,
+/// because this server **does not implement literals** (see the module header — a `{n}`
+/// continuation is passed to the model as raw text rather than parsed), so no command reaching
+/// this reader legitimately carries a message body. What is left is tags, mailbox names and
+/// UID sets, and 8 KiB holds a `FETCH` over several hundred of them.
+///
+/// The cap exists because `AsyncBufReadExt::read_line` grows its `String` until it finds a
+/// `\n` and bounds nothing: an unauthenticated peer that connects and streams bytes with no
+/// newline made the server allocate without limit. The refusal happens here, before
+/// `handle_command` builds any event, so an oversized line never reaches a prompt.
+#[cfg(feature = "imap")]
+pub const MAX_COMMAND_BYTES: usize = 8192;
 
 /// IMAP server that handles mail retrieval with LLM
 pub struct ImapServer;
@@ -242,70 +258,101 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> ImapSess
 
         // Main command loop
         loop {
-            let mut line = String::new();
-            match self.reader.read_line(&mut line).await {
-                Ok(0) => {
+            // Bounded: `read_line` would grow its `String` until it found a `\n`, so a peer
+            // that connects and never sends one was a one-connection OOM before any model
+            // call.
+            let (read, n) = match crate::utils::line_reader::read_bounded_line(
+                &mut self.reader,
+                MAX_COMMAND_BYTES,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    debug!("IMAP read error on {}: {}", self.connection_id, e);
+                    break;
+                }
+            };
+            let line = match read {
+                crate::utils::line_reader::BoundedLine::Line(line) => line,
+                crate::utils::line_reader::BoundedLine::Eof => {
                     // EOF - client disconnected
                     debug!("IMAP client {} disconnected", self.connection_id);
                     break;
                 }
-                Ok(n) => {
-                    trace!(
-                        "IMAP received {} bytes from {}: {}",
-                        n,
-                        self.connection_id,
-                        line.trim()
+                crate::utils::line_reader::BoundedLine::TooLong => {
+                    // There is no tag to echo — the tag is at the *start* of the line and the
+                    // peer is still mid-line, so nothing here can be correlated to a command.
+                    // RFC 3501 §7.1.5 makes an untagged `* BYE` the server's way of ending a
+                    // session unilaterally, and RFC 5530's `[UNAVAILABLE]` says why.
+                    error!(
+                        "IMAP connection {} sent a command line over {} bytes with no newline; \
+                         decision=fail_closed_oversized_command",
+                        self.connection_id, MAX_COMMAND_BYTES
                     );
-                    Log::new(Some(&self.status_tx)).trace(format!("IMAP command: {}", line.trim()));
-
-                    // Update bytes received
-                    self.app_state
-                        .update_connection_stats(
-                            self.server_id,
-                            self.connection_id,
-                            Some(n as u64),
-                            None,
-                            Some(1),
-                            None,
-                        )
-                        .await;
-
-                    // Parse and handle IMAP command
-                    if let Err(e) = self.handle_command(&line).await {
-                        // NO, not BAD. BAD means "I did not understand the command", which
-                        // invites the client to give up on the command permanently; a backend
-                        // failure is a refusal to execute a command we understood fine. The
-                        // tag is echoed so the client can correlate, and the RFC 5530 code
-                        // tells it whether retrying is worth anything.
-                        let (code, detail) = imap_failure_code(&e);
-                        error!(
-                            "Error handling IMAP command on connection {}: {}",
-                            self.connection_id, e
-                        );
-                        Log::new(Some(&self.status_tx)).error(format!(
-                            "IMAP connection {} refusing command with NO [{}]: {}",
-                            self.connection_id, code, e
-                        ));
-
-                        let (tag, _, _) = parse_imap_command(&line);
-                        let error_response = format!("{} NO [{}] {}\r\n", tag, code, detail);
-                        let _ = self.send_response(error_response.as_bytes()).await;
-                    }
-
-                    // Check if session should logout
-                    if let Some((session_state, _, _)) = self
-                        .app_state
-                        .get_imap_connection_state(self.server_id, self.connection_id)
-                        .await
-                    {
-                        if session_state == ImapSessionState::Logout {
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Error reading IMAP command: {}", e);
+                    Log::new(Some(&self.status_tx)).error(format!(
+                        "IMAP connection {} refused: command line exceeds {} bytes",
+                        self.connection_id, MAX_COMMAND_BYTES
+                    ));
+                    let bye = format!(
+                        "* BYE [UNAVAILABLE] command line exceeds {MAX_COMMAND_BYTES} bytes\r\n"
+                    );
+                    let _ = self.send_response(bye.as_bytes()).await;
                     break;
+                }
+            };
+            {
+                trace!(
+                    "IMAP received {} bytes from {}: {}",
+                    n,
+                    self.connection_id,
+                    line.trim()
+                );
+                Log::new(Some(&self.status_tx)).trace(format!("IMAP command: {}", line.trim()));
+
+                // Update bytes received
+                self.app_state
+                    .update_connection_stats(
+                        self.server_id,
+                        self.connection_id,
+                        Some(n as u64),
+                        None,
+                        Some(1),
+                        None,
+                    )
+                    .await;
+
+                // Parse and handle IMAP command
+                if let Err(e) = self.handle_command(&line).await {
+                    // NO, not BAD. BAD means "I did not understand the command", which
+                    // invites the client to give up on the command permanently; a backend
+                    // failure is a refusal to execute a command we understood fine. The
+                    // tag is echoed so the client can correlate, and the RFC 5530 code
+                    // tells it whether retrying is worth anything.
+                    let (code, detail) = imap_failure_code(&e);
+                    error!(
+                        "Error handling IMAP command on connection {}: {}",
+                        self.connection_id, e
+                    );
+                    Log::new(Some(&self.status_tx)).error(format!(
+                        "IMAP connection {} refusing command with NO [{}]: {}",
+                        self.connection_id, code, e
+                    ));
+
+                    let (tag, _, _) = parse_imap_command(&line);
+                    let error_response = format!("{} NO [{}] {}\r\n", tag, code, detail);
+                    let _ = self.send_response(error_response.as_bytes()).await;
+                }
+
+                // Check if session should logout
+                if let Some((session_state, _, _)) = self
+                    .app_state
+                    .get_imap_connection_state(self.server_id, self.connection_id)
+                    .await
+                {
+                    if session_state == ImapSessionState::Logout {
+                        break;
+                    }
                 }
             }
         }

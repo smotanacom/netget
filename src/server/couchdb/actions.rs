@@ -642,6 +642,7 @@ impl Protocol for CouchDbProtocol {
                  bodies are bounded at http_common::MAX_REQUEST_BODY_BYTES and a larger one \
                  is refused with 413. No attachment content action and no Mango queries",
             )
+            .max_inbound_bytes(crate::server::couchdb::MAX_REQUEST_BODY_BYTES)
             .build()
     }
 

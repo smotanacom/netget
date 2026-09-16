@@ -131,6 +131,7 @@ impl Protocol for IpsecProtocol {
                  working tunnel. A real IKEv2 responder would need SA negotiation, DH, \
                  auth, ESP and kernel XFRM programming - deliberately out of scope.",
             )
+            .max_inbound_bytes(crate::server::ipsec::MAX_PACKET_SIZE)
             .build()
     }
     fn description(&self) -> &'static str {

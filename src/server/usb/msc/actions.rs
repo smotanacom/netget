@@ -418,6 +418,9 @@ impl Protocol for UsbMscProtocol {
                  vhci-hcd and root on the client side and is untested - the E2E harness proves \
                  the device side, not that an OS mounts the filesystem. Single LUN only.",
             )
+            // The USB/IP screen in `src/server/usb/guard.rs` refuses a `USBIP_CMD_SUBMIT`
+            // declaring more than this, before the crate allocates from the number.
+            .max_inbound_bytes(crate::server::usb::guard::MAX_TRANSFER_BUFFER_BYTES)
             .build()
     }
 

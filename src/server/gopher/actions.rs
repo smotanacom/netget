@@ -123,6 +123,7 @@ impl Protocol for GopherProtocol {
                  both appear in its output. Not implemented: Gopher+ (the '+' attribute \
                  protocol), TLS ('gophers'), binary transfers, and any filesystem serving.",
             )
+            .max_inbound_bytes(crate::server::gopher::MAX_REQUEST_BYTES)
             .build()
     }
 

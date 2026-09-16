@@ -285,6 +285,7 @@ impl Protocol for LdapProtocol {
                  applied. No referrals, no schema validation, no access control beyond what \
                  the model chooses.",
             )
+            .max_inbound_bytes(crate::server::ldap::MAX_LDAP_MESSAGE)
             .build()
     }
     fn description(&self) -> &'static str {

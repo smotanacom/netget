@@ -47,7 +47,7 @@ use tokio::sync::{mpsc, Mutex};
 
 /// RFC 1413 §5 caps a query line at 1000 characters. A peer that sends more without a
 /// newline is not speaking ident; cap the buffer rather than growing it for them.
-const MAX_QUERY_BYTES: usize = 1024;
+pub const MAX_QUERY_BYTES: usize = 1024;
 
 /// How long to wait for the query line before giving up on a connected-but-silent peer.
 /// Only covers the read: once the query has arrived, a manual handler may park the event for

@@ -25,7 +25,7 @@ use bson::{doc, Bson, Document};
 /// Matches the server-advertised `maxMessageSizeBytes` (48 MB). The header's `messageLength`
 /// is attacker-controlled, so it has to be range-checked before it is used as an allocation
 /// size - see `read_message_body`.
-const MAX_MESSAGE_SIZE: i32 = 48 * 1024 * 1024;
+pub const MAX_MESSAGE_SIZE: i32 = 48 * 1024 * 1024;
 
 /// MongoDB wire protocol opcode for OP_MSG (MongoDB 3.6+).
 const OP_MSG: i32 = 2013;

@@ -129,6 +129,7 @@ impl Protocol for XmppProtocol {
                 "Core stanzas only. No roster, no presence distribution, no MUC, no S2S, no \
                  TLS/STARTTLS, and no credential checking - the model decides every auth outcome.",
             )
+            .max_inbound_bytes(crate::server::xmpp::MAX_XMPP_BUFFER_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

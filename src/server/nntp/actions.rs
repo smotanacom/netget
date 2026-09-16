@@ -230,6 +230,7 @@ impl Protocol for NntpProtocol {
             .implementation("Manual line-based NNTP parsing (RFC 3977)")
             .llm_control("All NNTP commands (LIST, GROUP, ARTICLE, POST)")
             .e2e_testing("Raw TCP NNTP client")
+            .max_inbound_bytes(crate::server::nntp::MAX_COMMAND_BYTES)
             .notes("No article storage, POST not implemented yet")
             .build()
     }

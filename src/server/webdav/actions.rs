@@ -319,6 +319,7 @@ impl Protocol for WebDavProtocol {
                  answered by the server without a model call; locks are never enforced. No \
                  authentication, no TLS, no PROPPATCH dead-property storage.",
             )
+            .max_inbound_bytes(crate::server::webdav::MAX_REQUEST_BODY)
             .build()
     }
     fn description(&self) -> &'static str {

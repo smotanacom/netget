@@ -79,6 +79,7 @@ impl Protocol for TcpProtocol {
             .llm_control("Full byte stream control - all sent/received data")
             .e2e_testing("tokio::net::TcpStream")
             .notes("Basis for FTP, SMTP, custom protocols")
+            .max_inbound_bytes(crate::server::tcp::MAX_QUEUED_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

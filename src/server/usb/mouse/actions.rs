@@ -343,6 +343,9 @@ impl Protocol for UsbMouseProtocol {
             .e2e_testing("E2E tests using Linux usbip client")
             .privilege_requirement(crate::protocol::metadata::PrivilegeRequirement::None)
             .notes("Virtual USB HID mouse over USB/IP. A hand-written UsbInterfaceHandler (handler.rs) supplies the report descriptor and 4-byte reports, because usbip 0.9 still ships no UsbHidMouseHandler. It was written but never wired: handle_connection took the accepted socket as _stream, dropped it, ran no USB/IP session, and parked on sleep(u64::MAX), while every action logged 'not yet implemented' and returned NoAction. All of that is live now, and usb_mouse_detached has an emit site for the first time. move_relative splits movement larger than a report can carry; click and drag emit their own release, so neither sticks; scroll sends one detent per report. move_absolute has no way to know where the pointer is -- a boot-protocol mouse is relative-only -- so it slams into the top-left corner first and moves out from there, which is visible on screen. Exercised against an in-test USB/IP client that decodes the HID reports; never against a real Linux usbip host, so nothing here has been seen by a kernel HID driver.")
+            // The USB/IP screen in `src/server/usb/guard.rs` refuses a `USBIP_CMD_SUBMIT`
+            // declaring more than this, before the crate allocates from the number.
+            .max_inbound_bytes(crate::server::usb::guard::MAX_TRANSFER_BUFFER_BYTES)
             .build()
     }
 

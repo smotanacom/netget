@@ -330,3 +330,28 @@ and returns as soon as one errors, so the disconnect short-circuits the already-
 CHANNEL_DATA. The bytes are on the wire and OpenSSH prints them. Covered by
 `tests/server/ssh/llm_failure_test.rs`, which asserts the auth refusal and, for the shell, the
 non-zero exit status and the closed channel.
+
+## Max inbound message size
+
+`MAX_SHELL_LINE_BYTES = 64 * 1024` (`mod.rs`), declared as `metadata().max_inbound_bytes`.
+
+This is the only inbound buffer NetGet owns in this protocol. russh does the transport framing
+and bounds a single packet (256 KiB transport, 32 KiB `maximum_packet_size`), but the
+per-channel echo buffer in `shell_buffers` is flushed to the model only when a newline or a
+control byte arrives — so it accumulates across arbitrarily many packets, one `Vec` per open
+channel, and russh replenishes the channel window for free. A peer that opened a shell channel
+and sent `'A'` forever grew it without limit. The per-packet bound gives no protection against
+cross-packet accumulation; that was verified in the vendored crate rather than assumed.
+
+64 KiB is a policy choice, not a spec number — SSH defines no line limit. It is far above any
+command a person types or a script sends, and the buffer becomes an LLM prompt, where anything
+past a few kilobytes is cost with no benefit.
+
+**The line is discarded, not the session**, which is the opposite of what the line-oriented text
+protocols do. An over-long line on an interactive shell is far more often a paste accident than
+an attack, and a newline is a natural resynchronisation point — unlike POP3/NNTP/IMAP, where
+the peer is mid-frame and the connection must close. SSH has no size-refusal code, so the
+notice goes on the channel (`[netget] input line too long, discarded`) where a user sees it,
+and the log carries `decision=fail_closed_oversized_line`.
+
+The check runs before any byte is appended, so the high-water mark is the bound.

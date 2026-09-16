@@ -53,6 +53,14 @@ struct Session {
     play_task: Option<tokio::task::AbortHandle>,
 }
 
+/// Largest single RTSP request the server will accumulate before refusing the peer.
+///
+/// RTSP requests are control messages — `DESCRIBE`, `SETUP`, `PLAY` — and the largest thing
+/// one legitimately carries is an SDP body on `ANNOUNCE`, which is kilobytes. 1 MiB is far
+/// above that and far below anything worth buffering from an unauthenticated peer: the parser
+/// needs a complete request before it can act, so until a `\r\n\r\n` arrives every byte is held.
+pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+
 pub struct RtspServer;
 
 impl RtspServer {
@@ -276,8 +284,40 @@ impl RtspServer {
                 )
                 .await;
             buffer.extend_from_slice(&chunk[..n]);
-            if buffer.len() > 1_048_576 {
-                anyhow::bail!("RTSP request exceeded 1 MiB");
+            if buffer.len() > MAX_REQUEST_BYTES {
+                // RTSP inherits HTTP's status vocabulary (RFC 2326 §11), and 413 is the
+                // answer. Closing without one made an oversized request indistinguishable
+                // from a dropped connection, so a client reported a transport fault instead
+                // of the refusal it was given. `CSeq` cannot be echoed — the request head is
+                // exactly what did not arrive — so the reply carries none, which RFC 2326
+                // permits for a response the server generates without a parsed request.
+                tracing::error!(
+                    "RTSP connection {} sent a request over {} bytes; \
+                     decision=fail_closed_oversized_request",
+                    connection_id,
+                    MAX_REQUEST_BYTES
+                );
+                Log::new(Some(status_tx)).error(format!(
+                    "RTSP connection {} refused: request exceeds {} bytes",
+                    connection_id, MAX_REQUEST_BYTES
+                ));
+                let refusal = b"RTSP/1.0 413 Request Entity Too Large\r\n\r\n";
+                {
+                    let mut w = write_half.lock().await;
+                    let _ = w.write_all(refusal).await;
+                    let _ = w.flush().await;
+                }
+                state
+                    .update_connection_stats(
+                        server_id,
+                        connection_id,
+                        None,
+                        Some(refusal.len() as u64),
+                        None,
+                        Some(1),
+                    )
+                    .await;
+                return Ok(());
             }
         }
     }

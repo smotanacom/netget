@@ -124,6 +124,7 @@ impl Protocol for TelnetProtocol {
                  telnet client stays in its default line mode and gets no reply to its offers. \
                  Absent: character-at-a-time mode, TTYPE/NAWS, terminal emulation, TLS.",
             )
+            .max_inbound_bytes(crate::server::telnet::MAX_LINE_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

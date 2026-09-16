@@ -72,7 +72,7 @@ const HANDSHAKE_TIMEOUT_SECS: u64 = 15;
 
 const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 const DEFAULT_MAX_FRAME_SIZE: usize = 1024 * 1024;
-const MAX_SIZE_LIMIT: usize = 64 * 1024 * 1024;
+pub const MAX_SIZE_LIMIT: usize = 64 * 1024 * 1024;
 
 // ============================================================================
 // HTTP request head parsing

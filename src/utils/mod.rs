@@ -2,6 +2,7 @@
 
 pub mod bencode;
 pub mod clock;
+pub mod line_reader;
 pub mod sanitize;
 pub mod save_load;
 pub mod shutdown;

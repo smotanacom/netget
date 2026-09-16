@@ -110,6 +110,7 @@ impl Protocol for QuicProtocol {
                  clients (curl --http3, browsers, and NetGet's own http3 client) cannot talk to \
                  it. The peer must be a raw QUIC client. request_filter is not supported.",
             )
+            .max_inbound_bytes(crate::server::quic::MAX_STREAM_QUEUE_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

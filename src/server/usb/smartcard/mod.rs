@@ -265,7 +265,7 @@ impl UsbSmartCardServer {
     /// Drive one USB/IP session and the CCID exchange that hangs off it.
     #[allow(clippy::too_many_arguments)]
     async fn handle_connection(
-        mut stream: tokio::net::TcpStream,
+        stream: tokio::net::TcpStream,
         connection_id: ConnectionId,
         server_id: ServerId,
         card: Arc<StdMutex<CardState>>,
@@ -296,8 +296,21 @@ impl UsbSmartCardServer {
 
         let usbip_server = Arc::new(usbip::UsbIpServer::new_simulated(vec![device]));
 
+        // Not `usbip::handler(&mut stream, ...)` directly: the crate allocates from the peer's
+        // `transfer_buffer_length` and `number_of_packets` without checking either, on a socket
+        // USB/IP never authenticates. `run_guarded_usbip` screens both before a byte reaches it
+        // -- see `src/server/usb/guard.rs`.
+        let guard_status_tx = status_tx.clone();
         let mut usbip_task = tokio::spawn(async move {
-            match usbip::handler(&mut stream, usbip_server).await {
+            match crate::server::usb::guard::run_guarded_usbip(
+                stream,
+                usbip_server,
+                "USB smart card",
+                connection_id.to_string(),
+                guard_status_tx,
+            )
+            .await
+            {
                 Ok(()) => debug!(
                     "USB/IP session ended for smart card connection {}",
                     connection_id

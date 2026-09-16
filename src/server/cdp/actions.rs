@@ -395,6 +395,7 @@ impl Protocol for CdpProtocol {
                  the log only, tagged decision=model_reject / model_silent / \
                  fail_closed_llm_error, and no LLM error text ever reaches the wire.",
             )
+            .max_inbound_bytes(crate::server::cdp::codec::MAX_8023_LENGTH)
             .build()
     }
 

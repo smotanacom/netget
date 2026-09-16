@@ -38,7 +38,7 @@ use crate::{console_error, console_info};
 /// The body is buffered whole and then embedded in an LLM prompt, so there is no legitimate
 /// use for a large one: a model cannot read 8 MB, and every byte past a few kilobytes is cost
 /// without benefit. Without a cap the buffer is whatever the peer chooses to send.
-const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// CouchDB server that delegates all operations to LLM
 pub struct CouchDbServer;

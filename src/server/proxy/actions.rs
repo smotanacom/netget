@@ -194,6 +194,7 @@ impl Protocol for ProxyProtocol {
                  upstream response at 8 MiB, but the number of concurrent connections is \
                  unbounded.",
             )
+            .max_inbound_bytes(crate::server::proxy::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

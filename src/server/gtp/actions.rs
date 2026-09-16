@@ -372,6 +372,7 @@ impl Protocol for GtpProtocol {
                  identifiers: the model invents them and this server reads no real subscriber \
                  source of any kind",
             )
+            .max_inbound_bytes(crate::server::gtp::codec::MAX_GPDU_PAYLOAD_LEN)
             .build()
     }
 

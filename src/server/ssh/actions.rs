@@ -92,6 +92,9 @@ impl Protocol for SshProtocol {
             // Check what the test drives, not what the server links.
             .state(DevelopmentState::Beta)
             .privilege_requirement(PrivilegeRequirement::PrivilegedPort(22))
+            // The shell echo buffer is the only inbound allocation NetGet owns here; russh
+            // bounds the transport packets around it.
+            .max_inbound_bytes(crate::server::ssh::MAX_SHELL_LINE_BYTES)
             .implementation("russh v0.45, russh-sftp v2.1; ephemeral Ed25519 host key")
             .llm_control("Auth decisions, shell banner and output, SFTP reads and listings")
             .e2e_testing(

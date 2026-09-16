@@ -236,6 +236,7 @@ impl Protocol for OpenvpnProtocol {
                  (IV_* peer info), its expected options, and the username and password it \
                  was going to authenticate with. Use WireGuard for a working tunnel.",
             )
+            .max_inbound_bytes(crate::server::openvpn::packet::MAX_PACKET_SIZE)
             .build()
     }
 

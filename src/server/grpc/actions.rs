@@ -138,6 +138,7 @@ impl Protocol for GrpcProtocol {
                  reflection is NOT served, so grpcurl needs -proto or -protoset. Request \
                  compression is rejected. bytes fields cross the action boundary as base64.",
             )
+            .max_inbound_bytes(crate::server::grpc::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

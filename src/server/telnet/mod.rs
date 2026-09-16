@@ -40,7 +40,7 @@ fn preview(text: &str, max: usize) -> String {
 /// no `\n` among them, and the server buffered every byte. Nothing authenticates before this
 /// loop, and telnet is the protocol an operator is most likely to point at a real device.
 #[cfg(feature = "telnet")]
-const MAX_LINE_BYTES: usize = 8192;
+pub const MAX_LINE_BYTES: usize = 8192;
 
 #[cfg(feature = "telnet")]
 mod iac {

@@ -32,7 +32,7 @@ use crate::{console_error, console_info};
 /// because `server::http_common` is gated on `any(feature = "http", "http2", "oauth2", …)`
 /// and `elasticsearch` is not in that list — the same exit `xmlrpc` takes. Adding
 /// `elasticsearch` to the gate in `src/server/mod.rs` would let this share the constant.
-const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Elasticsearch server that delegates search/index operations to LLM
 pub struct ElasticsearchServer;

@@ -31,7 +31,7 @@ use actions::{TCP_CONNECTION_OPENED_EVENT, TCP_DATA_RECEIVED_EVENT};
 /// for, and reaching it means the peer is not waiting for answers at all — so the connection is
 /// closed rather than the queue trimmed, which would hand the model a truncated message it had
 /// no way to know was truncated.
-const MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_QUEUED_BYTES: usize = 8 * 1024 * 1024;
 
 /// Connection state for LLM processing
 #[derive(Debug, Clone, PartialEq)]

@@ -198,6 +198,7 @@ impl Protocol for HsrpProtocol {
                  security; HSRPv2 MD5 digests are reported structurally but neither verified \
                  nor generated.",
             )
+            .max_inbound_bytes(crate::server::hsrp::MAX_DATAGRAM_LEN)
             .build()
     }
 

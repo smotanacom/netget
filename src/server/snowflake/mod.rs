@@ -53,7 +53,7 @@ use crate::state::app_state::AppState;
 /// POST to `/session/v1/login-request` could grow the process without limit. A login body
 /// is a few hundred bytes and a query body is one SQL statement; 4 MiB is far beyond what
 /// any driver sends.
-const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 
 /// Snowflake error code sent when the authentication backend (the LLM) is
 /// unavailable. 390100 is Snowflake's "incorrect username or password" — a

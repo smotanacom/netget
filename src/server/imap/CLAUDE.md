@@ -282,3 +282,28 @@ For FETCH 1, return message with From: test@example.com, Subject: Test.
 
 - RFC 3501 - IMAP4rev1 Protocol Specification
 - RFC 4551 - IMAP Extension for Conditional STORE (CONDSTORE)
+
+## Max inbound message size
+
+`MAX_COMMAND_BYTES = 8192` (`mod.rs`), declared as `metadata().max_inbound_bytes`.
+
+IMAP4rev1 sets no line limit of its own, so the reference point is what a real server chose:
+Dovecot's `imap_max_line_length` defaults to 64 KiB. 8 KiB is deliberately tighter, because
+this server does not implement literals — a `{n}` continuation is passed to the model as raw
+text rather than parsed (see Library Choices) — so no command reaching this reader legitimately
+carries a message body. What is left is tags, mailbox names and UID sets.
+
+The bound exists because `AsyncBufReadExt::read_line` grows its `String` until it finds a `\n`
+and caps nothing: a peer that connected and streamed bytes with no newline made the server
+allocate without limit, before `LOGIN` and therefore before any authentication. The read now
+goes through `crate::utils::line_reader::read_bounded_line`, shared with POP3 and NNTP.
+
+The refusal is an untagged `* BYE [UNAVAILABLE] command line exceeds 8192 bytes`, and the
+untagged form is forced rather than chosen: an IMAP tag is the *first* token of a line, and the
+line never arrived, so there is nothing for a tagged `NO` to correlate to. RFC 3501 §7.1.5
+makes `* BYE` the server's way of ending a session unilaterally. Logged
+`decision=fail_closed_oversized_command`.
+
+The refusal happens **before** `handle_command` builds any event, so an oversized line never
+reaches a prompt. `tests/server/imap/line_limit_test.rs` asserts exactly that — zero model
+calls, not merely a BYE — and its second test asserts a 4 KiB command is still answered.

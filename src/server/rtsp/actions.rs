@@ -97,6 +97,7 @@ impl Protocol for RtspProtocol {
                  only UDP RTP via client_port/server_port. Only PCMU/PCMA audio streams; no video. \
                  Default port 8554 (unprivileged); pass port 554 explicitly if you have privilege.",
             )
+            .max_inbound_bytes(crate::server::rtsp::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

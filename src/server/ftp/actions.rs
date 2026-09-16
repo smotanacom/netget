@@ -229,6 +229,7 @@ impl Protocol for FtpProtocol {
                 "Control connection only: PASV/PORT are not implemented, so LIST/RETR/STOR \
                  cannot complete against a real FTP client. No TLS. No E2E test.",
             )
+            .max_inbound_bytes(crate::server::ftp::MAX_COMMAND_LINE)
             .build()
     }
 

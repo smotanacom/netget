@@ -424,6 +424,7 @@ impl crate::llm::actions::protocol_trait::Protocol for S3Protocol {
                  Not proven: SigV4, multipart upload, versioning",
             )
             .notes("Virtual objects (no persistence); no SigV4 auth; binary bodies via encoding=base64")
+            .max_inbound_bytes(crate::server::s3::MAX_REQUEST_BYTES)
             .build()
     }
 

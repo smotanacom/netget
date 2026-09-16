@@ -171,6 +171,7 @@ impl Protocol for OpenIdProtocol {
                  ID token is signed and no access token is verified. Use it to exercise OIDC \
                  relying parties, not to authenticate anyone.",
             )
+            .max_inbound_bytes(crate::server::openid::MAX_REQUEST_BYTES)
             .build()
     }
     fn description(&self) -> &'static str {

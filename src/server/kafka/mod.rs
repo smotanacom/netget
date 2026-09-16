@@ -130,7 +130,7 @@ const MIN_REQUEST_BYTES: i32 = 8;
 /// Largest request accepted from a client. Real brokers cap this with
 /// `socket.request.max.bytes` (default 100 MiB); without a cap the wire-supplied
 /// size is an allocation primitive for any unauthenticated peer.
-const MAX_REQUEST_BYTES: usize = 100 * 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = 100 * 1024 * 1024;
 
 /// Cap on how much of a request is hex-dumped at TRACE level.
 const MAX_TRACE_HEX_BYTES: usize = 4096;

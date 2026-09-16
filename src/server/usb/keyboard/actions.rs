@@ -303,6 +303,9 @@ impl Protocol for UsbKeyboardProtocol {
             .e2e_testing("Mocked E2E over the USB/IP socket; real HID typing needs a Linux usbip client")
             .privilege_requirement(crate::protocol::metadata::PrivilegeRequirement::None)
             .notes("USB/IP runs on the accepted socket via usbip::handler (usbip 0.9, tokio 1.x), so the listen port is whatever the caller asks for and multiple instances can coexist. All three events are emitted: attached, detached, and led_status. led_status became reachable when the crate's UsbHidKeyboardHandler was wrapped by handler.rs -- the crate discards HID output reports, so a declared event could never fire; the wrapper also stops a control request the crate does not know (GET_PROTOCOL, GET_REPORT, and SET_REPORT itself) from hitting its unimplemented!() and panicking the session task. press_key_combo folds modifiers and up to six keys into one report. type_text/press_key cover the characters key_name_to_hid maps and refuse the rest rather than typing a different string. Exercised against an in-test USB/IP client that reads HID reports off the interrupt endpoint and writes LED reports; never against a real Linux usbip host, so nothing here has been seen by a kernel HID driver.")
+            // The USB/IP screen in `src/server/usb/guard.rs` refuses a `USBIP_CMD_SUBMIT`
+            // declaring more than this, before the crate allocates from the number.
+            .max_inbound_bytes(crate::server::usb::guard::MAX_TRANSFER_BUFFER_BYTES)
             .build()
     }
 

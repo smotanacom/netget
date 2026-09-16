@@ -593,6 +593,7 @@ impl Protocol for EapolProtocol {
                  only from an explicit send_eap_success on a session that already produced an \
                  identity.",
             )
+            .max_inbound_bytes(crate::server::eapol::MAX_FRAME_LEN)
             .build()
     }
 

@@ -125,6 +125,7 @@ impl Protocol for ModbusProtocol {
                  exception 0x01), request pipelining beyond the sequential case, and any \
                  real PLC or mbpoll/pymodbus peer",
             )
+            .max_inbound_bytes(crate::server::modbus::codec::MAX_ADU_LEN)
             .build()
     }
 

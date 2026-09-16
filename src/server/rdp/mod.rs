@@ -38,7 +38,7 @@ use tracing::{debug, error, info, warn};
 /// Largest X.224 Connection Request accepted, in bytes. A real CR is well under 512 bytes
 /// (routing cookie + RDP_NEG_REQ + optional correlation info); the TPKT length field is
 /// client-controlled, so it is bounded before anything is allocated.
-const MAX_X224_LEN: usize = 2048;
+pub const MAX_X224_LEN: usize = 2048;
 
 /// What one client sent in its X.224 Connection Request.
 struct ConnectionRequest {
