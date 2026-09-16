@@ -26,10 +26,17 @@
 //!
 //! Properties that did not hold when this file was written were kept here stating what
 //! *should* hold, behind `#[ignore = "FINDING: …"]`, rather than softened into something the
-//! code already satisfied. All ten have since been fixed in the codecs and un-ignored; each
-//! keeps its counterexample in a doc comment, plus an assertion that the bound is at the
-//! boundary and not one octet early — a refusal that refuses everything would pass the first
-//! half of every one of them.
+//! code already satisfied. All twelve have since been fixed in the codecs and un-ignored —
+//! **there is no `#[ignore]` left in this file** — and each keeps its counterexample in a doc
+//! comment, plus an assertion that the bound is at the boundary and not one octet early: a
+//! refusal that refuses everything would pass the first half of every one of them.
+//!
+//! The last two were AMQP's, and the second is the one worth generalising. `Encoder::field_*`
+//! recursed without a counter while the decoder next to it was bounded, and the ignored test
+//! documented *why that was safe* — every table reaching it had come through the decoder or
+//! through serde_json's 128-level cap. That argument was about the callers, not the function,
+//! so it would have expired silently the first time someone built a `Value` in a loop. A
+//! documented assumption is not a bound; a counter is one comparison.
 
 #![allow(clippy::uninlined_format_args)]
 
@@ -3715,11 +3722,15 @@ mod ndp_props {
 // bound holds, that the table stays in sync with the payload around it, and that a table which
 // survives the bound round-trips.
 //
-// FINDING (see the `#[ignore]`d tests at the end of this module):
+// Two findings from the first pass over this codec, both since fixed and both kept here as
+// regression tests at the end of the module:
 //
-//  * `Encoder::short_string` **truncates** at 255 bytes instead of refusing. It is the one
-//    place in this codec that shortens rather than refuses, and shortstr is what carries a
+//  * `Encoder::short_string` **truncated** at 255 bytes instead of refusing. It was the one
+//    place in this codec that shortened rather than refused, and shortstr is what carries a
 //    queue name, an exchange name, a routing key, a consumer tag and every field-table key.
+//  * the encoder's own recursion was unbounded, while the decoder's was capped. It is now
+//    capped by the same constant with the same accounting, which is what lets the round-trip
+//    property above hold at the boundary instead of only inside it.
 
 #[cfg(feature = "amqp")]
 mod amqp_props {
@@ -3762,7 +3773,7 @@ mod amqp_props {
         #[test]
         fn field_tables_round_trip(table in arb_table()) {
             let mut encoder = Encoder::new();
-            encoder.field_table(&table);
+            encoder.field_table(&table).unwrap();
             let bytes = encoder.into_vec();
             let decoded = Decoder::new(&bytes).field_table();
             prop_assert!(decoded.is_ok(), "{:?}", decoded);
@@ -3779,7 +3790,7 @@ mod amqp_props {
             trailer in proptest::collection::vec(any::<u8>(), 0..16),
         ) {
             let mut encoder = Encoder::new();
-            encoder.field_table(&table);
+            encoder.field_table(&table).unwrap();
             let mut bytes = encoder.into_vec();
             bytes.extend_from_slice(&trailer);
             let mut decoder = Decoder::new(&bytes);
@@ -3799,20 +3810,38 @@ mod amqp_props {
         }
 
         /// Property 1 for the two string forms, inside the lengths their length fields can
-        /// describe. See the FINDING for what `short_string` does above 255.
+        /// describe. The generator runs right up to 255 deliberately: the bound has to be
+        /// *encodable*, or `short_string_refuses_what_it_cannot_carry` below would pass
+        /// against an encoder that refused everything.
         #[test]
         fn strings_round_trip(
             short in "[ -~]{0,255}",
             long in "[ -~]{0,600}",
         ) {
             let mut encoder = Encoder::new();
-            encoder.short_string(&short);
+            encoder.short_string(&short).unwrap();
             encoder.long_string(long.as_bytes());
             let bytes = encoder.into_vec();
             let mut decoder = Decoder::new(&bytes);
             prop_assert_eq!(decoder.short_string().unwrap(), short);
             prop_assert_eq!(decoder.long_string().unwrap(), long);
             prop_assert_eq!(decoder.remaining(), 0);
+        }
+
+        /// Property 2 for `shortstr`: past the bound the encoder refuses, and refuses
+        /// having written **nothing**. A length octet already pushed would desynchronise
+        /// every argument after it in the same method frame, which reads as a protocol
+        /// error several fields later rather than as the error it is.
+        #[test]
+        fn short_string_refuses_past_the_bound(over in "[ -~]{256,320}") {
+            let mut encoder = Encoder::new();
+            let refused = encoder.short_string(&over);
+            prop_assert!(refused.is_err(), "{} bytes was accepted", over.len());
+            prop_assert!(
+                encoder.as_slice().is_empty(),
+                "a refusal wrote {} octets",
+                encoder.as_slice().len()
+            );
         }
 
         /// Property 1 for the Basic property list, whose presence flags are a 16-bit word
@@ -3835,7 +3864,7 @@ mod amqp_props {
                 headers: headers.clone(),
                 ..Default::default()
             };
-            let bytes = props.encode();
+            let bytes = props.encode().unwrap();
             let decoded = BasicProperties::decode(&mut Decoder::new(&bytes)).unwrap();
             prop_assert_eq!(decoded.content_type, content_type);
             prop_assert_eq!(decoded.delivery_mode, delivery_mode);
@@ -3963,19 +3992,14 @@ mod amqp_props {
         assert!(depth < 64, "decoded {depth} levels; the bound is 32");
     }
 
-    /// The encoder's own recursion is **not** bounded, and this pins why that is not a second
-    /// stack-overflow defect: every table it re-encodes came off the wire through the bounded
-    /// decoder, and every table a model supplies came through `serde_json`, whose parser caps
-    /// nesting at 128. Neither is near a stack overflow. If either of those two facts stops
-    /// being true, `Encoder::field_value` needs a counter of its own.
-    ///
     /// Re-encoding what the decoder returned is an operation the server really performs — it
-    /// echoes a peer's `client-properties` — so it has to be a fixed point for anything inside
-    /// the bound. **At** the bound it is not, and that is worth knowing rather than asserting
-    /// away: the guard truncates (`Err(_) => break`) rather than failing the table, so a
-    /// 32-deep value comes back one level shallower and re-encodes two octets shorter. That is
-    /// the right trade against a hostile peer — the walk stays in sync with the payload — but
-    /// it means an echoed table is not always the table that arrived.
+    /// echoes a peer's `client-properties` — so it has to be a fixed point for anything the
+    /// decoder can hand back.
+    ///
+    /// That is why the encoder's bound uses the **same** constant and the same accounting as
+    /// the decoder's. A bound one level tighter would refuse exactly the deepest table a peer
+    /// can send, which is the table most likely to have arrived from something hostile; a
+    /// bound one level looser would let NetGet emit a frame its own decoder rejects.
     #[test]
     fn a_table_that_survived_the_decoder_re_encodes() {
         let nested = |levels: usize| {
@@ -3987,34 +4011,88 @@ mod amqp_props {
         };
         let encode = |table: &Value| {
             let mut encoder = Encoder::new();
-            encoder.field_table(table);
-            encoder.into_vec()
+            encoder.field_table(table).map(|()| encoder.into_vec())
         };
 
         // Comfortably inside the bound: a round trip is exact and re-encoding is a fixed point.
         let table = nested(8);
-        let bytes = encode(&table);
+        let bytes = encode(&table).expect("8 levels is well inside the bound");
         let decoded = Decoder::new(&bytes).field_table().unwrap();
         assert_eq!(decoded, table);
-        assert_eq!(encode(&decoded), bytes);
+        assert_eq!(encode(&decoded).unwrap(), bytes);
 
-        // At the bound the innermost value is dropped, so the echo is shorter than what
-        // arrived. Asserted rather than avoided, because it is the guard's visible cost.
-        let deep = nested(31);
-        let deep_bytes = encode(&deep);
-        let deep_decoded = Decoder::new(&deep_bytes).field_table().unwrap();
-        assert_ne!(deep_decoded, deep);
-        assert!(encode(&deep_decoded).len() < deep_bytes.len());
+        // **At** the bound, which is the half a refuse-everything guard would fail. The
+        // deepest value the decoder will return sits at depth 31 (the table itself is depth 0
+        // and its entries depth 1), so thirty nested arrays around a leaf is the deepest table
+        // that both encodes and survives a round trip unchanged.
+        let deepest = nested(30);
+        let deepest_bytes = encode(&deepest).expect("the value at the bound must still encode");
+        assert_eq!(
+            Decoder::new(&deepest_bytes).field_table().unwrap(),
+            deepest,
+            "the deepest decodable table must round-trip exactly"
+        );
+
+        // One level past it the encoder refuses rather than recursing, and writes nothing.
+        let mut encoder = Encoder::new();
+        let refused = encoder.field_table(&nested(31));
+        assert!(refused.is_err(), "31 levels was encoded");
+        assert!(
+            encoder.as_slice().is_empty(),
+            "a refused table left {} octets behind",
+            encoder.as_slice().len()
+        );
+    }
+
+    /// The encoder's bound is what stops a programmatically-built `Value` from taking the
+    /// process down, and it is deliberately not argued away as unreachable.
+    ///
+    /// Every table reaching the encoder *today* came either off the wire through the bounded
+    /// decoder or through `serde_json`, whose parser caps nesting at 128 — so the bound fires
+    /// for no caller in the tree. That argument is about the callers, though, not about the
+    /// function: a `Value` built in a loop has no cap at all, a Rust stack overflow is a
+    /// `SIGSEGV` against the guard page rather than a panic, so `tokio::spawn` cannot contain
+    /// it and the whole process dies. This tree has had six of those.
+    ///
+    /// **A thousand levels, not a hundred thousand, and the reason is a finding of its own:**
+    /// `serde_json::Value` has no manual `Drop`, so dropping a deeply nested one recurses once
+    /// per level and overflows the stack *in the test harness* before the encoder is ever
+    /// called. A first version of this test used 50 000 and aborted with `stack overflow` at
+    /// the end of the function rather than inside `field_value_at`. So an unbounded `Value` is
+    /// a process-level hazard merely to **hold**, not only to encode — which is the strongest
+    /// argument available for never building one: NetGet's decoder stops at 32 and
+    /// `serde_json`'s parser at 128, and nothing should raise either.
+    #[test]
+    fn the_encoder_refuses_a_deeply_nested_value_rather_than_recursing() {
+        // Thirty times the bound, and shallow enough that `Value`'s own recursive drop is safe.
+        let mut value = json!(true);
+        for _ in 0..1_000 {
+            value = json!([value]);
+        }
+        let mut encoder = Encoder::new();
+        let refused = encoder.field_table(&json!({ "k": value }));
+        assert!(refused.is_err(), "1 000 levels was encoded");
+        assert!(encoder.as_slice().is_empty());
+
+        // Same through the `F` arm rather than the `A` arm, since the two recurse into each
+        // other and one of them writing its type id early would be enough to desynchronise.
+        let mut object = json!({ "leaf": true });
+        for _ in 0..1_000 {
+            object = json!({ "n": object });
+        }
+        let mut encoder = Encoder::new();
+        assert!(encoder.field_table(&object).is_err());
+        assert!(encoder.as_slice().is_empty());
     }
 
     // -------------------------------------------------------------------------------------
-    // FINDINGS
+    // REGRESSIONS — both were `#[ignore = "FINDING: …"]` until the encoder was fixed
     // -------------------------------------------------------------------------------------
 
-    /// FINDING: `Encoder::short_string` truncates at 255 bytes rather than refusing.
+    /// `Encoder::short_string` used to **truncate** at 255 bytes rather than refusing.
     ///
-    /// Minimal counterexample: a 256-byte string, which reaches the wire as its first 255
-    /// bytes. `Decoder::short_string` reads a one-octet length, so the result is a perfectly
+    /// Minimal counterexample: a 256-byte string, which reached the wire as its first 255
+    /// bytes. `Decoder::short_string` reads a one-octet length, so the result was a perfectly
     /// well-formed shortstr — carrying a **different name**. This is the `encode_apn` shape:
     /// truncation turns an obvious error into a believable value.
     ///
@@ -4024,41 +4102,71 @@ mod amqp_props {
     /// nothing at either end reports a problem — the publisher publishes into one and the
     /// consumer waits on the other.
     ///
-    /// Not reachable from the wire (`Decoder::short_string` cannot produce more than 255
-    /// bytes), so the source is the model or NetGet itself. The fix is the one the other nine
-    /// findings in this file took: return `Result` and name the value and the bound.
+    /// Never reachable from the wire (`Decoder::short_string` cannot produce more than 255
+    /// bytes), so the source was the model or NetGet itself — both of which want to be told.
     #[test]
-    #[ignore = "FINDING: Encoder::short_string truncates at 255 bytes instead of refusing"]
-    fn short_string_should_refuse_a_name_it_cannot_carry() {
-        let name = "q".repeat(256);
+    fn short_string_refuses_what_it_cannot_carry() {
+        // At the bound: still encodes, and round-trips. Without this half, an encoder that
+        // refused every shortstr would pass the rest of this test.
+        let at_bound = "q".repeat(255);
         let mut encoder = Encoder::new();
-        encoder.short_string(&name);
+        encoder
+            .short_string(&at_bound)
+            .expect("255 bytes is exactly what a shortstr carries");
         let bytes = encoder.into_vec();
-        assert_eq!(
-            Decoder::new(&bytes).short_string().unwrap(),
-            name,
-            "the name was silently truncated, so this is a different queue"
+        assert_eq!(bytes.len(), 256, "one length octet plus 255");
+        assert_eq!(Decoder::new(&bytes).short_string().unwrap(), at_bound);
+
+        // One byte past it: refused, naming the length and the bound, and nothing written.
+        let over = "q".repeat(256);
+        let mut encoder = Encoder::new();
+        let err = encoder
+            .short_string(&over)
+            .expect_err("a 256-byte name must not become a 255-byte one");
+        let message = err.to_string();
+        assert!(
+            message.contains("256"),
+            "the error names the value: {message}"
+        );
+        assert!(
+            message.contains("255"),
+            "the error names the bound: {message}"
+        );
+        assert!(
+            encoder.as_slice().is_empty(),
+            "a refusal must leave the buffer untouched"
         );
     }
 
-    /// FINDING, the same defect reached through a field-table key, which is where it costs a
-    /// value rather than a name: two keys differing only past octet 255 become one entry, and
-    /// whichever was written first is gone.
+    /// The same defect reached through a field-table key, which is where it cost a value
+    /// rather than a name: two keys differing only past octet 255 became one entry, and
+    /// whichever was written first was gone.
     #[test]
-    #[ignore = "FINDING: Encoder::short_string truncates at 255 bytes instead of refusing"]
-    fn two_long_table_keys_should_not_collide() {
+    fn two_long_table_keys_do_not_collide() {
+        // At the bound: two 255-byte keys that differ are two entries, both preserved. This is
+        // the half a guard that refused any long key would fail.
+        let mut table = Map::new();
+        table.insert(format!("{}a", "k".repeat(254)), json!(1));
+        table.insert(format!("{}b", "k".repeat(254)), json!(2));
+        let table = Value::Object(table);
+        let mut encoder = Encoder::new();
+        encoder
+            .field_table(&table)
+            .expect("255-byte keys are encodable");
+        let decoded = Decoder::new(&encoder.into_vec()).field_table().unwrap();
+        assert_eq!(decoded, table, "two 255-byte keys must stay two entries");
+
+        // Past the bound: the whole table is refused rather than one key being cut to collide
+        // with another. Refusing the table and not merely the key is the point — a partially
+        // written table would be length-prefixed to describe bytes that are not there.
         let mut table = Map::new();
         table.insert(format!("{}a", "k".repeat(255)), json!(1));
         table.insert(format!("{}b", "k".repeat(255)), json!(2));
-        let table = Value::Object(table);
-
         let mut encoder = Encoder::new();
-        encoder.field_table(&table);
-        let decoded = Decoder::new(&encoder.into_vec()).field_table().unwrap();
-        assert_eq!(
-            decoded.as_object().unwrap().len(),
-            2,
-            "two distinct keys collapsed into one entry, losing a value"
+        assert!(
+            encoder.field_table(&Value::Object(table)).is_err(),
+            "two 256-byte keys were encoded, which collapses them into one entry"
         );
+        assert!(encoder.as_slice().is_empty());
     }
 }

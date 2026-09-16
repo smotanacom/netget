@@ -229,21 +229,43 @@ none.
   deep; `client-properties` with its nested `capabilities` is depth 2, and `amq-protocol`
   produces nothing deeper. An over-deep value is dropped and what was decoded so far is
   returned, keeping the lenient behaviour above.
-- Short strings are truncated at a UTF-8 char boundary when encoding, never sliced by byte
-  index.
+- **Short strings are refused past 255 octets, not truncated.** `Encoder::short_string`
+  returns `Result` and names the length and the bound.
 
-  **That truncation is an open finding, not a feature.** `Encoder::short_string` shortens a
-  value past 255 bytes instead of refusing it, and shortstr is what carries a queue name, an
-  exchange name, a routing key, a consumer tag and every field-table key. The result is a
-  perfectly well-formed shortstr naming a *different* queue, which nothing at either end
-  reports: the publisher publishes into one and the consumer waits on the other. Two
-  field-table keys that differ only past octet 255 collapse into one entry and the first value
-  written is lost — measured, not theorised. It is the one place in this codec that shortens
-  rather than refuses, and it is the `gtp::encode_apn` shape the codec property tests exist to
-  find. Not reachable from the wire, since `Decoder::short_string` cannot produce more than 255
-  bytes; the source is the model or NetGet itself. `tests/codec_property_test.rs`'s
-  `amqp_props` holds both counterexamples as `#[ignore = "FINDING: …"]`; the fix is to return
-  `Result` and name the value and the bound, as the other nine findings in that file did.
+  It used to shorten, and that was a finding rather than a feature. shortstr carries a queue
+  name, an exchange name, a routing key, a consumer tag and every field-table key, so a
+  256-octet name cut to 255 reached the wire as a perfectly well-formed shortstr naming a
+  *different* queue, which nothing at either end reports: the publisher publishes into one and
+  the consumer waits on the other. Two field-table keys differing only past octet 255 collapsed
+  into one entry and the first value written was lost — measured, not theorised. It was the
+  `gtp::encode_apn` shape the codec property tests exist to find, never reachable from the wire
+  (`Decoder::short_string` reads a one-octet length), so the source was the model or NetGet
+  itself — both of which want to be told. `tests/codec_property_test.rs`'s `amqp_props` holds
+  both counterexamples as live regression tests, each asserting that the value **at** 255 still
+  encodes and round-trips, because a guard that refused everything would pass the other half.
+
+  The one exception is `Encoder::reply_text`, used only for AMQP's `reply-text` field in
+  `connection.close` and `channel.close`. That field is free-form prose rather than an
+  identifier, and one of its callers interpolates a decoder error message, so refusing would
+  mean not sending the close frame at all and leaving the peer waiting. A shortened diagnostic
+  is the same diagnostic with less of it; a shortened name is a different name. The method is
+  named after the field so that reaching for it anywhere else reads wrong.
+
+- **The encoder is depth-bounded too**, by the same `MAX_FIELD_TABLE_DEPTH` (32) and with the
+  same accounting as the decoder, so it accepts exactly the tables the decoder yields — which
+  matters because the broker really does echo a peer's `client-properties`. It was previously
+  unbounded under the argument that every table reaching it had come through the bounded
+  decoder or through `serde_json`'s 128-level parser cap. That argument is about the callers,
+  not the function, and would have expired silently the first time a `Value` was built in a
+  loop. A refusal at any level leaves the encoder's buffer untouched: a half-written table is
+  length-prefixed to describe bytes that are not there, which desynchronises every argument
+  after it in the same frame.
+
+  Worth knowing while you are here: `serde_json::Value` has no manual `Drop`, so **dropping** a
+  deeply nested value recurses once per level and overflows the stack on its own. The property
+  test that tries to feed the encoder 50 000 levels aborts in the harness before the encoder is
+  reached. Nothing in NetGet can build one — the decoder stops at 32 — but do not raise either
+  cap on the assumption that holding the value is free.
 
 ### Timeouts
 

@@ -371,7 +371,7 @@ impl AmqpProtocol {
 
     fn execute_connection_open_ok(&self) -> Result<ActionResult> {
         let mut args = Encoder::new();
-        args.short_string(""); // reserved-1 (known-hosts)
+        args.short_string("")?; // reserved-1 (known-hosts)
         self.log("AMQP -> connection.open-ok".to_string());
         self.send(
             RESP_CONNECTION_OPEN_OK,
@@ -402,7 +402,7 @@ impl AmqpProtocol {
 
         let mut args = Encoder::new();
         args.u16(reply_code as u16);
-        args.short_string(reply_text);
+        args.reply_text(reply_text);
         args.u16(CLASS_CONNECTION);
         args.u16(CONNECTION_OPEN);
         self.log(format!(
@@ -439,7 +439,7 @@ impl AmqpProtocol {
 
         let mut args = Encoder::new();
         args.u16(reply_code as u16);
-        args.short_string(reply_text);
+        args.reply_text(reply_text);
         args.u16(0);
         args.u16(0);
         self.log(format!(
@@ -479,7 +479,7 @@ impl AmqpProtocol {
             .min(u32::MAX as u64) as u32;
 
         let mut args = Encoder::new();
-        args.short_string(&queue);
+        args.short_string(&queue)?;
         args.u32(message_count);
         args.u32(consumer_count);
         self.log(format!(
@@ -544,7 +544,7 @@ impl AmqpProtocol {
         }
 
         let mut args = Encoder::new();
-        args.short_string(&consumer_tag);
+        args.short_string(&consumer_tag)?;
         self.log(format!(
             "AMQP -> basic.consume-ok '{}' on channel {}",
             consumer_tag, channel
@@ -616,11 +616,11 @@ impl AmqpProtocol {
         };
 
         let mut args = Encoder::new();
-        args.short_string(consumer_tag);
+        args.short_string(consumer_tag)?;
         args.u64(delivery_tag);
         args.bits(&[redelivered]);
-        args.short_string(exchange);
-        args.short_string(routing_key);
+        args.short_string(exchange)?;
+        args.short_string(routing_key)?;
 
         let mut frames = vec![method_frame(
             handle.channel,
@@ -632,7 +632,7 @@ impl AmqpProtocol {
             handle.channel,
             CLASS_BASIC,
             body.len() as u64,
-            &properties.encode(),
+            &properties.encode()?,
         ));
         frames.extend(body_frames(
             handle.channel,
@@ -715,9 +715,9 @@ impl AmqpProtocol {
 
         let mut args = Encoder::new();
         args.u16(reply_code as u16);
-        args.short_string(reply_text);
-        args.short_string(exchange);
-        args.short_string(routing_key);
+        args.reply_text(reply_text);
+        args.short_string(exchange)?;
+        args.short_string(routing_key)?;
 
         let properties = BasicProperties {
             content_type: action
@@ -737,7 +737,7 @@ impl AmqpProtocol {
                 channel,
                 CLASS_BASIC,
                 body.len() as u64,
-                &properties.encode(),
+                &properties.encode()?,
             ),
         )?;
         for frame in body_frames(

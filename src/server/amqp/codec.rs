@@ -10,7 +10,22 @@
 //! `get`, every length read off the wire is validated against the bytes remaining, every
 //! offset arithmetic uses `checked_add`, and field-table nesting is capped, so no frame —
 //! however malformed — can panic a connection task or overflow the stack.
-//! Encoding truncates over-long short strings at a UTF-8 char boundary rather than slicing.
+//!
+//! The depth half of that sentence was missing, and so was the bound. Field tables are
+//! recursive, five bytes bought a level, and a stack overflow is a `SIGSEGV` against a guard
+//! page rather than a panic — so it killed the whole process rather than one connection, and
+//! `tokio::spawn` could not contain it. See `MAX_FIELD_TABLE_DEPTH`.
+//!
+//! [`Encoder`] **refuses** what it cannot carry rather than shortening it. A `shortstr` holds
+//! 255 octets and carries every queue name, exchange name, routing key, consumer tag and
+//! field-table key in the protocol, so a 256-octet name truncated to 255 reaches the wire as a
+//! perfectly well-formed name for a *different* queue — the publisher publishes into one and
+//! the consumer waits on the other, and nothing at either end reports a problem. The one
+//! exception is [`Encoder::reply_text`], which is free-form prose rather than an identifier;
+//! it is documented where it is defined.
+//!
+//! The encoder is depth-bounded too, by the same `MAX_FIELD_TABLE_DEPTH` and with the same
+//! accounting, so it accepts exactly the tables the decoder yields.
 //!
 //! The depth half of that sentence was missing, and so was the bound. Field tables are
 //! recursive, five bytes bought a level, and a stack overflow is a `SIGSEGV` against a guard
@@ -141,6 +156,10 @@ pub fn method_name(class_id: u16, method_id: u16) -> String {
 /// produces nothing deeper. 32 is generous by an order of magnitude and still bottoms the
 /// recursion out in a few hundred bytes of stack.
 const MAX_FIELD_TABLE_DEPTH: usize = 32;
+
+/// Octets a `shortstr` can carry: its length field is a single octet (AMQP 0-9-1 section
+/// 4.2.5.3). Not a policy choice and not tunable — 256 bytes is simply not expressible.
+pub const MAX_SHORT_STRING_LEN: usize = 255;
 
 pub struct Decoder<'a> {
     buf: &'a [u8],
@@ -370,12 +389,49 @@ impl Encoder {
         self.buf.extend_from_slice(&v.to_be_bytes());
     }
 
-    /// `shortstr`. The wire format allows 255 bytes; longer input is truncated at a UTF-8
-    /// char boundary, never sliced by byte index.
-    pub fn short_string(&mut self, s: &str) {
-        let s = truncate_str(s, 255);
+    /// `shortstr`: one length octet then that many bytes. Refuses anything longer than
+    /// [`MAX_SHORT_STRING_LEN`], leaving the buffer untouched.
+    ///
+    /// This used to truncate at a UTF-8 char boundary, which is the `encode_apn` shape: a
+    /// name shortened to fit is not an error the caller can see, it is a well-formed name for
+    /// something else. shortstr carries queue names, exchange names, routing keys, consumer
+    /// tags and every field-table key, so the cost is a queue declared under one name and
+    /// bound under another — measured, not theorised: two table keys differing only past
+    /// octet 255 collapsed into one entry and a value was lost.
+    ///
+    /// Not reachable from the wire — [`Decoder::short_string`] reads a one-octet length and
+    /// so cannot produce more than 255 bytes — which means the source is the model or NetGet
+    /// itself, and both want to be told.
+    pub fn short_string(&mut self, s: &str) -> Result<()> {
+        if s.len() > MAX_SHORT_STRING_LEN {
+            return Err(anyhow!(
+                "AMQP shortstr cannot carry {} bytes; the wire format's length octet stops at \
+                 {}. Shorten the name rather than letting it be cut, which would name \
+                 something else: {}",
+                s.len(),
+                MAX_SHORT_STRING_LEN,
+                crate::utils::truncate_for_log(s, 48)
+            ));
+        }
         self.buf.push(s.len() as u8);
         self.buf.extend_from_slice(s.as_bytes());
+        Ok(())
+    }
+
+    /// `shortstr` for the one AMQP field that carries free-form prose rather than an
+    /// identifier: `reply-text`, in `connection.close` and `channel.close`.
+    ///
+    /// Shortened at a UTF-8 char boundary instead of refused, and the distinction is
+    /// deliberate. A shortened *name* is a believable different name; a shortened
+    /// *diagnostic* is the same diagnostic with less of it, and nothing keys off it. The
+    /// alternative — refusing — means not sending the close frame at all, so a peer that
+    /// provoked a long error message would be left waiting on a connection NetGet has already
+    /// given up on. Never reach for this for a queue, exchange, routing key, consumer tag or
+    /// table key: those go through [`Encoder::short_string`] and are meant to fail loudly.
+    pub fn reply_text(&mut self, text: &str) {
+        let text = truncate_str(text, MAX_SHORT_STRING_LEN);
+        self.buf.push(text.len() as u8);
+        self.buf.extend_from_slice(text.as_bytes());
     }
 
     pub fn long_string(&mut self, bytes: &[u8]) {
@@ -396,18 +452,56 @@ impl Encoder {
     }
 
     /// Encode a JSON object as a field table. Non-object input encodes as an empty table.
-    pub fn field_table(&mut self, value: &Value) {
+    ///
+    /// Refuses a key longer than a `shortstr` and a table nested past
+    /// `MAX_FIELD_TABLE_DEPTH`. Either refusal leaves this encoder's buffer exactly as it
+    /// was: a half-written table is worse than none, because the length prefix in front of it
+    /// would then describe bytes that are not there and desynchronise every argument after it
+    /// in the same method frame.
+    pub fn field_table(&mut self, value: &Value) -> Result<()> {
+        self.field_table_at(value, 0)
+    }
+
+    fn field_table_at(&mut self, value: &Value, depth: usize) -> Result<()> {
+        if depth >= MAX_FIELD_TABLE_DEPTH {
+            return Err(anyhow!(
+                "AMQP field table nested deeper than {} levels",
+                MAX_FIELD_TABLE_DEPTH
+            ));
+        }
         let mut inner = Encoder::new();
         if let Some(map) = value.as_object() {
             for (key, val) in map {
-                inner.short_string(key);
-                inner.field_value(val);
+                inner.short_string(key)?;
+                inner.field_value_at(val, depth + 1)?;
             }
         }
         self.long_string(&inner.buf);
+        Ok(())
     }
 
-    fn field_value(&mut self, value: &Value) {
+    /// One typed field-table value, depth-bounded with the **same accounting** as
+    /// `Decoder::field_value_at` — a value directly inside a table is at `depth + 1`, an
+    /// array's items and a nested table's entries one deeper again. The symmetry is the
+    /// point: a table the decoder hands back has to be re-encodable, because the broker
+    /// really does echo a peer's `client-properties`, and a bound that disagreed with the
+    /// decoder's by one level would refuse exactly the deepest tables a peer can send.
+    ///
+    /// Bounding the encoder is not redundant with bounding the decoder. Every table reaching
+    /// it *today* came either off the wire through the bounded decoder or through
+    /// `serde_json`, whose parser caps nesting at 128 — so neither is near a stack overflow,
+    /// and this bound fires for no caller in the tree. It is here because that argument is
+    /// about the callers rather than about this function: a `Value` built programmatically in
+    /// a loop has no cap at all, a stack overflow is a `SIGSEGV` against the guard page rather
+    /// than a panic, so `tokio::spawn` cannot contain it and the whole NetGet process dies,
+    /// and this tree has had six of them. A counter costs one comparison.
+    fn field_value_at(&mut self, value: &Value, depth: usize) -> Result<()> {
+        if depth >= MAX_FIELD_TABLE_DEPTH {
+            return Err(anyhow!(
+                "AMQP field table nested deeper than {} levels",
+                MAX_FIELD_TABLE_DEPTH
+            ));
+        }
         match value {
             Value::Null => self.u8(b'V'),
             Value::Bool(b) => {
@@ -427,19 +521,24 @@ impl Encoder {
                 self.u8(b'S');
                 self.long_string(s.as_bytes());
             }
+            // Both composite arms encode into a scratch buffer and only then write their type
+            // id, so a refusal anywhere below leaves this level untouched too.
             Value::Array(items) => {
                 let mut inner = Encoder::new();
                 for item in items {
-                    inner.field_value(item);
+                    inner.field_value_at(item, depth + 1)?;
                 }
                 self.u8(b'A');
                 self.long_string(&inner.buf);
             }
             Value::Object(_) => {
+                let mut inner = Encoder::new();
+                inner.field_table_at(value, depth + 1)?;
                 self.u8(b'F');
-                self.field_table(value);
+                self.buf.extend_from_slice(&inner.buf);
             }
         }
+        Ok(())
     }
 
     pub fn into_vec(self) -> Vec<u8> {
@@ -597,7 +696,15 @@ impl BasicProperties {
         Ok(props)
     }
 
-    pub fn encode(&self) -> Vec<u8> {
+    /// Serialise the property list.
+    ///
+    /// Returns `Err` for a `shortstr` property longer than 255 octets or a `headers` table
+    /// nested past the decoder's bound, rather than shortening either. `content_type`,
+    /// `reply_to`, `correlation_id` and `message_id` are all names something downstream
+    /// matches on, so a shortened one is the wrong name rather than a shorter one — and the
+    /// presence flags are written before the values, so a silently dropped property would
+    /// leave the flag word claiming a field that is not in the payload.
+    pub fn encode(&self) -> Result<Vec<u8>> {
         let present = [
             self.content_type.is_some(),
             self.content_encoding.is_some(),
@@ -624,13 +731,13 @@ impl BasicProperties {
         let mut e = Encoder::new();
         e.u16(flags);
         if let Some(v) = &self.content_type {
-            e.short_string(v);
+            e.short_string(v)?;
         }
         if let Some(v) = &self.content_encoding {
-            e.short_string(v);
+            e.short_string(v)?;
         }
         if let Some(v) = &self.headers {
-            e.field_table(v);
+            e.field_table(v)?;
         }
         if let Some(v) = self.delivery_mode {
             e.u8(v);
@@ -639,33 +746,33 @@ impl BasicProperties {
             e.u8(v);
         }
         if let Some(v) = &self.correlation_id {
-            e.short_string(v);
+            e.short_string(v)?;
         }
         if let Some(v) = &self.reply_to {
-            e.short_string(v);
+            e.short_string(v)?;
         }
         if let Some(v) = &self.expiration {
-            e.short_string(v);
+            e.short_string(v)?;
         }
         if let Some(v) = &self.message_id {
-            e.short_string(v);
+            e.short_string(v)?;
         }
         if let Some(v) = self.timestamp {
             e.u64(v);
         }
         if let Some(v) = &self.kind {
-            e.short_string(v);
+            e.short_string(v)?;
         }
         if let Some(v) = &self.user_id {
-            e.short_string(v);
+            e.short_string(v)?;
         }
         if let Some(v) = &self.app_id {
-            e.short_string(v);
+            e.short_string(v)?;
         }
         if let Some(v) = &self.cluster_id {
-            e.short_string(v);
+            e.short_string(v)?;
         }
-        e.into_vec()
+        Ok(e.into_vec())
     }
 
     /// Render for an event: only the properties the publisher actually set, as JSON.

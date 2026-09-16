@@ -446,7 +446,7 @@ impl Session {
             0,
             CLASS_CONNECTION,
             CONNECTION_START,
-            connection_start_args(),
+            connection_start_args()?,
         );
 
         let mut phase = Phase::AwaitStartOk;
@@ -867,7 +867,7 @@ impl Session {
                 ));
                 if !bits.first().copied().unwrap_or(false) {
                     let mut args = Encoder::new();
-                    args.short_string(&consumer_tag);
+                    args.short_string(&consumer_tag)?;
                     self.send_method(channel, CLASS_BASIC, BASIC_CANCEL_OK, args.into_vec());
                 }
                 Ok(Next::Continue)
@@ -998,7 +998,7 @@ impl Session {
                      queue",
                     queue
                 ));
-                self.send_queue_declare_ok(channel, &queue, 0, 0);
+                self.send_queue_declare_ok(channel, &queue, 0, 0)?;
                 Ok(Next::Continue)
             }
         }
@@ -1090,7 +1090,7 @@ impl Session {
                 ));
                 self.register_consumer(&consumer_tag, channel, &queue);
                 let mut args = Encoder::new();
-                args.short_string(&consumer_tag);
+                args.short_string(&consumer_tag)?;
                 self.send_method(channel, CLASS_BASIC, BASIC_CONSUME_OK, args.into_vec());
                 Ok(Next::Continue)
             }
@@ -1262,18 +1262,22 @@ impl Session {
             .send(method_frame(channel, class_id, method_id, &args));
     }
 
+    /// `Queue.Declare-Ok`. Returns `Err` for a queue name a `shortstr` cannot carry rather
+    /// than shortening it: the name is what the client will bind and consume against, so a
+    /// shortened one names a different queue and neither end can tell.
     fn send_queue_declare_ok(
         &self,
         channel: u16,
         queue: &str,
         message_count: u32,
         consumer_count: u32,
-    ) {
+    ) -> Result<()> {
         let mut args = Encoder::new();
-        args.short_string(queue);
+        args.short_string(queue)?;
         args.u32(message_count);
         args.u32(consumer_count);
         self.send_method(channel, CLASS_QUEUE, QUEUE_DECLARE_OK, args.into_vec());
+        Ok(())
     }
 
     fn send_connection_close(
@@ -1285,7 +1289,7 @@ impl Session {
     ) {
         let mut args = Encoder::new();
         args.u16(reply_code);
-        args.short_string(reply_text);
+        args.reply_text(reply_text);
         args.u16(class_id);
         args.u16(method_id);
         self.send_method(0, CLASS_CONNECTION, CONNECTION_CLOSE, args.into_vec());
@@ -1301,7 +1305,7 @@ impl Session {
     ) {
         let mut args = Encoder::new();
         args.u16(reply_code);
-        args.short_string(reply_text);
+        args.reply_text(reply_text);
         args.u16(class_id);
         args.u16(method_id);
         self.send_method(channel, CLASS_CHANNEL, CHANNEL_CLOSE, args.into_vec());
@@ -1390,7 +1394,7 @@ async fn spawn_heartbeat(
 }
 
 /// `Connection.Start` arguments: version, server properties, SASL mechanisms, locales.
-fn connection_start_args() -> Vec<u8> {
+fn connection_start_args() -> Result<Vec<u8>> {
     let mut args = Encoder::new();
     args.u8(0); // version-major
     args.u8(9); // version-minor
@@ -1399,10 +1403,10 @@ fn connection_start_args() -> Vec<u8> {
         "version": env!("CARGO_PKG_VERSION"),
         "platform": "Rust",
         "information": "LLM-controlled AMQP 0-9-1 broker",
-    }));
+    }))?;
     args.long_string(b"PLAIN");
     args.long_string(b"en_US");
-    args.into_vec()
+    Ok(args.into_vec())
 }
 
 /// Read one frame. `Ok(None)` means the peer closed cleanly between frames.
