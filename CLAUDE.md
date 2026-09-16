@@ -896,6 +896,25 @@ Use minimal features. `--all-features` compiles 50+ protocols and their dependen
 
 Kill stuck builds with `./cargo-isolated-kill.sh`, never `pkill cargo`.
 
+### Reclaiming disk: agent worktrees are where the space is, and pruning them has a trap
+
+`/Users/matus/dev/cargo-clean-all.sh` walks `~/dev`, runs `cargo clean` on every Rust project,
+**and** reclaims `.claude/worktrees/*/target` — which is usually the bigger half. Measured
+16 September 2026: 52 GiB across 23 worktrees in 8 repos, against which the top-level projects
+were a rounding error. `--prune` additionally removes a worktree whose branch is merged.
+
+Two things about that worth keeping:
+
+- **`git worktree remove` keeps the branch.** Only the working copy goes, so nothing committed
+  is lost and the commits stay reachable. That makes worktree directories the cheapest large
+  reserve on the machine, and nobody reclaims them.
+- **Check for a live process before removing one, not just that the branch is merged.** During a
+  full-disk recovery a worktree was pruned while a `cargo fuzz` run from it was still going. The
+  binary was already mapped, so it survived — orphaned at PPID 1, burning half a core for **five
+  hours** against a corpus directory that no longer existed, while the same session was
+  investigating load-sensitive test flakes on a machine it had quietly oversubscribed. The
+  script's `worktree_is_busy` does this with `pgrep -f` on the path; do the same by hand.
+
 ### `target/` will fill the disk, and it fails in a way that wastes an hour
 
 **Watch `df` during any session that builds several different feature sets.** `target/debug/deps`
