@@ -874,13 +874,21 @@ after a long period when no CI job ran `cargo test` at all:
 |---|---|---|
 | `lint` | yes | `cargo fmt --check`; `clippy -D correctness -D suspicious`. A full default clippy runs advisory-only — ~50 style/complexity warnings predate the gate |
 | `test` | yes | `cargo test` on `tcp,http,dns,udp,redis,mcp-stdio` |
-| `single-feature` | yes | `cargo check --tests` on 14 protocol features **one at a time** — catches a feature whose deps are under-declared, which no multi-feature build can |
+| `single-feature` | yes | `cargo check --tests` on `SINGLE_FEATURE_CORE` (24 features) **one at a time** — catches a feature whose deps are under-declared, which no multi-feature build can |
+| `single-feature-full` | nightly | The same check over all **133** features that build standalone (`SINGLE_FEATURE_CORE` + `SINGLE_FEATURE_REST`). Cron + `workflow_dispatch` only, never on a PR; the 30-minute runner timeout is why it is not blocking |
 | `orphaned-tests` | yes | Fails if a test dir on disk is undeclared in `mod.rs` (see the footgun above) |
 | `clippy-wide` | **no** (`continue-on-error`) | Clippy over a wide feature set. Advisory because at `--all-features` the lib alone emits ~495 warnings |
 | `registry-audit` | **no** (`continue-on-error`) | The registry-walking audits at `--all-features`, with the system libraries installed. This is the only job that sees more than 6 of 116 protocols — and it cannot fail the build, so **a green PR is not evidence the audits passed**. Read its log |
 
-Six jobs, not four: `clippy-wide` and `registry-audit` are easy to miss because both are
-`continue-on-error` and so report green regardless of outcome.
+Nine jobs, not the six tabulated: `ratchets` and `wasm-web` are blocking and missing from the
+table above, and `clippy-wide` and `registry-audit` are easy to miss because both are
+`continue-on-error` and so report green regardless of outcome. Derive the list from
+`.github/workflows/ci.yml`; this table has been short before.
+
+Every job except `single-feature-full` carries `if: github.event_name != 'schedule'`, so the
+nightly cron runs that one job and nothing else. The workflow's `concurrency` group includes
+`github.event_name` for the same reason: without it a push to master and the nightly run share
+a group and `cancel-in-progress` makes each kill the other.
 
 ### Terminal (PTY) tests
 
