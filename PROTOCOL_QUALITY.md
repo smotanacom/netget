@@ -234,7 +234,13 @@ declare, whether or not anyone has looked at it.
   RESP `LOADING`) and a close where none does. *Why:* the NFS guard chose 256 for a reason;
   nothing else chose anything. *Effort:* M.
 
-- [ ] **Max message / frame size declared in metadata and asserted by a test.** Every server
+- [ ] **Max message / frame size declared in metadata and asserted by a test.** **Measured
+  15 Sep: 72 of 152 server directories declare a `MAX_*_LEN`/`SIZE`/`BYTES` const; 81 do not.**
+  The names have converged on their own — `MAX_REQUEST_BYTES` (15) and `MAX_REQUEST_BODY_BYTES`
+  (12) already dominate — so the work is less "invent a scheme" than "finish and surface it".
+  Note before starting: many of the 81 genuinely have no message to bound (the 17 BLE profiles
+  delegate to the base; `arp`, `bootp`, `datalink` have fixed-size frames), so the real target
+  is smaller than 81 and the first task is to derive it rather than to sweep. Every server
   states its bound (`ProtocolMetadataV2::max_inbound_bytes`), and a generic test sends
   bound+1 and asserts a refusal before any model call. *Why:* the unbounded-body class
   (kubernetes, ipp, openai, openapi, ollama, modbus's accumulator, fido2's assembly) was found
