@@ -3,6 +3,17 @@
 //! These tests verify end-to-end web_search functionality by starting NetGet
 //! and having the LLM use web_search to gather information.
 
+/// The death tie that keeps a spawned `netget` from outliving this binary.
+///
+/// Pulled in by path rather than through the shared harness because this file needs exactly one
+/// module out of it: `child_guard.rs` depends only on `std` and `libc`, so it compiles
+/// standalone. `Drop` alone is not enough — it does not run when the test binary is
+/// `SIGKILL`ed, aborts, or is interrupted, which is how 78 orphaned `netget` processes
+/// accumulated on one machine in ten hours. Every test here waits 30–45 seconds against a real
+/// model, so an interrupted run is the normal way for one of these children to be abandoned.
+#[path = "../helpers/child_guard.rs"]
+mod child_guard;
+
 use reqwest;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -64,6 +75,8 @@ async fn test_htcpcp_tea_accepts_message_teapot() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to start netget");
+    let pid = child.id();
+    child_guard::tie_child(pid);
 
     // 2. Wait for server to start (needs time for web_search + LLM processing)
     println!("Waiting for server to start and read RFC...");
@@ -73,6 +86,8 @@ async fn test_htcpcp_tea_accepts_message_teapot() {
     match child.try_wait() {
         Ok(Some(status)) => {
             let output = child.wait_with_output().unwrap();
+            // Exited on its own, so the pid is free; release the tie before it is recycled.
+            child_guard::untie_child(pid);
             eprintln!(
                 "NetGet stdout:\n{}",
                 String::from_utf8_lossy(&output.stdout)
@@ -107,6 +122,8 @@ async fn test_htcpcp_tea_accepts_message_teapot() {
     // 5. Kill the NetGet process
     let _ = child.kill();
     let _ = child.wait();
+    // After the kill, never before: a tie released first leaves nothing watching.
+    child_guard::untie_child(pid);
 
     // 6. Assert the request succeeded and did NOT return 415
     match result {
@@ -172,6 +189,8 @@ async fn test_htcpcp_coffeepot_rejects_message_teapot() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to start netget");
+    let pid = child.id();
+    child_guard::tie_child(pid);
 
     // 2. Wait for server to start (needs time for web_search + LLM processing)
     println!("Waiting for server to start and read RFC...");
@@ -181,6 +200,8 @@ async fn test_htcpcp_coffeepot_rejects_message_teapot() {
     match child.try_wait() {
         Ok(Some(status)) => {
             let output = child.wait_with_output().unwrap();
+            // Exited on its own, so the pid is free; release the tie before it is recycled.
+            child_guard::untie_child(pid);
             eprintln!(
                 "NetGet stdout:\n{}",
                 String::from_utf8_lossy(&output.stdout)
@@ -215,6 +236,8 @@ async fn test_htcpcp_coffeepot_rejects_message_teapot() {
     // 5. Kill the NetGet process
     let _ = child.kill();
     let _ = child.wait();
+    // After the kill, never before: a tie released first leaves nothing watching.
+    child_guard::untie_child(pid);
 
     // 6. Assert the request succeeded and DID return 415
     match result {
@@ -271,6 +294,8 @@ async fn test_llm_search_and_extract_rfc2324_media_type() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to start netget");
+    let pid = child.id();
+    child_guard::tie_child(pid);
 
     // Wait for LLM to process (search, read, extract)
     // This involves: search query -> find URL -> fetch URL -> extract info -> respond
@@ -280,6 +305,7 @@ async fn test_llm_search_and_extract_rfc2324_media_type() {
     // Kill the process and capture output
     let _ = child.kill();
     let output = child.wait_with_output().expect("Failed to get output");
+    child_guard::untie_child(pid);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

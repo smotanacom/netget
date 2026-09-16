@@ -20,6 +20,7 @@
 //! Platform: Unix/Linux/macOS only.
 #![cfg(all(feature = "stdio", unix))]
 
+use super::super::super::helpers::child_guard;
 use super::super::super::helpers::mock_builder::MockLlmBuilder;
 use super::super::super::helpers::mock_ollama::MockOllamaServer;
 use super::super::super::helpers::E2EResult;
@@ -68,6 +69,14 @@ async fn test_stdio_pipe_filter() -> E2EResult<()> {
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
+    // `kill_on_drop` covers the normal and unwinding-panic paths and nothing else: `Drop` does
+    // not run when this binary is `SIGKILL`ed, aborts, or is interrupted mid-run — which is how
+    // 78 orphaned `netget` processes accumulated on one machine in ten hours. The tie is the
+    // OS-level half. See `tests/helpers/child_guard.rs`.
+    let pid = child.id();
+    if let Some(pid) = pid {
+        child_guard::tie_child(pid);
+    }
 
     let mut stdin = child.stdin.take().ok_or("no child stdin")?;
     let mut lines = BufReader::new(child.stdout.take().ok_or("no child stdout")?).lines();
@@ -94,6 +103,10 @@ async fn test_stdio_pipe_filter() -> E2EResult<()> {
     .unwrap_or(false);
 
     let _ = child.kill().await;
+    // After the kill, never before: a tie released first leaves nothing watching.
+    if let Some(pid) = pid {
+        child_guard::untie_child(pid);
+    }
 
     assert!(
         found,
@@ -148,6 +161,14 @@ async fn test_stdio_server_flag_clean_stdout() -> E2EResult<()> {
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
+    // `kill_on_drop` covers the normal and unwinding-panic paths and nothing else: `Drop` does
+    // not run when this binary is `SIGKILL`ed, aborts, or is interrupted mid-run — which is how
+    // 78 orphaned `netget` processes accumulated on one machine in ten hours. The tie is the
+    // OS-level half. See `tests/helpers/child_guard.rs`.
+    let pid = child.id();
+    if let Some(pid) = pid {
+        child_guard::tie_child(pid);
+    }
 
     let mut stdin = child.stdin.take().ok_or("no child stdin")?;
     let mut stdout_lines = BufReader::new(child.stdout.take().ok_or("no child stdout")?).lines();
@@ -188,6 +209,10 @@ async fn test_stdio_server_flag_clean_stdout() -> E2EResult<()> {
     .unwrap_or(false);
 
     let _ = child.kill().await;
+    // After the kill, never before: a tie released first leaves nothing watching.
+    if let Some(pid) = pid {
+        child_guard::untie_child(pid);
+    }
     let _ = stderr_task.await;
 
     assert!(
@@ -261,6 +286,14 @@ async fn test_stdio_llm_failure_writes_category_to_stderr_only() -> E2EResult<()
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
+    // `kill_on_drop` covers the normal and unwinding-panic paths and nothing else: `Drop` does
+    // not run when this binary is `SIGKILL`ed, aborts, or is interrupted mid-run — which is how
+    // 78 orphaned `netget` processes accumulated on one machine in ten hours. The tie is the
+    // OS-level half. See `tests/helpers/child_guard.rs`.
+    let pid = child.id();
+    if let Some(pid) = pid {
+        child_guard::tie_child(pid);
+    }
 
     let mut stdin = child.stdin.take().ok_or("no child stdin")?;
     let mut stdout_lines = BufReader::new(child.stdout.take().ok_or("no child stdout")?).lines();
@@ -307,6 +340,10 @@ async fn test_stdio_llm_failure_writes_category_to_stderr_only() -> E2EResult<()
     .unwrap_or(false);
 
     let _ = child.kill().await;
+    // After the kill, never before: a tie released first leaves nothing watching.
+    if let Some(pid) = pid {
+        child_guard::untie_child(pid);
+    }
     let _ = stderr_task.await;
     let _ = stdout_task.await;
 
