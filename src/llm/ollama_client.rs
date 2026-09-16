@@ -907,15 +907,79 @@ fn without_dns_for_literal_ip(
     }
 }
 
+/// Whether `host` (anything [`host_of`] accepts) names this machine.
+///
+/// `127.0.0.0/8`, `::1` and the literal name `localhost`. Nothing else: a LAN address
+/// is somebody's network and its proxy configuration is their business.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn is_loopback_endpoint(url_or_host: &str) -> bool {
+    let bare = host_of(url_or_host);
+    if bare.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    bare.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
+/// Skip the **system proxy probe** when the endpoint is on this machine.
+///
+/// This is the same shape of defect as [`without_dns_for_literal_ip`] and cost more.
+/// `reqwest`'s `system-proxy` feature is on by default, so every
+/// `Client::builder().build()` calls `hyper_util`'s `Matcher::from_system()`, which on
+/// macOS opens an `SCDynamicStore` session — a connection to **configd**, one
+/// system-wide daemon, exactly like `getaddrinfo`'s mDNSResponder. It is paid whether or
+/// not a proxy is configured, and it serialises across processes: measured here at
+/// **0.056 ms alone and 657 ms (p50, 726 ms max) with 100 processes building at once**,
+/// against 0.090 ms for the same build with `.no_proxy()` at the same concurrency. The
+/// e2e suite runs a netget process per test, so that is the suite's normal condition.
+///
+/// It is **not** a per-client cost, which is the trap: the first build in a process pays
+/// it and every later one costs ~0.3 ms, so caching clients per endpoint would save
+/// nothing. The TLS backend is irrelevant too — `use_rustls_tls()` measured the same
+/// 699 ms, and `tls_built_in_root_certs(false)` made no difference, because neither
+/// backend loads a root store at build time.
+///
+/// Gating on loopback is also the **correct** behaviour rather than merely the cheap one.
+/// `hyper_util`'s macOS reader takes `kSCPropNetProxiesHTTPEnable`/`Proxy`/`Port` and never
+/// reads `kSCPropNetProxiesExceptionsList`, so with a system proxy configured it would send
+/// a request for `http://127.0.0.1:11434` to that proxy — ignoring the exceptions list macOS
+/// itself ships, which excludes local addresses. A loopback request must never leave the
+/// machine.
+///
+/// A non-loopback endpoint keeps full system/env proxy behaviour: reaching a remote model
+/// through a corporate proxy is a real deployment, and this must not break it.
+#[cfg(not(target_arch = "wasm32"))]
+fn without_proxy_for_loopback(
+    builder: reqwest::ClientBuilder,
+    host: &str,
+) -> reqwest::ClientBuilder {
+    if is_loopback_endpoint(host) {
+        builder.no_proxy()
+    } else {
+        builder
+    }
+}
+
+/// Both endpoint short-circuits in one place, so no constructor can acquire one and miss
+/// the other. Every client NetGet builds from a configured URL goes through here.
+#[cfg(not(target_arch = "wasm32"))]
+fn configured_for_endpoint(
+    builder: reqwest::ClientBuilder,
+    base_url: &str,
+) -> reqwest::ClientBuilder {
+    without_proxy_for_loopback(without_dns_for_literal_ip(builder, base_url), base_url)
+}
+
 /// An HTTP client for a NetGet-configured endpoint, with no request timeout.
 ///
 /// Use this instead of `reqwest::Client::new()` anywhere the URL comes from configuration
-/// (`--ollama-url`, `--openai-url`). It applies [`without_dns_for_literal_ip`], and building
-/// it once per endpoint rather than once per request is the other half of the same lesson —
-/// see the note on [`LlmBackend::Ollama`].
+/// (`--ollama-url`, `--openai-url`). It applies [`without_dns_for_literal_ip`] and
+/// [`without_proxy_for_loopback`], and building it once per endpoint rather than once per
+/// request is the other half of the same lesson — see the note on [`LlmBackend::Ollama`].
 #[cfg(not(target_arch = "wasm32"))]
 pub fn client_for_endpoint(base_url: &str) -> reqwest::Client {
-    without_dns_for_literal_ip(reqwest::Client::builder(), base_url)
+    configured_for_endpoint(reqwest::Client::builder(), base_url)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -926,7 +990,7 @@ pub fn client_for_endpoint_with_timeout(
     base_url: &str,
     timeout: std::time::Duration,
 ) -> reqwest::Client {
-    without_dns_for_literal_ip(reqwest::Client::builder().timeout(timeout), base_url)
+    configured_for_endpoint(reqwest::Client::builder().timeout(timeout), base_url)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -937,7 +1001,7 @@ pub fn client_for_endpoint_with_timeout(
 /// disagree; see [`OllamaClient::with_request_timeout`] for what that disagreement cost.
 #[cfg(not(target_arch = "wasm32"))]
 fn openai_http_client(timeout: std::time::Duration, base_url: &str) -> reqwest::Client {
-    without_dns_for_literal_ip(reqwest::Client::builder().timeout(timeout), base_url)
+    configured_for_endpoint(reqwest::Client::builder().timeout(timeout), base_url)
         .build()
         .expect("Failed to build HTTP client")
 }
@@ -1018,8 +1082,9 @@ impl OllamaClient {
         };
 
         // Built here rather than left to `Ollama::new`, which makes its own default client,
-        // so a literal-IP host skips the system resolver. See `without_dns_for_literal_ip`.
-        let http = without_dns_for_literal_ip(reqwest::Client::builder(), host)
+        // so a literal-IP host skips the system resolver and a loopback one skips the system
+        // proxy probe. See `without_dns_for_literal_ip` and `without_proxy_for_loopback`.
+        let http = configured_for_endpoint(reqwest::Client::builder(), host)
             .build()
             .expect("Failed to build Ollama HTTP client");
         let ollama = Ollama::new_with_client(host, port, http.clone());
@@ -1035,12 +1100,18 @@ impl OllamaClient {
     }
 
     /// Create a default client pointing to localhost
+    ///
+    /// `ollama-rs`'s own default points at `http://127.0.0.1:11434`, so the HTTP client for
+    /// the two endpoints it does not cover is built for that endpoint rather than with
+    /// `reqwest::Client::new()` — which would take the system resolver and the system proxy
+    /// probe this module exists to avoid.
     #[allow(clippy::should_implement_trait)]
     #[cfg(not(target_arch = "wasm32"))]
     pub fn default() -> Self {
-        let ollama = Ollama::default();
+        let http = client_for_endpoint("http://127.0.0.1:11434");
+        let ollama = Ollama::new_with_client("http://127.0.0.1", 11434, http.clone());
         Self {
-            backend: LlmBackend::Ollama(ollama, reqwest::Client::new()),
+            backend: LlmBackend::Ollama(ollama, http),
             status_tx: None,
             mock_config_file: None,
             app_state: None,
