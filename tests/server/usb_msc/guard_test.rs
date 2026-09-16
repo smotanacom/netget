@@ -3,8 +3,8 @@
 //! `usbip` 0.9.0 reads `transfer_buffer_length` and `number_of_packets` off the wire and
 //! allocates from both without a bound: `vec![0; transfer_buffer_length as usize]` and
 //! `vec![0; 16 * number_of_packets as usize]`. USB/IP authenticates nothing — `OP_REQ_IMPORT`
-//! carries a bus id and no credential — and NetGet spawns the session task before the attach
-//! LLM call, so **forty-eight bytes from an unimported peer** are enough to ask for 4 GiB.
+//! carries a bus id and no credential — so **forty-eight bytes from an unimported peer** are
+//! enough to ask for 4 GiB.
 //!
 //! These tests send exactly those forty-eight bytes and nothing else: no payload follows, which
 //! is the point. Without the guard the crate allocates the whole declared length and then parks
@@ -23,10 +23,6 @@ mod usb_msc_guard {
     use crate::helpers::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-
-    /// Log line the server emits after the attach LLM call, which every TCP connection to an
-    /// MSC server provokes regardless of what USB/IP is then spoken on it.
-    const ATTACH_CALL_LOG: &str = "USB MSC LLM call completed (attach)";
 
     /// The `decision=` tags `Refusal::decision_tag` promises an operator.
     const OVERSIZED_URB_TAG: &str = "decision=fail_closed_oversized_urb";
@@ -54,10 +50,12 @@ mod usb_msc_guard {
 
     /// Mock covering the startup instruction and every event an MSC connection can raise.
     ///
-    /// `usb_msc_read`/`usb_msc_write` carry `expect_calls(0)`: a refused URB never reaches
-    /// `UsbInterfaceHandler::handle_urb`, so it can cost no model budget. That is a claim about
-    /// price rather than the discriminator between guarded and unguarded — unguarded, the crate
-    /// blocks in `read_exact` and never reaches the handler either.
+    /// **Every per-connection rule expects zero calls, and that is now an assertion rather than
+    /// bookkeeping.** Nothing in these tests sends `OP_REQ_IMPORT`, and the attach event follows
+    /// the import rather than the accept, so a peer that opens a socket and fires one malformed
+    /// URB header must cost the operator no model budget at all — not one call for attaching,
+    /// not one for detaching, and not one for the refused URB, which never reaches
+    /// `UsbInterfaceHandler::handle_urb`.
     fn guard_config() -> NetGetConfig {
         NetGetConfig::new_no_scripts("Pretend to be a USB drive.".to_string()).with_mock(|mock| {
             mock.on_instruction_containing("USB drive")
@@ -75,13 +73,13 @@ mod usb_msc_guard {
                     "volume_label": "GUARD",
                     "files": [{"name": "a.txt", "content": "x"}]
                 }]))
-                .expect_at_least(1)
+                .expect_calls(0)
                 .and()
                 .on_event("usb_msc_detached")
                 .respond_with_actions(serde_json::json!([
                     { "type": "show_message", "message": "detached" }
                 ]))
-                .expect_at_least(0)
+                .expect_calls(0)
                 .and()
                 .on_event("usb_msc_read")
                 .respond_with_actions(serde_json::json!([{ "type": "wait_for_more" }]))
@@ -94,14 +92,13 @@ mod usb_msc_guard {
         })
     }
 
-    /// Connect, wait for the attach call that every connection provokes, then send `bytes`.
+    /// Connect and send `bytes` — nothing else. No `OP_REQ_IMPORT`, which is the point: this is
+    /// what a peer that has never asked for the device can do.
     ///
-    /// Waiting for the attach line first is what makes "no further LLM call" measurable: the
-    /// attach call races the USB/IP session by construction, so without this the counts would
-    /// be a timing artefact.
+    /// This used to wait for the attach LLM call first, because one arrived on every TCP
+    /// connection. It no longer does, and the mock above asserts that.
     async fn connect_and_send(server: &NetGetServer, bytes: &[u8]) -> E2EResult<TcpStream> {
         let mut stream = TcpStream::connect(("127.0.0.1", server.port)).await?;
-        server.wait_for_log(ATTACH_CALL_LOG, 20).await?;
         stream.write_all(bytes).await?;
         stream.flush().await?;
         Ok(stream)
@@ -144,7 +141,7 @@ mod usb_msc_guard {
 
     /// 48 bytes declaring a 4 GiB transfer buffer, with no payload behind them.
     ///
-    /// LLM calls: 3 (startup, attach on the attacking connection, attach on the control).
+    /// LLM calls: 1 (startup, and nothing else — neither connection imports a device).
     #[tokio::test]
     async fn test_oversized_transfer_buffer_is_refused_before_allocation() -> E2EResult<()> {
         let mut server = start_netget_server(guard_config()).await?;
@@ -170,7 +167,7 @@ mod usb_msc_guard {
     /// `0xFFFFFFFE` is used rather than `0xFFFFFFFF`, because that value and `0` are the two
     /// the protocol defines as "not isochronous" and both are exempt by design.
     ///
-    /// LLM calls: 3 (startup, attach on the attacking connection, attach on the control).
+    /// LLM calls: 1 (startup, and nothing else — neither connection imports a device).
     #[tokio::test]
     async fn test_oversized_iso_descriptor_count_is_refused() -> E2EResult<()> {
         let mut server = start_netget_server(guard_config()).await?;

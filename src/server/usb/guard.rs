@@ -24,6 +24,19 @@
 //! else — and every NetGet USB server spawns its USB/IP session task *before* it makes the
 //! attach LLM call, so both allocations are reachable pre-auth and pre-model, from 48 bytes.
 //!
+//! # It also decides *when* a device has been attached
+//!
+//! Every USB server used to make its attach LLM call the moment `accept()` returned, so
+//! `nc <host> <port>` — one TCP handshake, not one byte of USB/IP — bought a model round-trip
+//! on a protocol that authenticates nothing. The screen already reads and classifies every
+//! message, so it is the one place that knows when the peer has actually asked to import a
+//! device. [`run_guarded_usbip`] takes a [`oneshot::Sender`](tokio::sync::oneshot::Sender) and
+//! fires it on the first admitted `OP_REQ_IMPORT`, and the callers hang their attach event on
+//! that instead of on the accept.
+//!
+//! `OP_REQ_DEVLIST` deliberately does **not** fire it: listing what a host exports is not
+//! attaching to it, and `usbip list -r` is exactly the enumeration a scanner would do.
+//!
 //! # The seam
 //!
 //! `usbip::handler` is generic over `T: AsyncReadExt + AsyncWriteExt + Unpin`, so unlike
@@ -98,6 +111,34 @@ pub const MAX_TRANSFER_BUFFER_BYTES: usize = 1024 * 1024;
 /// bound has been applied — it is still computed with `checked_mul`, because the point of the
 /// bound is that the arithmetic happens *after* it.
 pub const MAX_ISO_PACKETS: u32 = 1024;
+
+/// Concurrent USB/IP connections one USB server admits, for
+/// [`accept_bounded`](crate::server::accept_bounded::accept_bounded).
+///
+/// Smaller than the shared [`DEFAULT_MAX_CONNECTIONS`](crate::server::accept_bounded::DEFAULT_MAX_CONNECTIONS)
+/// of 256, because a USB/IP connection is not a request — it is an entire emulated device.
+/// Each one costs a `usbip::UsbIpServer`, a device's worth of descriptors, a live
+/// `UsbInterfaceHandler` with its own session state (a CCID card, a FIDO2 credential store, a
+/// memory-mapped MSC disk image), an `AppState` connection entry, and up to
+/// [`MAX_TRANSFER_BUFFER_BYTES`] in flight. It is also not a number a working deployment ever
+/// approaches: a virtual device is imported by *one* host, and the only reason this is not 2 is
+/// that a host reconnecting while the previous session winds down, and a test harness opening
+/// several at once, are both ordinary.
+///
+/// 32 therefore multiplies the 1 MiB transfer bound into 32 MiB rather than 256 MiB, and is
+/// still an order of magnitude above anything legitimate.
+pub const MAX_USBIP_CONNECTIONS: usize = 32;
+
+/// What a USB server says to a connection it is refusing: nothing.
+///
+/// USB/IP has no "busy", "try later" or "too many clients" message. Its only server-to-client
+/// messages are `OP_REP_DEVLIST`, `OP_REP_IMPORT` and `USBIP_RET_SUBMIT`/`USBIP_RET_UNLINK`,
+/// and each is a positive assertion about a device — `OP_REP_IMPORT` with a non-zero status is
+/// the closest thing to a refusal, but sending one unprompted would be answering a question the
+/// peer has not asked, and a peer that has only completed a TCP handshake has by definition
+/// asked nothing. So the refusal is a plain close and the reason lives in the log, which is the
+/// case `accept_bounded`'s empty-slice arm exists for.
+pub const USBIP_NO_REFUSAL: &[u8] = &[];
 
 /// How long a peer may stall part-way through a payload it has already announced.
 ///
@@ -258,12 +299,19 @@ enum Relayed {
 /// session ends, and reports the crate's own error where there is one. `device` names the
 /// protocol for the log (`"USB MSC"`, `"USB keyboard"`, …) and `peer` identifies the
 /// connection.
+///
+/// `on_import` is fired once, on the first admitted `OP_REQ_IMPORT`. That is the point at which
+/// a peer has asked for the device rather than merely opened a socket, and it is where the
+/// caller's attach event belongs — see the module docs. If the peer never imports anything the
+/// sender is dropped when this returns, so the caller's receiver resolves with `Err` and it can
+/// tell "never attached" from "attached and then left".
 pub async fn run_guarded_usbip(
     stream: TcpStream,
     server: Arc<usbip::UsbIpServer>,
     device: &str,
     peer: String,
     status_tx: UnboundedSender<String>,
+    on_import: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> std::io::Result<()> {
     let log = Log::new(Some(&status_tx));
     let _ = stream.set_nodelay(true);
@@ -285,8 +333,9 @@ pub async fn run_guarded_usbip(
     }));
 
     let mut chunk = vec![0u8; RELAY_CHUNK_BYTES];
+    let mut on_import = on_import;
     let refusal = loop {
-        match relay_one_message(&mut from_peer, &mut to_crate, &mut chunk).await {
+        match relay_one_message(&mut from_peer, &mut to_crate, &mut chunk, &mut on_import).await {
             Ok(Relayed::Complete) => {}
             Ok(Relayed::PeerGone) => break None,
             Err(refusal) => break Some(refusal),
@@ -341,6 +390,7 @@ async fn relay_one_message<R, W>(
     from_peer: &mut R,
     to_crate: &mut W,
     chunk: &mut [u8],
+    on_import: &mut Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<Relayed, Refusal>
 where
     R: AsyncReadExt + Unpin,
@@ -400,6 +450,16 @@ where
 
     if to_crate.write_all(&message).await.is_err() {
         return Ok(Relayed::PeerGone);
+    }
+
+    // The peer has now asked, in USB/IP's own words, for the device. Everything before this
+    // point is a peer that has said nothing the protocol recognises as a request, and must
+    // therefore cost nothing — no event, no model call. Fired after the message is admitted
+    // and relayed, so a refused or malformed one never reaches here.
+    if command == OP_REQ_IMPORT {
+        if let Some(tx) = on_import.take() {
+            let _ = tx.send(());
+        }
     }
 
     stream_trailer(from_peer, to_crate, chunk, payload_len + iso_len).await

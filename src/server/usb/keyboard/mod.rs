@@ -56,7 +56,11 @@ use crate::llm::ollama_client::OllamaClient;
 #[cfg(feature = "usb-keyboard")]
 use crate::protocol::Event;
 #[cfg(feature = "usb-keyboard")]
+use crate::server::accept_bounded::{accept_bounded, ConnectionLimiter};
+#[cfg(feature = "usb-keyboard")]
 use crate::server::connection::ConnectionId;
+#[cfg(feature = "usb-keyboard")]
+use crate::server::usb::guard::{MAX_USBIP_CONNECTIONS, USBIP_NO_REFUSAL};
 #[cfg(feature = "usb-keyboard")]
 use crate::state::app_state::AppState;
 #[cfg(feature = "usb-keyboard")]
@@ -114,11 +118,21 @@ impl UsbKeyboardServer {
         let protocol = Arc::new(crate::server::usb::keyboard::UsbKeyboardProtocol::new());
 
         let task_registrar = app_state.clone();
+        // One emulated device per connection, so the cap is small and lives with the screen.
+        let limiter = ConnectionLimiter::new(MAX_USBIP_CONNECTIONS);
         // Spawn accept loop for USB/IP connections
         let accept_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    Ok((stream, remote_addr)) => {
+                match accept_bounded(
+                    &listener,
+                    &limiter,
+                    USBIP_NO_REFUSAL,
+                    "USB keyboard",
+                    Some(&status_tx),
+                )
+                .await
+                {
+                    Ok((stream, remote_addr, permit)) => {
                         let connection_id =
                             ConnectionId::new(app_state.get_next_unified_id().await);
                         let local_addr_conn = stream.local_addr().unwrap_or(local_addr);
@@ -165,6 +179,9 @@ impl UsbKeyboardServer {
                         let task_owner = app_state.clone();
                         task_owner
                             .spawn_server_task(server_id, async move {
+                                // Held for the life of the connection: dropping it early
+                                // releases the slot while the device is still exported.
+                                let _permit = permit;
                                 if let Err(e) = Self::handle_connection(
                                     stream,
                                     connection_id,
@@ -291,7 +308,11 @@ impl UsbKeyboardServer {
         // `transfer_buffer_length` and `number_of_packets` without checking either, on a socket
         // USB/IP never authenticates. `run_guarded_usbip` screens both before a byte reaches it
         // -- see `src/server/usb/guard.rs`.
+        //
+        // The attach event hangs off `import_rx`, not off the accept: see the note above
+        // `import_pending` below.
         let guard_status_tx = status_tx.clone();
+        let (import_tx, mut import_rx) = tokio::sync::oneshot::channel();
         let usbip_task = tokio::spawn(async move {
             match crate::server::usb::guard::run_guarded_usbip(
                 stream,
@@ -299,6 +320,7 @@ impl UsbKeyboardServer {
                 "USB keyboard",
                 connection_id.to_string(),
                 guard_status_tx,
+                Some(import_tx),
             )
             .await
             {
@@ -313,30 +335,43 @@ impl UsbKeyboardServer {
             }
         });
 
-        // Call LLM on device attach
-        if let Err(e) = Self::call_llm_on_attach(
-            connection_id,
-            &llm_client,
-            &app_state,
-            &status_tx,
-            &connections,
-            &protocol,
-            server_id,
-        )
-        .await
-        {
-            error!(
-                "Failed to call LLM on keyboard attach for connection {}: {}",
-                connection_id, e
-            );
-        }
-
         // Serve the host until the USB/IP session ends. This loop is why
         // usb_keyboard_led_status can fire at all: the previous version awaited the session
         // handle directly and never looked at the LED channel.
+        //
+        // It is also where the attach event is raised. USB/IP authenticates nothing, so a bare
+        // TCP connect must cost nothing: `import_rx` fires only once the screen has admitted an
+        // `OP_REQ_IMPORT`, which is the first moment the peer has asked for the keyboard.
+        // `import_pending` is the select! guard — a `oneshot::Receiver` must not be polled
+        // again once it has resolved — and `imported` is the record, because the detach event
+        // is the other half of an attachment and must not fire without one.
         let mut usbip_task = usbip_task;
+        let mut import_pending = true;
+        let mut imported = false;
         loop {
             tokio::select! {
+                asked = &mut import_rx, if import_pending => {
+                    import_pending = false;
+                    if asked.is_ok() {
+                        imported = true;
+                        if let Err(e) = Self::call_llm_on_attach(
+                            connection_id,
+                            &llm_client,
+                            &app_state,
+                            &status_tx,
+                            &connections,
+                            &protocol,
+                            server_id,
+                        )
+                        .await
+                        {
+                            error!(
+                                "Failed to call LLM on keyboard attach for connection {}: {}",
+                                connection_id, e
+                            );
+                        }
+                    }
+                }
                 received = led_rx.recv() => {
                     let Some(mut leds) = received else { break };
                     // A burst of LED writes (Caps then Num within a millisecond) is folded
@@ -365,22 +400,25 @@ impl UsbKeyboardServer {
             connection_id, remote_addr
         );
 
-        // Call LLM on device detach
-        if let Err(e) = Self::call_llm_on_detach(
-            connection_id,
-            &llm_client,
-            &app_state,
-            &status_tx,
-            &connections,
-            &protocol,
-            server_id,
-        )
-        .await
-        {
-            error!(
-                "Failed to call LLM on keyboard detach for connection {}: {}",
-                connection_id, e
-            );
+        // Call LLM on device detach — only for a host that actually attached. A peer that
+        // opened a socket and closed it again detached nothing.
+        if imported {
+            if let Err(e) = Self::call_llm_on_detach(
+                connection_id,
+                &llm_client,
+                &app_state,
+                &status_tx,
+                &connections,
+                &protocol,
+                server_id,
+            )
+            .await
+            {
+                error!(
+                    "Failed to call LLM on keyboard detach for connection {}: {}",
+                    connection_id, e
+                );
+            }
         }
 
         // The USB/IP session owned this handler; drop it so a later connection with the

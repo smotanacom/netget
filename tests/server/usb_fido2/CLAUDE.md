@@ -92,8 +92,10 @@ It runs with `approval_timeout_secs: 3` so the silence case does not spend the 3
 
 ## Synchronisation
 
-Both network tests wait for `"USB FIDO2 LLM call completed (attach)"` before asserting: the
-attach event fires as soon as the TCP connection is accepted, well before `OP_REQ_IMPORT`. The
+Both network tests wait for `"USB FIDO2 LLM call completed (attach)"` before asserting: the attach event follows the peer's `OP_REQ_IMPORT`, not the TCP accept — a bare
+connect costs no model call at all (see `src/server/usb/CLAUDE.md` and
+`tests/server/usb_keyboard/attach_on_import_test.rs`), so the log line is the only
+signal that the import has been answered. The
 log line puts the event kind *before* the connection id precisely so a test can wait on one
 specific event with a substring match.
 
