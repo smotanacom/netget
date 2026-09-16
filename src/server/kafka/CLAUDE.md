@@ -189,7 +189,13 @@ Kept from the earlier audit and still enforced:
   the produce path and the metadata path.
 - TRACE hex dumps capped at `MAX_TRACE_HEX_BYTES` (4 KiB) in both directions.
 - Accept loop breaks on error instead of spinning.
-- Connections are marked `Closed` when their task ends.
+- Connections are closed through `AppState::close_connection_on_server` when their task ends,
+  which marks the row `Closed` **and** reaps the connection's scheduled tasks. This used to be
+  `update_connection_status(…, Closed)`: the same row, the same status, and none of the
+  reaping, so a `TaskScope::Connection` task outlived the socket that owned it — and a
+  *recurring* one kept ticking, each tick an LLM prompt about a peer that had hung up. The
+  distinction is invisible from the dashboard, since both leave the row looking identical;
+  `tests/server/kafka/connection_task_cleanup_test.rs` asserts the reaping directly.
 
 Added this pass:
 

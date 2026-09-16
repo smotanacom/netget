@@ -8,3 +8,6 @@ pub mod required_fields_test;
 // `mongodb` client crate, so it is gated on `mongodb-server` alone.
 #[cfg(all(test, feature = "mongodb-server"))]
 pub mod peer_inject_test;
+// Deadlines only: raw sockets, no BSON driver, so the server feature alone is enough.
+#[cfg(all(test, feature = "mongodb-server"))]
+pub mod connection_bounds_test;

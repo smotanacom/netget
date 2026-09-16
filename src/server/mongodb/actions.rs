@@ -107,8 +107,8 @@ pub static MONGODB_DISCONNECTED_EVENT: LazyLock<EventType> = LazyLock::new(|| {
         name: "reason".to_string(),
         type_hint: "string".to_string(),
         description: "Why the connection ended: client_disconnect, close_this_connection, \
-                      invalid_message_length, incomplete_message_body, unsupported_opcode or \
-                      malformed_op_msg"
+                      idle_timeout, invalid_message_length, incomplete_message_body, \
+                      unsupported_opcode or malformed_op_msg"
             .to_string(),
         required: false,
     }])

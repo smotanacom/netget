@@ -192,6 +192,25 @@ its own header first), a handshake method out of sequence, a frame whose end mar
 progress, a body longer than its content header declared, and any method on channel 0 that
 is not implemented.
 
+**A decode error tells the peer a category and tells the log the error.** All of the above
+produce `Connection.Close` with reply code 505 (`UNEXPECTED_FRAME`) and the fixed
+`reply_text` in `UNEXPECTED_FRAME_REPLY_TEXT` — *"UNEXPECTED_FRAME - frame could not be
+decoded or was not expected here"* — while the decoder's own message goes to the WARN line
+tagged `decision=fail_closed_decode_error`.
+
+It used to build that `reply_text` as `format!("UNEXPECTED_FRAME - {}", e)`, so the peer got
+netget's internal diagnostics: `"AMQP payload truncated: 24 bytes wanted at offset 6, only 2
+available"` hands an unauthenticated stranger our buffer offsets, and an `anyhow` context
+chain reaches further than that. That is the leak class the project `CLAUDE.md` records
+across ~25 protocols, arriving here by a different door — this is a *decode* failure, so
+`crate::utils::WireFailure` is not the tool (neither `Overloaded` nor `Unavailable`
+describes it), but the rule it encodes is the same one. The reply text is a `&'static str`
+for the same reason `WireFailure::text` returns one: a value that *can* be a `String` is one
+`format!` away from leaking again.
+`tests/server/amqp/wire_text_test.rs` drives a truncated `connection.start-ok` from a raw
+socket and asserts both halves — that the fixed category arrives, and that none of the
+decoder's vocabulary does.
+
 ## Limits and parsing safety
 
 Everything read off the wire is length-prefixed, so the parser is the attack surface.
@@ -246,10 +265,13 @@ none.
 
   The one exception is `Encoder::reply_text`, used only for AMQP's `reply-text` field in
   `connection.close` and `channel.close`. That field is free-form prose rather than an
-  identifier, and one of its callers interpolates a decoder error message, so refusing would
-  mean not sending the close frame at all and leaving the peer waiting. A shortened diagnostic
-  is the same diagnostic with less of it; a shortened name is a different name. The method is
+  identifier, and a handler may supply its own refusal text of any length, so refusing would
+  mean not sending the close frame at all and leaving the peer waiting. A shortened sentence is
+  the same sentence with less of it; a shortened name is a different name. The method is
   named after the field so that reaching for it anywhere else reads wrong.
+
+  This entry used to justify that exception by saying "one of its callers interpolates a
+  decoder error message". It did, and that was the defect below rather than a reason.
 
 - **The encoder is depth-bounded too**, by the same `MAX_FIELD_TABLE_DEPTH` (32) and with the
   same accounting as the decoder, so it accepts exactly the tables the decoder yields — which

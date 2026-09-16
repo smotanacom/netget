@@ -6,3 +6,5 @@ mod codec_test;
 mod e2e_test;
 #[cfg(all(test, feature = "amqp"))]
 mod peer_inject_test;
+#[cfg(all(test, feature = "amqp"))]
+mod wire_text_test;

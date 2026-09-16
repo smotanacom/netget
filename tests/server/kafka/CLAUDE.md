@@ -114,6 +114,21 @@ Both tests end with `server.verify_mocks().await?` and `server.stop().await?`.
   only the ApiVersions refusal path is asserted.
 - Consumer groups, which are not implemented at all.
 
+## `connection_task_cleanup_test.rs` — teardown reaps what the connection owned
+
+Zero LLM calls, in-process `AppState`, `instruction: Some(String::new())`. A peer connects, a
+recurring `TaskScope::Connection` task is registered against the connection the broker tracked,
+the peer's socket is dropped, and once the row reaches `Closed` the test asserts
+`get_connection_tasks` is empty.
+
+Two things make it evidence rather than decoration. It asserts the task is present **while the
+connection is live** first, so a run that registered nothing cannot pass by reaping nothing.
+And it looks at the task map rather than at the connection row: `update_connection_status(…,
+Closed)` and `close_connection_on_server` leave the row identical and differ only in whether
+`cleanup_connection_tasks` ran, so the row says nothing about which one the teardown called.
+Put `update_connection_status` back in `src/server/kafka/mod.rs` and it fails naming the
+surviving task.
+
 ## Running
 
 ```bash
