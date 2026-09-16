@@ -31,9 +31,35 @@ checks this repo applies to such a claim:
   an `optional = true` **dev**-dependency. That distinction is what makes AMQP's
   Beta rest on a test its gate never compiles; etcd does not have that hole.
 
-Not verified against `etcdctl` or any other Go client. The gRPC status is
-returned in the initial HEADERS rather than in HTTP/2 trailers — tonic accepts
-that and grpc-go may not. Do not "fix" it without a Go client to test against.
+**That evidence is real and it is no longer enough — the rating is now
+`Experimental`.** This file used to say the gRPC status is returned in the
+initial HEADERS rather than in HTTP/2 trailers, that tonic accepts it and
+"grpc-go **may** not", and that nobody should touch it without a Go client to
+test against. September 2026: a Go client was pointed at it, and grpc-go does
+not.
+
+```
+$ etcdctl --endpoints=http://127.0.0.1:PORT put /config/database localhost:5432
+Error: rpc error: code = Internal desc = server closed the stream without sending trailers
+```
+
+Not a get, not an edge case — the **first** RPC, and every other one that
+carries a body. gRPC-over-HTTP/2 requires `grpc-status` in Trailers whenever a
+response has a body; `src/server/etcd/mod.rs` writes it into the initial HEADERS
+and then sends DATA, so the stream ends after DATA with no trailing HEADERS.
+Error replies are unaffected because they are Trailers-Only by construction,
+which is exactly why no existing test caught this: only the success path is
+broken.
+
+So the Beta rating rested on tonic being lenient about a thing the reference
+implementation is strict about — the same shape as `mysql`'s Beta resting on
+`mysql_async` where the real `mysql` CLI cannot connect at all. One client
+agreeing is not "works against real clients".
+
+**No `etcdctl` test is committed.** A test asserting this failure would lock the
+bug in and turn its fix into a red build. The fix is to emit real HTTP/2
+trailers on the success path; once that lands, an `etcdctl` put/get/prefix/del
+test is the promotion evidence, and it is about eighty lines.
 
 ## No Ollama, and no store
 
