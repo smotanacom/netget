@@ -247,11 +247,37 @@ pub fn build_safe_response(
 /// which is why this went unnoticed — but nine protocols elsewhere in the tree do, and
 /// `src/server/vnc/mod.rs`, `jsonrpc`, `openvpn` and `usb/smartcard` each hand-rolled a
 /// flatten for exactly this reason.
+/// How deep a `Multiple` may nest before this stops descending.
+///
+/// Only one place in the tree constructs a `Multiple` today (`src/server/xmpp/actions.rs`) and
+/// it does not nest, so the recursion below cannot currently run away. The bound is here
+/// anyway, because the cost of being wrong about that is not a wrong answer: a Rust stack
+/// overflow is a SIGSEGV against the guard page, not a panic, so `catch_unwind` cannot see it
+/// and `tokio::spawn` cannot contain it — **the whole NetGet process dies, taking every other
+/// server in it.** This tree has had six of those.
+///
+/// 8 is far above anything a real executor produces; the deepest today is 1.
+const MAX_RESULT_NESTING: usize = 8;
+
 fn for_each_output(results: &[ActionResult], visit: &mut impl FnMut(&[u8])) {
+    for_each_output_at(results, 0, visit)
+}
+
+fn for_each_output_at(results: &[ActionResult], depth: usize, visit: &mut impl FnMut(&[u8])) {
+    if depth >= MAX_RESULT_NESTING {
+        // Refuse to descend rather than unwinding the whole reply: the outputs already
+        // visited are real and the peer should still get them.
+        tracing::warn!(
+            "http_common: result nesting deeper than {MAX_RESULT_NESTING}, not descending \
+             further. An executor is producing nested Multiple results; the outputs found so \
+             far are still used."
+        );
+        return;
+    }
     for result in results {
         match result {
             ActionResult::Output(data) => visit(data),
-            ActionResult::Multiple(inner) => for_each_output(inner, visit),
+            ActionResult::Multiple(inner) => for_each_output_at(inner, depth + 1, visit),
             _ => {}
         }
     }
