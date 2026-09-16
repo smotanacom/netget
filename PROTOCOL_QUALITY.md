@@ -77,7 +77,7 @@ once these exist.
   at. A forged newline in a log line is a forged log entry. *Verify:* a test renders a template
   with `\r\nERROR fake` in a field and asserts one line. *Effort:* S.
 
-- [ ] **Migrate the 25 hand-rolled control-character filters to `utils::sanitize`, then ratchet.**
+- [x] **Migrate the 25 hand-rolled control-character filters to `utils::sanitize`, then ratchet.**
   *Why:* six protocols had six semantics before the shared module existed, and the one told to
   be copied (`whois`) had none. The ratchet fails on any new `is_ascii_control`/`is_control()`
   filter outside `src/utils/`. *Effort:* M (mechanical, but each site needs the right variant —
@@ -228,7 +228,7 @@ declare, whether or not anyone has looked at it.
 
 ## Tier 3 — evidence and maturity
 
-- [ ] **Define Stable, then earn it for five protocols.** Zero are Stable and three have lost
+- [x] **Define Stable, then earn it for five protocols.** Zero are Stable and three have lost
   it. The bar should be written down before anything is promoted: (1) two independent
   third-party clients complete a real session, hard-fail when absent; (2) the pcap oracle is
   green; (3) a fuzz target exists and has run; (4) every declared bound has a test; (5) the
@@ -312,13 +312,13 @@ the protocol at all — and the mock never tells you, because the mock is script
   `{{event.xid}}` placeholder — before a user does. *Effort:* L for the harness; S per
   protocol to add instructions.
 
-- [ ] **Action and parameter description ratchet.** Every parameter: a description of at
+- [x] **Action and parameter description ratchet.** Every parameter: a description of at
   least one sentence, a `type_hint` from the known set, an `example`; every action: an
   example its executor accepts (exists), a `log_template`. Every event: every field the model
   is told to echo back is a field the event carries. *Why:* the model chooses from the
   description alone. *Effort:* S — extend `executable_examples_test`.
 
-- [ ] **Every startup example actually starts.** `startup_examples_validation_test` checks
+- [x] **Every startup example actually starts.** `startup_examples_validation_test` checks
   shape. A second test spawns each example against the mock and asserts `ServerStatus::Running`
   within 5s, for every protocol that needs no system library. *Why:* ten BLE examples were
   inert for a reason no shape check can see. *Effort:* M.
@@ -328,7 +328,7 @@ the protocol at all — and the mock never tells you, because the mock is script
   a parked peer without one, and manual-first is the dashboard's whole premise. *Effort:* S
   each — the `whois` diff is ~40 lines.
 
-- [ ] **`get_dependencies()` on the 17 device protocols and every system-library one.** One
+- [x] **`get_dependencies()` on the 17 device protocols and every system-library one.** One
   override exists. *Why:* the exclusion-with-install-hint mechanism is fully plumbed and does
   nothing; a model offered `nfc` on a machine with no reader gets a runtime error instead of
   never being offered it. *Effort:* S each.
@@ -350,7 +350,7 @@ The suite is the evidence. Where it lies, the ratings lie.
 - [x] **`verify_mocks` after every `with_mock`.** A test that configures a mock and never
   verifies it asserts nothing about the model. *Verify:* source ratchet. *Effort:* S.
 
-- [ ] **The blocking CI test job covers every protocol that needs no system library.** It runs
+- [x] **The blocking CI test job covers every protocol that needs no system library.** It runs
   6 of 116. `modbus` and `coap` are Beta on evidence CI never executes. Split into a matrix by
   family so each job stays under the runner's memory; keep the six-protocol job as the fast
   gate. Make `registry-audit` blocking once it is green three runs in a row. *Effort:* M.
@@ -378,7 +378,7 @@ The suite is the evidence. Where it lies, the ratings lie.
   verified them once. Schedule it: every protocol's two docs re-read against source every
   quarter, with the drift recorded. *Effort:* L, recurring.
 
-- [ ] **Correct `CLAUDE.md` on the two counts this file measured**: command-channel adoption is
+- [x] **Correct `CLAUDE.md` on the two counts this file measured**: command-channel adoption is
   99 clients; the panic hook does not log. *Effort:* S.
 
 ## Tier 7 — the classes Programme 2 found, as ratchets
@@ -560,3 +560,39 @@ copied example from an intended answer. The classifier now names it automaticall
 should be *obviously* a placeholder (`example.com`) rather than plausible content a model might
 reasonably ship. That is a sweep, not a ratchet — worth measuring once the parser fix lets the
 eval see past it.
+
+**15 September 2026 — the second wave.**
+
+- **The four fail-opens** (`rtp`, `npm`/`pypi`, `imap`, `usb`). rtp's budget bypass was the
+  tuntap defect unrepaired, and is **measured**: five datagrams under `llm_max_per_minute: 0`
+  produced **5** model calls on the old gate and **0** on the repaired one, with a control at
+  ceiling 30 giving 5 either way. Moving the dispatch also had to move `pipe::dispatch_pipes`
+  and the access-log write, or a handler-answered datagram would have silently stopped firing
+  pipes and vanished from `list_access_logs`.
+- **The ten codec counterexamples**, all fixed by refusing rather than truncating. Fixing
+  m3ua's encode bound exposed a third defect: `MAX_USER_DATA_LEN` forgot a body is a whole
+  number of 4-octet words, so a payload at exactly the documented limit encoded one byte past
+  the ceiling — the "padding is not in the length" trap, met by the code that documents it.
+- **145 spawn sites registered** across 113 servers and 2 clients. Every site proved to end
+  `.await` by building at `--all-features` with `-D unused_must_use`, because that is the lint
+  that catches the mistake I made converting TCP.
+- **16 sanitizer sites migrated**, and the re-derivation corrected this file: of 25 grep hits
+  only 12 were filters, and four filters the grep never saw matched `'\t' | '\r' | '\n'`
+  directly instead of calling `is_control`.
+- **354 startup examples across 118 protocols all reach `Running`.** No example was
+  unstartable; both failures were the test's own bugs.
+- **The whole-tree ratchets are a blocking CI job.** They read source, so they cover all ~137
+  servers and ~98 clients at any feature set — unlike `registry-audit`, which needs
+  `--all-features` and five system libraries and is `continue-on-error`, so a green PR never
+  meant those audits passed.
+
+**Three findings landed on this programme's own work, which is the useful part:**
+
+1. `f397328e` (mine) added `ProtocolMetadataV2::failure_mode` and missed the one site that
+   builds the struct by **literal** rather than through the builder, so `HEAD` did not compile
+   at `--all-features`. I had only built narrow feature sets. Two independent parties hit it.
+2. `send_first`'s ratchet had the **coverage-guard defect it was written to replace** — it
+   walked the registry, so a narrow feature set made it red for unrelated reasons.
+3. That ratchet then caught **its own comment**: prose quoting `let _send_first = …` was
+   reported as the defect it documents. Third time this repository has hit the
+   matching-prose-about-the-pattern false positive.
