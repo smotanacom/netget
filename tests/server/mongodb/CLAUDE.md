@@ -17,7 +17,28 @@
 ### Test Files
 
 - `tests/server/mongodb/e2e_test.rs` - Main E2E tests with mocks
+- `tests/server/mongodb/connection_bounds_test.rs` - the read deadlines, from a raw socket
 - `tests/server/mongodb/CLAUDE.md` - This file (test strategy)
+
+### `connection_bounds_test.rs` — deadlines, not answers
+
+Zero LLM calls: the LLM endpoint is a dead port and the server is built with
+`instruction: Some(String::new())`, so the model is genuinely never consulted. It speaks raw
+OP_MSG rather than driving the `mongodb` crate, so it is gated on `mongodb-server` alone.
+
+Three cases, and the third is the one that stops a lazy fix:
+
+| Case | Asserts |
+|---|---|
+| peer connects and says nothing | closed at `FIRST_HEADER_READ_TIMEOUT`, having written nothing (MongoDB has no greeting) |
+| peer sends eight bytes of a sixteen-byte header | closed too — `BODY_READ_TIMEOUT` never covered a *partial* header, because it arms only downstream of a complete one |
+| peer completes the `hello` handshake, then goes quiet past 30 s | **not** closed: an answered session gets `IDLE_BETWEEN_MESSAGES_TIMEOUT`, because a driver's pooled connection is idle for minutes by design |
+
+Remove the `tokio::time::timeout` around the header read and the first two hang until their own
+60 s assertion windows expire. Collapse the pair onto one short number and the third fails.
+Each waits generously against the 30 s bound so an ordinary scheduling delay under
+`--test-threads=100` is not mistaken for a missing deadline; what is asserted is that the
+connection ends *at all*, and that it did not end far too early.
 
 ### Test Coverage
 

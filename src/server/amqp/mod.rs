@@ -92,6 +92,25 @@ const IDLE_READ_TIMEOUT_SECS: u64 = 600;
 /// How many `accept()` failures in a row before the listener is treated as dead.
 const MAX_CONSECUTIVE_ACCEPT_ERRORS: u32 = 64;
 
+/// AMQP reply code 505, `UNEXPECTED_FRAME` (0-9-1 section 4.2.7): the peer sent a frame this
+/// broker could not decode or did not expect where it arrived.
+const REPLY_UNEXPECTED_FRAME: u16 = 505;
+
+/// The `reply_text` that accompanies [`REPLY_UNEXPECTED_FRAME`], fixed rather than built from
+/// the decoder's own error.
+///
+/// The peer gets a category; the log gets the error. This used to be
+/// `format!("UNEXPECTED_FRAME - {}", e)`, which put netget's internal decoder diagnostics on a
+/// stranger's wire — `"AMQP payload truncated: 24 bytes wanted at offset 6, only 2 available"`
+/// tells an unauthenticated peer our buffer offsets, and `anyhow` context chains reach further
+/// than that. It is the same leak class `crate::utils::WireFailure` exists for on the LLM-error
+/// path; `WireFailure` itself does not apply here because this is a *decode* failure and
+/// neither of its two categories (`Overloaded`, `Unavailable`) describes it — but the rule is
+/// the one `WireFailure` encodes, so the text is a `&'static str` for the same reason its
+/// `text()` is: a helper that can return a `String` is one `format!` away from leaking again.
+const UNEXPECTED_FRAME_REPLY_TEXT: &str =
+    "UNEXPECTED_FRAME - frame could not be decoded or was not expected here";
+
 /// AMQP 0-9-1 broker.
 pub struct AmqpServer;
 
@@ -464,11 +483,19 @@ impl Session {
                 Err(e) => {
                     // A framing or decoding error desynchronises the stream; the spec's
                     // remedy is a connection exception.
+                    //
+                    // The error goes in the log line below and nowhere else. What the peer
+                    // gets is the fixed category — see `UNEXPECTED_FRAME_REPLY_TEXT`.
                     Log::new(Some(&self.status_tx)).warn(format!(
-                        "AMQP protocol error from {}: {}",
+                        "AMQP protocol error from {}: decision=fail_closed_decode_error: {}",
                         self.peer_addr, e
                     ));
-                    self.send_connection_close(505, &format!("UNEXPECTED_FRAME - {}", e), 0, 0);
+                    self.send_connection_close(
+                        REPLY_UNEXPECTED_FRAME,
+                        UNEXPECTED_FRAME_REPLY_TEXT,
+                        0,
+                        0,
+                    );
                     return Ok(());
                 }
             };

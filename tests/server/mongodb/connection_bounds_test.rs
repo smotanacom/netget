@@ -1,0 +1,254 @@
+//! The header read deadline on a real, running MongoDB server, driven from the wire.
+//!
+//! `BODY_READ_TIMEOUT` used to be the only deadline in `run_session`, and it arms only *after*
+//! a sixteen-byte header has arrived. So a peer that connected and sent nothing — or fewer
+//! than sixteen bytes — parked the connection task in `read_exact` with no clock running at
+//! all, holding the socket, the registered task and the `AppState` row until the peer itself
+//! chose to close. The operator-visible form is worse: `[ disconnect this peer ]` half-closes
+//! the write side and marks the row `Closed`, which a peer that is not reading never notices,
+//! so the dashboard reported a hang-up that had not happened.
+//!
+//! `FIRST_HEADER_READ_TIMEOUT` (30s) and `IDLE_BETWEEN_MESSAGES_TIMEOUT` (600s) are the pair
+//! the other seventeen TCP servers use, for the reason `whois` states: "has said nothing at
+//! all" and "has gone quiet mid-session" are different claims and deserve different answers.
+//!
+//! **This test fails without the fix**: remove the `tokio::time::timeout` around the header
+//! read and the first test hangs until its own 60s assertion window expires. The second test
+//! is what stops a lazy fix — one short number applied to both reads would close an answered
+//! connection at 30s, and it asserts that does not happen.
+//!
+//! Both deadlines are armed lazily, per read: the future is constructed at the top of the loop
+//! after the previous message's work has finished, so no clock runs during an LLM round-trip
+//! or a `manual` rule parked for a human. That is the property the TFTP eviction defect is
+//! about, and the second test is also its evidence — a server answering a message spends time
+//! outside the read.
+//!
+//! No mock backend: the LLM endpoint is a dead port. These tests assert on *deadlines*, not on
+//! answers, and the first sends nothing at all; the second drives only the `hello` handshake,
+//! which MongoDB answers in Rust with no model call (see `src/server/mongodb/mod.rs`).
+//! Loopback only.
+//!
+//! Run with:
+//!   ./cargo-isolated.sh test --no-default-features --features mongodb-server --test server -- mongodb::connection_bounds --test-threads=100
+
+#![cfg(feature = "mongodb-server")]
+
+use std::time::Duration;
+
+use netget::cli::management::ServerForm;
+use netget::state::app_state::AppState;
+use netget::state::ServerId;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
+
+/// `src/server/mongodb/mod.rs::FIRST_HEADER_READ_TIMEOUT`.
+const FIRST_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+async fn new_state() -> AppState {
+    let state = AppState::new_with_options(false, "http://127.0.0.1:1".to_string());
+    state
+        .set_llm_client(netget::llm::OllamaClient::new(
+            "http://127.0.0.1:1".to_string(),
+        ))
+        .await;
+    state
+}
+
+async fn wait_for_port(state: &AppState, id: ServerId) -> u16 {
+    for _ in 0..200 {
+        if let Some(s) = state.get_server(id).await {
+            if let Some(addr) = s.local_addr {
+                return addr.port();
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    panic!("MongoDB server #{} never bound a port", id.as_u32());
+}
+
+async fn start_server(state: &AppState) -> (ServerId, u16) {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let server_id = ServerForm {
+        protocol: "mongodb".to_string(),
+        port: Some(0),
+        // An empty instruction is genuinely model-free; `None` is replaced by a default one
+        // and every command would consult the LLM.
+        instruction: Some(String::new()),
+        ..Default::default()
+    }
+    .create(state, tx)
+    .await
+    .expect("create mongodb server");
+    let port = wait_for_port(state, server_id).await;
+    (server_id, port)
+}
+
+/// An OP_MSG carrying one BSON document, framed with the 16-byte wire header.
+fn op_msg(request_id: i32, body: &[u8]) -> Vec<u8> {
+    // header(16) + flagBits(4) + sectionKind(1) + document
+    let total = 16 + 4 + 1 + body.len();
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(&(total as i32).to_le_bytes());
+    out.extend_from_slice(&request_id.to_le_bytes());
+    out.extend_from_slice(&0i32.to_le_bytes()); // responseTo
+    out.extend_from_slice(&2013i32.to_le_bytes()); // OP_MSG
+    out.extend_from_slice(&0u32.to_le_bytes()); // flagBits
+    out.push(0); // section kind 0: body
+    out.extend_from_slice(body);
+    out
+}
+
+/// `{hello: 1, $db: "admin"}`, hand-encoded so this test needs only the server feature.
+fn hello_document() -> Vec<u8> {
+    let mut doc = Vec::new();
+    // int32 "hello" = 1
+    doc.push(0x10);
+    doc.extend_from_slice(b"hello\0");
+    doc.extend_from_slice(&1i32.to_le_bytes());
+    // string "$db" = "admin"
+    doc.push(0x02);
+    doc.extend_from_slice(b"$db\0");
+    doc.extend_from_slice(&6i32.to_le_bytes());
+    doc.extend_from_slice(b"admin\0");
+    doc.push(0x00); // document terminator
+
+    let mut out = Vec::with_capacity(doc.len() + 4);
+    out.extend_from_slice(&((doc.len() + 4) as i32).to_le_bytes());
+    out.extend_from_slice(&doc);
+    out
+}
+
+#[tokio::test]
+async fn a_peer_that_connects_and_says_nothing_is_closed_at_the_first_header_bound() {
+    let state = new_state().await;
+    let (server_id, port) = start_server(&state).await;
+
+    let mut peer = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+
+    let started = std::time::Instant::now();
+    let mut sink = Vec::new();
+    // Generous against the 30s bound so an ordinary scheduling delay under --test-threads=100
+    // is not mistaken for a missing timeout; the assertion that matters is that it ends at all.
+    let read = tokio::time::timeout(
+        FIRST_HEADER_READ_TIMEOUT + Duration::from_secs(30),
+        peer.read_to_end(&mut sink),
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        read.is_ok(),
+        "a peer that connected and sent nothing was still holding the socket, the connection \
+         task and its AppState entry after {}s — the header read has no deadline. \
+         BODY_READ_TIMEOUT does not cover this: it arms only once sixteen bytes have arrived.",
+        elapsed.as_secs()
+    );
+    read.unwrap().expect("read to EOF");
+    assert!(
+        sink.is_empty(),
+        "MongoDB is client-speaks-first and has nothing to say to a peer that asked nothing; \
+         it should close, not write. Got {:?}",
+        sink
+    );
+    assert!(
+        elapsed >= FIRST_HEADER_READ_TIMEOUT / 2,
+        "closed after only {}ms — that is not the declared 30s bound, it is something else \
+         tearing the connection down",
+        elapsed.as_millis()
+    );
+
+    let _ = state.remove_server(server_id).await;
+}
+
+#[tokio::test]
+async fn a_partial_header_is_bounded_too() {
+    // Eight bytes is a plausible-looking start and not a header. The old code sat in
+    // `read_exact` for the other eight forever; `BODY_READ_TIMEOUT` never came into it,
+    // because the body read is downstream of a *complete* header.
+    let state = new_state().await;
+    let (server_id, port) = start_server(&state).await;
+
+    let mut peer = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    peer.write_all(&[0x30, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00])
+        .await
+        .expect("write half a header");
+
+    let started = std::time::Instant::now();
+    let mut sink = Vec::new();
+    let read = tokio::time::timeout(
+        FIRST_HEADER_READ_TIMEOUT + Duration::from_secs(30),
+        peer.read_to_end(&mut sink),
+    )
+    .await;
+
+    assert!(
+        read.is_ok(),
+        "a peer that sent half a header held the connection for {}s — the header read is \
+         unbounded",
+        started.elapsed().as_secs()
+    );
+    read.unwrap().expect("read to EOF");
+
+    let _ = state.remove_server(server_id).await;
+}
+
+#[tokio::test]
+async fn an_answered_peer_gets_the_longer_idle_bound() {
+    // The point of the pair: "has said nothing at all" and "has gone quiet mid-session" are
+    // different claims and get different answers. Collapsing the two into one short number
+    // would close a pooled driver connection between operations — MongoDB drivers keep those
+    // open for minutes by design — and this is the assertion that catches it.
+    let state = new_state().await;
+    let (server_id, port) = start_server(&state).await;
+
+    let mut peer = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    peer.write_all(&op_msg(7, &hello_document()))
+        .await
+        .expect("write hello");
+
+    // The handshake is answered by Rust, with no model call. Reading its header is enough to
+    // know the session has answered one message and moved on to the idle bound.
+    let mut reply_header = [0u8; 16];
+    tokio::time::timeout(Duration::from_secs(20), peer.read_exact(&mut reply_header))
+        .await
+        .expect("a hello reply within 20s")
+        .expect("read the reply header");
+    let reply_len = i32::from_le_bytes([
+        reply_header[0],
+        reply_header[1],
+        reply_header[2],
+        reply_header[3],
+    ]);
+    assert!(
+        reply_len >= 16,
+        "the hello reply announced a length of {reply_len}, which is not a MongoDB message"
+    );
+    let mut reply_body = vec![0u8; (reply_len - 16) as usize];
+    peer.read_exact(&mut reply_body)
+        .await
+        .expect("read the reply body");
+
+    // Now go quiet. If both reads shared the 30s first-header bound this connection would be
+    // closed well inside the window below; on the real pair it must survive it.
+    let quiet = FIRST_HEADER_READ_TIMEOUT + Duration::from_secs(10);
+    let mut sink = Vec::new();
+    let closed_early = tokio::time::timeout(quiet, peer.read_to_end(&mut sink)).await;
+
+    assert!(
+        closed_early.is_err(),
+        "an answered connection was closed after {:?} of silence. A driver's pooled connection \
+         is legitimately idle for minutes between operations: the first-message bound must not \
+         be applied to a session that has already been answered. (read_to_end returned {:?})",
+        quiet,
+        closed_early.map(|r| r.map(|n| n))
+    );
+
+    let _ = state.remove_server(server_id).await;
+}

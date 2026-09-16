@@ -365,12 +365,17 @@ impl KafkaServer {
 
                                 // Connections used to be added and never removed, so the
                                 // TUI accumulated Active entries for dead sockets.
+                                //
+                                // `close_connection_on_server`, not `update_connection_status`:
+                                // both mark the row `Closed`, but only the former also runs
+                                // `cleanup_connection_tasks`. A connection-scoped scheduled
+                                // task belongs to a connection that no longer exists, and a
+                                // recurring one keeps ticking after the socket is gone — each
+                                // tick an LLM prompt about a peer that has hung up. Marking the
+                                // row closed and leaving the tasks running is the defect
+                                // `remove_server` was restructured to prevent, one level down.
                                 state_clone
-                                    .update_connection_status(
-                                        server_id,
-                                        connection_id,
-                                        crate::state::server::ConnectionStatus::Closed,
-                                    )
+                                    .close_connection_on_server(server_id, connection_id)
                                     .await;
                                 let _ = status_clone.send("__UPDATE_UI__".to_string());
                             })

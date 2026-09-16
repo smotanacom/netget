@@ -392,11 +392,22 @@ Maturity lives in each protocol's `metadata()` (`ProtocolMetadataV2`, `src/proto
   a gate makes that binary a requirement everywhere the suite runs, which is a decision for
   whoever owns the CI image, not one to take unilaterally.
 
-  `scripts/beta_evidence_table.py` **does not cover clients**: `declared_states()`,
-  `test_directory()`, `rows()` and `http_native()` each hard-code `src/server` / `tests/server`.
-  The scanning machinery is side-agnostic, so a `--side {server,client}` threaded through those
-  four is all it needs. Until that exists the list above is hand-derived, and will drift exactly
-  the way every other hand-derived list in this file has.
+  **Do not read the four groups above as the list — generate them:**
+
+  ```bash
+  python3 scripts/beta_evidence_table.py --side client --all   # table + the four-way split
+  python3 scripts/beta_evidence_table.py --side client --check # exit 1 on a defective Beta
+  ```
+
+  `--side client` landed 16 September 2026 and applies the bar above rather than the server one:
+  it detects **self-served** (a test that builds a `ServerForm`, calls `start_netget_server` or
+  sends an `open_server` action — the peer is NetGet's own server) and treats `#[ignore]`d
+  evidence as disqualifying rather than as a review flag, attributing peers **per file** so a
+  peer named only in tests that never run is reported as unreachable. Its first run agreed with
+  the hand audit and sharpened it: 62 self-served rather than "~60", **zero** protocols in the
+  "real peer, evidence runs" group, and `mqtt` alone in "real peer, unreachable". What no scan
+  can check is condition 4 — that the client acts on the model's answer — and the script says so
+  instead of implying it passed.
 - **Experimental** — LLM-authored or newly implemented, not fully reviewed. The overwhelming
   majority (100 of the 136 `src/server/*/actions.rs` the script below walks). Note the script
   reports one `NONE`: `src/server/http_common/actions.rs`, which is a shared response helper

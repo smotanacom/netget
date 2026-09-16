@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the Beta-evidence table from the source tree.
+"""Generate the Beta-evidence table from the source tree, for servers or for clients.
 
 CLAUDE.md carries a hand-maintained list of which protocols are Beta and what their
 evidence is. That list has been wrong three times, in both directions: it under-rated
@@ -7,11 +7,11 @@ evidence is. That list has been wrong three times, in both directions: it under-
 `ssh` on the strength of `russh` — which is the server's *own* library, so the "peer"
 was the server. A generated table cannot drift.
 
-For every registered server protocol this prints:
+For every registered protocol on the selected side this prints:
 
   state          the DevelopmentState its own metadata() declares
   peer           the third-party binaries and crates its tests actually drive
-  circular       any of those crates that its own src/server/<p>/ also imports, which
+  circular       any of those crates that its own src/<side>/<p>/ also imports, which
                  means the peer is the same implementation as the framer and the
                  evidence proves only that a crate agrees with itself
   optional       any of those crates declared `optional = true` in Cargo.toml, which
@@ -20,19 +20,45 @@ For every registered server protocol this prints:
   skip-gate      whether a test prints a skip message and returns success anyway
 
 The last four are the three ways CLAUDE.md says evidence fails to execute, plus the
-circular case. `--check` exits non-zero only on what a script can be *sure* of — no
-independent peer, a skip-and-pass gate, or every test `#[ignore]`d. Circular and
-optional dependencies are printed as review flags instead, because both have accepted
-exceptions (`quic`/quinn and `webrtc`/webrtc-rs use the server's own crate in the
-opposite role, completing a real handshake) and no static rule can tell those from the
-`ssh`/russh case.
+circular case. `--check` exits non-zero only on what a script can be *sure* of.
+Circular and optional dependencies are printed as review flags instead, because both
+have accepted exceptions (`quic`/quinn and `webrtc`/webrtc-rs use the server's own
+crate in the opposite role, completing a real handshake) and no static rule can tell
+those from the `ssh`/russh case.
+
+THE TWO BARS ARE NOT THE SAME, which is why `--side` is more than a path swap.
+
+A **server** proves itself against a third-party *client*. A **client** proves itself
+against a third-party *server* — and CLAUDE.md's client bar adds two conditions the
+server bar does not have:
+
+  * **The peer must not be NetGet's own server.** Pointing NetGet's redis client at
+    NetGet's redis server proves the two agree, which is what they were both written to
+    do. This is the circular case wearing the other hat, and it is by far the largest
+    group: the September 2026 hand audit put it at ~60 of 98. It is detected here as
+    `self-served` — a test that builds a `ServerForm`, calls `start_netget_server` or
+    sends an `open_server` action — and it is blocking when nothing else backs the
+    rating up.
+  * **`#[ignore]` disqualifies, not just a skip gate.** The server bar treats a partly
+    ignored suite as a review flag, because a suite may legitimately ignore its
+    adapter-claiming tests while its real evidence runs. The client bar does not: the
+    audit's second-largest group was "real peer, unreachable evidence — and every one
+    of those tests is `#[ignore]`d". So peers are attributed **per file**, and a peer
+    that appears only in files where every test is ignored is reported as unreachable
+    and fails `--check` on the client side.
+
+What this cannot check, on either side, is the fourth client condition — that the
+client acts on the model's answer, asserted on the wire. `tests/client_event_wiring_test.rs`
+is the ratchet for that; this script names it as a review item rather than pretending
+to decide it, because "the LLM was called" and "the client did what it said" look
+identical to a scan.
 
 Usage:
-    python3 scripts/beta_evidence_table.py              # Beta only, markdown
-    python3 scripts/beta_evidence_table.py --all        # every protocol
-    python3 scripts/beta_evidence_table.py --check      # exit 1 on a defective Beta
-    python3 scripts/beta_evidence_table.py --experimental-with-evidence
-                                                        # promotion candidates
+    python3 scripts/beta_evidence_table.py                      # Beta servers, markdown
+    python3 scripts/beta_evidence_table.py --side client --all  # every client
+    python3 scripts/beta_evidence_table.py --check              # exit 1 on a defective Beta
+    python3 scripts/beta_evidence_table.py --side client --experimental-with-evidence
+                                                                # promotion candidates
 """
 
 from __future__ import annotations
@@ -55,6 +81,13 @@ INFRASTRUCTURE = {
     "bytes", "byteorder", "chrono", "time", "uuid", "regex", "url", "libc", "nix",
     "ctor", "hex", "base64", "sha1", "sha2", "md5", "md_5", "urlencoding",
     "netget", "helpers", "mod", "axum", "axum_server", "http", "http_body_util",
+    # Test fixtures. Each of these is a real Cargo dependency a test genuinely reaches
+    # for, which is why the "is it a known dep?" filter does not catch them — and none
+    # of them speaks a protocol to anything. Reporting them as peers put the `tls`
+    # client in the promotion-candidate list (`rcgen` makes it a certificate, while its
+    # actual peer is a `tokio_rustls::TlsAcceptor` — rustls agreeing with rustls, which
+    # CLAUDE.md names as the disqualifying case) and gave the `git` client `dirs`.
+    "rcgen", "dirs",
 }
 
 # A generic HTTP client proves an HTTP server answers, not that the protocol layered
@@ -91,13 +124,27 @@ LIB_NAME_ALIASES = {
 }
 
 
-def declared_states() -> dict[str, str]:
-    """Every server protocol's own DevelopmentState, keyed by its source directory."""
+# A test that builds one of these is driving NetGet's own server of the same protocol.
+#
+# For a *client* that is the circular case — the peer is the implementation this
+# repository wrote to agree with it — and it is what ~60 of 98 clients rest on. It is
+# not a defect on the server side (a server test starting a server is just the setup),
+# so it is only interpreted under `--side client`.
+SELF_SERVED_MARKERS = (
+    "ServerForm",
+    "start_netget_server",
+    '"open_server"',
+    "open_server",
+)
+
+
+def declared_states(side: str) -> dict[str, str]:
+    """Every protocol's own DevelopmentState on this side, keyed by its source directory."""
     pattern = re.compile(
         r"\.state\(\s*(?:crate::protocol::metadata::)?DevelopmentState::([A-Za-z]+)"
     )
     out: dict[str, str] = {}
-    base = ROOT / "src" / "server"
+    base = ROOT / "src" / side
     for actions in sorted(list(base.glob("*/actions.rs")) + list(base.glob("*/*/actions.rs"))):
         rel = actions.relative_to(base).parent.as_posix()
         m = pattern.search(actions.read_text(errors="ignore"))
@@ -106,13 +153,17 @@ def declared_states() -> dict[str, str]:
     return out
 
 
-def http_native(protocol: str) -> bool:
-    """True when the protocol's own stack ends at HTTP, so an HTTP client is its client.
+def http_native(protocol: str, side: str) -> bool:
+    """True when the protocol's own stack ends at HTTP, so an HTTP peer is its peer.
 
     `ETH>IP>TCP>HTTP` is HTTP; `ETH>IP>TCP>HTTP>Maven` is Maven carried over HTTP, and
-    for that one a generic HTTP client proves the transport and nothing above it.
+    for that one a generic HTTP library proves the transport and nothing above it.
+
+    The rule is the same in both directions, only the role flips: for a server it says
+    whether `reqwest` counts as a client, for a client whether an `axum` router (or
+    `nginx`) counts as a server.
     """
-    actions = ROOT / "src" / "server" / protocol / "actions.rs"
+    actions = ROOT / "src" / side / protocol / "actions.rs"
     if not actions.is_file():
         return False
     m = re.search(
@@ -174,23 +225,55 @@ def imported_crates(directory: Path, known: set[str]) -> set[str]:
     if not directory.is_dir():
         return set()
     found: set[str] = set()
-    use_form = re.compile(r"^\s*use\s+([a-z][a-z0-9_]*)\s*::", re.M)
-    inline_form = re.compile(r"(?<![A-Za-z0-9_:])([a-z][a-z0-9_]*)\s*::")
     for f in directory.rglob("*.rs"):
-        code = "\n".join(line.split("//")[0] for line in f.read_text(errors="ignore").splitlines())
-        for m in use_form.finditer(code):
-            crate = m.group(1)
-            if crate not in INFRASTRUCTURE and crate in known:
-                found.add(crate)
-        for m in inline_form.finditer(code):
-            crate = m.group(1)
-            if crate not in INFRASTRUCTURE and crate in known:
-                found.add(crate)
+        code = strip_line_comments(f.read_text(errors="ignore"))
+        found |= crates_in_code(code, known)
     return found
 
 
-def test_directory(protocol: str) -> Path:
-    base = ROOT / "tests" / "server"
+USE_FORM = re.compile(r"^\s*use\s+([a-z][a-z0-9_]*)\s*::", re.M)
+# Captures the crate *and* the segment after it, because the second one decides whether
+# the first is a peer — see `crates_in_code`.
+INLINE_FORM = re.compile(r"(?<![A-Za-z0-9_:])([a-z][a-z0-9_]*)\s*::\s*([a-z][a-z0-9_]*)?")
+
+
+def strip_line_comments(text: str) -> str:
+    """Drop `//` tails, so prose *about* a crate or a gate is not read as one.
+
+    This repository has hit the matching-prose-about-the-pattern false positive three
+    times, and twice in this script's own history.
+    """
+    return "\n".join(line.split("//")[0] for line in text.splitlines())
+
+
+def crates_in_code(code: str, known: set[str]) -> set[str]:
+    """Third-party crate names one already-comment-stripped body of code reaches for.
+
+    One subtlety on top of the two the module docstring records. `quinn::rustls::crypto::
+    ring::default_provider()` names `quinn` inline while using it purely as a **re-export**
+    of another crate — `tests/client/kubernetes` does exactly that to install a crypto
+    provider, and it made the kubernetes client report `quinn` as its peer, which put a
+    client whose test starts no server at all into the promotion-candidate list. So an
+    inline `a::b::` where `b` is itself a Cargo dependency is read as reaching for `b`,
+    not for `a`. Only the inline form needs this: a real dependence writes `use quinn::…`,
+    and `USE_FORM` is untouched.
+    """
+    found: set[str] = set()
+    for m in USE_FORM.finditer(code):
+        crate = m.group(1)
+        if crate not in INFRASTRUCTURE and crate in known:
+            found.add(crate)
+    for m in INLINE_FORM.finditer(code):
+        crate, inner = m.group(1), m.group(2)
+        if inner and inner in known and inner != crate:
+            continue  # `a::b::` — the crate being used is `b`, which its own match catches
+        if crate not in INFRASTRUCTURE and crate in known:
+            found.add(crate)
+    return found
+
+
+def test_directory(protocol: str, side: str) -> Path:
+    base = ROOT / "tests" / side
     for candidate in (protocol.replace("/", "_"), protocol, protocol.split("/")[-1]):
         path = base / candidate
         if path.is_dir():
@@ -198,18 +281,38 @@ def test_directory(protocol: str) -> Path:
     return base / protocol.replace("/", "_")
 
 
-def scan_tests(directory: Path) -> dict:
-    """Binaries driven, #[ignore] counts, and any skip-and-pass gate."""
+def scan_tests(directory: Path, known: set[str]) -> dict:
+    """Binaries driven, crates driven, #[ignore] counts, skip gates, and self-served tests.
+
+    Peers are attributed **per file** as well as in aggregate, because the client bar
+    turns on reachability: a peer named only in a file where every test is `#[ignore]`d
+    is a peer nothing ever speaks to. The aggregate alone cannot see that — `nats`
+    would look identical to `mqtt`, and one of them runs.
+    """
     binaries: set[str] = set()
+    crates: set[str] = set()
     ignored: list[str] = []
     total = 0
     skip_gates: list[str] = []
+    self_served: list[str] = []
+    per_file: list[dict] = []
     if not directory.is_dir():
-        return {"binaries": binaries, "ignored": ignored, "tests": 0, "skip_gates": skip_gates}
+        return {
+            "binaries": binaries,
+            "crates": crates,
+            "ignored": ignored,
+            "tests": 0,
+            "skip_gates": skip_gates,
+            "self_served": self_served,
+            "per_file": per_file,
+        }
 
     for f in sorted(directory.rglob("*.rs")):
         text = f.read_text(errors="ignore")
-        code = "\n".join(line.split("//")[0] for line in text.splitlines())
+        code = strip_line_comments(text)
+        file_binaries: set[str] = set()
+        file_crates = crates_in_code(code, known)
+        crates |= file_crates
 
         # `Command::new("dig")` is the easy case. `Command::new(&binary)`, where the
         # path was resolved earlier, is just as common — `radius` and `memcached` both
@@ -218,18 +321,33 @@ def scan_tests(directory: Path) -> dict:
         for m in re.finditer(r'Command::new\(\s*"([^"]+)"', code):
             name = m.group(1).split("/")[-1]
             if name not in NOT_A_PEER_BINARY:
-                binaries.add(name)
+                file_binaries.add(name)
         if re.search(r"Command::new\(\s*&?[a-z_]", code):
             for m in re.finditer(r'"(?:/opt/homebrew/bin|/usr/local/bin|/usr/bin|/bin|/sbin|/usr/sbin)/([a-z0-9_.-]+)"', code):
                 if m.group(1) not in NOT_A_PEER_BINARY:
-                    binaries.add(m.group(1))
+                    file_binaries.add(m.group(1))
             for m in re.finditer(r'(?:tool|which_in_path|find_binary|require_tool)\(\s*"([a-z0-9_.-]+)"', code):
                 if m.group(1) not in NOT_A_PEER_BINARY:
-                    binaries.add(m.group(1))
+                    file_binaries.add(m.group(1))
+        binaries |= file_binaries
 
-        total += len(re.findall(r"#\[(?:tokio::)?test", code))
+        file_tests = len(re.findall(r"#\[(?:tokio::)?test", code))
+        file_ignored = 0
+        total += file_tests
         for m in re.finditer(r"#\[ignore[^\]]*\]", code):
+            file_ignored += 1
             ignored.append(f"{f.name}:{code[:m.start()].count(chr(10)) + 1}")
+
+        if any(marker in code for marker in SELF_SERVED_MARKERS):
+            self_served.append(f.name)
+
+        per_file.append({
+            "name": f.name,
+            "binaries": file_binaries,
+            "crates": file_crates,
+            "tests": file_tests,
+            "ignored": file_ignored,
+        })
 
         lines = text.splitlines()
         for i, line in enumerate(lines):
@@ -241,35 +359,69 @@ def scan_tests(directory: Path) -> dict:
             if RETURN_OK.search(window):
                 skip_gates.append(f"{f.name}:{i + 1}")
 
-    return {"binaries": binaries, "ignored": ignored, "tests": total, "skip_gates": skip_gates}
+    return {
+        "binaries": binaries,
+        "crates": crates,
+        "ignored": ignored,
+        "tests": total,
+        "skip_gates": skip_gates,
+        "self_served": self_served,
+        "per_file": per_file,
+    }
 
 
-def rows() -> list[dict]:
+def unreachable_peers(scan: dict, peers: set[str]) -> list[str]:
+    """Peers named only in files where **every** test is `#[ignore]`d.
+
+    A file with no `#[test]` at all (a helper, a `mod.rs`) is not evidence either way,
+    so it neither rescues a peer nor condemns one — only a file that has tests and
+    ignores all of them counts against.
+    """
+    reachable: set[str] = set()
+    seen: set[str] = set()
+    for f in scan["per_file"]:
+        named = (f["binaries"] | f["crates"]) & peers
+        if not named:
+            continue
+        seen |= named
+        if f["tests"] > 0 and f["ignored"] >= f["tests"]:
+            continue  # this file's evidence never runs
+        if f["tests"] > 0:
+            reachable |= named
+    return sorted(seen - reachable)
+
+
+def rows(side: str) -> list[dict]:
     known = cargo_dependencies()
     known_names = set(known)
     result = []
-    for protocol, state in sorted(declared_states().items()):
-        tests = test_directory(protocol)
-        scan = scan_tests(tests)
-        test_crates = imported_crates(tests, known_names)
-        src_crates = imported_crates(ROOT / "src" / "server" / protocol, known_names)
+    for protocol, state in sorted(declared_states(side).items()):
+        tests = test_directory(protocol, side)
+        scan = scan_tests(tests, known_names)
+        test_crates = scan["crates"]
+        src_crates = imported_crates(ROOT / "src" / side / protocol, known_names)
 
-        native = http_native(protocol)
+        native = http_native(protocol, side)
         peers = sorted(c for c in test_crates if native or c not in GENERIC_HTTP)
         generic = [] if native else sorted(c for c in test_crates if c in GENERIC_HTTP)
+        binaries = sorted(b for b in scan["binaries"] if b not in GENERIC_HTTP)
+        circular = sorted(set(peers) & src_crates)
+        independent = set(binaries) | (set(peers) - set(circular))
 
         result.append({
             "protocol": protocol,
             "state": state,
-            "binaries": sorted(b for b in scan["binaries"] if b not in GENERIC_HTTP),
+            "binaries": binaries,
             "crates": peers,
-            "circular": sorted(set(peers) & src_crates),
+            "circular": circular,
             "optional": sorted(c for c in peers if known.get(c)),
             "optional_status": {c: known.get(c) for c in peers},
             "generic_only": generic,
             "ignored": scan["ignored"],
             "tests": scan["tests"],
             "skip_gates": scan["skip_gates"],
+            "self_served": scan["self_served"],
+            "unreachable": unreachable_peers(scan, independent),
             "has_tests": tests.is_dir(),
         })
     return result
@@ -285,26 +437,43 @@ def independent_peers(row: dict) -> list[str]:
     return row["binaries"] + [c for c in row["crates"] if c not in row["circular"]]
 
 
-def blocking_defects(row: dict) -> list[str]:
+def blocking_defects(row: dict, side: str) -> list[str]:
     """Failures a script can be sure about, which `--check` fails the build on."""
     out = []
-    if not independent_peers(row):
+    peers = independent_peers(row)
+    if not peers:
         if row["generic_only"]:
             out.append(
-                "only a generic HTTP client (" + ", ".join(row["generic_only"]) + ")"
+                "only a generic HTTP library (" + ", ".join(row["generic_only"]) + ")"
             )
         elif row["crates"]:
             out.append("only circular peers (" + ", ".join(row["circular"]) + ")")
+        elif side == "client" and row["self_served"]:
+            out.append(
+                "self-served: the only peer is NetGet's own server, driven from "
+                + ", ".join(row["self_served"])
+                + " — the two were written to agree, so the exchange measures nothing"
+            )
         else:
             out.append("no independent peer found")
     if row["skip_gates"]:
         out.append("skip-and-pass gate at " + ", ".join(row["skip_gates"]))
     if row["tests"] and len(row["ignored"]) >= row["tests"]:
         out.append(f"every test #[ignore]d ({len(row['ignored'])}/{row['tests']})")
+    if side == "client" and row["unreachable"]:
+        # The client bar names `#[ignore]` alongside a skip gate: unreachable evidence
+        # is not evidence, however good the reason for parking it. On the server side
+        # this stays a review flag, because a suite may legitimately ignore its
+        # adapter-claiming tests while its real evidence runs.
+        out.append(
+            "peer only in tests that never run: "
+            + ", ".join(row["unreachable"])
+            + " — every test naming it is #[ignore]d"
+        )
     return out
 
 
-def review_flags(row: dict) -> list[str]:
+def review_flags(row: dict, side: str) -> list[str]:
     """Things a human has to read the test to settle. Deliberately NOT build-failing.
 
     Two of them have documented, accepted exceptions:
@@ -339,13 +508,76 @@ def review_flags(row: dict) -> list[str]:
         out.append(f"{len(row['ignored'])} of {row['tests']} tests #[ignore]d")
     if not row["has_tests"]:
         out.append("no test directory at all")
+    if side == "client":
+        if peers and row["self_served"]:
+            out.append(
+                "also drives NetGet's own server ("
+                + ", ".join(row["self_served"])
+                + ") — check the rating rests on the independent peer, not on that"
+            )
+        out.append(
+            "the fourth client condition is not checkable here: that the client acts on "
+            "the model's answer, asserted on the wire. `tests/client_event_wiring_test.rs` "
+            "catches the source shape; only reading the test settles the assertion"
+        )
     return out
 
 
-def render(selected: list[dict], show_availability: bool) -> str:
+def client_groups(rows_in: list[dict]) -> list[tuple[str, list[str]]]:
+    """Split non-Beta clients the four ways the September 2026 audit found by hand.
+
+    Each protocol lands in exactly one group, tested in order of how close it is to the
+    bar, so the first group is the cheapest work rather than the largest. The groups are
+    *derived* here; the value of that is precisely that the hand-written version in
+    CLAUDE.md will drift and this will not.
+    """
+    reachable_peer: list[str] = []
+    unreachable: list[str] = []
+    wrong_peer: list[str] = []
+    self_served: list[str] = []
+    nothing: list[str] = []
+
+    for r in rows_in:
+        peers = independent_peers(r)
+        name = r["protocol"]
+        if peers and not r["unreachable"] and not r["skip_gates"]:
+            reachable_peer.append(name)
+        elif peers:
+            unreachable.append(name)
+        elif r["generic_only"] or r["circular"]:
+            wrong_peer.append(name)
+        elif r["self_served"]:
+            self_served.append(name)
+        else:
+            nothing.append(name)
+
+    return [
+        (
+            "real peer, evidence runs — read the test, this is a promotion candidate",
+            reachable_peer,
+        ),
+        (
+            "real peer, unreachable evidence (#[ignore]d or skip-gated) — un-ignoring it is the work",
+            unreachable,
+        ),
+        (
+            "wrong peer: a generic HTTP library, or the same crate the client is built on",
+            wrong_peer,
+        ),
+        (
+            "self-served: the peer is NetGet's own server of the same protocol",
+            self_served,
+        ),
+        ("no peer of any kind found in its tests", nothing),
+    ]
+
+
+def render(selected: list[dict], show_availability: bool, side: str) -> str:
+    extra = " | self-served |" if side == "client" else " |"
     lines = [
-        "| protocol | state | peer (binary / crate) | circular | optional dep | #[ignore]d | skip gate |",
-        "|---|---|---|---|---|---|---|",
+        "| protocol | state | peer (binary / crate) | circular | optional dep | #[ignore]d | skip gate"
+        + extra,
+        "|---|---|---|---|---|---|---|" + ("---|" if side == "client" else ""),
     ]
     for r in selected:
         peer_parts = []
@@ -357,22 +589,31 @@ def render(selected: list[dict], show_availability: bool) -> str:
         peer_parts += [f"`{c}`" for c in r["crates"]]
         if not peer_parts:
             peer_parts = ["**none**" + (f" (generic: {', '.join(r['generic_only'])})" if r["generic_only"] else "")]
-        lines.append(
-            "| {p} | {s} | {peer} | {circ} | {opt} | {ign} | {skip} |".format(
-                p=r["protocol"],
-                s=r["state"],
-                peer=", ".join(peer_parts),
-                circ=", ".join(r["circular"]) or "-",
-                opt=", ".join(r["optional"]) or "-",
-                ign=f"{len(r['ignored'])}/{r['tests']}" if r["ignored"] else "-",
-                skip=", ".join(r["skip_gates"]) or "-",
-            )
+        row = "| {p} | {s} | {peer} | {circ} | {opt} | {ign} | {skip} |".format(
+            p=r["protocol"],
+            s=r["state"],
+            peer=", ".join(peer_parts),
+            circ=", ".join(r["circular"]) or "-",
+            opt=", ".join(r["optional"]) or "-",
+            ign=f"{len(r['ignored'])}/{r['tests']}" if r["ignored"] else "-",
+            skip=", ".join(r["skip_gates"]) or "-",
         )
+        if side == "client":
+            row += " {} |".format("yes" if r["self_served"] else "-")
+        lines.append(row)
     return "\n".join(lines)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--side",
+        choices=("server", "client"),
+        default="server",
+        help="which tree to report on (default: server). The bars differ — see the module "
+        "docstring; the client one additionally rules out NetGet's own server as a peer "
+        "and treats #[ignore]d evidence as disqualifying.",
+    )
     parser.add_argument("--all", action="store_true", help="every protocol, not only Beta")
     parser.add_argument("--check", action="store_true", help="exit 1 if a Beta rating's evidence cannot execute")
     parser.add_argument(
@@ -387,7 +628,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    all_rows = rows()
+    side = args.side
+    all_rows = rows(side)
     show = not args.no_availability
 
     if args.experimental_with_evidence:
@@ -395,25 +637,33 @@ def main() -> int:
             r for r in all_rows
             if r["state"] == "Experimental" and (r["binaries"] or r["crates"])
             and not r["circular"] and not r["skip_gates"] and not r["ignored"]
+            and not (side == "client" and not independent_peers(r))
         ]
-        print("# Experimental protocols whose evidence already executes\n")
+        print(f"# Experimental {side} protocols whose evidence already executes\n")
         print("Each has an independent peer, no circular crate, no skip gate and no `#[ignore]`.")
-        print("Read the test before promoting: this cannot tell a client completing a session")
+        if side == "client":
+            print("A candidate may still be self-served — read the `self-served` column: a peer")
+            print("that is NetGet's own server of the same protocol is not a peer.")
+        print("Read the test before promoting: this cannot tell a peer completing a session")
         print("from a codec being called, and that distinction is the whole rating.\n")
-        print(render(candidates, show))
+        print(render(candidates, show, side))
         return 0
 
     selected = all_rows if args.all else [r for r in all_rows if r["state"] == "Beta"]
-    title = "every server protocol" if args.all else "every Beta server protocol"
+    title = f"every {side} protocol" if args.all else f"every Beta {side} protocol"
     print(f"# Evidence behind {title}\n")
     print("Generated by `scripts/beta_evidence_table.py` — do not hand-maintain this.")
     if show:
         print("A ✓ or ✗ after a binary says whether it is installed on the machine that ran this.")
+    if side == "client":
+        print("The peer of a client is a **server**, and never NetGet's own server of the same")
+        print("protocol — the `self-served` column is that case, which the September 2026 audit")
+        print("put at roughly 60 of 98 clients.")
     print()
-    print(render(selected, show))
+    print(render(selected, show, side))
 
     beta = [r for r in all_rows if r["state"] == "Beta"]
-    problems = [(r, blocking_defects(r)) for r in beta]
+    problems = [(r, blocking_defects(r, side)) for r in beta]
     problems = [(r, d) for r, d in problems if d]
     print("\n## Beta ratings with no evidence a script can find\n")
     if problems:
@@ -424,7 +674,7 @@ def main() -> int:
     else:
         print("None.")
 
-    flagged = [(r, review_flags(r)) for r in beta]
+    flagged = [(r, review_flags(r, side)) for r in beta]
     flagged = [(r, fl) for r, fl in flagged if fl]
     print("\n## Beta ratings a human should re-read\n")
     if flagged:
@@ -435,10 +685,19 @@ def main() -> int:
     else:
         print("None.")
 
+    if side == "client":
+        print("\n## Why the Experimental clients are Experimental\n")
+        print("The September 2026 hand audit divided them four ways. This is the same split,")
+        print("derived rather than remembered — the groups are ordered by how far each is from")
+        print("the bar, so the top group is the cheapest work and the bottom is the deepest.\n")
+        groups = client_groups([r for r in all_rows if r["state"] != "Beta"])
+        for label, names in groups:
+            print(f"- **{label}** ({len(names)}): {', '.join(names) if names else '—'}")
+
     counts: dict[str, int] = {}
     for r in all_rows:
         counts[r["state"]] = counts.get(r["state"], 0) + 1
-    print("\n## Counts\n")
+    print(f"\n## Counts ({side})\n")
     for state, n in sorted(counts.items()):
         print(f"- {state}: {n}")
 

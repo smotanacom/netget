@@ -36,6 +36,19 @@ injection path: a raw socket sends the protocol header, `send_to_peer` injects
 because AMQP actions are `Custom`), counters move in both directions, `close_connection`
 yields EOF, and the peer handle is released when the connection ends.
 
+`wire_text_test.rs` (zero LLM calls, in-process `AppState`, `instruction: Some(String::new())`
+so the model is genuinely never consulted) covers what a *decode* failure tells the peer. It
+sends a `connection.start-ok` whose `client-properties` table declares 24 bytes and carries
+two, then reads the `connection.close` back off the raw socket and asserts the `reply_text` is
+the fixed category and contains none of `Decoder::take`'s vocabulary — `truncated`, `offset`,
+`available`, `wanted`. Both halves are asserted deliberately: the equality alone would still
+pass if someone replaced the category with a *different* interpolated string and updated the
+expected value to match.
+
+Restoring `format!("UNEXPECTED_FRAME - {}", e)` in `src/server/amqp/mod.rs` fails it with
+`left: "UNEXPECTED_FRAME - AMQP payload truncated: 24 bytes wanted at offset 8, only 2
+available"` — which is exactly the sentence that was reaching strangers.
+
 Eleven calls across four `netget` processes; each test runs its own broker because the
 mock rules differ per broker instruction.
 

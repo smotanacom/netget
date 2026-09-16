@@ -35,7 +35,7 @@ client-first, so it could never have been honoured.
 
 | Field | Values |
 |---|---|
-| `reason` | `client_disconnect`, `close_this_connection`, `invalid_message_length`, `incomplete_message_body`, `unsupported_opcode`, `malformed_op_msg` |
+| `reason` | `client_disconnect`, `close_this_connection`, `idle_timeout`, `invalid_message_length`, `incomplete_message_body`, `unsupported_opcode`, `malformed_op_msg` |
 
 The write half is shut down and the connection marked closed before this event
 fires, so the LLM round-trip does not hold the connection open. A session that
@@ -157,6 +157,44 @@ header has already arrived is in flight by definition, so the deadline refuses a
 stalled peer without truncating a legitimate one; the connection ends with
 `reason: incomplete_message_body`.
 
+The *header* read is bounded separately — see [Connection bounds](#connection-bounds).
+
+## Connection bounds
+
+| Bound | Value | Applies to | Why this number |
+|---|---|---|---|
+| `FIRST_HEADER_READ_TIMEOUT` | 30s | the 16-byte header, before this session has answered anything | MongoDB is client-speaks-first: the server says nothing until an OP_MSG arrives, and every real driver opens with `hello`/`isMaster` inside its own connect path. A peer that has connected and sent no header has started nothing. |
+| `IDLE_BETWEEN_MESSAGES_TIMEOUT` | 600s | the 16-byte header, once a message has been answered | A driver's pooled connection is legitimately idle for minutes between operations; `heartbeatFrequencyMS` defaults to 10 s, so a monitoring connection stays far inside this. Forever is not a legitimate configuration. |
+| `BODY_READ_TIMEOUT` | 30s | the announced body, once its header has arrived | The rest of a message whose header arrived is in flight by definition. |
+| `MAX_MESSAGE_SIZE` | 48 MB | the announced `messageLength` | The value this server advertises as `maxMessageSizeBytes`. |
+
+**The header pair is what makes `[ disconnect this peer ]` take effect.** The
+dashboard's disconnect half-closes the write side, which a peer that is not
+reading never notices, so without a deadline on the header read the connection
+task stayed parked in `read_exact` until the peer itself closed — holding the
+socket, the registered task and the `AppState` row behind an operator action that
+reported success. `BODY_READ_TIMEOUT` never covered it: that one arms only once
+sixteen bytes have already arrived, so a peer sending zero bytes, or eight, was
+outside every bound in the file.
+
+**Two numbers, not one, for the reason `whois` states**: "has said nothing at all"
+and "has gone quiet mid-session" are different claims. Collapsing them onto the
+short bound would close a pooled driver connection between operations.
+
+**Both are armed lazily, per read.** The `tokio::time::timeout` future is built at
+the top of the loop, *after* the previous message's LLM round-trip — or a `manual`
+rule parked for a human, 300 s by default — has finished, so no clock runs during
+that work and a long park cannot evict a live session. That is the TFTP eviction
+defect the project `CLAUDE.md` records, stated in reverse: what is bounded is a
+peer holding a connection while saying nothing, never a server taking its time to
+answer. The `reason` reported on the disconnect event is `idle_timeout`.
+
+`tests/server/mongodb/connection_bounds_test.rs` drives all of it from a raw
+socket: a peer that says nothing, a peer that sends half a header, and — the
+control that stops the pair collapsing back into one number — a peer that
+completes the `hello` handshake and then goes quiet past the 30 s bound and
+is *not* closed.
+
 Anything other than opCode 2013 closes the connection rather than being skipped —
 skipping left the client waiting forever for a reply it could parse. OP_QUERY
 (2004), OP_COMPRESSED (2012) and section kind 1 are all rejected this way.
@@ -217,12 +255,13 @@ would fail as an unknown action.
 
 `tests/server/mongodb/peer_inject_test.rs` proves all of this with zero LLM calls.
 
-**One thing the handle does not fix**: the header read has no deadline (only the
-*body* is bounded, by `BODY_READ_TIMEOUT`). After an injected half-close the
-connection is marked closed and the handle is gone immediately, but the task
-itself stays parked in `read_exact` until the peer closes its own side. `mssql`,
-`db2` and `whois` all bound the first/idle read; MongoDB does not, and that is a
-pre-existing gap rather than one this introduced.
+**The gap this section used to name is closed.** The header read had no deadline
+— only the *body* was bounded, by `BODY_READ_TIMEOUT` — so after an injected
+half-close the connection was marked closed and the handle gone immediately while
+the task itself stayed parked in `read_exact` until the peer closed its own side.
+`[ disconnect this peer ]` reported a hang-up that had not happened. See
+[Connection bounds](#connection-bounds): the header read is bounded now, by the
+same first/idle pair `mssql`, `db2` and `whois` use.
 
 ## Not implemented
 

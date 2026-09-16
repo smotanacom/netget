@@ -36,6 +36,34 @@ const OP_MSG: i32 = 2013;
 /// it, sixteen bytes claiming a 48 MB body pin 48 MB per connection indefinitely.
 const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long to wait for a peer's first message header after it has connected.
+///
+/// MongoDB is client-speaks-first: the server says nothing until an OP_MSG arrives, and every
+/// real driver opens with `hello`/`isMaster` inside its own connect path. A peer that has
+/// connected and sent no header at all has started nothing, so it gets the short bound.
+const FIRST_HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait for a *further* message header once one has been answered.
+///
+/// Ten minutes, matching the driver-side idle window the official drivers ship
+/// (`maxIdleTimeMS` is unset by default, but connection pools reap at this order and a
+/// `heartbeatFrequencyMS` of 10 s keeps a monitoring connection far inside it). A pooled
+/// connection between operations is legitimately silent for minutes; forever is not a
+/// legitimate configuration.
+///
+/// **This bound is what makes `[ disconnect this peer ]` take effect.** The dashboard's
+/// disconnect half-closes the socket and marks the row closed, which a peer that is not
+/// reading never notices — so without a deadline on the *header* read this task stayed parked
+/// in `read_exact` until the peer itself closed, holding the connection's tasks and state row
+/// behind an operator action that reported success. [`BODY_READ_TIMEOUT`] did not cover it:
+/// that one arms only once sixteen bytes have already arrived.
+///
+/// Like every read deadline in this tree it is armed lazily, per read: the future is created
+/// at the top of the loop, *after* the previous message's LLM round-trip (or a `manual` rule
+/// parked for a human, 300 s by default) has finished, so no clock runs during that work and a
+/// long park cannot evict a live session. That is the TFTP eviction defect stated in reverse.
+const IDLE_BETWEEN_MESSAGES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// The write half of one connection, shared between the session loop and the dashboard's
 /// peer-command task (`server::peer_support`).
 ///
@@ -350,12 +378,41 @@ impl MongodbHandler {
         // MongoDB doesn't require handshake - client sends first
         // The disconnect reason reported to the LLM once the socket is done.
         let mut disconnect_reason = "client_disconnect";
+        // Whether this session has already answered a message, which decides which of the two
+        // header deadlines applies.
+        let mut answered_one = false;
 
         loop {
             // Read MongoDB wire protocol message header (16 bytes)
             // Format: messageLength (4) + requestID (4) + responseTo (4) + opCode (4)
+            //
+            // Bounded: `BODY_READ_TIMEOUT` used to be the only deadline in this loop, and it
+            // arms only after a header has arrived, so a peer that connected and said nothing
+            // — or one the operator disconnected from the dashboard, which half-closes without
+            // the peer noticing — parked this task in `read_exact` indefinitely.
+            let header_timeout = if answered_one {
+                IDLE_BETWEEN_MESSAGES_TIMEOUT
+            } else {
+                FIRST_HEADER_READ_TIMEOUT
+            };
             let mut header = [0u8; 16];
-            match reader.read_exact(&mut header).await {
+            let header_read =
+                match tokio::time::timeout(header_timeout, reader.read_exact(&mut header)).await {
+                    Ok(read) => read,
+                    Err(_) => {
+                        debug!(
+                            "MongoDB: {} sent no message header for {:?}; closing idle connection",
+                            self.remote_addr, header_timeout
+                        );
+                        let _ = self.status_tx.send(format!(
+                            "[INFO] MongoDB: {} sent nothing for {:?}, closing idle connection",
+                            self.remote_addr, header_timeout
+                        ));
+                        disconnect_reason = "idle_timeout";
+                        break;
+                    }
+                };
+            match header_read {
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     debug!("MongoDB client disconnected");
@@ -424,6 +481,9 @@ impl MongodbHandler {
                 }
             }
             self.record_received(message_length as u64).await;
+            // A whole message has arrived, so this connection is in use rather than merely
+            // open: subsequent header reads get the long, pooled-connection bound.
+            answered_one = true;
 
             // Parse command based on opCode. Only OP_MSG is implemented; anything else would
             // leave the client waiting forever for a reply it can parse, so close instead.
