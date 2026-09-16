@@ -408,12 +408,49 @@ declare, whether or not anyone has looked at it.
   was installed — hard-failing a gate makes that binary a requirement wherever the suite runs,
   which belongs to whoever owns the CI image.
 
-- [ ] **Make `beta_evidence_table.py` client-aware.** It hard-codes `src/server` and
-  `tests/server` in exactly four places — `declared_states()`, `test_directory()`, `rows()`'s
-  `src_crates` and `http_native()` — plus the title string. The scanning machinery is already
-  side-agnostic, so `--side {server,client}` threaded through those five is the whole change.
-  *Why:* the client audit above is hand-derived, and every hand-derived list in this repository
-  has drifted, in both directions. *Effort:* S.
+- [x] **Make `beta_evidence_table.py` client-aware.** *(16 September 2026 — `--side
+  {server,client}`.)* The path swap was the four places this item named, and it was **not the
+  whole change**, because the two bars are not the same. The client bar adds two conditions the
+  server bar does not have, and both had to become checks:
+
+  - **The peer must not be NetGet's own server.** `self-served` is detected from the test
+    building a `ServerForm`, calling `start_netget_server`, or sending an `open_server` action,
+    and it is blocking when nothing else backs the rating up. Derived count: **62 of 97**, against
+    the hand audit's "~60" — so the hand figure was close, and is now generated.
+  - **`#[ignore]` disqualifies, not merely flags.** Peers are attributed **per file**, so a peer
+    named only in files where every test is ignored is reported as unreachable. The aggregate
+    count cannot see this: `nats` and `mqtt` both name a real third-party server, and one of
+    them runs.
+
+  Server output is byte-identical to the previous version apart from three deliberate
+  corrections, which is the check that the split did not change the side that was already right.
+
+  **The run also found two false positives in the existing scan**, both of the kind its own
+  comments warn about, and both of which would have put a client on the promotion list:
+  `rcgen` and `dirs` are test fixtures rather than peers (a certificate generator and a
+  home-directory locator) — `rcgen` made the `tls` client look independently peered when its
+  actual peer is a `tokio_rustls::TlsAcceptor` against a `tokio_rustls::TlsConnector`, the
+  rustls-agreeing-with-rustls case this file already names; and an inline `quinn::rustls::…`
+  used purely as a **re-export** to install a crypto provider made the `kubernetes` client
+  report `quinn` as its peer, in a suite that starts no server at all. An inline `a::b::` where
+  `b` is itself a dependency now reads as reaching for `b`.
+
+  **The derived client picture, which is the point of the item:**
+
+  | group | count |
+  |---|---|
+  | Beta | **1** (`nats`) |
+  | real peer, evidence runs — promotion candidates | **0** |
+  | real peer, unreachable (`#[ignore]`d or skip-gated) | 1 (`mqtt`) |
+  | wrong peer: generic HTTP, or the client's own crate | 9 |
+  | self-served: the peer is NetGet's own server | 62 |
+  | no peer of any kind in its tests | 25 |
+
+  The zero in the second row is the finding. The hand audit reached it in September and this
+  reaches it from source, which is the difference between believing it and being able to re-run
+  it. What remains un-checkable by any scan is the fourth client condition — that the client
+  *acts* on the model's answer, asserted on the wire — and the script says so rather than
+  implying it passed.
 
 - [x] **Re-derive the "not promoted" list in `CLAUDE.md`.** *(15 September 2026.)*
   `scripts/beta_evidence_table.py` generates it: per protocol, the binaries and crates its
