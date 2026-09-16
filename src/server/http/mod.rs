@@ -575,9 +575,10 @@ async fn handle_http_request_inner(
             // silently. It lives in `src/server/http_common/handler.rs`, shared with
             // ipp/openapi/…, so the tag has to be applied here at the call site instead.
             //
-            // The predicate below is the same one `build_response` uses for its internal
-            // `produced_response` flag: an `Output` whose bytes parse as JSON. When it is
-            // false the model produced no usable `send_http_response`, and the server
+            // `produced_http_response` is `build_response`'s own predicate, exported so this
+            // line cannot drift from the bytes that actually go out: a tag claiming the model
+            // answered while the peer received the fallback would be worse than no tag. When
+            // it is false the model produced no usable `send_http_response`, and the server
             // answers anyway — with the configured `default_response` if there is one, and
             // otherwise with a blank **200**.
             //
@@ -587,13 +588,9 @@ async fn handle_http_request_inner(
             // reach the peer as `200 OK` with an empty body. `decision=fail_closed_*` would
             // be a lie on that path, so the silence is tagged as the model's and the
             // fallback that was actually used is named in the same line.
-            let produced_response = execution_result.protocol_results.iter().any(|r| {
-                matches!(
-                    r,
-                    crate::llm::actions::protocol_trait::ActionResult::Output(out)
-                        if serde_json::from_slice::<serde_json::Value>(out).is_ok()
-                )
-            });
+            let produced_response = crate::server::http_common::handler::produced_http_response(
+                &execution_result.protocol_results,
+            );
             let failure_summary = execution_result
                 .failures
                 .iter()
