@@ -598,11 +598,20 @@ Startup must report failure. `spawn()` has to await readiness and return `Err` s
 `spawn_blocking` and sat in `Running` having captured nothing — a server that lies about being
 up is worse than one that refuses to start.
 
-`get_dependencies()` / `ProtocolDependency` (`src/protocol/dependencies.rs`) is plumbed —
-`get_excluded_protocols()` is called from the event handler and the TUI — but **no protocol
-overrides `get_dependencies()`**, so the exclusion map is always empty and the mechanism does
-nothing. Adopting it is cheap: declare dependencies and the existing plumbing starts excluding
-unusable protocols with install hints.
+`get_dependencies()` / `ProtocolDependency` (`src/protocol/dependencies.rs`) is plumbed, and as
+of September 2026 the default **derives** from `privilege_requirement` rather than being empty —
+so the old claim here that "no protocol overrides it, so the mechanism does nothing" is no longer
+true in either half.
+
+What the September audit found is more useful than the gap it was sent to close: **most of what
+looks like a runtime dependency is not one.** `libpcap` and `libsmbclient` are linked at load
+time, so the process could not start for a check to fire; `protoc` is `build.rs` only. Devices
+have no honest probe, which is why `DeviceAccess` derives nothing. Exactly two were real and
+undeclared, and both are declared now — the **gRPC client**'s `protoc` (the server declared it;
+the client running the identical `Command::new("protoc")` did not) and **wireguard-go** on macOS.
+
+So before declaring a dependency, ask whether it can actually be *missing at runtime on a
+process that started*. If not, the declaration is decoration.
 
 ## Adding a server protocol
 
